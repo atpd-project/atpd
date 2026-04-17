@@ -1,5 +1,6 @@
 #include "logger.h"
 #include "utils.h"
+#include "atp.h"
 #include <syslog.h>
 #include <libgen.h>
 #include <sys/time.h>
@@ -7,6 +8,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
+#include <string.h>
+#include <stdlib.h>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -23,7 +26,7 @@ static int android_level_map[] = {
 static log_config_t g_log_config = {
     .min_level = LOG_LEVEL_INFO,
     .targets = LOG_TARGET_STDERR | LOG_TARGET_FILE,
-    .log_file = ATP_DEFAULT_DIR "/" ATP_LOG_FILE,
+    .log_file = "",
     .enable_timestamp = 1,
     .enable_color = 1,
     .max_file_size = 10 * 1024 * 1024,
@@ -68,10 +71,11 @@ static void get_timestamp(char *buf, size_t size, int with_ms) {
 static void log_rotate_if_needed(void) {
     if (g_log_config.max_file_size == 0) return;
     if (!(g_log_config.targets & LOG_TARGET_FILE)) return;
+    if (g_log_config.log_file[0] == '\0') return;
     
     struct stat st;
     if (stat(g_log_config.log_file, &st) != 0) return;
-    if (st.st_size < g_log_config.max_file_size) return;
+    if ((size_t)st.st_size < g_log_config.max_file_size) return;
     
     char old_path[PATH_MAX];
     char new_path[PATH_MAX];
@@ -90,6 +94,7 @@ static void log_to_file(log_level_t level, const char *timestamp,
                          const char *file, int line, const char *func,
                          const char *msg) {
     if (!(g_log_config.targets & LOG_TARGET_FILE)) return;
+    if (g_log_config.log_file[0] == '\0') return;
     
     pthread_mutex_lock(&g_log_config.mutex);
     
@@ -205,11 +210,20 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
 }
 
 void log_init(void) {
+    char default_log_path[PATH_MAX];
+    snprintf(default_log_path, sizeof(default_log_path), "%s/%s", 
+             ATP_DEFAULT_DIR, ATP_LOG_FILE);
+    
+    if (g_log_config.log_file[0] == '\0') {
+        strncpy(g_log_config.log_file, default_log_path, sizeof(g_log_config.log_file) - 1);
+    }
+    
     char *dir = dirname(strdup(g_log_config.log_file));
     mkdir_recursive(dir, 0755);
     free(dir);
     
-    LOG_INFO("Logging initialized (level=%s)", level_names[g_log_config.min_level]);
+    fprintf(stderr, "Logging initialized (level=%s, file=%s)\n", 
+            level_names[g_log_config.min_level], g_log_config.log_file);
 }
 
 void log_set_level(log_level_t level) {
@@ -221,7 +235,10 @@ void log_set_target(int targets) {
 }
 
 void log_set_file(const char *path) {
-    strncpy(g_log_config.log_file, path, sizeof(g_log_config.log_file) - 1);
+    if (path && path[0]) {
+        strncpy(g_log_config.log_file, path, sizeof(g_log_config.log_file) - 1);
+        g_log_config.log_file[sizeof(g_log_config.log_file) - 1] = '\0';
+    }
 }
 
 void log_set_color(int enable) {
