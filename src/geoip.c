@@ -11,7 +11,7 @@ struct curl_memory {
     size_t size;
 };
 
-static size_t curl_write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
+static size_t curl_mem_write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
     struct curl_memory *mem = (struct curl_memory*)userp;
     
@@ -45,7 +45,7 @@ int geoip_download_url(const char *url, const char *output_path, int timeout_sec
     struct curl_memory chunk = {0};
     
     curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_mem_write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_sec);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -136,9 +136,10 @@ int geoip_ipset_swap(const char *from, const char *to) {
 
 int geoip_ipset_exists(const char *name) {
     char cmd[MAX_CMD_LEN];
+    char output[256];
+    
     snprintf(cmd, sizeof(cmd), "ipset list %s 2>/dev/null | head -1", name);
     
-    char output[256];
     if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0]) {
         return 1;
     }
