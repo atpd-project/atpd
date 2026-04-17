@@ -1,9 +1,11 @@
-// src/cli.c
 #include "cli.h"
 #include "logger.h"
 #include "atp.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 
-static const char *copyright = 
+static const char *copyright =
     ATP_NAME " v" ATP_VERSION "\n"
     "Copyright (C) 2024 ATP Project\n"
     "License: GPL v3\n";
@@ -72,7 +74,6 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
     opts->command = CMD_NONE;
     opts->log_level = LOG_LEVEL_INFO;
     
-    // Set defaults
     strcpy(opts->config_dir, ATP_DEFAULT_DIR);
     
     int opt;
@@ -168,7 +169,6 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
         }
     }
     
-    // If no command specified via long option, check positional argument
     if (opts->command == CMD_NONE && optind < argc) {
         const char *cmd = argv[optind];
         if (strcmp(cmd, "start") == 0) opts->command = CMD_START;
@@ -177,13 +177,14 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
         else if (strcmp(cmd, "status") == 0) opts->command = CMD_STATUS;
         else if (strcmp(cmd, "update-geoip") == 0) opts->command = CMD_UPDATE_GEOIP;
         else if (strcmp(cmd, "reload") == 0) opts->command = CMD_RELOAD;
+        else if (strcmp(cmd, "help") == 0) opts->command = CMD_HELP;
+        else if (strcmp(cmd, "version") == 0) opts->command = CMD_VERSION;
         else {
             fprintf(stderr, "Unknown command: %s\n", cmd);
             return -1;
         }
     }
     
-    // Help and version don't need a command
     if (opts->command == CMD_NONE && opts->command != CMD_HELP && opts->command != CMD_VERSION) {
         fprintf(stderr, "Error: No command specified\n");
         print_usage(argv[0]);
