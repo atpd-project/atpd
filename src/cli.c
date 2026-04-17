@@ -41,8 +41,17 @@ void print_usage(const char *progname) {
     printf("  status             Show service status\n");
     printf("  update-geoip       Update China GeoIP database\n");
     printf("  reload             Reload configuration\n");
-    printf("  -h, --help         Show this help message\n");
-    printf("  -V, --version      Show version information\n");
+    printf("\nOptions:\n");
+    printf("  -d, --config-dir DIR   Set configuration directory\n");
+    printf("  -n, --dry-run          Simulate operations (no changes)\n");
+    printf("  -v, --verbose          Enable verbose output\n");
+    printf("  -q, --quiet            Suppress non-error output\n");
+    printf("  -f, --foreground       Run in foreground (don't daemonize)\n");
+    printf("  -y, --syslog           Log to syslog\n");
+    printf("  -o, --log-file FILE    Write logs to FILE\n");
+    printf("  -L, --log-level LVL    Set log level\n");
+    printf("  -h, --help             Show this help message\n");
+    printf("  -V, --version          Show version information\n");
 }
 
 void print_version(void) {
@@ -52,21 +61,6 @@ void print_version(void) {
 
 void print_help(const char *progname) {
     print_usage(progname);
-    printf("\nOptions:\n");
-    printf("  -d, --config-dir DIR   Set configuration directory\n");
-    printf("  -n, --dry-run          Simulate operations (no changes)\n");
-    printf("  -v, --verbose          Enable verbose output\n");
-    printf("  -q, --quiet            Suppress non-error output\n");
-    printf("  -f, --foreground       Run in foreground (don't daemonize)\n");
-    printf("  -y, --syslog           Log to syslog\n");
-    printf("  -o, --log-file FILE    Write logs to FILE\n");
-    printf("  -L, --log-level LVL    Set log level (debug/info/warn/error)\n");
-    printf("\nExamples:\n");
-    printf("  %s start -v              # Start with verbose logging\n", progname);
-    printf("  %s start -f              # Run in foreground\n", progname);
-    printf("  %s status                # Check service status\n", progname);
-    printf("  %s update-geoip          # Update GeoIP database\n", progname);
-    printf("  %s stop                  # Stop service\n", progname);
 }
 
 int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
@@ -79,52 +73,32 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
     int opt;
     int option_index = 0;
     
+    optind = 1;
+    opterr = 1;
+    
     while ((opt = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1) {
         switch (opt) {
             case 's':
-                if (opts->command != CMD_NONE) {
-                    fprintf(stderr, "Error: Multiple commands specified\n");
-                    return -1;
-                }
                 opts->command = CMD_START;
                 break;
             case 't':
-                if (opts->command != CMD_NONE) {
-                    fprintf(stderr, "Error: Multiple commands specified\n");
-                    return -1;
-                }
                 opts->command = CMD_STOP;
                 break;
             case 'r':
-                if (opts->command != CMD_NONE) {
-                    fprintf(stderr, "Error: Multiple commands specified\n");
-                    return -1;
-                }
                 opts->command = CMD_RESTART;
                 break;
             case 'u':
-                if (opts->command != CMD_NONE) {
-                    fprintf(stderr, "Error: Multiple commands specified\n");
-                    return -1;
-                }
                 opts->command = CMD_STATUS;
                 break;
             case 'g':
-                if (opts->command != CMD_NONE) {
-                    fprintf(stderr, "Error: Multiple commands specified\n");
-                    return -1;
-                }
                 opts->command = CMD_UPDATE_GEOIP;
                 break;
             case 'l':
-                if (opts->command != CMD_NONE) {
-                    fprintf(stderr, "Error: Multiple commands specified\n");
-                    return -1;
-                }
                 opts->command = CMD_RELOAD;
                 break;
             case 'd':
                 strncpy(opts->config_dir, optarg, sizeof(opts->config_dir) - 1);
+                opts->config_dir[sizeof(opts->config_dir) - 1] = '\0';
                 break;
             case 'n':
                 opts->dry_run = 1;
@@ -145,6 +119,7 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
                 break;
             case 'o':
                 strncpy(opts->log_file, optarg, sizeof(opts->log_file) - 1);
+                opts->log_file[sizeof(opts->log_file) - 1] = '\0';
                 break;
             case 'L':
                 if (strcmp(optarg, "debug") == 0) opts->log_level = LOG_LEVEL_DEBUG;
@@ -152,7 +127,7 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
                 else if (strcmp(optarg, "warn") == 0) opts->log_level = LOG_LEVEL_WARN;
                 else if (strcmp(optarg, "error") == 0) opts->log_level = LOG_LEVEL_ERROR;
                 else {
-                    fprintf(stderr, "Invalid log level: %s\n", optarg);
+                    fprintf(stderr, "Error: invalid log level '%s'\n", optarg);
                     return -1;
                 }
                 break;
@@ -169,6 +144,27 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
         }
     }
     
+    // Verify that every long option argument is exactly matched (no prefix matching)
+    for (int i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        if (arg[0] == '-' && arg[1] == '-') {
+            // This is a long option
+            const char *optname = arg + 2;
+            int exact_match = 0;
+            for (int j = 0; long_options[j].name != NULL; j++) {
+                if (strcmp(optname, long_options[j].name) == 0) {
+                    exact_match = 1;
+                    break;
+                }
+            }
+            if (!exact_match) {
+                fprintf(stderr, "Error: unknown option '--%s'\n", optname);
+                return -1;
+            }
+        }
+    }
+    
+    // Check for command if not already set by long option
     if (opts->command == CMD_NONE && optind < argc) {
         const char *cmd = argv[optind];
         if (strcmp(cmd, "start") == 0) opts->command = CMD_START;
@@ -180,15 +176,9 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
         else if (strcmp(cmd, "help") == 0) opts->command = CMD_HELP;
         else if (strcmp(cmd, "version") == 0) opts->command = CMD_VERSION;
         else {
-            fprintf(stderr, "Unknown command: %s\n", cmd);
+            fprintf(stderr, "Error: unknown command '%s'\n", cmd);
             return -1;
         }
-    }
-    
-    if (opts->command == CMD_NONE && opts->command != CMD_HELP && opts->command != CMD_VERSION) {
-        fprintf(stderr, "Error: No command specified\n");
-        print_usage(argv[0]);
-        return -1;
     }
     
     return 0;
@@ -202,6 +192,8 @@ const char* command_to_string(atp_command_t cmd) {
         case CMD_STATUS: return "status";
         case CMD_UPDATE_GEOIP: return "update-geoip";
         case CMD_RELOAD: return "reload";
+        case CMD_VERSION: return "version";
+        case CMD_HELP: return "help";
         default: return "unknown";
     }
 }
