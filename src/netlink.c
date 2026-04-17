@@ -1,3 +1,4 @@
+
 #include "netlink.h"
 #include "logger.h"
 #include "utils.h"
@@ -11,8 +12,8 @@
 #define EPOLL_TIMEOUT_MS 1000
 #define IP_CMD "/system/bin/ip"
 
-static int nl_socket_fd = -1;
-static int epoll_fd = -1;
+//static int nl_socket_fd = -1;
+//static int epoll_fd = -1;
 static volatile int monitoring = 0;
 
 static int netlink_send_request(int sock, int type, int flags) {
