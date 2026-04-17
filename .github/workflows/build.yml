@@ -128,7 +128,7 @@ jobs:
         ls -la build/bin/atpd
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v8
+      uses: actions/upload-artifact@v7
       with:
         name: atpd-${{ env.TARGET_ARCH }}-android
         path: build/bin/atpd
