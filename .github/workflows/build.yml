@@ -12,13 +12,15 @@ jobs:
 
     - name: Setup musl toolchain
       run: |
-        wget https://github.com/cross-tools/musl-cross/releases/download/20241103/aarch64-unknown-linux-musl.tar.xz
-        tar -xzf aarch64-linux-musl-cross.tgz
-        echo "$PWD/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
-        echo "CC=aarch64-linux-musl-gcc" >> $GITHUB_ENV
-        echo "AR=aarch64-linux-musl-ar" >> $GITHUB_ENV
-        echo "RANLIB=aarch64-linux-musl-ranlib" >> $GITHUB_ENV
-        echo "STRIP=aarch64-linux-musl-strip" >> $GITHUB_ENV
+       # 下载您找到的 musl 工具链
+         wget https://github.com/cross-tools/musl-cross/releases/download/20241103/aarch64-unknown-linux-musl.tar.xz
+         tar -xJf aarch64-unknown-linux-musl.tar.xz
+       # 设置环境变量 (假设解压后目录名为 aarch64-unknown-linux-musl)
+         echo "$PWD/aarch64-unknown-linux-musl/bin" >> $GITHUB_PATH
+         echo "CC=aarch64-unknown-linux-musl-gcc" >> $GITHUB_ENV
+         echo "AR=aarch64-unknown-linux-musl-ar" >> $GITHUB_ENV
+         echo "RANLIB=aarch64-unknown-linux-musl-ranlib" >> $GITHUB_ENV
+         echo "STRIP=aarch64-unknown-linux-musl-strip" >> $GITHUB_ENV
 
     - name: Cache libcurl build
       id: cache-curl
