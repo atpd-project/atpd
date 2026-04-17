@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-/* Legacy compatibility functions (for existing code) */
+/* Legacy compatibility functions */
 int netlink_get_active_vpn(char *iface, size_t size);
 int netlink_get_ipv4_snapshot(char *output, size_t size);
 int netlink_check_rule_exists(int table_id, int mark, const char *iface);

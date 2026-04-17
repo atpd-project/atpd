@@ -4,10 +4,16 @@ PROJECT_NAME = atp
 VERSION = 1.0.0
 TARGET = atpd
 
-# Default compiler (will be overridden by environment)
-CC ?= gcc
-CFLAGS ?= -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
-LDFLAGS ?= -pthread
+# Detect NDK environment
+ifneq ($(ANDROID_NDK_ROOT),)
+    CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+    CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\" -fPIC -fpie
+    LDFLAGS = -L/tmp/curl-musl/lib -lcurl -pthread -pie
+else
+    CC = gcc
+    CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
+    LDFLAGS = -lcurl -pthread
+endif
 
 # Directories
 SRC_DIR = src
@@ -16,18 +22,15 @@ OBJ_DIR = build/obj
 BIN_DIR = build/bin
 DIST_DIR = dist
 
-# Source files
-SRCS = $(wildcard $(SRC_DIR)/*.c)
-# Add new source files to OBJS
-OBJS = $(OBJ_DIR)/api.o $(OBJ_DIR)/app_filter.o $(OBJ_DIR)/cli.o \
-       $(OBJ_DIR)/config.o $(OBJ_DIR)/geoip.o \
-       $(OBJ_DIR)/ipset.o $(OBJ_DIR)/ipv6_manager.o $(OBJ_DIR)/logger.o \
-       $(OBJ_DIR)/mac_filter.o $(OBJ_DIR)/main.o $(OBJ_DIR)/netlink.o \
-       $(OBJ_DIR)/netlink_link.o $(OBJ_DIR)/netlink_route.o \
-       $(OBJ_DIR)/netlink_rule.o $(OBJ_DIR)/netlink_wait.o \
-       $(OBJ_DIR)/perf_mode.o $(OBJ_DIR)/routing.o $(OBJ_DIR)/service.o \
-       $(OBJ_DIR)/status.o $(OBJ_DIR)/tproxy.o $(OBJ_DIR)/utils.o
+# Source files - only essential modules
+SRCS = $(SRC_DIR)/api.c $(SRC_DIR)/app_filter.c $(SRC_DIR)/cli.c \
+       $(SRC_DIR)/config.c $(SRC_DIR)/geoip.c $(SRC_DIR)/ipset.c \
+       $(SRC_DIR)/ipv6_manager.c $(SRC_DIR)/logger.c $(SRC_DIR)/mac_filter.c \
+       $(SRC_DIR)/main.c $(SRC_DIR)/netlink.c $(SRC_DIR)/perf_mode.c \
+       $(SRC_DIR)/routing.c $(SRC_DIR)/service.c $(SRC_DIR)/status.c \
+       $(SRC_DIR)/tproxy.c $(SRC_DIR)/utils.c
 
+OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 
 # Headers
 HEADERS = $(wildcard $(INC_DIR)/*.h)

@@ -93,7 +93,6 @@ int netlink_wait_for_iface(const char *iface, int timeout_sec) {
 }
 
 int netlink_get_iface_info(const char *iface, void *info_ptr) {
-    /* Legacy function - not fully implemented */
     (void)iface;
     (void)info_ptr;
     return -1;
