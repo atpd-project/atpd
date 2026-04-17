@@ -7,6 +7,7 @@
 #include "service.h"
 #include "geoip.h"
 #include "api.h"
+#include "cli.h"
 #include "utils.h"
 #include <libgen.h>
 #include <sys/stat.h>
@@ -200,50 +201,48 @@ void atp_show_status(void) {
     printf("\n");
 }
 
-static void __attribute__((unused)) on_interface_change(const char *iface, int added, int ifindex, void *userdata) {
-    static char current_vpn[IFNAMSIZ] = {0};
-    (void)ifindex;
-    (void)userdata;
-    
-    if (strncmp(iface, "ipsec", 5) == 0) {
-        if (added) {
-            LOG_INFO("VPN interface detected: %s", iface);
-            strncpy(current_vpn, iface, sizeof(current_vpn) - 1);
-            
-            netlink_wait_for_iface(iface, 15);
-            
-            routing_remove_vpn_policy(&g_config, iface);
-            routing_add_vpn_policy(&g_config, iface);
-            routing_add_mss_clamp(&g_config, iface);
-            
-            tproxy_dns_hijack_setup(&g_config, 4, DNS_HIJACK_TPROXY);
-            tproxy_dns_hijack_setup(&g_config, 6, DNS_HIJACK_TPROXY);
-            tproxy_xfrm_bypass(&g_config);
-            tproxy_prevent_loop(&g_config);
-            
-            api_set_mode(&g_api_ctx, "Google VPN");
-            
-        } else if (strcmp(current_vpn, iface) == 0) {
-            LOG_INFO("VPN interface removed: %s", iface);
-            memset(current_vpn, 0, sizeof(current_vpn));
-            
-            routing_remove_vpn_policy(&g_config, iface);
-            routing_remove_mss_clamp(&g_config, iface);
-            
-            api_set_mode(&g_api_ctx, "Rule");
-        }
-    }
-}
-
 int main(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+    atp_options_t opts;
+    memset(&opts, 0, sizeof(opts));
+    
+    // Parse arguments first
+    if (parse_arguments(argc, argv, &opts) != 0) {
+        return 1;
+    }
+    
+    // Handle help and version commands immediately (no root needed)
+    if (opts.command == CMD_HELP) {
+        print_help(argv[0]);
+        return 0;
+    }
+    
+    if (opts.command == CMD_VERSION) {
+        print_version();
+        return 0;
+    }
+    
+    // Root check for all other commands
+    if (atp_check_root() != 0) {
+        return 1;
+    }
+    
+    // Initialize logging
+    log_init();
+    if (opts.verbose) log_set_level(LOG_LEVEL_DEBUG);
+    if (opts.quiet) log_set_level(LOG_LEVEL_ERROR);
     
     LOG_INFO(ATP_NAME " v" ATP_VERSION " starting");
     
-    if (atp_check_root() != 0) return 1;
-    
+    // Load configuration
     config_set_defaults(&g_config);
+    
+    if (opts.config_dir[0]) {
+        strncpy(g_config.data_dir, opts.config_dir, sizeof(g_config.data_dir) - 1);
+    }
+    
+    g_config.dry_run = opts.dry_run;
+    g_config.verbose = opts.verbose;
+    g_config.foreground = opts.foreground;
     
     char conf_path[PATH_MAX];
     snprintf(conf_path, sizeof(conf_path), "%s/%s", 
@@ -255,6 +254,31 @@ int main(int argc, char *argv[]) {
         LOG_WARN("Config file not found: %s, using defaults", conf_path);
     }
     
+    // Handle status command (no daemonization needed)
+    if (opts.command == CMD_STATUS) {
+        service_init(&g_service_ctx, &g_config);
+        atp_show_status();
+        return 0;
+    }
+    
+    // Handle update-geoip command
+    if (opts.command == CMD_UPDATE_GEOIP) {
+        geoip_init(&g_config);
+        geoip_force_update(&g_config);
+        return 0;
+    }
+    
+    // Handle stop command
+    if (opts.command == CMD_STOP) {
+        service_init(&g_service_ctx, &g_config);
+        service_stop(&g_service_ctx);
+        tproxy_cleanup_all(&g_config);
+        routing_cleanup_all(&g_config);
+        LOG_INFO("ATP stopped");
+        return 0;
+    }
+    
+    // For start and restart, continue with daemon setup
     atp_signal_setup();
     
     if (atp_check_running()) return 1;
@@ -326,8 +350,8 @@ int main(int argc, char *argv[]) {
     
     netlink_cleanup(&g_netlink_ctx);
     service_stop(&g_service_ctx);
-    tproxy_cleanup_ipv4(&g_config);
-    routing_cleanup_ipv4(&g_config);
+    tproxy_cleanup_all(&g_config);
+    routing_cleanup_all(&g_config);
     
     atp_cleanup();
     LOG_INFO(ATP_NAME " stopped");
