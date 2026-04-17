@@ -7,11 +7,15 @@ TARGET = atpd
 # Detect NDK environment
 ifneq ($(ANDROID_NDK_ROOT),)
     CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
-    CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\" -fPIC
-    # TLS alignment fix for Android Bionic (64-byte alignment requirement)
+    CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\" \
+             -fPIC -fpie -ftls-model=local-exec
+    # Static linking with TLS alignment fix for Bionic
     LDFLAGS = -L/tmp/curl-android/lib -lcurl -pthread -static \
-              -Wl,-z,max-page-size=4096 -Wl,-z,common-page-size=4096 \
-              -Wl,-z,tls-segment-align=64
+              -Wl,-z,max-page-size=4096 \
+              -Wl,-z,common-page-size=4096 \
+              -Wl,-Bstatic \
+              -Wl,--no-undefined \
+              -Wl,--no-warn-shared-textrel
 else
     CC = gcc
     CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
@@ -32,11 +36,7 @@ OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 # Headers
 HEADERS = $(wildcard $(INC_DIR)/*.h)
 
-# Install paths
-PREFIX ?= /usr/local
-BINDIR ?= $(PREFIX)/bin
-
-.PHONY: all clean distclean install install-android help
+.PHONY: all clean distclean
 
 all: $(BIN_DIR)/$(TARGET)
 	@echo "Build complete: $(BIN_DIR)/$(TARGET)"
@@ -58,26 +58,3 @@ clean:
 
 distclean: clean
 	rm -rf $(BIN_DIR)
-	rm -rf $(DIST_DIR)
-
-install: $(BIN_DIR)/$(TARGET)
-	mkdir -p $(DESTDIR)$(BINDIR)
-	install -m 755 $(BIN_DIR)/$(TARGET) $(DESTDIR)$(BINDIR)/
-
-install-android: $(BIN_DIR)/$(TARGET)
-	adb shell "su -c 'mkdir -p /data/adb/atp/bin'"
-	adb push $(BIN_DIR)/$(TARGET) /data/local/tmp/atpd
-	adb shell "su -c 'cp /data/local/tmp/atpd /data/adb/atp/bin/ && chmod 755 /data/adb/atp/bin/atpd'"
-	adb shell "rm /data/local/tmp/atpd"
-	@echo "Android installation complete"
-
-help:
-	@echo "ATP Build System"
-	@echo ""
-	@echo "Targets:"
-	@echo "  all              - Build the main target (default)"
-	@echo "  clean            - Remove build artifacts"
-	@echo "  distclean        - Remove build artifacts and distribution"
-	@echo "  install          - Install to Linux system"
-	@echo "  install-android  - Install to Android device via adb"
-	@echo "  help             - Show this help"
