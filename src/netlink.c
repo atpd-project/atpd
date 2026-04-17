@@ -9,6 +9,7 @@
 
 #define NL_BUF_SIZE 8192
 #define EPOLL_TIMEOUT_MS 1000
+#define IP_CMD "/system/bin/ip"
 
 static int nl_socket_fd = -1;
 static int epoll_fd = -1;
