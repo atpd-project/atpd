@@ -2,7 +2,10 @@
 #include "logger.h"
 #include "utils.h"
 #include "netlink.h"
+#include "service.h"
+#include "api.h"
 #include <stdio.h>
+#include <string.h>
 
 static const char* proxy_mode_to_string(atp_config_t *cfg) {
     if (cfg->proxy_mode == 0) {
@@ -62,17 +65,11 @@ static void status_show_mode(atp_config_t *cfg, api_ctx_t *api) {
 static void status_show_vpn(void) {
     char vpn_iface[IFNAMSIZ] = {0};
     
-    if (netlink_get_active_vpn(NULL, vpn_iface, sizeof(vpn_iface)) == 0) {
-        netlink_iface_info_t info;
+    if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
         printf("VPN Status:\n");
         printf("    ├─ State:     CONNECTED\n");
         printf("    ├─ Interface: %s\n", vpn_iface);
-        
-        if (netlink_get_iface_info(vpn_iface, &info) == 0 && info.has_ipv4) {
-            printf("    └─ IP:        %s/%d\n", info.ipv4_addr, info.ipv4_prefix);
-        } else {
-            printf("    └─ IP:        (no IPv4 address)\n");
-        }
+        printf("    └─ IP:        (check with ip addr show %s)\n", vpn_iface);
     } else {
         printf("VPN Status:\n");
         printf("    └─ State:     DISCONNECTED\n");
