@@ -47,15 +47,10 @@ static void get_timestamp(char *buf, size_t size, int with_ms) {
     gettimeofday(&tv, NULL);
     localtime_r(&tv.tv_sec, &tm);
     
-    if (with_ms) {
-        snprintf(buf, size, "%04d-%02d-%02d %02d:%02d:%02d.%03ld",
-            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-            tm.tm_hour, tm.tm_min, tm.tm_sec, tv.tv_usec / 1000);
-    } else {
-        snprintf(buf, size, "%04d-%02d-%02d %02d:%02d:%02d",
-            tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-            tm.tm_hour, tm.tm_min, tm.tm_sec);
-    }
+    // Format: YYYY-MM-DD HH:MM:SS (same as atp.sh)
+    snprintf(buf, size, "%04d-%02d-%02d %02d:%02d:%02d",
+        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+        tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
 static void log_rotate_if_needed(void) {
@@ -94,14 +89,8 @@ static void log_to_file(log_level_t level, const char *timestamp,
     
     FILE *fp = fopen(g_log_config.log_file, "a");
     if (fp) {
-        if (timestamp && timestamp[0]) {
-            fprintf(fp, "[%s] [%s] [%s:%d %s] %s\n",
-                    timestamp, level_names[level], 
-                    basename((char*)file), line, func, msg);
-        } else {
-            fprintf(fp, "[%s] [%s:%d %s] %s\n",
-                    level_names[level], basename((char*)file), line, func, msg);
-        }
+        fprintf(fp, "[%s] [%s]: %s\n",
+                timestamp, level_names[level], msg);
         fclose(fp);
     }
     
@@ -120,24 +109,12 @@ static void log_to_stderr(log_level_t level, const char *timestamp,
     int use_color = g_log_config.enable_color && isatty(STDERR_FILENO);
     
     if (use_color) {
-        if (timestamp && timestamp[0]) {
-            fprintf(stderr, "%s[%s]%s \033[2m[%s]\033[0m %s[%s:%d %s]%s %s\n",
-                    level_colors[level], level_names[level], COLOR_RESET,
-                    timestamp, COLOR_BLUE, basename((char*)file), line, func, COLOR_RESET, msg);
-        } else {
-            fprintf(stderr, "%s[%s]%s %s[%s:%d %s]%s %s\n",
-                    level_colors[level], level_names[level], COLOR_RESET,
-                    COLOR_BLUE, basename((char*)file), line, func, COLOR_RESET, msg);
-        }
+        fprintf(stderr, "%s[%s]%s [%s]: %s\n",
+                level_colors[level], level_names[level], COLOR_RESET,
+                timestamp, msg);
     } else {
-        if (timestamp && timestamp[0]) {
-            fprintf(stderr, "[%s] [%s] [%s:%d %s] %s\n",
-                    timestamp, level_names[level], 
-                    basename((char*)file), line, func, msg);
-        } else {
-            fprintf(stderr, "[%s] [%s:%d %s] %s\n",
-                    level_names[level], basename((char*)file), line, func, msg);
-        }
+        fprintf(stderr, "[%s] [%s]: %s\n",
+                timestamp, level_names[level], msg);
     }
     
     pthread_mutex_unlock(&g_log_config.mutex);
@@ -171,7 +148,7 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
     
     char timestamp[64] = {0};
     if (g_log_config.enable_timestamp) {
-        get_timestamp(timestamp, sizeof(timestamp), 1);
+        get_timestamp(timestamp, sizeof(timestamp), 0);
     }
     
     char msg_buffer[4096];

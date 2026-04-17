@@ -335,7 +335,7 @@ double get_process_cpu_percent(pid_t pid) {
 int get_process_uptime_sec(pid_t pid) {
     char path[PATH_MAX];
     char line[256];
-    unsigned long start_time = 0;
+    unsigned long long start_time = 0;
     long ticks_per_sec = sysconf(_SC_CLK_TCK);
     
     snprintf(path, sizeof(path), "/proc/%d/stat", pid);
@@ -343,8 +343,17 @@ int get_process_uptime_sec(pid_t pid) {
     if (!fp) return 0;
     
     if (fgets(line, sizeof(line), fp)) {
-        sscanf(line, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %*u %*u %*d %*d %*d %*d %*d %*d %lu",
-               &start_time);
+        char *p = line;
+        int field = 0;
+        char *saveptr;
+        char *token = strtok_r(p, " ", &saveptr);
+        while (token && field < 21) {
+            token = strtok_r(NULL, " ", &saveptr);
+            field++;
+        }
+        if (token && field == 21) {
+            start_time = strtoull(token, NULL, 10);
+        }
     }
     fclose(fp);
     
@@ -357,7 +366,8 @@ int get_process_uptime_sec(pid_t pid) {
     fscanf(fp_uptime, "%lf", &uptime_sec);
     fclose(fp_uptime);
     
-    int elapsed = (int)uptime_sec - (int)(start_time / ticks_per_sec);
+    double process_start = (double)start_time / ticks_per_sec;
+    int elapsed = (int)(uptime_sec - process_start);
     if (elapsed < 0) elapsed = 0;
     
     return elapsed;
@@ -415,8 +425,10 @@ void format_uptime(int seconds, char *buf, size_t size) {
     
     if (days > 0) {
         snprintf(buf, size, "%dd %02d:%02d:%02d", days, hours, mins, secs);
-    } else {
+    } else if (hours > 0) {
         snprintf(buf, size, "%02d:%02d:%02d", hours, mins, secs);
+    } else {
+        snprintf(buf, size, "%02d:%02d", mins, secs);
     }
 }
 

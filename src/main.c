@@ -164,53 +164,71 @@ void atp_cleanup(void) {
 }
 
 void atp_show_status(void) {
-    printf("\n");
-    LOG_INFO("==================== ATP Summary ====================");
+    service_show_status(&g_config);
+}
+
+static void on_interface_change(const char *iface, int added, int ifindex, void *userdata) {
+    static char current_vpn[IFNAMSIZ] = {0};
+    char ip_snapshot[1024];
+    (void)ifindex;
+    (void)userdata;
     
-    int pid = service_get_pid(&g_service_ctx);
-    
-    if (pid > 0) {
-        long mem_kb = get_process_memory_kb(pid);
-        double cpu = get_process_cpu_percent(pid);
-        int threads = get_process_threads(pid);
-        int fd_count = get_process_fd_count(pid);
-        int uptime_sec = get_process_uptime_sec(pid);
-        char uptime_str[64];
-        char version[64];
-        
-        format_uptime(uptime_sec, uptime_str, sizeof(uptime_str));
-        get_binary_version(PROXY_BIN_PATH, version, sizeof(version));
-        
-        char user[64], group[64];
-        get_process_user_group(pid, user, group, sizeof(user));
-        
-        LOG_INFO("✓ Service Status: Running (PID: %d)", pid);
-        LOG_INFO("    ├─ User:Group: %s:%s", user[0] ? user : "root", group[0] ? group : "net_admin");
-        LOG_INFO("    ├─ Memory:     %.1f MB", mem_kb / 1024.0);
-        LOG_INFO("    ├─ CPU:        %.1f%%", cpu);
-        LOG_INFO("    ├─ Threads:    %d", threads);
-        LOG_INFO("    ├─ Sockets:    %d (Active FDs)", fd_count);
-        LOG_INFO("    ├─ Uptime:     %s", uptime_str);
-        LOG_INFO("    └─ Version:    %s", version);
-    } else {
-        LOG_ERROR("✗ Service Status: Stopped/Failed");
-        LOG_ERROR("Check logs in %s for core errors.", g_config.data_dir);
+    if (strncmp(iface, "ipsec", 5) == 0) {
+        if (added) {
+            LOG_INFO("VPN STATUS: [CONNECTED] ➔ Enabling Google Service Path (Google VPN)");
+            LOG_INFO("Sync: Clearing routing stack...");
+            
+            strncpy(current_vpn, iface, sizeof(current_vpn) - 1);
+            
+            netlink_wait_for_iface(iface, 15);
+            
+            routing_remove_vpn_policy(&g_config, iface);
+            routing_add_vpn_policy(&g_config, iface);
+            routing_add_mss_clamp(&g_config, iface);
+            
+            tproxy_dns_hijack_setup(&g_config, 4, DNS_HIJACK_TPROXY);
+            tproxy_dns_hijack_setup(&g_config, 6, DNS_HIJACK_TPROXY);
+            tproxy_xfrm_bypass(&g_config);
+            tproxy_prevent_loop(&g_config);
+            
+            LOG_INFO("[tproxy] Mode 4 XFRM Green Lane re-paved.");
+            
+            netlink_get_ipv4_snapshot(ip_snapshot, sizeof(ip_snapshot));
+            LOG_INFO("Network Stable: [%s]", ip_snapshot);
+            LOG_INFO("Sync OK | VPN_STATE=1 | Final_Mode=Google VPN");
+            LOG_INFO("[Sentinel] STABILITY: Shift complete.");
+            
+            api_set_mode(&g_api_ctx, "Google VPN");
+            
+        } else if (strcmp(current_vpn, iface) == 0) {
+            LOG_INFO("[Sentinel] STABILITY: Detecting radio shift... (%s -> NONE)", iface);
+            LOG_INFO("[Sentinel] ACTION: VPN OFF detected. Clearing Green Lane.");
+            LOG_INFO("VPN STATUS: [DISCONNECTED] ➔ Falling back to Standard Rules (Rule)");
+            LOG_INFO("Sync: Clearing routing stack...");
+            
+            memset(current_vpn, 0, sizeof(current_vpn));
+            
+            routing_remove_vpn_policy(&g_config, iface);
+            routing_remove_mss_clamp(&g_config, iface);
+            
+            netlink_get_ipv4_snapshot(ip_snapshot, sizeof(ip_snapshot));
+            LOG_INFO("Network Stable: [%s]", ip_snapshot);
+            LOG_INFO("Sync OK | VPN_STATE=0 | Final_Mode=Rule");
+            LOG_INFO("[Sentinel] STABILITY: Shift complete.");
+            
+            api_set_mode(&g_api_ctx, "Rule");
+        }
     }
-    
-    LOG_INFO("========================================================");
-    printf("\n");
 }
 
 int main(int argc, char *argv[]) {
     atp_options_t opts;
     memset(&opts, 0, sizeof(opts));
     
-    // Parse arguments first
     if (parse_arguments(argc, argv, &opts) != 0) {
         return 1;
     }
     
-    // Handle help and version commands immediately (no root needed)
     if (opts.command == CMD_HELP) {
         print_help(argv[0]);
         return 0;
@@ -221,19 +239,16 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     
-    // Root check for all other commands
     if (atp_check_root() != 0) {
         return 1;
     }
     
-    // Initialize logging
     log_init();
     if (opts.verbose) log_set_level(LOG_LEVEL_DEBUG);
     if (opts.quiet) log_set_level(LOG_LEVEL_ERROR);
     
     LOG_INFO(ATP_NAME " v" ATP_VERSION " starting");
     
-    // Load configuration
     config_set_defaults(&g_config);
     
     if (opts.config_dir[0]) {
@@ -250,25 +265,23 @@ int main(int argc, char *argv[]) {
     
     if (file_exists(conf_path)) {
         config_load(conf_path, &g_config);
+        LOG_INFO("Configuration loaded from %s", conf_path);
     } else {
         LOG_WARN("Config file not found: %s, using defaults", conf_path);
     }
     
-    // Handle status command (no daemonization needed)
     if (opts.command == CMD_STATUS) {
         service_init(&g_service_ctx, &g_config);
         atp_show_status();
         return 0;
     }
     
-    // Handle update-geoip command
     if (opts.command == CMD_UPDATE_GEOIP) {
         geoip_init(&g_config);
         geoip_force_update(&g_config);
         return 0;
     }
     
-    // Handle stop command
     if (opts.command == CMD_STOP) {
         service_init(&g_service_ctx, &g_config);
         service_stop(&g_service_ctx);
@@ -278,7 +291,8 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     
-    // For start and restart, continue with daemon setup
+    LOG_INFO("Using ENHANCE mode (Split TCP:NAT / UDP:Mangle)");
+    
     atp_signal_setup();
     
     if (atp_check_running()) return 1;
