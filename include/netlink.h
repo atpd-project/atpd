@@ -2,8 +2,6 @@
 #define ATP_NETLINK_H
 
 #include <stddef.h>
-#include <stdint.h>
-#include <net/if.h>
 
 /* Legacy compatibility functions (for existing code) */
 int netlink_get_active_vpn(char *iface, size_t size);
