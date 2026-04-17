@@ -165,7 +165,7 @@ void atp_cleanup(void) {
 
 void atp_show_status(void) {
     int pid = service_get_pid(&g_service_ctx);
-
+    
     if (pid > 0) {
         long mem_kb = get_process_memory_kb(pid);
         double cpu = get_process_cpu_percent(pid);
@@ -174,11 +174,10 @@ void atp_show_status(void) {
         int uptime_sec = get_process_uptime_sec(pid);
         char uptime_str[64];
         char version[64];
-
+        
         format_uptime(uptime_sec, uptime_str, sizeof(uptime_str));
         get_binary_version(PROXY_BIN_PATH, version, sizeof(version));
-
-        /* Use printf directly, avoid LOG_INFO to prevent formatting issues */
+        
         printf("\n");
         printf("sing-box is running as root:net_admin.\n");
         printf("    ├─ PID:       %d\n", pid);
@@ -193,13 +192,6 @@ void atp_show_status(void) {
         printf("sing-box service is stopped.\n");
     }
 }
-    
-    printf("\n");
-}
-    
-    LOG_INFO("========================================================");
-    printf("\n");
-}
 
 static void on_interface_change(const char *iface, int added, int ifindex, void *userdata) {
     static char current_vpn[IFNAMSIZ] = {0};
@@ -209,7 +201,7 @@ static void on_interface_change(const char *iface, int added, int ifindex, void 
     
     if (strncmp(iface, "ipsec", 5) == 0) {
         if (added) {
-            LOG_INFO("VPN STATUS: [CONNECTED] ➔ Enabling Google Service Path (Google VPN)");
+            LOG_INFO("VPN STATUS: [CONNECTED] -> Enabling Google Service Path (Google VPN)");
             LOG_INFO("Sync: Clearing routing stack...");
             
             strncpy(current_vpn, iface, sizeof(current_vpn) - 1);
@@ -237,7 +229,7 @@ static void on_interface_change(const char *iface, int added, int ifindex, void 
         } else if (strcmp(current_vpn, iface) == 0) {
             LOG_INFO("[Sentinel] STABILITY: Detecting radio shift... (%s -> NONE)", iface);
             LOG_INFO("[Sentinel] ACTION: VPN OFF detected. Clearing Green Lane.");
-            LOG_INFO("VPN STATUS: [DISCONNECTED] ➔ Falling back to Standard Rules (Rule)");
+            LOG_INFO("VPN STATUS: [DISCONNECTED] -> Falling back to Standard Rules (Rule)");
             LOG_INFO("Sync: Clearing routing stack...");
             
             memset(current_vpn, 0, sizeof(current_vpn));
@@ -287,6 +279,7 @@ int main(int argc, char *argv[]) {
     
     if (opts.config_dir[0]) {
         strncpy(g_config.data_dir, opts.config_dir, sizeof(g_config.data_dir) - 1);
+        g_config.data_dir[sizeof(g_config.data_dir) - 1] = '\0';
     }
     
     g_config.dry_run = opts.dry_run;
