@@ -38,3 +38,5 @@ int api_patch_json(api_ctx_t *ctx, const char *path, const char *json_body);
 int api_get_json(api_ctx_t *ctx, const char *path, char *output, size_t size);
 
 #endif
+
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);

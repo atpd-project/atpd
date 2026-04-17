@@ -215,3 +215,55 @@ api_mode_t api_string_to_mode(const char *str) {
     if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
     return API_MODE_RULE;
 }
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
+    char response[4096];
+    char url[512];
+    char cmd[1024];
+
+    if (!ctx || !mode || size == 0) {
+        return -1;
+    }
+
+    snprintf(url, sizeof(url), "%s/configs", ctx->base_url);
+
+    if (ctx->secret[0] != '\0') {
+        snprintf(cmd, sizeof(cmd),
+                 "curl -s --connect-timeout 3 --max-time 5 "
+                 "-H 'Authorization: Bearer %s' %s 2>/dev/null",
+                 ctx->secret, url);
+    } else {
+        snprintf(cmd, sizeof(cmd),
+                 "curl -s --connect-timeout 3 --max-time 5 %s 2>/dev/null",
+                 url);
+    }
+
+    if (exec_cmd(cmd, response, sizeof(response), 5) != 0) {
+        LOG_WARN("Failed to get mode from API");
+        return -1;
+    }
+
+    /* Simple string parsing: find "mode":"xxx" or "mode": "xxx" */
+    char *needle = strstr(response, "\"mode\":\"");
+    if (!needle) {
+        needle = strstr(response, "\"mode\": \"");
+    }
+    if (!needle) {
+        LOG_WARN("Failed to parse mode from API response");
+        return -1;
+    }
+
+    needle += 8;
+    if (*needle == ' ') needle++;
+
+    char *end = strchr(needle, '"');
+    if (!end) {
+        return -1;
+    }
+
+    size_t len = end - needle;
+    if (len >= size) len = size - 1;
+    strncpy(mode, needle, len);
+    mode[len] = '\0';
+
+    return 0;
+}

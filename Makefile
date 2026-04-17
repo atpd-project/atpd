@@ -18,7 +18,11 @@ DIST_DIR = dist
 
 # Source files
 SRCS = $(wildcard $(SRC_DIR)/*.c)
-OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
+OBJS = $(OBJ_DIR)/api.o $(OBJ_DIR)/cli.o $(OBJ_DIR)/config.o \
+       $(OBJ_DIR)/geoip.o $(OBJ_DIR)/ipset.o $(OBJ_DIR)/logger.o \
+       $(OBJ_DIR)/main.o $(OBJ_DIR)/netlink.o $(OBJ_DIR)/routing.o \
+       $(OBJ_DIR)/service.o $(OBJ_DIR)/status.o $(OBJ_DIR)/tproxy.o \
+       $(OBJ_DIR)/utils.o
 
 # Headers
 HEADERS = $(wildcard $(INC_DIR)/*.h)

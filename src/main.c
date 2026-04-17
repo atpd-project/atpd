@@ -11,6 +11,7 @@
 #include "utils.h"
 #include <libgen.h>
 #include <sys/stat.h>
+#include "status.h"
 
 atp_config_t g_config;
 
@@ -164,33 +165,7 @@ void atp_cleanup(void) {
 }
 
 void atp_show_status(void) {
-    int pid = service_get_pid(&g_service_ctx);
-    
-    if (pid > 0) {
-        long mem_kb = get_process_memory_kb(pid);
-        double cpu = get_process_cpu_percent(pid);
-        int threads = get_process_threads(pid);
-        int fd_count = get_process_fd_count(pid);
-        int uptime_sec = get_process_uptime_sec(pid);
-        char uptime_str[64];
-        char version[64];
-        
-        format_uptime(uptime_sec, uptime_str, sizeof(uptime_str));
-        get_binary_version(PROXY_BIN_PATH, version, sizeof(version));
-        
-        printf("\n");
-        printf("sing-box is running as root:net_admin.\n");
-        printf("    ├─ PID:       %d\n", pid);
-        printf("    ├─ Memory:    %ld kB\n", mem_kb);
-        printf("    ├─ CPU:       %.1f%%\n", cpu);
-        printf("    ├─ Threads:   %d\n", threads);
-        printf("    ├─ Sockets:   %d (Active FDs)\n", fd_count);
-        printf("    ├─ Uptime:    %s\n", uptime_str);
-        printf("    └─ Version:   %s\n", version);
-        printf("\n");
-    } else {
-        printf("sing-box service is stopped.\n");
-    }
+    status_show(&g_config, &g_service_ctx, &g_api_ctx);
 }
 
 static void on_interface_change(const char *iface, int added, int ifindex, void *userdata) {
