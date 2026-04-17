@@ -8,11 +8,11 @@ TARGET = atpd
 ifneq ($(ANDROID_NDK_ROOT),)
     CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
     CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\"
-    LDFLAGS = -pthread -lcurl -static -llog
+    LDFLAGS = -L/tmp/curl-android/lib -lcurl -pthread -static -llog
 else
     CC = gcc
     CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
-    LDFLAGS = -pthread -lcurl
+    LDFLAGS = -lcurl -pthread
 endif
 
 # Directories
