@@ -3,10 +3,13 @@
 
 #include <sys/types.h>
 #include <unistd.h>
+#include <limits.h>
 
 #define PIDOF_BUF_SIZE  256
 #define VERSION_BUF_SIZE 128
 #define UPTIME_BUF_SIZE 64
+#define MAX_CMD_LEN     512
+#define MAX_OUTPUT_LEN  4096
 
 int file_exists(const char *path);
 int mkdir_recursive(const char *path, mode_t mode);
