@@ -8,9 +8,9 @@ TARGET = atpd
 ifneq ($(ANDROID_NDK_ROOT),)
     CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
     CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\"
-    LDFLAGS = -L/tmp/curl-android/lib -lcurl -pthread -static
-    # Add liblog path
-    LDFLAGS += $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/21/liblog.so
+    # TLS alignment fix for Android Bionic
+    LDFLAGS = -L/tmp/curl-android/lib -lcurl -pthread -static \
+              -Wl,-z,max-page-size=0x1000 -Wl,-z,common-page-size=0x1000
 else
     CC = gcc
     CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
