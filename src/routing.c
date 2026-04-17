@@ -113,17 +113,40 @@ int routing_route_flush_table(atp_config_t *cfg, int family, int table_id) {
     }
 }
 
+static int routing_rule_exists(atp_config_t *cfg, int family, int mark, int table_id) {
+    char cmd[MAX_CMD_LEN];
+    char output[256];
+    
+    if (family == 4) {
+        snprintf(cmd, sizeof(cmd), 
+                 "%s rule show | grep -q 'fwmark 0x%x.*lookup %d'", IP_CMD, mark, table_id);
+    } else {
+        snprintf(cmd, sizeof(cmd),
+                 "%s -6 rule show | grep -q 'fwmark 0x%x.*lookup %d'", IP_CMD, mark, table_id);
+    }
+    
+    return exec_cmd(cmd, output, sizeof(output), 5) == 0;
+}
+
 int routing_setup_ipv4(atp_config_t *cfg) {
     LOG_INFO("Setting up IPv4 policy routing (table=%d, mark=%d)", 
              cfg->table_id, cfg->mark_value);
     
+    /* Remove existing rules with same preference first */
     routing_rule_del_all_by_pref(cfg, 4, cfg->table_id);
     
-    char rule_buf[128];
-    snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x%x table %d pref %d",
-             cfg->mark_value, cfg->table_id, cfg->table_id);
-    routing_rule_add(cfg, 4, rule_buf);
+    /* Add rule only if not exists */
+    if (!routing_rule_exists(cfg, 4, cfg->mark_value, cfg->table_id)) {
+        char rule_buf[128];
+        snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x%x table %d pref %d",
+                 cfg->mark_value, cfg->table_id, cfg->table_id);
+        routing_rule_add(cfg, 4, rule_buf);
+        LOG_DEBUG("Added IPv4 routing rule");
+    } else {
+        LOG_DEBUG("IPv4 routing rule already exists, skipping");
+    }
     
+    /* Add local route (idempotent) */
     char route_buf[128];
     snprintf(route_buf, sizeof(route_buf), "local 0.0.0.0/0 dev lo table %d",
              cfg->table_id);
@@ -144,13 +167,21 @@ int routing_setup_ipv6(atp_config_t *cfg) {
     LOG_INFO("Setting up IPv6 policy routing (table=%d, mark=%d)", 
              cfg->table_id, cfg->mark_value6);
     
+    /* Remove existing rules with same preference first */
     routing_rule_del_all_by_pref(cfg, 6, cfg->table_id);
     
-    char rule_buf[128];
-    snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x%x table %d pref %d",
-             cfg->mark_value6, cfg->table_id, cfg->table_id);
-    routing_rule_add(cfg, 6, rule_buf);
+    /* Add rule only if not exists */
+    if (!routing_rule_exists(cfg, 6, cfg->mark_value6, cfg->table_id)) {
+        char rule_buf[128];
+        snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x%x table %d pref %d",
+                 cfg->mark_value6, cfg->table_id, cfg->table_id);
+        routing_rule_add(cfg, 6, rule_buf);
+        LOG_DEBUG("Added IPv6 routing rule");
+    } else {
+        LOG_DEBUG("IPv6 routing rule already exists, skipping");
+    }
     
+    /* Add local route (idempotent) */
     char route_buf[128];
     snprintf(route_buf, sizeof(route_buf), "local ::/0 dev lo table %d",
              cfg->table_id);
@@ -245,6 +276,7 @@ int routing_remove_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
 
 int routing_add_mss_clamp(atp_config_t *cfg, const char *iface) {
     if (!iface || !iface[0]) return -1;
+    (void)cfg;
     
     LOG_INFO("Adding MSS clamp for interface: %s", iface);
     
@@ -269,6 +301,7 @@ int routing_add_mss_clamp(atp_config_t *cfg, const char *iface) {
 
 int routing_remove_mss_clamp(atp_config_t *cfg, const char *iface) {
     if (!iface || !iface[0]) return 0;
+    (void)cfg;
     
     LOG_INFO("Removing MSS clamp for interface: %s", iface);
     

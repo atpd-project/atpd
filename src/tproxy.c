@@ -45,7 +45,30 @@ static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd,
     return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
 }
 
+static int chain_exists(atp_config_t *cfg, int family, const char *table, const char *chain) {
+    char cmd[MAX_CMD_LEN];
+    char output[256];
+    
+    if (family == 4) {
+        snprintf(cmd, sizeof(cmd), "%s -t %s -L %s 2>/dev/null | head -1",
+                 IPTABLES_CMD, table, chain);
+    } else {
+        snprintf(cmd, sizeof(cmd), "%s -t %s -L %s 2>/dev/null | head -1",
+                 IP6TABLES_CMD, table, chain);
+    }
+    
+    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0] != '\0') {
+        return 1;
+    }
+    return 0;
+}
+
 int tproxy_chain_create(atp_config_t *cfg, int family, const char *table, const char *chain) {
+    if (chain_exists(cfg, family, table, chain)) {
+        LOG_DEBUG("Chain %s already exists in table %s", chain, table);
+        return 0;
+    }
+    
     if (family == 4) {
         return exec_iptables(cfg, table, "-N", chain, NULL);
     } else {
@@ -54,6 +77,10 @@ int tproxy_chain_create(atp_config_t *cfg, int family, const char *table, const 
 }
 
 int tproxy_chain_flush(atp_config_t *cfg, int family, const char *table, const char *chain) {
+    if (!chain_exists(cfg, family, table, chain)) {
+        return 0;
+    }
+    
     if (family == 4) {
         return exec_iptables(cfg, table, "-F", chain, NULL);
     } else {
@@ -62,29 +89,15 @@ int tproxy_chain_flush(atp_config_t *cfg, int family, const char *table, const c
 }
 
 int tproxy_chain_destroy(atp_config_t *cfg, int family, const char *table, const char *chain) {
+    if (!chain_exists(cfg, family, table, chain)) {
+        return 0;
+    }
+    
     if (family == 4) {
         return exec_iptables(cfg, table, "-X", chain, NULL);
     } else {
         return exec_ip6tables(cfg, table, "-X", chain, NULL);
     }
-}
-
-int tproxy_chain_exists(atp_config_t *cfg, int family, const char *table, const char *chain) {
-    char check_cmd[MAX_CMD_LEN];
-    
-    if (family == 4) {
-        snprintf(check_cmd, sizeof(check_cmd), "%s -t %s -L %s 2>/dev/null | head -1",
-                 IPTABLES_CMD, table, chain);
-    } else {
-        snprintf(check_cmd, sizeof(check_cmd), "%s -t %s -L %s 2>/dev/null | head -1",
-                 IP6TABLES_CMD, table, chain);
-    }
-    
-    char output[256];
-    if (exec_cmd(check_cmd, output, sizeof(output), 5) == 0 && output[0] != '\0') {
-        return 1;
-    }
-    return 0;
 }
 
 int tproxy_rule_add(atp_config_t *cfg, int family, const char *table,
@@ -107,9 +120,6 @@ int tproxy_rule_del(atp_config_t *cfg, int family, const char *table,
 
 int tproxy_rule_insert(atp_config_t *cfg, int family, const char *table,
                        const char *chain, int position, const char *rule) {
-    char pos_str[16];
-    snprintf(pos_str, sizeof(pos_str), "-I %s %d", chain, position);
-    
     if (family == 4) {
         char cmd[MAX_CMD_LEN];
         snprintf(cmd, sizeof(cmd), "%s -t %s -I %s %d %s",
@@ -129,11 +139,11 @@ int tproxy_atomic_switch(atp_config_t *cfg, int family, const char *table,
     
     snprintf(rule_buf, sizeof(rule_buf), "-j %s", chain1);
     
-    if (tproxy_rule_del(cfg, family, table, hook, rule_buf) != 0) {
-        snprintf(rule_buf, sizeof(rule_buf), "-j %s", chain0);
-        tproxy_rule_del(cfg, family, table, hook, rule_buf);
-    }
+    /* Remove old rule pointing to chain0 if exists */
+    snprintf(rule_buf, sizeof(rule_buf), "-j %s", chain0);
+    tproxy_rule_del(cfg, family, table, hook, rule_buf);
     
+    /* Insert new rule pointing to chain1 at position 1 */
     snprintf(rule_buf, sizeof(rule_buf), "-j %s", chain1);
     return tproxy_rule_insert(cfg, family, table, hook, 1, rule_buf);
 }
@@ -174,9 +184,7 @@ int tproxy_setup_ipv4(atp_config_t *cfg) {
     };
     
     for (int i = 0; chains[i] != NULL; i++) {
-        if (!tproxy_chain_exists(cfg, 4, "mangle", chains[i])) {
-            tproxy_chain_create(cfg, 4, "mangle", chains[i]);
-        }
+        tproxy_chain_create(cfg, 4, "mangle", chains[i]);
         tproxy_chain_flush(cfg, 4, "mangle", chains[i]);
     }
     
@@ -227,9 +235,7 @@ int tproxy_setup_ipv6(atp_config_t *cfg) {
     };
     
     for (int i = 0; chains[i] != NULL; i++) {
-        if (!tproxy_chain_exists(cfg, 6, "mangle", chains[i])) {
-            tproxy_chain_create(cfg, 6, "mangle", chains[i]);
-        }
+        tproxy_chain_create(cfg, 6, "mangle", chains[i]);
         tproxy_chain_flush(cfg, 6, "mangle", chains[i]);
     }
     
@@ -369,9 +375,7 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
     if (enable) {
         LOG_INFO("Enabling QUIC blocking");
         
-        if (!tproxy_chain_exists(cfg, 4, "filter", "ATP_QUIC_0")) {
-            tproxy_chain_create(cfg, 4, "filter", "ATP_QUIC_0");
-        }
+        tproxy_chain_create(cfg, 4, "filter", "ATP_QUIC_0");
         tproxy_chain_flush(cfg, 4, "filter", "ATP_QUIC_0");
         
         tproxy_rule_add(cfg, 4, "filter", "ATP_QUIC_0", "-p udp --dport 443 -j REJECT");
@@ -380,9 +384,7 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
         tproxy_rule_add(cfg, 4, "filter", "OUTPUT", "-j ATP_QUIC_0");
         
         if (cfg->proxy_ipv6) {
-            if (!tproxy_chain_exists(cfg, 6, "filter", "ATP6_QUIC_0")) {
-                tproxy_chain_create(cfg, 6, "filter", "ATP6_QUIC_0");
-            }
+            tproxy_chain_create(cfg, 6, "filter", "ATP6_QUIC_0");
             tproxy_chain_flush(cfg, 6, "filter", "ATP6_QUIC_0");
             tproxy_rule_add(cfg, 6, "filter", "ATP6_QUIC_0", "-p udp --dport 443 -j REJECT");
             tproxy_rule_add(cfg, 6, "filter", "INPUT", "-j ATP6_QUIC_0");
@@ -447,9 +449,7 @@ int tproxy_block_loopback(atp_config_t *cfg, int enable) {
 int tproxy_xfrm_bypass(atp_config_t *cfg) {
     LOG_INFO("Setting up XFRM bypass chain");
     
-    if (!tproxy_chain_exists(cfg, 4, "mangle", "XFRM_BYPASS")) {
-        tproxy_chain_create(cfg, 4, "mangle", "XFRM_BYPASS");
-    }
+    tproxy_chain_create(cfg, 4, "mangle", "XFRM_BYPASS");
     tproxy_chain_flush(cfg, 4, "mangle", "XFRM_BYPASS");
     
     tproxy_rule_add(cfg, 4, "mangle", "XFRM_BYPASS", "-p esp -j RETURN");

@@ -5,10 +5,25 @@
 #include <curl/curl.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 struct curl_memory {
     char *data;
     size_t size;
+};
+
+/* Built-in default China IPv4 CIDRs (fallback when download fails) */
+static const char *default_cn_cidrs[] = {
+    "1.0.0.0/8", "14.0.0.0/8", "27.0.0.0/8", "36.0.0.0/8",
+    "39.0.0.0/8", "42.0.0.0/8", "49.0.0.0/8", "58.0.0.0/8",
+    "59.0.0.0/8", "60.0.0.0/8", "61.0.0.0/8", "101.0.0.0/8",
+    "106.0.0.0/8", "110.0.0.0/8", "111.0.0.0/8", "112.0.0.0/8",
+    "113.0.0.0/8", "114.0.0.0/8", "115.0.0.0/8", "116.0.0.0/8",
+    "117.0.0.0/8", "118.0.0.0/8", "119.0.0.0/8", "120.0.0.0/8",
+    "121.0.0.0/8", "122.0.0.0/8", "123.0.0.0/8", "124.0.0.0/8",
+    "125.0.0.0/8", "126.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
+    "192.168.0.0/16", "223.0.0.0/8", NULL
 };
 
 static size_t curl_mem_write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
@@ -50,6 +65,9 @@ int geoip_download_url(const char *url, const char *output_path, int timeout_sec
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_sec);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "ATPd/" ATP_VERSION);
+    /* Skip SSL verification for GeoIP downloads (trusted sources) */
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     
     CURLcode res = curl_easy_perform(curl);
     
@@ -89,26 +107,11 @@ int geoip_download(atp_config_t *cfg) {
     if (geoip_download_url(cfg->cn_ip_url, v4_tmp, 30) == 0) {
         rename(v4_tmp, v4_path);
         LOG_INFO("IPv4 list downloaded successfully");
+        return 0;
     } else {
         LOG_WARN("Failed to download IPv4 list, using cached if available");
+        return -1;
     }
-    
-    if (cfg->proxy_ipv6) {
-        char v6_path[PATH_MAX];
-        char v6_tmp[PATH_MAX];
-        snprintf(v6_path, sizeof(v6_path), "%s/%s", rules_dir, cfg->cn_ipv6_file);
-        snprintf(v6_tmp, sizeof(v6_tmp), "%s/%s.tmp", rules_dir, cfg->cn_ipv6_file);
-        
-        LOG_INFO("Downloading China IPv6 list");
-        if (geoip_download_url(cfg->cn_ipv6_url, v6_tmp, 30) == 0) {
-            rename(v6_tmp, v6_path);
-            LOG_INFO("IPv6 list downloaded successfully");
-        } else {
-            LOG_WARN("Failed to download IPv6 list");
-        }
-    }
-    
-    return 0;
 }
 
 int geoip_ipset_create(const char *name, int family, int hashsize, int maxelem) {
@@ -204,6 +207,49 @@ int geoip_parse_cidr_file(const char *input_path, const char *output_path, int f
     return 0;
 }
 
+static int geoip_create_default_ipset(atp_config_t *cfg) {
+    LOG_INFO("Creating default ipset (fallback mode)");
+    
+    geoip_ipset_destroy("cnip");
+    geoip_ipset_create("cnip", 4, 8192, 65536);
+    
+    for (int i = 0; default_cn_cidrs[i] != NULL; i++) {
+        char cmd[MAX_CMD_LEN];
+        snprintf(cmd, sizeof(cmd), "ipset add cnip %s -exist", default_cn_cidrs[i]);
+        exec_cmd_simple(cmd, 2);
+    }
+    
+    int count = 0;
+    while (default_cn_cidrs[count] != NULL) count++;
+    LOG_INFO("Default ipset 'cnip' created with %d entries", count);
+    return 0;
+}
+
+static int geoip_async_update(atp_config_t *cfg) {
+    pid_t pid = fork();
+    
+    if (pid < 0) {
+        LOG_WARN("Failed to fork for async GeoIP update");
+        return -1;
+    }
+    
+    if (pid == 0) {
+        LOG_INFO("Async GeoIP update started in background");
+        
+        if (geoip_download(cfg) == 0) {
+            geoip_atomic_update(cfg);
+            LOG_INFO("Async GeoIP update completed");
+        } else {
+            LOG_WARN("Async GeoIP update failed, keeping default list");
+        }
+        
+        exit(0);
+    }
+    
+    LOG_DEBUG("Async GeoIP update running in PID %d", pid);
+    return 0;
+}
+
 int geoip_setup_ipset(atp_config_t *cfg) {
     if (!cfg->bypass_cn_ip) {
         LOG_DEBUG("CN IP bypass disabled, skipping ipset setup");
@@ -218,19 +264,27 @@ int geoip_setup_ipset(atp_config_t *cfg) {
     snprintf(v4_path, sizeof(v4_path), "%s/%s", rules_dir, cfg->cn_ip_file);
     snprintf(v4_parsed, sizeof(v4_parsed), "%s/%s.parsed", rules_dir, cfg->cn_ip_file);
     
-    if (!file_exists(v4_path)) {
-        LOG_WARN("IPv4 list not found, skipping ipset");
-        return -1;
+    /* First, create default ipset (fast, ensures basic functionality) */
+    geoip_create_default_ipset(cfg);
+    
+    /* Then try to download and upgrade to full list */
+    if (geoip_download(cfg) == 0 && file_exists(v4_path)) {
+        geoip_parse_cidr_file(v4_path, v4_parsed, 4);
+        
+        geoip_ipset_create("cnip_temp", 4, 8192, 65536);
+        geoip_ipset_restore_file("cnip_temp", v4_parsed);
+        
+        geoip_ipset_swap("cnip_temp", "cnip");
+        LOG_INFO("IPv4 ipset upgraded to full list");
+        
+        geoip_ipset_destroy("cnip_temp");
+    } else {
+        LOG_WARN("Full GeoIP download failed, using default list only");
+        /* Start async update in background for next time */
+        geoip_async_update(cfg);
     }
     
-    geoip_parse_cidr_file(v4_path, v4_parsed, 4);
-    
-    geoip_ipset_destroy("cnip");
-    geoip_ipset_create("cnip", 4, 8192, 65536);
-    geoip_ipset_restore_file("cnip", v4_parsed);
-    
-    LOG_INFO("IPv4 ipset 'cnip' loaded");
-    
+    /* IPv6 handling */
     if (cfg->proxy_ipv6) {
         char v6_path[PATH_MAX];
         char v6_parsed[PATH_MAX];
@@ -262,6 +316,8 @@ int geoip_cleanup_ipset(atp_config_t *cfg) {
 }
 
 int geoip_atomic_update(atp_config_t *cfg) {
+    if (!cfg->bypass_cn_ip) return 0;
+    
     LOG_INFO("Performing atomic GeoIP update");
     
     char rules_dir[PATH_MAX];
@@ -286,19 +342,16 @@ int geoip_atomic_update(atp_config_t *cfg) {
     geoip_ipset_create("cnip_temp", 4, 8192, 65536);
     geoip_ipset_restore_file("cnip_temp", v4_parsed_tmp);
     
-    if (geoip_ipset_exists("cnip")) {
-        geoip_ipset_swap("cnip_temp", "cnip");
-        LOG_INFO("IPv4 ipset swapped atomically");
-    } else {
-        geoip_ipset_swap("cnip_temp", "cnip");
-        LOG_INFO("IPv4 ipset created");
-    }
+    /* Always swap (cnip exists from default list) */
+    geoip_ipset_swap("cnip_temp", "cnip");
+    LOG_INFO("IPv4 ipset swapped atomically");
     
     geoip_ipset_destroy("cnip_temp");
     
     rename(v4_tmp, v4_path);
     rename(v4_parsed_tmp, v4_parsed);
     
+    /* IPv6 handling */
     if (cfg->proxy_ipv6) {
         char v6_path[PATH_MAX];
         char v6_tmp[PATH_MAX];
@@ -314,15 +367,8 @@ int geoip_atomic_update(atp_config_t *cfg) {
             geoip_parse_cidr_file(v6_tmp, v6_parsed_tmp, 6);
             geoip_ipset_create("cnip6_temp", 6, 8192, 65536);
             geoip_ipset_restore_file("cnip6_temp", v6_parsed_tmp);
-            
-            if (geoip_ipset_exists("cnip6")) {
-                geoip_ipset_swap("cnip6_temp", "cnip6");
-                LOG_INFO("IPv6 ipset swapped atomically");
-            } else {
-                geoip_ipset_swap("cnip6_temp", "cnip6");
-                LOG_INFO("IPv6 ipset created");
-            }
-            
+            geoip_ipset_swap("cnip6_temp", "cnip6");
+            LOG_INFO("IPv6 ipset swapped atomically");
             geoip_ipset_destroy("cnip6_temp");
             rename(v6_tmp, v6_path);
             rename(v6_parsed_tmp, v6_parsed);

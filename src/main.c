@@ -8,10 +8,11 @@
 #include "geoip.h"
 #include "api.h"
 #include "cli.h"
+#include "status.h"
 #include "utils.h"
 #include <libgen.h>
 #include <sys/stat.h>
-#include "status.h"
+#include <sys/wait.h>
 
 atp_config_t g_config;
 
@@ -19,6 +20,21 @@ static volatile sig_atomic_t g_running = 1;
 static netlink_ctx_t g_netlink_ctx;
 static service_ctx_t g_service_ctx;
 static api_ctx_t g_api_ctx;
+
+/* Initialization stage flags for log deduplication */
+static int init_stage = 0;
+#define INIT_STAGE_TPROXY    (1 << 0)
+#define INIT_STAGE_ROUTING   (1 << 1)
+#define INIT_STAGE_DNS       (1 << 2)
+#define INIT_STAGE_GEOIP     (1 << 3)
+#define INIT_STAGE_COMPLETE  (1 << 4)
+
+static void log_stage(int stage, const char *msg) {
+    if (!(init_stage & stage)) {
+        LOG_INFO("%s", msg);
+        init_stage |= stage;
+    }
+}
 
 static void signal_handler(int sig) {
     if (sig == SIGTERM || sig == SIGINT) {
@@ -168,59 +184,69 @@ void atp_show_status(void) {
     status_show(&g_config, &g_service_ctx, &g_api_ctx);
 }
 
-static void on_interface_change(const char *iface, int added, int ifindex, void *userdata) {
-    static char current_vpn[IFNAMSIZ] = {0};
-    char ip_snapshot[1024];
-    (void)ifindex;
-    (void)userdata;
+static void parallel_init_tasks(atp_config_t *cfg) {
+    pid_t pids[4];
+    int status;
+    int task_count = 0;
     
-    if (strncmp(iface, "ipsec", 5) == 0) {
-        if (added) {
-            LOG_INFO("VPN STATUS: [CONNECTED] -> Enabling Google Service Path (Google VPN)");
-            LOG_INFO("Sync: Clearing routing stack...");
-            
-            strncpy(current_vpn, iface, sizeof(current_vpn) - 1);
-            current_vpn[sizeof(current_vpn) - 1] = '\0';
-            
-            netlink_wait_for_iface(iface, 15);
-            
-            routing_remove_vpn_policy(&g_config, iface);
-            routing_add_vpn_policy(&g_config, iface);
-            routing_add_mss_clamp(&g_config, iface);
-            
-            tproxy_dns_hijack_setup(&g_config, 4, DNS_HIJACK_TPROXY);
-            tproxy_dns_hijack_setup(&g_config, 6, DNS_HIJACK_TPROXY);
-            tproxy_xfrm_bypass(&g_config);
-            tproxy_prevent_loop(&g_config);
-            
-            LOG_INFO("[tproxy] Mode 4 XFRM Green Lane re-paved.");
-            
-            netlink_get_ipv4_snapshot(ip_snapshot, sizeof(ip_snapshot));
-            LOG_INFO("Network Stable: [%s]", ip_snapshot);
-            LOG_INFO("Sync OK | VPN_STATE=1 | Final_Mode=Google VPN");
-            LOG_INFO("[Sentinel] STABILITY: Shift complete.");
-            
-            api_set_mode(&g_api_ctx, "Google VPN");
-            
-        } else if (strcmp(current_vpn, iface) == 0) {
-            LOG_INFO("[Sentinel] STABILITY: Detecting radio shift... (%s -> NONE)", iface);
-            LOG_INFO("[Sentinel] ACTION: VPN OFF detected. Clearing Green Lane.");
-            LOG_INFO("VPN STATUS: [DISCONNECTED] -> Falling back to Standard Rules (Rule)");
-            LOG_INFO("Sync: Clearing routing stack...");
-            
-            memset(current_vpn, 0, sizeof(current_vpn));
-            
-            routing_remove_vpn_policy(&g_config, iface);
-            routing_remove_mss_clamp(&g_config, iface);
-            
-            netlink_get_ipv4_snapshot(ip_snapshot, sizeof(ip_snapshot));
-            LOG_INFO("Network Stable: [%s]", ip_snapshot);
-            LOG_INFO("Sync OK | VPN_STATE=0 | Final_Mode=Rule");
-            LOG_INFO("[Sentinel] STABILITY: Shift complete.");
-            
-            api_set_mode(&g_api_ctx, "Rule");
+    /* Task 1: TPROXY rules (can run independently) */
+    pids[task_count] = fork();
+    if (pids[task_count] == 0) {
+        log_stage(INIT_STAGE_TPROXY, "Setting up TPROXY rules");
+        tproxy_setup_ipv4(cfg);
+        if (cfg->proxy_ipv6) {
+            tproxy_setup_ipv6(cfg);
+        }
+        exit(0);
+    }
+    task_count++;
+    
+    /* Task 2: Routing rules (can run independently) */
+    pids[task_count] = fork();
+    if (pids[task_count] == 0) {
+        log_stage(INIT_STAGE_ROUTING, "Setting up routing rules");
+        routing_setup_ipv4(cfg);
+        if (cfg->proxy_ipv6) {
+            routing_setup_ipv6(cfg);
+        }
+        exit(0);
+    }
+    task_count++;
+    
+    /* Task 3: DNS hijack (depends on tproxy, brief wait) */
+    pids[task_count] = fork();
+    if (pids[task_count] == 0) {
+        usleep(500000);  /* 0.5 sec wait for tproxy */
+        log_stage(INIT_STAGE_DNS, "Setting up DNS hijack");
+        tproxy_dns_hijack_setup(cfg, 4, cfg->dns_hijack);
+        tproxy_dns_hijack_setup(cfg, 6, cfg->dns_hijack);
+        exit(0);
+    }
+    task_count++;
+    
+    /* Task 4: GeoIP (async, non-blocking, runs in background) */
+    pids[task_count] = fork();
+    if (pids[task_count] == 0) {
+        log_stage(INIT_STAGE_GEOIP, "Setting up GeoIP (may run async)");
+        if (cfg->bypass_cn_ip) {
+            geoip_setup_ipset(cfg);
+        }
+        exit(0);
+    }
+    task_count++;
+    
+    /* Wait for critical tasks (1,2,3) but not GeoIP (task 4) */
+    for (int i = 0; i < 3; i++) {
+        waitpid(pids[i], &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+            LOG_WARN("Task %d exited with status %d", i, WEXITSTATUS(status));
         }
     }
+    
+    /* GeoIP continues in background, don't wait */
+    LOG_DEBUG("GeoIP task running in background (PID: %d)", pids[3]);
+    
+    init_stage |= INIT_STAGE_COMPLETE;
 }
 
 int main(int argc, char *argv[]) {
@@ -301,6 +327,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     
+    /* Log proxy mode once */
     LOG_INFO("Using ENHANCE mode (Split TCP:NAT / UDP:Mangle)");
     
     atp_signal_setup();
@@ -319,24 +346,14 @@ int main(int argc, char *argv[]) {
         service_start(&g_service_ctx);
     }
     
-    tproxy_setup_ipv4(&g_config);
-    routing_setup_ipv4(&g_config);
+    /* Parallel initialization of independent tasks */
+    parallel_init_tasks(&g_config);
     
-    if (g_config.proxy_ipv6) {
-        tproxy_setup_ipv6(&g_config);
-        routing_setup_ipv6(&g_config);
-    }
-    
-    if (g_config.bypass_cn_ip) {
-        geoip_download(&g_config);
-        geoip_setup_ipset(&g_config);
-    }
-    
-    if (g_config.block_quic) {
-        tproxy_block_quic(&g_config, 1);
-    }
-    
+    /* Additional setup that must run after parallel tasks */
+    tproxy_block_quic(&g_config, g_config.block_quic);
     tproxy_block_loopback(&g_config, 1);
+    tproxy_xfrm_bypass(&g_config);
+    tproxy_prevent_loop(&g_config);
     
     netlink_init(&g_netlink_ctx);
     
