@@ -418,17 +418,13 @@ int get_binary_version(const char *bin_path, char *version, size_t size) {
 }
 
 void format_uptime(int seconds, char *buf, size_t size) {
-    int days = seconds / 86400;
-    int hours = (seconds % 86400) / 3600;
+    int hours = seconds / 3600;
     int mins = (seconds % 3600) / 60;
-    int secs = seconds % 60;
-    
-    if (days > 0) {
-        snprintf(buf, size, "%dd %02d:%02d:%02d", days, hours, mins, secs);
-    } else if (hours > 0) {
-        snprintf(buf, size, "%02d:%02d:%02d", hours, mins, secs);
+
+    if (hours > 0) {
+        snprintf(buf, size, "%dh%02d", hours, mins);
     } else {
-        snprintf(buf, size, "%02d:%02d", mins, secs);
+        snprintf(buf, size, "%dm%02d", mins, seconds % 60);
     }
 }
 

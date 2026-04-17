@@ -205,6 +205,7 @@ static void on_interface_change(const char *iface, int added, int ifindex, void 
             LOG_INFO("Sync: Clearing routing stack...");
             
             strncpy(current_vpn, iface, sizeof(current_vpn) - 1);
+            current_vpn[sizeof(current_vpn) - 1] = '\0';
             
             netlink_wait_for_iface(iface, 15);
             
@@ -265,6 +266,19 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     
+    /* Handle status command - no log initialization needed */
+    if (opts.command == CMD_STATUS) {
+        config_set_defaults(&g_config);
+        if (opts.config_dir[0]) {
+            strncpy(g_config.data_dir, opts.config_dir, sizeof(g_config.data_dir) - 1);
+            g_config.data_dir[sizeof(g_config.data_dir) - 1] = '\0';
+        }
+        service_init(&g_service_ctx, &g_config);
+        atp_show_status();
+        return 0;
+    }
+    
+    /* Root check for all other commands */
     if (atp_check_root() != 0) {
         return 1;
     }
@@ -295,12 +309,6 @@ int main(int argc, char *argv[]) {
         LOG_INFO("Configuration loaded from %s", conf_path);
     } else {
         LOG_WARN("Config file not found: %s, using defaults", conf_path);
-    }
-    
-    if (opts.command == CMD_STATUS) {
-        service_init(&g_service_ctx, &g_config);
-        atp_show_status();
-        return 0;
     }
     
     if (opts.command == CMD_UPDATE_GEOIP) {
