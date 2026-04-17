@@ -21,7 +21,6 @@
 atp_config_t g_config;
 
 static volatile sig_atomic_t g_running = 1;
-static netlink_ctx_t g_netlink_ctx;
 static service_ctx_t g_service_ctx;
 static api_ctx_t g_api_ctx;
 
@@ -220,7 +219,7 @@ static void parallel_init_tasks(atp_config_t *cfg) {
     /* Task 3: DNS hijack (depends on tproxy, brief wait) */
     pids[task_count] = fork();
     if (pids[task_count] == 0) {
-        usleep(500000);  /* 0.5 sec wait for tproxy */
+        usleep(500000);
         log_stage(INIT_STAGE_DNS, "Setting up DNS hijack");
         tproxy_dns_hijack_setup(cfg, 4, cfg->dns_hijack);
         tproxy_dns_hijack_setup(cfg, 6, cfg->dns_hijack);
@@ -247,7 +246,6 @@ static void parallel_init_tasks(atp_config_t *cfg) {
         }
     }
     
-    /* GeoIP continues in background, don't wait */
     LOG_DEBUG("GeoIP task running in background (PID: %d)", pids[3]);
     
     init_stage |= INIT_STAGE_COMPLETE;
@@ -333,7 +331,6 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     
-    /* Log proxy mode once */
     LOG_INFO("Using ENHANCE mode (Split TCP:NAT / UDP:Mangle)");
     
     atp_signal_setup();
@@ -352,7 +349,6 @@ int main(int argc, char *argv[]) {
         service_start(&g_service_ctx);
     }
     
-    /* Parallel initialization of independent tasks */
     parallel_init_tasks(&g_config);
     
     /* Additional setup that must run after parallel tasks */
@@ -361,20 +357,15 @@ int main(int argc, char *argv[]) {
     tproxy_xfrm_bypass(&g_config);
     tproxy_prevent_loop(&g_config);
     
-    /* Initialize performance mode */
     perf_mode_init(&g_config);
     perf_mode_setup(&g_config);
     
-    /* Initialize filters */
     app_filter_init(&g_config);
     app_filter_setup(&g_config);
     mac_filter_init(&g_config);
     mac_filter_setup(&g_config);
     
-    /* Initialize IPv6 manager */
     ipv6_manager_init(&g_config);
-    
-    netlink_init(&g_netlink_ctx);
     
     int heal_counter = 0;
     time_t last_api_sync = 0;
@@ -386,7 +377,7 @@ int main(int argc, char *argv[]) {
         if (heal_counter >= 3) {
             heal_counter = 0;
             char vpn_iface[IFNAMSIZ];
-            if (netlink_get_active_vpn(&g_netlink_ctx, vpn_iface, sizeof(vpn_iface)) == 0) {
+            if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0) {
                 if (!netlink_check_rule_exists(g_config.table_id, g_config.mark_value, vpn_iface)) {
                     LOG_WARN("Rule drift detected, repairing...");
                     routing_add_vpn_policy(&g_config, vpn_iface);
@@ -408,7 +399,6 @@ int main(int argc, char *argv[]) {
         }
     }
     
-    netlink_cleanup(&g_netlink_ctx);
     service_stop(&g_service_ctx);
     tproxy_cleanup_all(&g_config);
     routing_cleanup_all(&g_config);
