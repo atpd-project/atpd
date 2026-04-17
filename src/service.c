@@ -4,6 +4,15 @@
 #include "atp.h"
 #include <signal.h>
 #include <sys/wait.h>
+#include <pwd.h>
+#include <grp.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <time.h>
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(service_ctx_t));
@@ -44,7 +53,7 @@ int service_validate_config(service_ctx_t *ctx) {
 
 static int set_user_group(service_ctx_t *ctx) {
     struct group *grp = getgrnam(ctx->group);
-    if (grp) {
+    if (grp != NULL) {
         if (setgid(grp->gr_gid) != 0) {
             LOG_ERROR("Failed to set group %s: %s", ctx->group, strerror(errno));
             return -1;
@@ -52,7 +61,7 @@ static int set_user_group(service_ctx_t *ctx) {
     }
     
     struct passwd *pwd = getpwnam(ctx->user);
-    if (pwd) {
+    if (pwd != NULL) {
         if (setuid(pwd->pw_uid) != 0) {
             LOG_ERROR("Failed to set user %s: %s", ctx->user, strerror(errno));
             return -1;
@@ -247,9 +256,9 @@ void service_set_cooldown(service_ctx_t *ctx, int seconds) {
 
 int service_cooldown_active(service_ctx_t *ctx) {
     time_t now = time(NULL);
-    int elapsed = now - ctx->last_restart_time;
+    int elapsed = (int)(now - ctx->last_restart_time);
     
-    if (elapsed < ctx->restart_cooldown_sec) {
+    if (elapsed < ctx->restart_cooldown_sec && ctx->last_restart_time > 0) {
         LOG_DEBUG("Cooldown active: %d seconds remaining", 
                   ctx->restart_cooldown_sec - elapsed);
         return 1;
