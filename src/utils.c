@@ -1,12 +1,20 @@
 #include "utils.h"
 #include "logger.h"
-#include <sys/stat.h>
-#include <libgen.h>
-#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
 #include <ctype.h>
 #include <dirent.h>
-#include <time.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/times.h>
+#include <time.h>
+#include <libgen.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <limits.h>
 
 int file_exists(const char *path) {
     return access(path, F_OK) == 0;
@@ -19,6 +27,8 @@ int mkdir_recursive(const char *path, mode_t mode) {
     
     snprintf(tmp, sizeof(tmp), "%s", path);
     len = strlen(tmp);
+    
+    if (len == 0) return -1;
     
     if (tmp[len - 1] == '/') {
         tmp[len - 1] = 0;
@@ -38,9 +48,8 @@ int mkdir_recursive(const char *path, mode_t mode) {
 int exec_cmd(const char *cmd, char *output, size_t output_size, int timeout_sec) {
     LOG_EXEC(cmd);
     
-    char timeout_cmd[512];
-    snprintf(timeout_cmd, sizeof(timeout_cmd), 
-             "timeout %d %s", timeout_sec, cmd);
+    char timeout_cmd[MAX_CMD_LEN];
+    snprintf(timeout_cmd, sizeof(timeout_cmd), "timeout %d %s", timeout_sec, cmd);
     
     FILE *fp = popen(timeout_cmd, "r");
     if (!fp) {
@@ -93,7 +102,7 @@ int read_file(const char *path, char *buf, size_t buf_size) {
     }
     
     fclose(fp);
-    return len;
+    return (int)len;
 }
 
 int write_file(const char *path, const char *content) {
@@ -118,6 +127,8 @@ void trim(char *str) {
     char *start = str;
     char *end;
     
+    if (!str || !*str) return;
+    
     while (isspace(*start)) start++;
     
     if (*start == 0) {
@@ -136,10 +147,12 @@ void trim(char *str) {
 }
 
 int starts_with(const char *str, const char *prefix) {
+    if (!str || !prefix) return 0;
     return strncmp(str, prefix, strlen(prefix)) == 0;
 }
 
 int ends_with(const char *str, const char *suffix) {
+    if (!str || !suffix) return 0;
     size_t str_len = strlen(str);
     size_t suffix_len = strlen(suffix);
     
@@ -153,6 +166,8 @@ char *str_replace(const char *str, const char *old, const char *new_str) {
     const char *src = str;
     size_t old_len = strlen(old);
     size_t new_len = strlen(new_str);
+    
+    if (!str || !old || !new_str) return (char*)str;
     
     while (*src) {
         if (strncmp(src, old, old_len) == 0) {
