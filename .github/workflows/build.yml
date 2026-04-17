@@ -17,13 +17,21 @@ jobs:
       run: |
         wget https://github.com/cross-tools/musl-cross/releases/download/20250929/aarch64-unknown-linux-musl.tar.xz
         tar -xJf aarch64-unknown-linux-musl.tar.xz
-        TOOLCHAIN_DIR=$(find "$PWD" -maxdepth 2 -name "aarch64-unknown-linux-musl-gcc" | head -1 | xargs dirname)
-        echo "$TOOLCHAIN_DIR" >> $GITHUB_PATH
+        # Debug: show what was extracted
+        find "$PWD" -maxdepth 3 -name "*-gcc" | head -5
+        TOOLCHAIN_BIN=$(find "$PWD" -maxdepth 3 -name "aarch64-unknown-linux-musl-gcc" | head -1 | xargs -I{} dirname {})
+        if [ -z "$TOOLCHAIN_BIN" ]; then
+          echo "ERROR: could not find aarch64-unknown-linux-musl-gcc"
+          find "$PWD" -maxdepth 4 -type f -name "*gcc*"
+          exit 1
+        fi
+        echo "Found toolchain at: $TOOLCHAIN_BIN"
+        echo "$TOOLCHAIN_BIN" >> $GITHUB_PATH
         echo "CC=aarch64-unknown-linux-musl-gcc" >> $GITHUB_ENV
         echo "AR=aarch64-unknown-linux-musl-ar" >> $GITHUB_ENV
         echo "RANLIB=aarch64-unknown-linux-musl-ranlib" >> $GITHUB_ENV
         echo "STRIP=aarch64-unknown-linux-musl-strip" >> $GITHUB_ENV
-
+        
     - name: Cache libcurl build
       id: cache-curl
       uses: actions/cache@v4
