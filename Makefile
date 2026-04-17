@@ -22,7 +22,7 @@ OBJ_DIR = build/obj
 BIN_DIR = build/bin
 DIST_DIR = dist
 
-# Source files - only essential modules
+# Source files - only essential modules (no netlink_*.c)
 SRCS = $(SRC_DIR)/api.c $(SRC_DIR)/app_filter.c $(SRC_DIR)/cli.c \
        $(SRC_DIR)/config.c $(SRC_DIR)/geoip.c $(SRC_DIR)/ipset.c \
        $(SRC_DIR)/ipv6_manager.c $(SRC_DIR)/logger.c $(SRC_DIR)/mac_filter.c \
