@@ -9,6 +9,8 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/epoll.h>
+#include <stdio.h>
+#include <arpa/inet.h>
 
 #define NL_BUF_SIZE 8192
 #define EPOLL_TIMEOUT_MS 1000
