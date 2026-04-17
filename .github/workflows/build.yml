@@ -8,10 +8,9 @@ on:
       - 'include/**'
       - 'Makefile'
       - '.github/workflows/**'
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'examples/**'
+      - '!**.md'
+      - '!docs/**'
+      - '!examples/**'
   pull_request:
     branches: [main]
     paths:
