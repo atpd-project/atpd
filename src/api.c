@@ -127,14 +127,14 @@ int api_patch_json(api_ctx_t *ctx, const char *path, const char *json_body) {
     int ret = api_do_request(ctx, "PATCH", path, json_body, &resp);
     
     if (ret == 0 && ctx->last_http_code == 200) {
-        LOG_DEBUG("API PATCH %s succeeded (HTTP %ld)", path, ctx->last_http_code);
+        LOG_DEBUG("API PATCH %s succeeded (HTTP %d)", path, ctx->last_http_code);
         return 0;
     } else if (ret == 0 && ctx->last_http_code == 204) {
-        LOG_DEBUG("API PATCH %s succeeded (HTTP 204)", path);
+        LOG_DEBUG("API PATCH %s succeeded (HTTP %d)", path, ctx->last_http_code);
         return 0;
     }
     
-    LOG_WARN("API PATCH %s failed: HTTP %ld, %s", 
+    LOG_WARN("API PATCH %s failed: HTTP %d, %s", 
              path, ctx->last_http_code, ctx->last_error);
     return -1;
 }
