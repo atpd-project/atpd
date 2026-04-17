@@ -8,6 +8,8 @@
 #include "geoip.h"
 #include "api.h"
 #include "utils.h"
+#include <libgen.h>
+#include <sys/stat.h>
 
 atp_config_t g_config;
 
