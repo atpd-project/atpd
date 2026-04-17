@@ -8,7 +8,9 @@ TARGET = atpd
 ifneq ($(ANDROID_NDK_ROOT),)
     CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
     CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\"
-    LDFLAGS = -L/tmp/curl-android/lib -lcurl -pthread -static -llog
+    LDFLAGS = -L/tmp/curl-android/lib -lcurl -pthread -static
+    # Add liblog path
+    LDFLAGS += $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/21/liblog.so
 else
     CC = gcc
     CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
@@ -48,7 +50,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
 
 $(BIN_DIR)/$(TARGET): $(OBJS) | $(BIN_DIR)
-	$(CC) $(OBJS) -o $@ $(LDFLAGS) -llog
+	$(CC) $(OBJS) -o $@ $(LDFLAGS)
 
 clean:
 	rm -rf $(OBJ_DIR)
