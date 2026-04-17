@@ -11,12 +11,14 @@ on:
       - '!**.md'
       - '!docs/**'
       - '!examples/**'
+      - '!.github/workflows/clean.yml'
   pull_request:
     branches: [main]
     paths:
       - 'src/**'
       - 'include/**'
       - 'Makefile'
+      - '!.github/workflows/clean.yml'
   workflow_dispatch:
 
 env:
