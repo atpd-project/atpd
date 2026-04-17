@@ -1,0 +1,130 @@
+name: Clean GitHub Actions Cache and Logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_type:
+        description: 'What to clean'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - caches
+          - logs
+          - old-runs
+      days_to_keep:
+        description: 'Keep runs from last N days (default: 30)'
+        required: false
+        default: '30'
+        type: string
+
+jobs:
+  clean-caches:
+    name: Clean GitHub Actions Caches
+    runs-on: ubuntu-latest
+    if: github.event.inputs.clean_type == 'all' || github.event.inputs.clean_type == 'caches'
+    steps:
+      - name: Delete all caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Fetching all cache keys..."
+          cache_keys=$(gh api repos/${{ github.repository }}/actions/caches \
+            --jq '.actions_caches[].key' 2>/dev/null || echo "")
+          
+          if [ -z "$cache_keys" ]; then
+            echo "No caches found."
+            exit 0
+          fi
+          
+          count=0
+          for key in $cache_keys; do
+            echo "Deleting cache: $key"
+            gh api -X DELETE repos/${{ github.repository }}/actions/caches \
+              -f key="$key" 2>/dev/null || true
+            count=$((count + 1))
+          done
+          
+          echo "Deleted $count caches."
+
+  clean-logs:
+    name: Clean Workflow Run Logs
+    runs-on: ubuntu-latest
+    if: github.event.inputs.clean_type == 'all' || github.event.inputs.clean_type == 'logs'
+    steps:
+      - name: Delete workflow run logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Fetching workflow runs..."
+          run_ids=$(gh api repos/${{ github.repository }}/actions/runs \
+            --jq '.workflow_runs[].id' 2>/dev/null || echo "")
+          
+          if [ -z "$run_ids" ]; then
+            echo "No workflow runs found."
+            exit 0
+          fi
+          
+          count=0
+          for run_id in $run_ids; do
+            echo "Deleting logs for run: $run_id"
+            gh api -X DELETE repos/${{ github.repository }}/actions/runs/$run_id/logs 2>/dev/null || true
+            count=$((count + 1))
+          done
+          
+          echo "Deleted logs for $count runs."
+
+  clean-old-runs:
+    name: Delete Old Workflow Runs
+    runs-on: ubuntu-latest
+    if: github.event.inputs.clean_type == 'all' || github.event.inputs.clean_type == 'old-runs'
+    steps:
+      - name: Delete old workflow runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAYS_TO_KEEP: ${{ github.event.inputs.days_to_keep }}
+        run: |
+          if [ -z "$DAYS_TO_KEEP" ]; then
+            DAYS_TO_KEEP=30
+          fi
+          
+          CUTOFF_DATE=$(date -d "$DAYS_TO_KEEP days ago" --iso-8601=seconds 2>/dev/null || \
+                        date -v-${DAYS_TO_KEEP}d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                        date +%Y-%m-%dT%H:%M:%SZ)
+          
+          echo "Keeping runs from last $DAYS_TO_KEEP days ($CUTOFF_DATE)"
+          
+          run_ids=$(gh api repos/${{ github.repository }}/actions/runs \
+            --jq ".workflow_runs[] | select(.created_at < \"$CUTOFF_DATE\") | .id" 2>/dev/null || echo "")
+          
+          if [ -z "$run_ids" ]; then
+            echo "No old workflow runs found."
+            exit 0
+          fi
+          
+          count=0
+          for run_id in $run_ids; do
+            echo "Deleting run: $run_id"
+            gh api -X DELETE repos/${{ github.repository }}/actions/runs/$run_id 2>/dev/null || true
+            count=$((count + 1))
+          done
+          
+          echo "Deleted $count old workflow runs."
+
+  clean-summary:
+    name: Clean Summary
+    runs-on: ubuntu-latest
+    needs: [clean-caches, clean-logs, clean-old-runs]
+    if: always()
+    steps:
+      - run: |
+          echo "## Cleanup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Task | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Caches | ${{ needs.clean-caches.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Logs | ${{ needs.clean-logs.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Old Runs | ${{ needs.clean-old-runs.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Cleanup completed at $(date)" >> $GITHUB_STEP_SUMMARY
