@@ -9,6 +9,10 @@
 #include "api.h"
 #include "cli.h"
 #include "status.h"
+#include "app_filter.h"
+#include "mac_filter.h"
+#include "ipv6_manager.h"
+#include "perf_mode.h"
 #include "utils.h"
 #include <libgen.h>
 #include <sys/stat.h>
@@ -323,6 +327,8 @@ int main(int argc, char *argv[]) {
         service_stop(&g_service_ctx);
         tproxy_cleanup_all(&g_config);
         routing_cleanup_all(&g_config);
+        app_filter_cleanup(&g_config);
+        mac_filter_cleanup(&g_config);
         LOG_INFO("ATP stopped");
         return 0;
     }
@@ -354,6 +360,19 @@ int main(int argc, char *argv[]) {
     tproxy_block_loopback(&g_config, 1);
     tproxy_xfrm_bypass(&g_config);
     tproxy_prevent_loop(&g_config);
+    
+    /* Initialize performance mode */
+    perf_mode_init(&g_config);
+    perf_mode_setup(&g_config);
+    
+    /* Initialize filters */
+    app_filter_init(&g_config);
+    app_filter_setup(&g_config);
+    mac_filter_init(&g_config);
+    mac_filter_setup(&g_config);
+    
+    /* Initialize IPv6 manager */
+    ipv6_manager_init(&g_config);
     
     netlink_init(&g_netlink_ctx);
     
@@ -393,6 +412,8 @@ int main(int argc, char *argv[]) {
     service_stop(&g_service_ctx);
     tproxy_cleanup_all(&g_config);
     routing_cleanup_all(&g_config);
+    app_filter_cleanup(&g_config);
+    mac_filter_cleanup(&g_config);
     
     atp_cleanup();
     LOG_INFO(ATP_NAME " stopped");
