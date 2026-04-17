@@ -3,6 +3,8 @@
 
 #include <getopt.h>
 #include <stdbool.h>
+#include <limits.h>
+#include "logger.h"
 
 typedef enum {
     CMD_NONE = 0,
