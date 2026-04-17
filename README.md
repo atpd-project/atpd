@@ -116,3 +116,127 @@ atpd start --foreground --verbose # Run in foreground with verbose logging
 ---
 
 ## Directory Structure
+
+```
+/data/adb/atp/
+├── bin/
+│   └── atpd                # Main daemon
+├── run/
+│   ├── atp.log             # ATP log file
+│   ├── atpd.pid            # Daemon PID file
+│   ├── sing-box.log        # sing-box log
+│   └── sing-box.pid        # sing-box PID file
+├── rules/
+│   ├── cn.zone             # China IPv4 CIDRs
+│   └── cn_ipv6.zone        # China IPv6 CIDRs
+├── sing-box/
+│   └── config.json         # sing-box configuration
+└── atp.conf                # Main configuration
+```
+
+---
+
+## Architecture
+
+```
+atpd (daemon)
+├── epoll event loop
+├── netlink interface monitor
+├── iptables/ip6tables manager
+├── ipset manager (GeoIP)
+├── routing policy manager
+├── service monitor (sing-box)
+├── Clash API client
+└── command queue (serialized execution)
+```
+
+---
+
+## How It Works
+
+### Standard mode
+
+```
+Traffic → PREROUTING → ATP_PRE_0 → TPROXY → sing-box
+```
+
+### VPN mode (`ipsec*` detected)
+
+```
+Traffic → PREROUTING → XFRM_BYPASS → ATP_PRE_0 → TPROXY → sing-box
+                ↓
+         ESP / UDP 4500 / UDP 500 bypassed
+```
+
+### Atomic rule updates
+
+Rule changes are applied with zero traffic interruption:
+
+```
+1. Build new ruleset in ATP_PRE_1
+2. Atomic switch: PREROUTING → ATP_PRE_1
+3. Flush and clear ATP_PRE_0
+```
+
+---
+
+## Building for Android
+
+### With NDK directly
+
+```bash
+export NDK=/path/to/android-ndk
+export TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64
+export CC=$TOOLCHAIN/bin/aarch64-linux-android21-clang
+
+make CC=$CC
+```
+
+### Dependencies
+
+- `libcurl` — GeoIP database downloads
+- `pthread` — built into the NDK
+- `cJSON` — bundled in source tree
+
+---
+
+## Troubleshooting
+
+**Check if running**
+```bash
+atpd status
+ps -A | grep atpd
+```
+
+**View logs**
+```bash
+cat /data/adb/atp/run/atp.log
+tail -f /data/adb/atp/run/atp.log
+```
+
+**Inspect iptables rules**
+```bash
+iptables -t mangle -L | grep ATP
+ip6tables -t mangle -L | grep ATP
+```
+
+**Inspect ipsets**
+```bash
+ipset list cnip
+ipset list cnip6
+```
+
+**Force GeoIP update**
+```bash
+atpd update-geoip
+```
+
+---
+
+## License
+
+GPL v3
+
+---
+
+*ATP Project — v1.0.0*
