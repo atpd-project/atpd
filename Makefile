@@ -7,10 +7,11 @@ TARGET = atpd
 # Detect NDK environment
 ifneq ($(ANDROID_NDK_ROOT),)
     CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
-    CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\"
-    # TLS alignment fix for Android Bionic
+    CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\" -fPIC
+    # TLS alignment fix for Android Bionic (64-byte alignment requirement)
     LDFLAGS = -L/tmp/curl-android/lib -lcurl -pthread -static \
-              -Wl,-z,max-page-size=0x1000 -Wl,-z,common-page-size=0x1000
+              -Wl,-z,max-page-size=4096 -Wl,-z,common-page-size=4096 \
+              -Wl,-z,tls-segment-align=64
 else
     CC = gcc
     CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
