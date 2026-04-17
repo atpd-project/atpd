@@ -200,7 +200,7 @@ void atp_show_status(void) {
     printf("\n");
 }
 
-static void on_interface_change(const char *iface, int added, int ifindex, void *userdata) {
+static void __attribute__((unused)) on_interface_change(const char *iface, int added, int ifindex, void *userdata) {
     static char current_vpn[IFNAMSIZ] = {0};
     (void)ifindex;
     (void)userdata;
