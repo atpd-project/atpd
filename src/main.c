@@ -165,9 +165,7 @@ void atp_cleanup(void) {
 
 void atp_show_status(void) {
     int pid = service_get_pid(&g_service_ctx);
-    
-    printf("\n");
-    
+
     if (pid > 0) {
         long mem_kb = get_process_memory_kb(pid);
         double cpu = get_process_cpu_percent(pid);
@@ -176,11 +174,12 @@ void atp_show_status(void) {
         int uptime_sec = get_process_uptime_sec(pid);
         char uptime_str[64];
         char version[64];
-        
+
         format_uptime(uptime_sec, uptime_str, sizeof(uptime_str));
         get_binary_version(PROXY_BIN_PATH, version, sizeof(version));
-        
-        /* Status output with tree format */
+
+        /* Use printf directly, avoid LOG_INFO to prevent formatting issues */
+        printf("\n");
         printf("sing-box is running as root:net_admin.\n");
         printf("    ├─ PID:       %d\n", pid);
         printf("    ├─ Memory:    %ld kB\n", mem_kb);
@@ -189,9 +188,11 @@ void atp_show_status(void) {
         printf("    ├─ Sockets:   %d (Active FDs)\n", fd_count);
         printf("    ├─ Uptime:    %s\n", uptime_str);
         printf("    └─ Version:   %s\n", version);
+        printf("\n");
     } else {
         printf("sing-box service is stopped.\n");
     }
+}
     
     printf("\n");
 }
