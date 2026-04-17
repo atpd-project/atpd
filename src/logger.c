@@ -43,6 +43,7 @@ static const char *level_colors[] = {
 static void get_timestamp(char *buf, size_t size, int with_ms) {
     struct timeval tv;
     struct tm tm;
+    (void)with_ms;  // Suppress unused parameter warning
     
     gettimeofday(&tv, NULL);
     localtime_r(&tv.tv_sec, &tm);
@@ -80,6 +81,9 @@ static void log_to_file(log_level_t level, const char *timestamp,
                          const char *msg) {
     if (!(g_log_config.targets & LOG_TARGET_FILE)) return;
     if (g_log_config.log_file[0] == '\0') return;
+    (void)file;
+    (void)line;
+    (void)func;
     
     pthread_mutex_lock(&g_log_config.mutex);
     
@@ -103,6 +107,9 @@ static void log_to_stderr(log_level_t level, const char *timestamp,
                            const char *file, int line, const char *func,
                            const char *msg) {
     if (!(g_log_config.targets & LOG_TARGET_STDERR)) return;
+    (void)file;
+    (void)line;
+    (void)func;
     
     pthread_mutex_lock(&g_log_config.mutex);
     
@@ -168,7 +175,7 @@ void log_init(void) {
              ATP_DEFAULT_DIR, ATP_LOG_FILE);
     
     if (g_log_config.log_file[0] == '\0') {
-        strncpy(g_log_config.log_file, default_log_path, sizeof(g_log_config.log_file) - 1);
+        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s", default_log_path);
     }
     
     char *dir = dirname(strdup(g_log_config.log_file));
@@ -189,8 +196,7 @@ void log_set_target(int targets) {
 
 void log_set_file(const char *path) {
     if (path && path[0]) {
-        strncpy(g_log_config.log_file, path, sizeof(g_log_config.log_file) - 1);
-        g_log_config.log_file[sizeof(g_log_config.log_file) - 1] = '\0';
+        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s", path);
     }
 }
 
