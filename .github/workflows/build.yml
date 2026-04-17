@@ -1,6 +1,23 @@
 name: Build ATP for Android (musl)
 
 on:
+  push:
+    branches: [dev, main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'Makefile'
+      - '.github/workflows/**'
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'examples/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'Makefile'
   workflow_dispatch:
 
 env:
@@ -9,6 +26,12 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Skip CI for commits containing [skip ci] or [skip actions]
+    if: |
+      (github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, '[skip actions]')) ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch'
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -111,15 +134,24 @@ jobs:
         # 检查是否静态链接
         file build/bin/atpd
 
-    - name: Upload artifact
+    - name: Upload artifact (dev branch)
       uses: actions/upload-artifact@v4
+      if: github.ref == 'refs/heads/dev'
+      with:
+        name: atpd-musl-aarch64-dev
+        path: build/bin/atpd
+        if-no-files-found: error
+
+    - name: Upload artifact (main branch)
+      uses: actions/upload-artifact@v4
+      if: github.ref == 'refs/heads/main'
       with:
         name: atpd-musl-aarch64
         path: build/bin/atpd
         if-no-files-found: error
 
     - name: Create release
-      if: startsWith(github.ref, 'refs/tags/')
+      if: github.ref == 'refs/heads/main' && startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
         files: build/bin/atpd
