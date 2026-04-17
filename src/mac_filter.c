@@ -91,6 +91,7 @@ static int mac_filter_get_hotspot_interface(atp_config_t *cfg, char *iface, size
     /* Check if hotspot interface is set and different from WiFi */
     if (cfg->hotspot_iface[0] && strcmp(cfg->hotspot_iface, cfg->wifi_iface) != 0) {
         strncpy(iface, cfg->hotspot_iface, size - 1);
+        iface[size - 1] = '\0';
         return 0;
     }
     return -1;
@@ -139,8 +140,7 @@ int mac_filter_setup(atp_config_t *cfg) {
     
     /* Add rules for each MAC address */
     for (int i = 0; i < mac_count; i++) {
-        char rule[128];
-        char iface_rule[256];
+        char rule[256];
         
         if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
             /* Blacklist: bypassed MACs go to ACCEPT */
@@ -158,6 +158,7 @@ int mac_filter_setup(atp_config_t *cfg) {
     }
     
     /* Add default rule */
+    char rule[256];
     if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
         /* Blacklist: default is to proxy (RETURN -> TPROXY) */
         snprintf(rule, sizeof(rule), "-i %s -j RETURN", hotspot_iface);
