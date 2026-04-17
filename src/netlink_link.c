@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <stdio.h>
+#include <arpa/inet.h>
 
 #define NL_BUF_SIZE 8192
 #define NL_SEQ 12347
@@ -71,15 +73,8 @@ static void nl_parse_link_attrs(struct nl_link *link, struct rtattr *attrs, int 
                 strncpy(link->name, (char*)RTA_DATA(rta), IFNAMSIZ - 1);
                 link->name[IFNAMSIZ - 1] = '\0';
                 break;
-            case IFLA_QDISC:
-                strncpy(link->qdisc, (char*)RTA_DATA(rta), IFNAMSIZ - 1);
-                link->qdisc[IFNAMSIZ - 1] = '\0';
-                break;
             case IFLA_MTU:
                 link->mtu = *((int*)RTA_DATA(rta));
-                break;
-            case IFLA_TXQLEN:
-                link->tx_queue_len = *((int*)RTA_DATA(rta));
                 break;
             case IFLA_ADDRESS: {
                 int addr_len = RTA_PAYLOAD(rta);
@@ -88,19 +83,6 @@ static void nl_parse_link_attrs(struct nl_link *link, struct rtattr *attrs, int 
                 link->address.len = addr_len;
                 break;
             }
-            case IFLA_BROADCAST: {
-                int addr_len = RTA_PAYLOAD(rta);
-                if (addr_len > 8) addr_len = 8;
-                memcpy(link->broadcast.data, RTA_DATA(rta), addr_len);
-                link->broadcast.len = addr_len;
-                break;
-            }
-            case IFLA_CARRIER:
-                link->carrier = *((uint8_t*)RTA_DATA(rta));
-                break;
-            case IFLA_CARRIER_CHANGES:
-                link->carrier_changes = *((uint32_t*)RTA_DATA(rta));
-                break;
         }
     }
 }
@@ -183,6 +165,7 @@ int nl_link_list(struct nl_link **links, int *count) {
 }
 
 void nl_link_free(struct nl_link *links, int count) {
+    (void)count;
     if (!links) return;
     free(links);
 }
@@ -208,48 +191,6 @@ int nl_link_get_by_name(const char *name, struct nl_link *link) {
     return found ? 0 : -1;
 }
 
-int nl_link_get_by_index(int index, struct nl_link *link) {
-    struct nl_link *links;
-    int count;
-    
-    if (nl_link_list(&links, &count) < 0) {
-        return -1;
-    }
-    
-    int found = 0;
-    for (int i = 0; i < count; i++) {
-        if (links[i].index == index) {
-            memcpy(link, &links[i], sizeof(struct nl_link));
-            found = 1;
-            break;
-        }
-    }
-    
-    nl_link_free(links, count);
-    return found ? 0 : -1;
-}
-
-int nl_link_get_index_by_name(const char *name) {
-    struct nl_link link;
-    if (nl_link_get_by_name(name, &link) < 0) {
-        return -1;
-    }
-    return link.index;
-}
-
-const char* nl_link_get_name_by_index(int index) {
-    static char name[IFNAMSIZ];
-    struct nl_link link;
-    
-    if (nl_link_get_by_index(index, &link) < 0) {
-        return NULL;
-    }
-    
-    strncpy(name, link.name, IFNAMSIZ - 1);
-    name[IFNAMSIZ - 1] = '\0';
-    return name;
-}
-
 int nl_link_get_vpn_interface(char *iface, size_t size) {
     struct nl_link *links;
     int count;
@@ -260,10 +201,9 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     
     int found = 0;
     for (int i = 0; i < count; i++) {
-        /* Check for typical VPN interface naming patterns */
-        if (strncmp(links[i].name, "tun", 3) == 0 ||
+        if (strncmp(links[i].name, "ipsec", 5) == 0 ||
+            strncmp(links[i].name, "tun", 3) == 0 ||
             strncmp(links[i].name, "wg", 2) == 0 ||
-            strncmp(links[i].name, "ipsec", 5) == 0 ||
             strncmp(links[i].name, "vpn", 3) == 0) {
             if (links[i].flags & IFF_RUNNING) {
                 strncpy(iface, links[i].name, size - 1);
