@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 env:
-  NDK_VERSION: r26d
+  NDK_VERSION: r27c
   API_LEVEL: 21
   CURL_VERSION: 8.6.0
   TARGET_ARCH: aarch64
