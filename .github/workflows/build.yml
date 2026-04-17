@@ -5,7 +5,6 @@ on:
 
 env:
   CURL_VERSION: 8.6.0
-  CURL_PREFIX: ${{ github.workspace }}/deps/curl-musl
 
 jobs:
   build:
@@ -16,15 +15,10 @@ jobs:
 
     - name: Setup musl toolchain
       run: |
-        # Download modern toolchain (GCC 15 + Musl 1.2.5)
-        wget https://github.com/cross-tools/musl-cross/releases/download/20241103/aarch64-unknown-linux-musl.tar.xz
-        tar -xf aarch64-unknown-linux-musl.tar.xz
-        
-        # Add to PATH
-        TOOLCHAIN_BIN="$PWD/aarch64-unknown-linux-musl/bin"
-        echo "$TOOLCHAIN_BIN" >> $GITHUB_PATH
-        
-        # Define cross-compile environment
+        wget https://github.com/cross-tools/musl-cross/releases/download/20250929/aarch64-unknown-linux-musl.tar.xz
+        tar -xJf aarch64-unknown-linux-musl.tar.xz
+        TOOLCHAIN_DIR=$(find "$PWD" -maxdepth 2 -name "aarch64-unknown-linux-musl-gcc" | head -1 | xargs dirname)
+        echo "$TOOLCHAIN_DIR" >> $GITHUB_PATH
         echo "CC=aarch64-unknown-linux-musl-gcc" >> $GITHUB_ENV
         echo "AR=aarch64-unknown-linux-musl-ar" >> $GITHUB_ENV
         echo "RANLIB=aarch64-unknown-linux-musl-ranlib" >> $GITHUB_ENV
@@ -34,21 +28,22 @@ jobs:
       id: cache-curl
       uses: actions/cache@v4
       with:
-        path: ${{ env.CURL_PREFIX }}
-        key: curl-musl-${{ env.CURL_VERSION }}-aarch64-v2
+        path: /tmp/curl-musl
+        key: curl-musl-aarch64-unknown-${{ env.CURL_VERSION }}
+        restore-keys: |
+          curl-musl-aarch64-unknown-
 
     - name: Build libcurl with musl
       if: steps.cache-curl.outputs.cache-hit != 'true'
       run: |
-        mkdir -p build-deps && cd build-deps
-        # Using official curl.se mirror
-        curl -L https://curl.se/download/curl-${{ env.CURL_VERSION }}.tar.gz -o curl.tar.gz
+        cd /tmp
+        curl -L https://github.com/curl/curl/releases/download/curl-8_6_0/curl-8.6.0.tar.gz -o curl.tar.gz
         tar -xzf curl.tar.gz
-        cd curl-${{ env.CURL_VERSION }}
+        cd curl-8.6.0
 
         ./configure \
           --host=aarch64-unknown-linux-musl \
-          --prefix=${{ env.CURL_PREFIX }} \
+          --prefix=/tmp/curl-musl \
           --disable-shared \
           --enable-static \
           --disable-ldap \
@@ -82,32 +77,31 @@ jobs:
 
         make -j$(nproc)
         make install
+        echo "libcurl built with musl"
 
     - name: Build ATP with musl
       run: |
-        # Ensure CFLAGS and LDFLAGS use the cached curl path
-        export CFLAGS="-I${{ env.CURL_PREFIX }}/include -Wall -Wextra -O2 -pthread"
-        # -static-pie is often preferred for modern Android, but -static is safer for pure musl
-        export LDFLAGS="-L${{ env.CURL_PREFIX }}/lib -static"
-        
+        cd ${{ github.workspace }}
+        export CFLAGS="-I/tmp/curl-musl/include -Wall -Wextra -O2 -pthread -static"
+        export LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
         make clean
-        # Pass LIBS separately if your Makefile supports it, 
-        # otherwise ensure -lcurl is at the end of the linking command.
-        make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" LIBS="-lcurl -pthread"
+        make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+
+        file build/bin/atpd
+        ls -la build/bin/atpd
 
     - name: Strip debug symbols
       run: |
         $STRIP build/bin/atpd
-        echo "Final binary info:"
+        echo "Stripped binary size:"
         ls -la build/bin/atpd
-        file build/bin/atpd
 
-    - name: Test binary headers
+    - name: Test binary
       run: |
-        # Verify architecture and static linking
-        readelf -h build/bin/atpd | grep 'Machine:'
-        # Check for dynamic dependencies (should be none)
-        readelf -d build/bin/atpd | grep 'NEEDED' || echo "No dynamic dependencies found."
+        # 检查 TLS 段对齐
+        readelf -l build/bin/atpd | grep -A2 TLS || echo "No TLS section"
+        # 检查是否静态链接
+        file build/bin/atpd
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4

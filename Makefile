@@ -4,23 +4,10 @@ PROJECT_NAME = atp
 VERSION = 1.0.0
 TARGET = atpd
 
-# Detect NDK environment
-ifneq ($(ANDROID_NDK_ROOT),)
-    CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
-    CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\" \
-             -fPIC -fpie -ftls-model=local-exec
-    # Static linking with TLS alignment fix for Bionic
-    LDFLAGS = -L/tmp/curl-android/lib -lcurl -pthread -static \
-              -Wl,-z,max-page-size=4096 \
-              -Wl,-z,common-page-size=4096 \
-              -Wl,-Bstatic \
-              -Wl,--no-undefined \
-              -Wl,--no-warn-shared-textrel
-else
-    CC = gcc
-    CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
-    LDFLAGS = -lcurl -pthread
-endif
+# Default compiler (will be overridden by environment)
+CC ?= gcc
+CFLAGS ?= -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
+LDFLAGS ?= -pthread
 
 # Directories
 SRC_DIR = src
@@ -36,7 +23,7 @@ OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 # Headers
 HEADERS = $(wildcard $(INC_DIR)/*.h)
 
-.PHONY: all clean distclean
+.PHONY: all clean distclean help
 
 all: $(BIN_DIR)/$(TARGET)
 	@echo "Build complete: $(BIN_DIR)/$(TARGET)"
@@ -58,3 +45,13 @@ clean:
 
 distclean: clean
 	rm -rf $(BIN_DIR)
+	rm -rf $(DIST_DIR)
+
+help:
+	@echo "ATP Build System"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all              - Build the main target (default)"
+	@echo "  clean            - Remove build artifacts"
+	@echo "  distclean        - Remove build artifacts and distribution"
+	@echo "  help             - Show this help"
