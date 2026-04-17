@@ -244,8 +244,9 @@ int netlink_get_active_vpn(netlink_ctx_t *ctx, char *iface, size_t size) {
 }
 
 int netlink_wait_for_iface(const char *iface, int timeout_sec) {
-    char cmd[MAX_CMD_LEN];
+    char cmd[MAX_CMD_LEN]
     char output[64];
+    (void)output;
     int waited = 0;
     
     while (waited < timeout_sec) {
