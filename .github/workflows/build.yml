@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
 
     - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
@@ -27,7 +27,7 @@ jobs:
 
     - name: Cache libcurl build
       id: cache-curl
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: /tmp/curl-android
         key: curl-android-${{ env.TARGET_ARCH }}-api${{ env.API_LEVEL }}-${{ env.CURL_VERSION }}
@@ -128,7 +128,7 @@ jobs:
         ls -la build/bin/atpd
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v8
       with:
         name: atpd-${{ env.TARGET_ARCH }}-android
         path: build/bin/atpd
