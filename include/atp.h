@@ -17,6 +17,10 @@
 #include <dirent.h>
 #include <time.h>
 #include <ctype.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <net/if.h>
 
 #define ATP_VERSION         "1.0.0"
 #define ATP_NAME            "ATP (Advanced Transparent Proxy)"
