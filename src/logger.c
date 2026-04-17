@@ -10,18 +10,8 @@
 #include <time.h>
 #include <string.h>
 #include <stdlib.h>
-
-#ifdef __ANDROID__
-#include <android/log.h>
-#define LOG_TAG "ATP"
-static int android_level_map[] = {
-    [LOG_LEVEL_DEBUG] = ANDROID_LOG_DEBUG,
-    [LOG_LEVEL_INFO]  = ANDROID_LOG_INFO,
-    [LOG_LEVEL_WARN]  = ANDROID_LOG_WARN,
-    [LOG_LEVEL_ERROR] = ANDROID_LOG_ERROR,
-    [LOG_LEVEL_FATAL] = ANDROID_LOG_FATAL
-};
-#endif
+#include <stdio.h>
+#include <stdarg.h>
 
 static log_config_t g_log_config = {
     .min_level = LOG_LEVEL_INFO,
@@ -175,13 +165,6 @@ static void log_to_syslog(log_level_t level, const char *msg) {
     syslog(syslog_level, "%s", msg);
 }
 
-#ifdef __ANDROID__
-static void log_to_android(log_level_t level, const char *msg) {
-    if (!(g_log_config.targets & LOG_TARGET_ANDROID)) return;
-    __android_log_write(android_level_map[level], LOG_TAG, msg);
-}
-#endif
-
 void log_write(log_level_t level, const char *file, int line, const char *func,
                 const char *fmt, ...) {
     if (level < g_log_config.min_level) return;
@@ -200,13 +183,6 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
     log_to_stderr(level, timestamp, file, line, func, msg_buffer);
     log_to_file(level, timestamp, file, line, func, msg_buffer);
     log_to_syslog(level, msg_buffer);
-    
-#ifdef __ANDROID__
-    char full_msg[4608];
-    snprintf(full_msg, sizeof(full_msg), "[%s:%d %s] %s",
-             basename((char*)file), line, func, msg_buffer);
-    log_to_android(level, full_msg);
-#endif
 }
 
 void log_init(void) {
