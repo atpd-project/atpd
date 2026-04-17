@@ -1,15 +1,7 @@
-name: Build ATP for Android
+name: Build ATP for Android (musl)
 
 on:
-  
   workflow_dispatch:
-
-env:
-  NDK_VERSION: r27c
-  API_LEVEL: 21
-  CURL_VERSION: 8.6.0
-  TARGET_ARCH: aarch64
-  TARGET_TRIPLE: aarch64-linux-android
 
 jobs:
   build:
@@ -18,125 +10,52 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v6
 
-    - name: Setup Android NDK
-      uses: nttld/setup-ndk@v1
-      with:
-        ndk-version: ${{ env.NDK_VERSION }}
-        add-to-path: true
-        local-cache: true
+    - name: Setup musl toolchain
+      run: |
+        wget https://musl.cc/aarch64-linux-musl-cross.tgz
+        tar -xzf aarch64-linux-musl-cross.tgz
+        echo "$PWD/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
+        echo "CC=aarch64-linux-musl-gcc" >> $GITHUB_ENV
+        echo "AR=aarch64-linux-musl-ar" >> $GITHUB_ENV
+        echo "RANLIB=aarch64-linux-musl-ranlib" >> $GITHUB_ENV
+        echo "STRIP=aarch64-linux-musl-strip" >> $GITHUB_ENV
 
     - name: Cache libcurl build
       id: cache-curl
       uses: actions/cache@v5
       with:
-        path: /tmp/curl-android
-        key: curl-android-${{ env.TARGET_ARCH }}-api${{ env.API_LEVEL }}-${{ env.CURL_VERSION }}
-        restore-keys: |
-          curl-android-${{ env.TARGET_ARCH }}-api${{ env.API_LEVEL }}-
-          curl-android-${{ env.TARGET_ARCH }}-
+        path: /tmp/curl-musl
+        key: curl-musl-${{ env.CURL_VERSION }}
 
-    - name: Build libcurl for Android
+    - name: Build libcurl with musl
       if: steps.cache-curl.outputs.cache-hit != 'true'
       run: |
-        set -e
-
-        TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-
         cd /tmp
-        curl -L https://github.com/curl/curl/releases/download/curl-$(echo ${{ env.CURL_VERSION }} | tr '.' '_')/curl-${{ env.CURL_VERSION }}.tar.gz \
-          -o curl.tar.gz
+        curl -L https://github.com/curl/curl/releases/download/curl-8_6_0/curl-8.6.0.tar.gz -o curl.tar.gz
         tar -xzf curl.tar.gz
-        mv curl-${{ env.CURL_VERSION }} curl-source
-        cd curl-source
+        cd curl-8.6.0
 
-        mkdir -p build && cd build
-
-        ../configure \
-          --host=${{ env.TARGET_TRIPLE }} \
-          --target=${{ env.TARGET_TRIPLE }} \
-          --prefix=/tmp/curl-android \
+        ./configure \
+          --host=aarch64-linux-musl \
+          --prefix=/tmp/curl-musl \
           --disable-shared \
           --enable-static \
-          --disable-ldap \
-          --disable-ldaps \
-          --disable-rtsp \
-          --disable-dict \
-          --disable-telnet \
-          --disable-tftp \
-          --disable-pop3 \
-          --disable-imap \
-          --disable-smtp \
-          --disable-gopher \
-          --disable-mqtt \
-          --disable-smb \
-          --disable-ntlm \
-          --disable-ntlm-wb \
-          --disable-tls-srp \
-          --disable-cookies \
-          --disable-dateparse \
-          --disable-dnsshuffle \
-          --disable-alt-svc \
-          --disable-hsts \
           --without-ssl \
-          --without-zlib \
-          --without-brotli \
-          --without-zstd \
-          --without-libpsl \
-          --without-libgsasl \
-          --without-librtmp \
-          --without-gnutls \
-          --without-mbedtls \
-          --without-wolfssl \
-          --without-bearssl \
-          --without-rustls \
-          AR=$TOOLCHAIN/bin/llvm-ar \
-          RANLIB=$TOOLCHAIN/bin/llvm-ranlib \
-          CC=$TOOLCHAIN/bin/${{ env.TARGET_TRIPLE }}${{ env.API_LEVEL }}-clang \
-          CXX=$TOOLCHAIN/bin/${{ env.TARGET_TRIPLE }}${{ env.API_LEVEL }}-clang++
+          --without-zlib
 
         make -j$(nproc)
         make install
-        echo "libcurl built and installed to /tmp/curl-android"
 
-    - name: Set build environment
-      run: |
-        TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
-        SYSROOT=$TOOLCHAIN/sysroot
-        echo "TOOLCHAIN=$TOOLCHAIN"                                                                   >> $GITHUB_ENV
-        echo "SYSROOT=$SYSROOT"                                                                       >> $GITHUB_ENV
-        echo "CC=$TOOLCHAIN/bin/${{ env.TARGET_TRIPLE }}${{ env.API_LEVEL }}-clang"                  >> $GITHUB_ENV
-        echo "CXX=$TOOLCHAIN/bin/${{ env.TARGET_TRIPLE }}${{ env.API_LEVEL }}-clang++"              >> $GITHUB_ENV
-        echo "AR=$TOOLCHAIN/bin/llvm-ar"                                                             >> $GITHUB_ENV
-        echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib"                                                     >> $GITHUB_ENV
-        echo "STRIP=$TOOLCHAIN/bin/llvm-strip"                                                       >> $GITHUB_ENV
-        echo "CFLAGS=-I/tmp/curl-android/include -Wall -Wextra -O2 -pthread -D__ANDROID__ --sysroot=$SYSROOT" >> $GITHUB_ENV
-        echo "LDFLAGS=-L/tmp/curl-android/lib -lcurl -pthread -static -Wl,--allow-shlib-undefined --sysroot=$SYSROOT" >> $GITHUB_ENV
-
-    - name: Build ATP
+    - name: Build ATP with musl
       run: |
         cd ${{ github.workspace }}
+        export CFLAGS="-I/tmp/curl-musl/include -Wall -Wextra -O2 -pthread -static"
+        export LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
         make clean
         make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
-
-        file build/bin/atpd
-        ls -la build/bin/atpd
-
-    - name: Strip debug symbols
-      run: |
-        $STRIP build/bin/atpd
-        echo "Stripped binary size:"
-        ls -la build/bin/atpd
 
     - name: Upload artifact
       uses: actions/upload-artifact@v7
       with:
-        name: atpd-${{ env.TARGET_ARCH }}-android
+        name: atpd-musl
         path: build/bin/atpd
-        if-no-files-found: error
-
-    - name: Create release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v2
-      with:
-        files: build/bin/atpd
-        generate_release_notes: true
