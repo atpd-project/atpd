@@ -31,9 +31,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 添加权限配置
     permissions:
-      contents: write      # 创建 Release 必需
+      contents: write
       id-token: write
       pages: write
     
@@ -157,23 +156,37 @@ jobs:
         readelf -l build/bin/atpd | grep -A2 TLS || echo "No TLS section"
         file build/bin/atpd
 
-    - name: Upload artifact (dev branch)
+    # ============================================
+    # 场景 1: 无 tag 编译 - 只上传 artifact
+    # ============================================
+    - name: Upload artifact (dev branch, no tag)
       uses: actions/upload-artifact@v4
-      if: github.ref == 'refs/heads/dev'
+      if: github.ref == 'refs/heads/dev' && !startsWith(github.ref, 'refs/tags/')
       with:
         name: atpd-musl-aarch64-dev-${{ steps.version.outputs.version }}
         path: build/bin/atpd
         if-no-files-found: error
 
-    - name: Upload artifact (main branch)
+    - name: Upload artifact (main branch, no tag)
       uses: actions/upload-artifact@v4
-      if: github.ref == 'refs/heads/main'
+      if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
       with:
         name: atpd-musl-aarch64-${{ steps.version.outputs.version }}
         path: build/bin/atpd
         if-no-files-found: error
 
-    - name: Create Release (tags on any branch)
+    # ============================================
+    # 场景 2: 有 tag 编译 - 上传 artifact + 创建 Release
+    # ============================================
+    - name: Upload artifact (tag build)
+      uses: actions/upload-artifact@v4
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        name: atpd-musl-aarch64-${{ steps.version.outputs.version }}
+        path: build/bin/atpd
+        if-no-files-found: error
+
+    - name: Create Release
       uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
