@@ -117,6 +117,8 @@ jobs:
     - name: Generate version header
       run: |
         cd ${{ github.workspace }}
+        # Force regenerate version.h
+        rm -f include/version.h
         chmod +x scripts/gen_version.sh
         ./scripts/gen_version.sh
         echo "Generated version.h:"
@@ -127,11 +129,20 @@ jobs:
         cd ${{ github.workspace }}
         export CFLAGS="-I/tmp/curl-musl/include -Wall -Wextra -O2 -pthread -static"
         export LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
+        
+        # Clean and rebuild
+        make clean
         make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
         
         # Verify build succeeded
         if [ ! -f build/bin/atpd ]; then
           echo "ERROR: Build failed - binary not created"
+          echo "Checking build directory contents:"
+          ls -la build/ 2>/dev/null || echo "build/ directory not found"
+          ls -la build/bin/ 2>/dev/null || echo "build/bin/ directory not found"
+          echo ""
+          echo "Checking make output for errors:"
+          make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" 2>&1 | tail -50
           exit 1
         fi
 
