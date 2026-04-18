@@ -19,6 +19,7 @@ void config_set_defaults(atp_config_t *cfg) {
     
     cfg->tcp_port = DEFAULT_TCP_PORT;
     cfg->udp_port = DEFAULT_UDP_PORT;
+    cfg->redirect_tcp_port = DEFAULT_REDIRECT_TCP_PORT;
     cfg->proxy_mode = MODE_AUTO;
     cfg->performance_mode = 0;
     cfg->proxy_tcp = 1;
@@ -87,6 +88,7 @@ void config_set_defaults(atp_config_t *cfg) {
 static void parse_key_value(const char *key, const char *value, atp_config_t *cfg) {
     if (strcmp(key, "PROXY_TCP_PORT") == 0) cfg->tcp_port = atoi(value);
     else if (strcmp(key, "PROXY_UDP_PORT") == 0) cfg->udp_port = atoi(value);
+    else if (strcmp(key, "REDIRECT_TCP_PORT") == 0) cfg->redirect_tcp_port = atoi(value);
     else if (strcmp(key, "PROXY_MODE") == 0) cfg->proxy_mode = atoi(value);
     else if (strcmp(key, "PERFORMANCE_MODE") == 0) cfg->performance_mode = atoi(value);
     else if (strcmp(key, "PROXY_TCP") == 0) cfg->proxy_tcp = atoi(value);
@@ -203,6 +205,7 @@ int config_save(const char *path, atp_config_t *cfg) {
     
     fprintf(fp, "PROXY_TCP_PORT=%d\n", cfg->tcp_port);
     fprintf(fp, "PROXY_UDP_PORT=%d\n", cfg->udp_port);
+    fprintf(fp, "REDIRECT_TCP_PORT=%d\n", cfg->redirect_tcp_port);
     fprintf(fp, "PROXY_MODE=%d\n", cfg->proxy_mode);
     fprintf(fp, "PERFORMANCE_MODE=%d\n", cfg->performance_mode);
     fprintf(fp, "PROXY_IPV6=%d\n", cfg->proxy_ipv6);
@@ -352,7 +355,8 @@ void config_print_summary(atp_config_t *cfg) {
     
     LOG_INFO("Config Summary:");
     LOG_INFO("  Proxy Mode: %d (0=auto,1=tproxy,2=redirect,3=enhance)", cfg->proxy_mode);
-    LOG_INFO("  TCP Port: %d, UDP Port: %d", cfg->tcp_port, cfg->udp_port);
+    LOG_INFO("  TCP Port: %d, UDP Port: %d, REDIRECT TCP Port: %d", 
+             cfg->tcp_port, cfg->udp_port, cfg->redirect_tcp_port);
     LOG_INFO("  IPv6: %s", cfg->proxy_ipv6 ? "enabled" : "disabled");
     LOG_INFO("  Mark: %d (IPv4), %d (IPv6)", cfg->mark_value, cfg->mark_value6);
     LOG_INFO("  Table ID: %d", cfg->table_id);

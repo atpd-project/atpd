@@ -39,6 +39,7 @@
 
 #define DEFAULT_TCP_PORT    1536
 #define DEFAULT_UDP_PORT    1536
+#define DEFAULT_REDIRECT_TCP_PORT  7891
 #define DEFAULT_MARK        20
 #define DEFAULT_MARK6       25
 #define DEFAULT_TABLE_ID    150
@@ -87,6 +88,7 @@ typedef struct {
     
     int tcp_port;
     int udp_port;
+    int redirect_tcp_port;      /* REDIRECT port for ENHANCE mode */
     proxy_mode_t proxy_mode;
     int performance_mode;
     int proxy_tcp;
