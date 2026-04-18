@@ -364,10 +364,33 @@ static int init_tasks(atp_config_t *cfg) {
     return core_success ? 0 : -1;
 }
 
-/* Atomic mode switch with config confirmation */
+/* Atomic mode switch with config confirmation - only when mode changed */
 static int atomic_mode_switch(atp_config_t *cfg, api_ctx_t *api, const char *new_mode) {
+    char current_mode[64];
+    static char last_mode[64] = "";
+    
+    /* Skip if mode hasn't changed */
+    if (api_get_mode(api, current_mode, sizeof(current_mode)) == 0) {
+        if (strcmp(current_mode, new_mode) == 0) {
+            LOG_DEBUG("Mode unchanged (%s), skipping switch", current_mode);
+            return 0;
+        }
+    }
+    
+    /* Check if this is the same as last requested mode (prevent duplicate attempts) */
+    if (strcmp(last_mode, new_mode) == 0) {
+        LOG_DEBUG("Mode %s already attempted, skipping duplicate request", new_mode);
+        return 0;
+    }
+    
+    strncpy(last_mode, new_mode, sizeof(last_mode) - 1);
+    last_mode[sizeof(last_mode) - 1] = '\0';
+    
+    LOG_INFO("Switching mode: %s -> %s", current_mode, new_mode);
+    
     if (api_set_mode(api, new_mode) != 0) {
         LOG_ERROR("Failed to set mode via API");
+        last_mode[0] = '\0';
         return -1;
     }
     
@@ -375,6 +398,7 @@ static int atomic_mode_switch(atp_config_t *cfg, api_ctx_t *api, const char *new
         LOG_WARN("Config confirmation timeout, proceeding anyway");
     }
     
+    /* Update routing based on new mode */
     if (strcmp(new_mode, "Global") == 0 || strcmp(new_mode, "Google VPN") == 0) {
         char vpn_iface[IFNAMSIZ];
         if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0) {
@@ -480,10 +504,13 @@ int main(int argc, char *argv[]) {
     
     state_transition(STATE_INIT);
     
+    int skip_sleep = 0;
+    
     while (g_running) {
         switch (g_state) {
             case STATE_UNINITIALIZED:
                 state_transition(STATE_INIT);
+                skip_sleep = 1;
                 break;
                 
             case STATE_INIT:
@@ -492,6 +519,7 @@ int main(int argc, char *argv[]) {
                 service_init(&g_service_ctx, &g_config);
                 api_init(&g_api_ctx, &g_config);
                 state_transition(STATE_CORE_START);
+                skip_sleep = 1;
                 break;
                 
             case STATE_CORE_START:
@@ -500,17 +528,20 @@ int main(int argc, char *argv[]) {
                     state_transition(STATE_CORE_WAIT);
                 } else {
                     LOG_ERROR("Failed to start core service");
-                    sleep(5);
+                    skip_sleep = 1;
                 }
+                skip_sleep = 1;
                 break;
                 
             case STATE_CORE_WAIT:
                 if (api_check_health(&g_api_ctx)) {
                     LOG_INFO("API health check passed");
                     state_transition(STATE_RULES_DEPLOY);
+                    skip_sleep = 1;
                 } else if (time(NULL) - g_state_enter_time > 30) {
                     LOG_ERROR("Core start timeout, retrying");
                     state_transition(STATE_CORE_START);
+                    skip_sleep = 1;
                 }
                 break;
                 
@@ -525,12 +556,14 @@ int main(int argc, char *argv[]) {
                     LOG_ERROR("Rules deployment failed, entering degraded mode");
                     state_transition(STATE_DEGRADED);
                 }
+                skip_sleep = 1;
                 break;
                 
             case STATE_READY:
                 if (!api_check_health(&g_api_ctx)) {
                     LOG_ERROR("Heartbeat lost, entering recovery");
                     state_transition(STATE_RECOVER);
+                    skip_sleep = 1;
                     break;
                 }
                 
@@ -573,9 +606,11 @@ int main(int argc, char *argv[]) {
                 if (api_check_health(&g_api_ctx)) {
                     LOG_INFO("API recovered, attempting rule redeploy");
                     state_transition(STATE_RULES_DEPLOY);
+                    skip_sleep = 1;
                 } else if (!service_check(&g_service_ctx)) {
                     LOG_ERROR("Service offline in degraded mode, restarting");
                     state_transition(STATE_RECOVER);
+                    skip_sleep = 1;
                 }
                 break;
                 
@@ -583,15 +618,24 @@ int main(int argc, char *argv[]) {
                 LOG_INFO("Entering recovery mode, cleaning up...");
                 routing_cleanup_all(&g_config);
                 tproxy_cleanup_all(&g_config);
+                app_filter_cleanup(&g_config);
+                mac_filter_cleanup(&g_config);
+                ipv6_manager_set_mode(&g_config, IPV6_MODE_DEFAULT);
                 service_stop_graceful(&g_service_ctx, 3);
+                init_stage = 0;
                 state_transition(STATE_CORE_START);
+                skip_sleep = 1;
                 break;
                 
             case STATE_STOPPING:
                 goto exit_loop;
         }
         
-        sleep(10);
+        if (!skip_sleep) {
+            sleep(10);
+        } else {
+            skip_sleep = 0;
+        }
     }
     
 exit_loop:
