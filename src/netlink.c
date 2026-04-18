@@ -5,6 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <unistd.h>
+#include <net/if.h>
 
 #define IP_CMD "/system/bin/ip"
 
@@ -96,4 +97,19 @@ int netlink_get_iface_info(const char *iface, void *info_ptr) {
     (void)iface;
     (void)info_ptr;
     return -1;
+}
+
+/* VPN detection functions for iface_monitor.c */
+
+int nl_vpn_detect(void) {
+    char vpn_iface[IFNAMSIZ];
+    if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0] != '\0') {
+        LOG_DEBUG("VPN detected on interface: %s", vpn_iface);
+        return 1;
+    }
+    return 0;
+}
+
+int nl_link_get_vpn_interface(char *iface, size_t size) {
+    return netlink_get_active_vpn(iface, size);
 }
