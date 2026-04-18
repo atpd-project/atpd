@@ -474,27 +474,3 @@ int wait_for_pid_exit(pid_t pid, int timeout_sec) {
     }
     return -1;
 }
-
-int check_ip6tables_available(void) {
-    /* Check if binary exists */
-    if (access("/system/bin/ip6tables", X_OK) != 0) {
-        return 0;
-    }
-
-    /* Check if kernel module works */
-    char output[256];
-    int ret = exec_cmd("/system/bin/ip6tables -L INPUT -n 2>/dev/null | head -1",
-                       output, sizeof(output), 3);
-    if (ret != 0) {
-        return 0;
-    }
-
-    /* Check for common error indicators */
-    if (strstr(output, "can't initialize") ||
-        strstr(output, "No chain") ||
-        strstr(output, "Protocol not supported")) {
-        return 0;
-    }
-
-    return 1;
-}
