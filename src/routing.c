@@ -5,6 +5,8 @@
 #include "atp.h"
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+#include <unistd.h>
 
 #define IP_CMD "/system/bin/ip"
 
@@ -116,6 +118,7 @@ int routing_route_flush_table(atp_config_t *cfg, int family, int table_id) {
 static int routing_rule_exists(atp_config_t *cfg, int family, int mark, int table_id) {
     char cmd[MAX_CMD_LEN];
     char output[256];
+    (void)cfg;
     
     if (family == 4) {
         snprintf(cmd, sizeof(cmd), 
@@ -240,17 +243,34 @@ int routing_add_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
     
     LOG_INFO("Adding VPN policy for interface: %s", vpn_iface);
     
+    /* First, add global fwmark lock (0x20000) to ensure marked traffic stays in VPN table */
+    /* This prevents marked packets (from sing-box) from leaking to default routing table */
     char rule_buf[128];
+    snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x20000 table %d pref 20000", cfg->table_id);
+    routing_rule_add(cfg, 4, rule_buf);
+    LOG_DEBUG("Added global fwmark lock (pref 20000)");
+    
+    if (cfg->proxy_ipv6) {
+        snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x20000 table %d pref 20000", cfg->table_id);
+        routing_rule_add(cfg, 6, rule_buf);
+        LOG_DEBUG("Added IPv6 global fwmark lock");
+    }
+    
+    /* Then add interface-specific policy for hotspot traffic */
     snprintf(rule_buf, sizeof(rule_buf), "from all iif ap0 lookup %s pref 100", vpn_iface);
     routing_rule_add(cfg, 4, rule_buf);
+    LOG_DEBUG("Added hotspot policy (iif ap0 -> %s)", vpn_iface);
     
     if (cfg->proxy_ipv6) {
         snprintf(rule_buf, sizeof(rule_buf), "from all iif ap0 lookup %s pref 100", vpn_iface);
         routing_rule_add(cfg, 6, rule_buf);
+        LOG_DEBUG("Added IPv6 hotspot policy");
     }
     
     strncpy(cfg->current_vpn_iface, vpn_iface, sizeof(cfg->current_vpn_iface) - 1);
+    cfg->current_vpn_iface[sizeof(cfg->current_vpn_iface) - 1] = '\0';
     
+    LOG_INFO("VPN policy added successfully");
     return 0;
 }
 
@@ -263,14 +283,27 @@ int routing_remove_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
     
     LOG_INFO("Removing VPN policy for interface: %s", vpn_iface);
     
+    /* Remove global fwmark lock */
+    routing_rule_del_by_pref(cfg, 4, 20000);
+    LOG_DEBUG("Removed global fwmark lock");
+    
+    if (cfg->proxy_ipv6) {
+        routing_rule_del_by_pref(cfg, 6, 20000);
+        LOG_DEBUG("Removed IPv6 global fwmark lock");
+    }
+    
+    /* Remove interface-specific policy */
     routing_rule_del_by_pref(cfg, 4, 100);
+    LOG_DEBUG("Removed hotspot policy");
     
     if (cfg->proxy_ipv6) {
         routing_rule_del_by_pref(cfg, 6, 100);
+        LOG_DEBUG("Removed IPv6 hotspot policy");
     }
     
     cfg->current_vpn_iface[0] = '\0';
     
+    LOG_INFO("VPN policy removed successfully");
     return 0;
 }
 
@@ -294,6 +327,9 @@ int routing_add_mss_clamp(atp_config_t *cfg, const char *iface) {
         snprintf(cmd, sizeof(cmd), 
                  "/system/bin/iptables -t mangle -A FORWARD %s", rule_buf);
         exec_cmd_simple(cmd, CMD_TIMEOUT_SEC);
+        LOG_DEBUG("MSS clamp rule added");
+    } else {
+        LOG_DEBUG("MSS clamp rule already exists");
     }
     
     return 0;
@@ -315,6 +351,7 @@ int routing_remove_mss_clamp(atp_config_t *cfg, const char *iface) {
              "/system/bin/iptables -t mangle -D FORWARD %s 2>/dev/null", rule_buf);
     exec_cmd_simple(cmd, CMD_TIMEOUT_SEC);
     
+    LOG_DEBUG("MSS clamp rule removed");
     return 0;
 }
 
