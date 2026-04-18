@@ -24,19 +24,35 @@ static volatile sig_atomic_t g_running = 1;
 static service_ctx_t g_service_ctx;
 static api_ctx_t g_api_ctx;
 
-/* Initialization stage flags for log deduplication */
+/* Initialization stage flags */
 static int init_stage = 0;
-#define INIT_STAGE_TPROXY    (1 << 0)
-#define INIT_STAGE_ROUTING   (1 << 1)
-#define INIT_STAGE_DNS       (1 << 2)
-#define INIT_STAGE_GEOIP     (1 << 3)
-#define INIT_STAGE_COMPLETE  (1 << 4)
+#define INIT_STAGE_TPROXY     (1 << 0)
+#define INIT_STAGE_ROUTING    (1 << 1)
+#define INIT_STAGE_DNS        (1 << 2)
+#define INIT_STAGE_GEOIP      (1 << 3)
+#define INIT_STAGE_APP_FILTER (1 << 4)
+#define INIT_STAGE_MAC_FILTER (1 << 5)
+#define INIT_STAGE_PERF_MODE  (1 << 6)
+#define INIT_STAGE_IPV6_MGR   (1 << 7)
 
-static void log_stage(int stage, const char *msg) {
-    if (!(init_stage & stage)) {
-        LOG_INFO("%s", msg);
-        init_stage |= stage;
+/* Core features mask */
+#define INIT_STAGE_CORE_MASK (INIT_STAGE_TPROXY | INIT_STAGE_ROUTING | INIT_STAGE_DNS)
+
+/* Helper to set stage flag only on success */
+static void set_stage_on_success(int *stage, int flag, const char *msg, int success) {
+    if (success) {
+        if (!(*stage & flag)) {
+            LOG_INFO("%s", msg);
+            *stage |= flag;
+        }
+    } else {
+        LOG_ERROR("%s FAILED", msg);
     }
+}
+
+/* Check if core features are ready */
+static int atp_core_ready(void) {
+    return (init_stage & INIT_STAGE_CORE_MASK) == INIT_STAGE_CORE_MASK;
 }
 
 static void signal_handler(int sig) {
@@ -188,33 +204,100 @@ void atp_show_status(void) {
     status_show(&g_config, &g_service_ctx, &g_api_ctx);
 }
 
-static void init_tasks(atp_config_t *cfg) {
+static int init_tasks(atp_config_t *cfg) {
+    int core_success = 1;
+    int tproxy_ok = 0, routing_ok = 0, dns_ok = 0;
+    
     /* TPROXY rules */
-    log_stage(INIT_STAGE_TPROXY, "Setting up TPROXY rules");
-    tproxy_setup_ipv4(cfg);
-    if (cfg->proxy_ipv6) {
-        tproxy_setup_ipv6(cfg);
+    LOG_INFO("Setting up TPROXY rules");
+    if (tproxy_setup_ipv4(cfg) == 0) {
+        if (cfg->proxy_ipv6 && tproxy_setup_ipv6(cfg) != 0) {
+            LOG_ERROR("Failed to setup IPv6 TPROXY rules");
+        } else {
+            tproxy_ok = 1;
+            LOG_INFO("TPROXY rules setup completed");
+        }
+    } else {
+        LOG_ERROR("Failed to setup IPv4 TPROXY rules");
     }
     
     /* Routing rules */
-    log_stage(INIT_STAGE_ROUTING, "Setting up routing rules");
-    routing_setup_ipv4(cfg);
-    if (cfg->proxy_ipv6) {
-        routing_setup_ipv6(cfg);
+    LOG_INFO("Setting up routing rules");
+    if (routing_setup_ipv4(cfg) == 0) {
+        if (cfg->proxy_ipv6 && routing_setup_ipv6(cfg) != 0) {
+            LOG_ERROR("Failed to setup IPv6 routing rules");
+        } else {
+            routing_ok = 1;
+            LOG_INFO("Routing rules setup completed");
+        }
+    } else {
+        LOG_ERROR("Failed to setup IPv4 routing rules");
+    }
+    
+    /* Verify routing table exists before DNS hijack */
+    char verify_cmd[256];
+    snprintf(verify_cmd, sizeof(verify_cmd), 
+             "ip route show table %d 2>/dev/null | grep -q '^local'", cfg->table_id);
+    if (exec_cmd_simple(verify_cmd, 2) != 0) {
+        LOG_WARN("Routing table %d not ready, waiting 100ms...", cfg->table_id);
+        usleep(100000);
     }
     
     /* DNS hijack */
-    log_stage(INIT_STAGE_DNS, "Setting up DNS hijack");
-    tproxy_dns_hijack_setup(cfg, 4, cfg->dns_hijack);
-    tproxy_dns_hijack_setup(cfg, 6, cfg->dns_hijack);
-    
-    /* GeoIP (synchronous, uses built-in default list if download fails) */
-    if (cfg->bypass_cn_ip) {
-        log_stage(INIT_STAGE_GEOIP, "Setting up GeoIP");
-        geoip_setup_ipset(cfg);
+    LOG_INFO("Setting up DNS hijack");
+    if (tproxy_dns_hijack_setup(cfg, 4, cfg->dns_hijack) == 0) {
+        if (cfg->proxy_ipv6 && tproxy_dns_hijack_setup(cfg, 6, cfg->dns_hijack) != 0) {
+            LOG_ERROR("Failed to setup IPv6 DNS hijack");
+        } else {
+            dns_ok = 1;
+            LOG_INFO("DNS hijack setup completed");
+        }
+    } else {
+        LOG_ERROR("Failed to setup IPv4 DNS hijack");
     }
     
-    init_stage |= INIT_STAGE_COMPLETE;
+    /* Update core stage flags only on success */
+    if (tproxy_ok) init_stage |= INIT_STAGE_TPROXY;
+    if (routing_ok) init_stage |= INIT_STAGE_ROUTING;
+    if (dns_ok) init_stage |= INIT_STAGE_DNS;
+    
+    core_success = (tproxy_ok && routing_ok && dns_ok);
+    
+    /* GeoIP (async, non-blocking) */
+    if (cfg->bypass_cn_ip) {
+        LOG_INFO("Setting up GeoIP (async mode)");
+        geoip_setup_ipset_async(cfg);
+    } else {
+        init_stage |= INIT_STAGE_GEOIP;
+    }
+    
+    /* Optional features - these don't affect core readiness */
+    LOG_INFO("Setting up performance mode");
+    perf_mode_init(cfg);
+    perf_mode_setup(cfg);
+    init_stage |= INIT_STAGE_PERF_MODE;
+    
+    LOG_INFO("Setting up app filter");
+    app_filter_init(cfg);
+    app_filter_setup(cfg);
+    init_stage |= INIT_STAGE_APP_FILTER;
+    
+    LOG_INFO("Setting up MAC filter");
+    mac_filter_init(cfg);
+    mac_filter_setup(cfg);
+    init_stage |= INIT_STAGE_MAC_FILTER;
+    
+    LOG_INFO("Setting up IPv6 manager");
+    ipv6_manager_init(cfg);
+    init_stage |= INIT_STAGE_IPV6_MGR;
+    
+    if (core_success) {
+        LOG_INFO("Core initialization completed successfully");
+    } else {
+        LOG_WARN("Core initialization incomplete, entering degraded mode");
+    }
+    
+    return core_success ? 0 : -1;
 }
 
 int main(int argc, char *argv[]) {
@@ -315,7 +398,7 @@ int main(int argc, char *argv[]) {
         service_start(&g_service_ctx);
     }
     
-    /* Initialize all network rules synchronously (no fork) */
+    /* Initialize all network rules synchronously */
     init_tasks(&g_config);
     
     /* Additional setup that must run after main tasks */
@@ -324,33 +407,41 @@ int main(int argc, char *argv[]) {
     tproxy_xfrm_bypass(&g_config);
     tproxy_prevent_loop(&g_config);
     
-    perf_mode_init(&g_config);
-    perf_mode_setup(&g_config);
-    
-    app_filter_init(&g_config);
-    app_filter_setup(&g_config);
-    mac_filter_init(&g_config);
-    mac_filter_setup(&g_config);
-    
-    ipv6_manager_init(&g_config);
-    
     int heal_counter = 0;
+    int geoip_ready_logged = 0;
     time_t last_api_sync = 0;
     
     while (g_running) {
         sleep(10);
         
-        heal_counter++;
-        if (heal_counter >= 3) {
-            heal_counter = 0;
-            char vpn_iface[IFNAMSIZ];
-            if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0) {
-                if (!netlink_check_rule_exists(g_config.table_id, g_config.mark_value, vpn_iface)) {
-                    LOG_WARN("Rule drift detected, repairing...");
-                    routing_add_vpn_policy(&g_config, vpn_iface);
-                    routing_add_mss_clamp(&g_config, vpn_iface);
+        /* Self-heal: only run when core features are ready */
+        if (atp_core_ready()) {
+            heal_counter++;
+            if (heal_counter >= 3) {
+                heal_counter = 0;
+                char vpn_iface[IFNAMSIZ];
+                if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0) {
+                    if (!netlink_check_rule_exists(g_config.table_id, g_config.mark_value, vpn_iface)) {
+                        LOG_WARN("Rule drift detected, repairing...");
+                        routing_add_vpn_policy(&g_config, vpn_iface);
+                        routing_add_mss_clamp(&g_config, vpn_iface);
+                    }
                 }
             }
+        } else {
+            /* Log degraded mode periodically */
+            static int degraded_log_counter = 0;
+            if (++degraded_log_counter >= 60) {
+                degraded_log_counter = 0;
+                LOG_WARN("Degraded mode: core features not ready (stage=0x%x)", init_stage);
+            }
+        }
+        
+        /* Log GeoIP ready status once */
+        if (!geoip_ready_logged && geoip_async_is_complete()) {
+            LOG_INFO("GeoIP async initialization completed");
+            init_stage |= INIT_STAGE_GEOIP;
+            geoip_ready_logged = 1;
         }
         
         if (!service_check(&g_service_ctx)) {
