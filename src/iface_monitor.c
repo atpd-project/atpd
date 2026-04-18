@@ -11,9 +11,33 @@
 #include <sys/epoll.h>
 #include <stdio.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 
 #define NL_BUF_SIZE 8192
 #define EPOLL_TIMEOUT_MS 1000
+
+/* Helper function to get interface name by index */
+static int get_ifname_by_index(int ifindex, char *ifname, size_t size) {
+    char cmd[MAX_CMD_LEN];
+    char output[IFNAMSIZ + 1];
+    
+    snprintf(cmd, sizeof(cmd), 
+             "ip link show %d 2>/dev/null | head -1 | awk '{print $2}' | tr -d ':'",
+             ifindex);
+    
+    if (exec_cmd(cmd, output, sizeof(output), 3) == 0 && output[0] != '\0') {
+        strncpy(ifname, output, size - 1);
+        ifname[size - 1] = '\0';
+        return 0;
+    }
+    
+    /* Fallback: use if_indextoname if available */
+    if (if_indextoname(ifindex, ifname) != NULL) {
+        return 0;
+    }
+    
+    return -1;
+}
 
 static int nl_send_link_dump(int sock) {
     struct {
@@ -110,7 +134,11 @@ static void handle_addr_message(struct nlmsghdr *nlh, iface_monitor_t *monitor) 
     char ifname[IFNAMSIZ] = {0};
     char addr_str[64] = {0};
     
-    snprintf(ifname, sizeof(ifname), "if%d", ifa->ifa_index);
+    /* Get real interface name by index */
+    if (get_ifname_by_index(ifa->ifa_index, ifname, sizeof(ifname)) != 0) {
+        /* Fallback: use generic name if lookup fails */
+        snprintf(ifname, sizeof(ifname), "if%d", ifa->ifa_index);
+    }
     
     for (rta = IFA_RTA(ifa); RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len)) {
         if (rta->rta_type == IFA_ADDRESS) {
