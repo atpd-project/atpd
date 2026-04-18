@@ -8,7 +8,7 @@ typedef struct {
     int major;
     int minor;
     int patch;
-    const char *suffix;
+    const char *prerelease;
     int build;
     const char *commit;
     const char *branch;
@@ -25,7 +25,7 @@ static const atp_version_t g_version = {
     .major = ATP_VERSION_MAJOR,
     .minor = ATP_VERSION_MINOR,
     .patch = ATP_VERSION_PATCH,
-    .suffix = ATP_VERSION_SUFFIX,
+    .prerelease = ATP_VERSION_PRERELEASE,
     .build = ATP_VERSION_BUILD,
     .commit = ATP_VERSION_COMMIT,
     .branch = ATP_VERSION_BRANCH,
@@ -42,16 +42,29 @@ const char* atp_get_version(void) {
 }
 
 const char* atp_get_full_version(void) {
-    static char full_version[256];
+    static char full_version[512];
     
     if (g_version.build > 0) {
-        snprintf(full_version, sizeof(full_version),
-                 "%s (build %d, commit %s, branch %s)",
-                 g_version.version, g_version.build, g_version.commit, g_version.branch);
+        if (g_version.prerelease && g_version.prerelease[0] != '\0') {
+            snprintf(full_version, sizeof(full_version),
+                     "%s-%s (build %d, commit %s, branch %s)",
+                     g_version.version, g_version.prerelease, g_version.build, 
+                     g_version.commit, g_version.branch);
+        } else {
+            snprintf(full_version, sizeof(full_version),
+                     "%s (build %d, commit %s, branch %s)",
+                     g_version.version, g_version.build, g_version.commit, g_version.branch);
+        }
     } else {
-        snprintf(full_version, sizeof(full_version),
-                 "%s (commit %s, branch %s)",
-                 g_version.version, g_version.commit, g_version.branch);
+        if (g_version.prerelease && g_version.prerelease[0] != '\0') {
+            snprintf(full_version, sizeof(full_version),
+                     "%s-%s (commit %s, branch %s)",
+                     g_version.version, g_version.prerelease, g_version.commit, g_version.branch);
+        } else {
+            snprintf(full_version, sizeof(full_version),
+                     "%s (commit %s, branch %s)",
+                     g_version.version, g_version.commit, g_version.branch);
+        }
     }
     
     if (g_version.dirty) {
@@ -64,7 +77,7 @@ const char* atp_get_full_version(void) {
 int atp_get_version_major(void) { return g_version.major; }
 int atp_get_version_minor(void) { return g_version.minor; }
 int atp_get_version_patch(void) { return g_version.patch; }
-const char* atp_get_version_suffix(void) { return g_version.suffix; }
+const char* atp_get_version_prerelease(void) { return g_version.prerelease; }
 int atp_get_version_build(void) { return g_version.build; }
 const char* atp_get_version_commit(void) { return g_version.commit; }
 const char* atp_get_version_branch(void) { return g_version.branch; }

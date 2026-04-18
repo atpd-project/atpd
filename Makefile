@@ -82,14 +82,17 @@ $(BIN_DIR):
 # Show version information
 version: $(VERSION_H)
 	@echo "ATP Version Information:"
-	@echo "  Version:   $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
-	@echo "  Major:     $$(grep ATP_VERSION_MAJOR $(VERSION_H) | cut -d' ' -f3)"
-	@echo "  Minor:     $$(grep ATP_VERSION_MINOR $(VERSION_H) | cut -d' ' -f3)"
-	@echo "  Patch:     $$(grep ATP_VERSION_PATCH $(VERSION_H) | cut -d' ' -f3)"
-	@echo "  Suffix:    $$(grep ATP_VERSION_SUFFIX $(VERSION_H) | cut -d'"' -f2)"
-	@echo "  Build:     $$(grep ATP_VERSION_BUILD $(VERSION_H) | cut -d' ' -f3)"
-	@echo "  Commit:    $$(grep ATP_VERSION_COMMIT $(VERSION_H) | cut -d'"' -f2)"
-	@echo "  Branch:    $$(grep ATP_VERSION_BRANCH $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Version:        $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Major:          $$(grep ATP_VERSION_MAJOR $(VERSION_H) | cut -d' ' -f3)"
+	@echo "  Minor:          $$(grep ATP_VERSION_MINOR $(VERSION_H) | cut -d' ' -f3)"
+	@echo "  Patch:          $$(grep ATP_VERSION_PATCH $(VERSION_H) | cut -d' ' -f3)"
+	@echo "  Prerelease:     $$(grep ATP_VERSION_PRERELEASE $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Build:          $$(grep ATP_VERSION_BUILD $(VERSION_H) | cut -d' ' -f3)"
+	@echo "  Commit:         $$(grep ATP_VERSION_COMMIT $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Branch:         $$(grep ATP_VERSION_BRANCH $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Dirty:          $$(grep ATP_VERSION_DIRTY $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Clean:          $$(grep ATP_VERSION_CLEAN $(VERSION_H) | cut -d' ' -f3)"
+
 
 # Compile cJSON
 $(OBJ_DIR)/cjson/cJSON.o: $(SRC_DIR)/cjson/cJSON.c $(HEADERS) | $(OBJ_DIR)
