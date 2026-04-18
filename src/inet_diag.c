@@ -17,7 +17,7 @@
 #include <ctype.h>
 
 #define INET_DIAG_SOCKET_TIMEOUT_MS 3000
-#define NLMSG_TAIL(nmsg) ((struct rtattr*)(((char*)(nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len))
+#define NLMSG_TAIL(nmsg) ((struct rtattr*)(((char*)(nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
 
 /* Fallback definitions for older kernels */
 #ifndef SOCK_DIAG_BY_FAMILY
@@ -121,36 +121,6 @@ void inet_diag_cleanup(void) {
     g_diag_available = -1;
     pthread_mutex_unlock(&g_diag_mutex);
     LOG_DEBUG("INET_DIAG module cleaned up");
-}
-
-/* Add attribute to netlink message */
-static void add_attr(struct nlmsghdr *nlh, int maxlen, int type, const void *data, int alen) {
-    int len = RTA_LENGTH(alen);
-    struct rtattr *rta;
-    int new_len = NLMSG_ALIGN(nlh->nlmsg_len) + len;
-    
-    if (new_len > maxlen) {
-        return;
-    }
-    
-    rta = (struct rtattr*)NLMSG_TAIL(nlh);
-    rta->rta_type = type;
-    rta->rta_len = len;
-    
-    if (data) {
-        memcpy(RTA_DATA(rta), data, alen);
-    }
-    
-    nlh->nlmsg_len = new_len;
-}
-
-/* Build bytecode filter for UID filtering */
-static int build_uid_filter(struct inet_diag_req_v2 *req, int uid) {
-    /* Simplified: we'll filter in userspace for now */
-    /* Full BPF implementation would go here */
-    (void)req;
-    (void)uid;
-    return 0;
 }
 
 /* Send diag request and receive response */
@@ -347,7 +317,7 @@ int inet_diag_get_uid_v6(int protocol,
     int uid = -1;
     
     if (!inet_diag_available()) {
-        return -1;  /* Fallback not easily implemented for IPv6 */
+        return -1;
     }
     
     pthread_mutex_lock(&g_diag_mutex);
@@ -452,10 +422,6 @@ int inet_diag_get_connections_filtered(connection_info_t **conns, int *count,
         req.sdiag_protocol = (filter && filter->protocol > 0) ? filter->protocol : IPPROTO_TCP;
         req.idiag_states = (filter && filter->state_mask) ? filter->state_mask : (1 << TCP_ESTABLISHED);
         
-        if (filter && filter->uid > 0) {
-            build_uid_filter(&req, filter->uid);
-        }
-        
         if (send_diag_request(&req, &response, &resp_len) == 0 && response) {
             struct nlmsghdr *nh;
             for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, resp_len); nh = NLMSG_NEXT(nh, resp_len)) {
@@ -528,6 +494,8 @@ int inet_diag_is_port_owned(int port, int protocol, int uid) {
     connection_info_t *conns = NULL;
     int count = 0;
     int found = 0;
+    
+    (void)protocol;
     
     if (inet_diag_get_connections_filtered(&conns, &count, NULL) != 0) {
         return 0;
