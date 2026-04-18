@@ -6,11 +6,12 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <arpa/inet.h>
 
 #define IPSET_CMD "/system/bin/ipset"
 
 static int exec_ipset(atp_config_t *cfg, const char *cmd, const char *arg) {
-    if (cfg->dry_run) {
+    if (cfg && cfg->dry_run) {
         LOG_DEBUG("[DRY_RUN] ipset %s %s", cmd, arg ? arg : "");
         return 0;
     }

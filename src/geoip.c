@@ -7,6 +7,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <arpa/inet.h>
 
 struct curl_memory {
     char *data;
@@ -161,7 +162,6 @@ int geoip_ipset_flush(const char *name) {
 
 int geoip_ipset_restore_file(const char *name, const char *filename) {
     char cmd[MAX_CMD_LEN];
-    /* Use ipset restore for batch import (much faster than individual adds) */
     snprintf(cmd, sizeof(cmd), 
              "awk '!/^[[:space:]]*#/ && NF > 0 {printf \"add %s %s\\n\", $0}' %s | ipset restore -exist 2>/dev/null",
              name, name, filename);
@@ -242,15 +242,12 @@ static void* geoip_async_update_thread(void *arg) {
     snprintf(v4_path, sizeof(v4_path), "%s/%s", rules_dir, cfg->cn_ip_file);
     snprintf(v4_parsed, sizeof(v4_parsed), "%s/%s.parsed", rules_dir, cfg->cn_ip_file);
     
-    /* Download and parse full list */
     if (geoip_download(cfg) == 0 && file_exists(v4_path)) {
         geoip_parse_cidr_file(v4_path, v4_parsed, 4);
         
-        /* Check file size - if > 1000 entries, use batch restore */
         struct stat st;
         int entry_count = 0;
         if (stat(v4_parsed, &st) == 0) {
-            /* Rough estimate: each entry ~20 bytes */
             entry_count = st.st_size / 20;
         }
         
@@ -261,7 +258,6 @@ static void* geoip_async_update_thread(void *arg) {
         geoip_ipset_create("cnip_temp", 4, 8192, 65536);
         geoip_ipset_restore_file("cnip_temp", v4_parsed);
         
-        /* Atomic swap - no service interruption */
         geoip_ipset_swap("cnip_temp", "cnip");
         LOG_INFO("IPv4 ipset upgraded to full list (%d entries)", entry_count);
         
@@ -282,10 +278,8 @@ int geoip_setup_ipset_async(atp_config_t *cfg) {
         return 0;
     }
     
-    /* First, create default ipset (fast, ensures basic functionality) */
     geoip_create_default_ipset(cfg);
     
-    /* Start async download and update in background */
     if (!geoip_async_running) {
         geoip_async_running = 1;
         geoip_async_complete = 0;
@@ -306,7 +300,6 @@ int geoip_async_is_complete(void) {
 }
 
 int geoip_setup_ipset(atp_config_t *cfg) {
-    /* Legacy synchronous version - kept for compatibility */
     return geoip_setup_ipset_async(cfg);
 }
 
@@ -347,7 +340,6 @@ int geoip_atomic_update(atp_config_t *cfg) {
     geoip_ipset_create("cnip_temp", 4, 8192, 65536);
     geoip_ipset_restore_file("cnip_temp", v4_parsed_tmp);
     
-    /* Always swap (cnip exists from default list) */
     geoip_ipset_swap("cnip_temp", "cnip");
     LOG_INFO("IPv4 ipset swapped atomically");
     
@@ -356,7 +348,6 @@ int geoip_atomic_update(atp_config_t *cfg) {
     rename(v4_tmp, v4_path);
     rename(v4_parsed_tmp, v4_parsed);
     
-    /* IPv6 handling */
     if (cfg->proxy_ipv6) {
         char v6_path[PATH_MAX];
         char v6_tmp[PATH_MAX];
