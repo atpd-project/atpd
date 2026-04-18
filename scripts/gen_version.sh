@@ -6,68 +6,67 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 VERSION_FILE="${PROJECT_ROOT}/include/version.h"
 
 # Default version (fallback)
-DEFAULT_VERSION="1.0.0"
-DEFAULT_BRANCH="unknown"
+DEFAULT_VERSION="0.0.0"
 DEFAULT_COMMIT="0000000"
 
 # Try to get Git information
 if command -v git >/dev/null 2>&1 && [ -d "${PROJECT_ROOT}/.git" ]; then
     cd "$PROJECT_ROOT"
     
-    # Get version from git describe (e.g., v1.14.0-alpha.14-5-g1234567)
+    # Get current commit hash (short)
+    COMMIT=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "$DEFAULT_COMMIT")
+    
+    # Get branch name (for internal use only, not displayed)
+    BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+    
+    # Get version from git describe (e.g., v1.14.0-alpha.9-5-gb73ae49)
     GIT_DESCRIBE=$(git describe --tags --dirty=-dirty --long 2>/dev/null)
     
     if [ -n "$GIT_DESCRIBE" ]; then
         # Remove leading 'v'
         VERSION_RAW=$(echo "$GIT_DESCRIBE" | sed 's/^v//')
         
-        # Extract base version (e.g., 1.14.0-alpha.14)
-        # Remove everything after last hyphen that contains git info
-        VERSION=$(echo "$VERSION_RAW" | sed 's/-[0-9]*-g[0-9a-f]*$//' | sed 's/-dirty$//')
-        
-        # Extract build number (commits since tag)
-        BUILD_NUM=$(echo "$VERSION_RAW" | grep -oP '-\K[0-9]+(?=-g)' 2>/dev/null || echo "0")
+        # Check if there are extra commits (has build number)
+        if echo "$VERSION_RAW" | grep -q '-[0-9]*-g[0-9a-f]*'; then
+            # Extract base version (without git info)
+            BASE_VERSION=$(echo "$VERSION_RAW" | sed 's/-[0-9]*-g[0-9a-f]*$//')
+            # Extract commit hash from the end
+            GIT_COMMIT=$(echo "$VERSION_RAW" | grep -oP 'g[0-9a-f]+' | sed 's/^g//')
+            # Format: version-commit (e.g., 1.14.0-alpha.9-b73ae49b)
+            VERSION="${BASE_VERSION}-${GIT_COMMIT}"
+            BUILD_NUM=$(echo "$VERSION_RAW" | grep -oP '-\K[0-9]+(?=-g)' 2>/dev/null || echo "0")
+        else
+            # Exact tag match, no extra commits
+            VERSION="$VERSION_RAW"
+            BUILD_NUM="0"
+        fi
         
         # Extract dirty flag
         if echo "$GIT_DESCRIBE" | grep -q "dirty"; then
-            DIRTY="-dirty"
-        else
-            DIRTY=""
+            VERSION="${VERSION}-dirty"
         fi
     else
-        # No tags, use fallback
-        VERSION="$DEFAULT_VERSION"
+        # No tags - use 0.0.0-commit format
+        VERSION="0.0.0-${COMMIT}"
         BUILD_NUM="0"
-        DIRTY=""
-    fi
-    
-    # Get branch name
-    BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$DEFAULT_BRANCH")
-    
-    # Get short commit hash
-    COMMIT=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "$DEFAULT_COMMIT")
-    
-    # Check if working tree is clean
-    if git diff --quiet && git diff --cached --quiet; then
-        CLEAN="1"
-    else
-        CLEAN="0"
+        
+        # Check if working tree is dirty
+        if ! git diff --quiet || ! git diff --cached --quiet; then
+            VERSION="${VERSION}-dirty"
+        fi
     fi
 else
     VERSION="$DEFAULT_VERSION"
     BUILD_NUM="0"
-    BRANCH="$DEFAULT_BRANCH"
+    BRANCH="unknown"
     COMMIT="$DEFAULT_COMMIT"
-    DIRTY=""
-    CLEAN="0"
 fi
 
-# Parse version components (semantic versioning)
-# Format: major.minor.patch[-prerelease]
-MAJOR=$(echo "$VERSION" | cut -d. -f1 2>/dev/null || echo "1")
-MINOR=$(echo "$VERSION" | cut -d. -f2 2>/dev/null || echo "0")
-PATCH=$(echo "$VERSION" | cut -d. -f3 | cut -d- -f1 2>/dev/null || echo "0")
-PRERELEASE=$(echo "$VERSION" | cut -d- -f2- 2>/dev/null)
+# Parse version components
+MAJOR=$(echo "$VERSION" | grep -oP '^\d+' 2>/dev/null || echo "0")
+MINOR=$(echo "$VERSION" | grep -oP '^\d+\.\K\d+' 2>/dev/null || echo "0")
+PATCH=$(echo "$VERSION" | grep -oP '^\d+\.\d+\.\K\d+' 2>/dev/null || echo "0")
+PRERELEASE=$(echo "$VERSION" | grep -oP '-\K(alpha|beta|rc)\.[0-9]+' 2>/dev/null || echo "")
 
 # Generate version.h
 cat > "$VERSION_FILE" << EOF
@@ -76,7 +75,7 @@ cat > "$VERSION_FILE" << EOF
 #ifndef ATP_VERSION_H
 #define ATP_VERSION_H
 
-#define ATP_VERSION_STRING    "${VERSION}${DIRTY}"
+#define ATP_VERSION_STRING    "${VERSION}"
 #define ATP_VERSION_MAJOR     ${MAJOR}
 #define ATP_VERSION_MINOR     ${MINOR}
 #define ATP_VERSION_PATCH     ${PATCH}
@@ -84,8 +83,7 @@ cat > "$VERSION_FILE" << EOF
 #define ATP_VERSION_BUILD     ${BUILD_NUM:-0}
 #define ATP_VERSION_COMMIT    "${COMMIT}"
 #define ATP_VERSION_BRANCH    "${BRANCH}"
-#define ATP_VERSION_DIRTY     "${DIRTY}"
-#define ATP_VERSION_CLEAN     ${CLEAN}
+#define ATP_VERSION_CLEAN     $([ -z "$(echo "$VERSION" | grep dirty)" ] && echo "1" || echo "0")
 
 #define ATP_BUILD_DATE        __DATE__
 #define ATP_BUILD_TIME        __TIME__
@@ -102,7 +100,6 @@ const char* atp_get_version_prerelease(void);
 int atp_get_version_build(void);
 const char* atp_get_version_commit(void);
 const char* atp_get_version_branch(void);
-int atp_is_dirty(void);
 int atp_is_clean(void);
 const char* atp_get_build_date(void);
 const char* atp_get_build_time(void);
@@ -112,4 +109,4 @@ const char* atp_get_arch(void);
 #endif /* ATP_VERSION_H */
 EOF
 
-echo "Generated ${VERSION_FILE}: ATP_VERSION_STRING=\"${VERSION}${DIRTY}\""
+echo "Generated ${VERSION_FILE}: ATP_VERSION_STRING=\"${VERSION}\""
