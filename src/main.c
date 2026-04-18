@@ -39,6 +39,34 @@ static int init_stage = 0;
 /* Core features mask */
 #define INIT_STAGE_CORE_MASK (INIT_STAGE_TPROXY | INIT_STAGE_ROUTING | INIT_STAGE_DNS)
 
+/* 状态机定义 */
+typedef enum {
+    STATE_UNINITIALIZED = 0,
+    STATE_INIT,
+    STATE_CORE_START,
+    STATE_CORE_WAIT,
+    STATE_RULES_DEPLOY,
+    STATE_READY,
+    STATE_DEGRADED,
+    STATE_RECOVER,
+    STATE_STOPPING
+} atp_state_t;
+
+static atp_state_t g_state = STATE_UNINITIALIZED;
+static time_t g_state_enter_time = 0;
+
+static const char *state_names[] = {
+    "UNINITIALIZED", "INIT", "CORE_START", "CORE_WAIT",
+    "RULES_DEPLOY", "READY", "DEGRADED", "RECOVER", "STOPPING"
+};
+
+static void state_transition(atp_state_t new_state) {
+    LOG_INFO("State transition: %s -> %s", 
+             state_names[g_state], state_names[new_state]);
+    g_state = new_state;
+    g_state_enter_time = time(NULL);
+}
+
 /* Check if core features are ready */
 static int atp_core_ready(void) {
     return (init_stage & INIT_STAGE_CORE_MASK) == INIT_STAGE_CORE_MASK;
@@ -48,9 +76,9 @@ static void signal_handler(int sig) {
     if (sig == SIGTERM || sig == SIGINT) {
         LOG_INFO("Received signal %d, shutting down...", sig);
         g_running = 0;
+        state_transition(STATE_STOPPING);
     } else if (sig == SIGHUP) {
         LOG_INFO("Received SIGHUP, reloading configuration...");
-        /* Reset API rate limit before reload to allow immediate sync */
         api_reset_rate_limit(&g_api_ctx);
         config_reload(&g_config);
     }
@@ -196,10 +224,9 @@ int atp_init(void) {
         mkdir_recursive(dirs[i], 0755);
     }
     
-    /* Check ip6tables availability and auto-disable IPv6 if not available */
     if (g_config.proxy_ipv6) {
         if (!check_ip6tables_available()) {
-            LOG_WARN("ip6tables not available (binary missing or kernel module missing), IPv6 proxy will be disabled");
+            LOG_WARN("ip6tables not available, IPv6 proxy will be disabled");
             g_config.proxy_ipv6 = 0;
         } else {
             LOG_INFO("ip6tables available, IPv6 proxy enabled");
@@ -226,7 +253,6 @@ void atp_show_status(void) {
     status_show(&g_config, &g_service_ctx, &g_api_ctx);
 }
 
-/* Initialize netlink monitor for instant VPN detection */
 static void init_netlink_monitor(atp_config_t *cfg) {
     nl_monitor_config_t monitor_config;
     
@@ -235,8 +261,8 @@ static void init_netlink_monitor(atp_config_t *cfg) {
     monitor_config.userdata = cfg;
     monitor_config.monitor_links = 1;
     monitor_config.monitor_addrs = 1;
-    monitor_config.monitor_routes = 0;  /* Optional, enable if needed */
-    monitor_config.monitor_vpn_only = 1; /* Only report VPN events */
+    monitor_config.monitor_routes = 0;
+    monitor_config.monitor_vpn_only = 1;
     
     if (netlink_monitor_start(&monitor_config) != 0) {
         LOG_WARN("Failed to start netlink monitor, falling back to polling mode");
@@ -249,7 +275,6 @@ static int init_tasks(atp_config_t *cfg) {
     int core_success = 1;
     int tproxy_ok = 0, routing_ok = 0, dns_ok = 0;
     
-    /* TPROXY rules */
     LOG_INFO("Setting up TPROXY rules");
     if (tproxy_setup_ipv4(cfg) == 0) {
         if (cfg->proxy_ipv6 && tproxy_setup_ipv6(cfg) != 0) {
@@ -262,7 +287,6 @@ static int init_tasks(atp_config_t *cfg) {
         LOG_ERROR("Failed to setup IPv4 TPROXY rules");
     }
     
-    /* Routing rules */
     LOG_INFO("Setting up routing rules");
     if (routing_setup_ipv4(cfg) == 0) {
         if (cfg->proxy_ipv6 && routing_setup_ipv6(cfg) != 0) {
@@ -275,7 +299,6 @@ static int init_tasks(atp_config_t *cfg) {
         LOG_ERROR("Failed to setup IPv4 routing rules");
     }
     
-    /* Verify routing table exists before DNS hijack */
     char verify_cmd[256];
     snprintf(verify_cmd, sizeof(verify_cmd), 
              "ip route show table %d 2>/dev/null | grep -q '^local'", cfg->table_id);
@@ -284,7 +307,6 @@ static int init_tasks(atp_config_t *cfg) {
         usleep(100000);
     }
     
-    /* DNS hijack */
     LOG_INFO("Setting up DNS hijack");
     if (tproxy_dns_hijack_setup(cfg, 4, cfg->dns_hijack) == 0) {
         if (cfg->proxy_ipv6 && tproxy_dns_hijack_setup(cfg, 6, cfg->dns_hijack) != 0) {
@@ -297,14 +319,12 @@ static int init_tasks(atp_config_t *cfg) {
         LOG_ERROR("Failed to setup IPv4 DNS hijack");
     }
     
-    /* Update core stage flags only on success */
     if (tproxy_ok) init_stage |= INIT_STAGE_TPROXY;
     if (routing_ok) init_stage |= INIT_STAGE_ROUTING;
     if (dns_ok) init_stage |= INIT_STAGE_DNS;
     
     core_success = (tproxy_ok && routing_ok && dns_ok);
     
-    /* GeoIP (async, non-blocking) */
     if (cfg->bypass_cn_ip) {
         LOG_INFO("Setting up GeoIP (async mode)");
         geoip_setup_ipset_async(cfg);
@@ -312,7 +332,6 @@ static int init_tasks(atp_config_t *cfg) {
         init_stage |= INIT_STAGE_GEOIP;
     }
     
-    /* Optional features - these don't affect core readiness */
     LOG_INFO("Setting up performance mode");
     perf_mode_init(cfg);
     perf_mode_setup(cfg);
@@ -341,6 +360,32 @@ static int init_tasks(atp_config_t *cfg) {
     return core_success ? 0 : -1;
 }
 
+/* 原子性模式切换 */
+static int atomic_mode_switch(atp_config_t *cfg, api_ctx_t *api, const char *new_mode) {
+    if (api_set_mode(api, new_mode) != 0) {
+        LOG_ERROR("Failed to set mode via API");
+        return -1;
+    }
+    
+    if (api_wait_for_config_loaded(api, new_mode, 3) != 0) {
+        LOG_WARN("Config confirmation timeout, proceeding anyway");
+    }
+    
+    if (strcmp(new_mode, "Global") == 0 || strcmp(new_mode, "Google VPN") == 0) {
+        char vpn_iface[IFNAMSIZ];
+        if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0) {
+            routing_add_vpn_policy(cfg, vpn_iface);
+            routing_add_mss_clamp(cfg, vpn_iface);
+        }
+    } else {
+        routing_cleanup_all(cfg);
+        routing_setup_ipv4(cfg);
+        if (cfg->proxy_ipv6) routing_setup_ipv6(cfg);
+    }
+    
+    return 0;
+}
+
 int main(int argc, char *argv[]) {
     atp_options_t opts;
     memset(&opts, 0, sizeof(opts));
@@ -359,7 +404,6 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     
-    /* Handle status command - no log initialization needed */
     if (opts.command == CMD_STATUS) {
         config_set_defaults(&g_config);
         if (opts.config_dir[0]) {
@@ -371,7 +415,6 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     
-    /* Root check for all other commands */
     if (atp_check_root() != 0) {
         return 1;
     }
@@ -412,7 +455,7 @@ int main(int argc, char *argv[]) {
     
     if (opts.command == CMD_STOP) {
         service_init(&g_service_ctx, &g_config);
-        service_stop(&g_service_ctx);
+        service_stop_graceful(&g_service_ctx, 3);
         netlink_monitor_stop();
         tproxy_cleanup_all(&g_config);
         routing_cleanup_all(&g_config);
@@ -430,79 +473,131 @@ int main(int argc, char *argv[]) {
     
     atp_daemonize();
     atp_create_pidfile();
-    atp_init();
     
-    /* Start netlink monitor for instant VPN detection */
-    init_netlink_monitor(&g_config);
+    /* 状态机初始化 */
+    state_transition(STATE_INIT);
     
-    service_init(&g_service_ctx, &g_config);
-    api_init(&g_api_ctx, &g_config);
-    
-    if (!service_check(&g_service_ctx)) {
-        LOG_INFO("sing-box not running, starting...");
-        service_start(&g_service_ctx);
-    }
-    
-    /* Initialize all network rules synchronously */
-    init_tasks(&g_config);
-    
-    /* Additional setup that must run after main tasks */
-    tproxy_block_quic(&g_config, g_config.block_quic);
-    tproxy_block_loopback(&g_config, 1);
-    tproxy_xfrm_bypass(&g_config);
-    tproxy_prevent_loop(&g_config);
-    
-    int heal_counter = 0;
-    int geoip_ready_logged = 0;
-    time_t last_api_sync = 0;
-    
+    /* 状态机主循环 */
     while (g_running) {
-        sleep(10);
-        
-        /* Self-heal: only run when core features are ready */
-        if (atp_core_ready()) {
-            heal_counter++;
-            if (heal_counter >= 3) {
-                heal_counter = 0;
-                char vpn_iface[IFNAMSIZ];
-                if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0) {
-                    if (!netlink_check_rule_exists(g_config.table_id, g_config.mark_value, vpn_iface)) {
-                        LOG_WARN("Rule drift detected, repairing...");
-                        routing_add_vpn_policy(&g_config, vpn_iface);
-                        routing_add_mss_clamp(&g_config, vpn_iface);
+        switch (g_state) {
+            case STATE_UNINITIALIZED:
+                state_transition(STATE_INIT);
+                break;
+                
+            case STATE_INIT:
+                atp_init();
+                init_netlink_monitor(&g_config);
+                service_init(&g_service_ctx, &g_config);
+                api_init(&g_api_ctx, &g_config);
+                state_transition(STATE_CORE_START);
+                break;
+                
+            case STATE_CORE_START:
+                LOG_INFO("Starting core service...");
+                if (service_start(&g_service_ctx) == 0) {
+                    state_transition(STATE_CORE_WAIT);
+                } else {
+                    LOG_ERROR("Failed to start core service");
+                    sleep(5);
+                }
+                break;
+                
+            case STATE_CORE_WAIT:
+                if (api_check_health(&g_api_ctx)) {
+                    LOG_INFO("API health check passed");
+                    state_transition(STATE_RULES_DEPLOY);
+                } else if (time(NULL) - g_state_enter_time > 30) {
+                    LOG_ERROR("Core start timeout, retrying");
+                    state_transition(STATE_CORE_START);
+                }
+                break;
+                
+            case STATE_RULES_DEPLOY:
+                if (init_tasks(&g_config) == 0) {
+                    tproxy_block_quic(&g_config, g_config.block_quic);
+                    tproxy_block_loopback(&g_config, 1);
+                    tproxy_xfrm_bypass(&g_config);
+                    tproxy_prevent_loop(&g_config);
+                    state_transition(STATE_READY);
+                } else {
+                    LOG_ERROR("Rules deployment failed, entering degraded mode");
+                    state_transition(STATE_DEGRADED);
+                }
+                break;
+                
+            case STATE_READY:
+                /* 心跳检查优先 */
+                if (!api_check_health(&g_api_ctx)) {
+                    LOG_ERROR("Heartbeat lost, entering recovery");
+                    state_transition(STATE_RECOVER);
+                    break;
+                }
+                
+                /* 规则自愈 */
+                {
+                    static int heal_counter = 0;
+                    heal_counter++;
+                    if (heal_counter >= 3) {
+                        heal_counter = 0;
+                        char vpn_iface[IFNAMSIZ];
+                        if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0) {
+                            if (!netlink_check_rule_exists(g_config.table_id, g_config.mark_value, vpn_iface)) {
+                                LOG_WARN("Rule drift detected, repairing...");
+                                routing_add_vpn_policy(&g_config, vpn_iface);
+                                routing_add_mss_clamp(&g_config, vpn_iface);
+                            }
+                        }
                     }
                 }
-            }
-        } else {
-            /* Log degraded mode periodically */
-            static int degraded_log_counter = 0;
-            if (++degraded_log_counter >= 60) {
-                degraded_log_counter = 0;
+                
+                /* GeoIP 状态检查 */
+                {
+                    static int geoip_ready_logged = 0;
+                    if (!geoip_ready_logged && geoip_async_is_complete()) {
+                        LOG_INFO("GeoIP async initialization completed");
+                        init_stage |= INIT_STAGE_GEOIP;
+                        geoip_ready_logged = 1;
+                    }
+                }
+                
+                /* API 模式同步 */
+                {
+                    static time_t last_api_sync = 0;
+                    if (time(NULL) - last_api_sync > 300) {
+                        atomic_mode_switch(&g_config, &g_api_ctx, g_config.user_clash_mode);
+                        last_api_sync = time(NULL);
+                    }
+                }
+                break;
+                
+            case STATE_DEGRADED:
                 LOG_WARN("Degraded mode: core features not ready (stage=0x%x)", init_stage);
-            }
+                if (api_check_health(&g_api_ctx)) {
+                    LOG_INFO("API recovered, attempting rule redeploy");
+                    state_transition(STATE_RULES_DEPLOY);
+                } else if (!service_check(&g_service_ctx)) {
+                    LOG_ERROR("Service offline in degraded mode, restarting");
+                    state_transition(STATE_RECOVER);
+                }
+                break;
+                
+            case STATE_RECOVER:
+                LOG_INFO("Entering recovery mode, cleaning up...");
+                routing_cleanup_all(&g_config);
+                tproxy_cleanup_all(&g_config);
+                service_stop_graceful(&g_service_ctx, 3);
+                state_transition(STATE_CORE_START);
+                break;
+                
+            case STATE_STOPPING:
+                goto exit_loop;
         }
         
-        /* Log GeoIP ready status once */
-        if (!geoip_ready_logged && geoip_async_is_complete()) {
-            LOG_INFO("GeoIP async initialization completed");
-            init_stage |= INIT_STAGE_GEOIP;
-            geoip_ready_logged = 1;
-        }
-        
-        if (!service_check(&g_service_ctx)) {
-            LOG_ERROR("sing-box is offline!");
-            if (!service_cooldown_active(&g_service_ctx)) {
-                service_restart(&g_service_ctx);
-            }
-        }
-        
-        if (time(NULL) - last_api_sync > 300) {
-            api_set_mode(&g_api_ctx, g_config.user_clash_mode);
-            last_api_sync = time(NULL);
-        }
+        sleep(10);
     }
     
-    service_stop(&g_service_ctx);
+exit_loop:
+    service_stop_graceful(&g_service_ctx, 3);
     netlink_monitor_stop();
     tproxy_cleanup_all(&g_config);
     routing_cleanup_all(&g_config);

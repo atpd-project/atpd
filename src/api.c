@@ -43,9 +43,10 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     ctx->last_call_time = 0;
     ctx->last_http_code = 0;
     ctx->last_error[0] = '\0';
+    ctx->timeout_sec = 2;  /* 默认 2 秒超时 */
     
-    LOG_INFO("API initialized: %s (secret=%s)", ctx->base_url, 
-             ctx->secret[0] ? "configured" : "not set");
+    LOG_INFO("API initialized: %s (secret=%s, timeout=%ds)", 
+             ctx->base_url, ctx->secret[0] ? "configured" : "not set", ctx->timeout_sec);
     return 0;
 }
 
@@ -71,8 +72,10 @@ void api_reset_rate_limit(api_ctx_t *ctx) {
     LOG_DEBUG("API rate limit reset");
 }
 
-static int api_do_request(api_ctx_t *ctx, const char *method, const char *path, 
-                          const char *body, struct api_response *response) {
+/* 带超时的 API 请求 */
+static int api_do_request_with_timeout(api_ctx_t *ctx, const char *method, 
+                                        const char *path, const char *body,
+                                        struct api_response *response, int timeout_sec) {
     CURL *curl = curl_easy_init();
     if (!curl) {
         snprintf(ctx->last_error, sizeof(ctx->last_error), "Failed to init curl");
@@ -94,8 +97,9 @@ static int api_do_request(api_ctx_t *ctx, const char *method, const char *path,
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_sec);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "ATPd/" ATP_VERSION);
     
     if (body) {
@@ -114,9 +118,9 @@ static int api_do_request(api_ctx_t *ctx, const char *method, const char *path,
     CURLcode res = curl_easy_perform(curl);
     
     if (res == CURLE_OK) {
-	long http_code;
-	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-	ctx->last_http_code = (int)http_code;
+        long http_code;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        ctx->last_http_code = (int)http_code;
     } else {
         snprintf(ctx->last_error, sizeof(ctx->last_error), "curl error: %s", 
                  curl_easy_strerror(res));
@@ -127,6 +131,11 @@ static int api_do_request(api_ctx_t *ctx, const char *method, const char *path,
     curl_easy_cleanup(curl);
     
     return (res == CURLE_OK) ? 0 : -1;
+}
+
+static int api_do_request(api_ctx_t *ctx, const char *method, const char *path, 
+                          const char *body, struct api_response *response) {
+    return api_do_request_with_timeout(ctx, method, path, body, response, ctx->timeout_sec);
 }
 
 int api_patch_json(api_ctx_t *ctx, const char *path, const char *json_body) {
@@ -215,7 +224,6 @@ int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
         return -1;
     }
     
-    /* Use libcurl via api_do_request instead of external curl command */
     struct api_response resp;
     int ret = api_do_request(ctx, "GET", "/configs", NULL, &resp);
     
@@ -225,7 +233,6 @@ int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
         return -1;
     }
     
-    /* Parse JSON using cJSON library */
     cJSON *json = cJSON_Parse(resp.data);
     free(resp.data);
     
@@ -263,4 +270,37 @@ api_mode_t api_string_to_mode(const char *str) {
     if (strcmp(str, "Direct") == 0) return API_MODE_DIRECT;
     if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
     return API_MODE_RULE;
+}
+
+/* 新增：确认配置已加载 */
+int api_wait_for_config_loaded(api_ctx_t *ctx, const char *expected_mode, int timeout_sec) {
+    char current_mode[64];
+    int waited_ms = 0;
+    
+    LOG_DEBUG("Waiting for config confirmation (mode=%s, timeout=%ds)", 
+              expected_mode, timeout_sec);
+    
+    while (waited_ms < timeout_sec * 1000) {
+        if (api_get_mode(ctx, current_mode, sizeof(current_mode)) == 0) {
+            if (strcmp(current_mode, expected_mode) == 0) {
+                LOG_INFO("API: Configuration confirmed (mode=%s)", current_mode);
+                return 0;
+            }
+        }
+        usleep(200000);  /* 200ms */
+        waited_ms += 200;
+    }
+    
+    LOG_WARN("API: Config confirmation timeout after %d seconds", timeout_sec);
+    return -1;
+}
+
+int api_check_health(api_ctx_t *ctx) {
+    struct api_response resp;
+    int ret = api_do_request_with_timeout(ctx, "GET", "/health", NULL, &resp, 2);
+    
+    if (ret == 0 && ctx->last_http_code == 200) {
+        return 1;
+    }
+    return 0;
 }

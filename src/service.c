@@ -14,12 +14,14 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <fcntl.h>
 
 /* External reference to global API context */
 extern api_ctx_t g_api_ctx;
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(service_ctx_t));
+    ctx->pid_fd = -1;
     
     pthread_mutex_lock(&cfg->config_mutex);
     
@@ -35,9 +37,9 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     pthread_mutex_unlock(&cfg->config_mutex);
     
     ctx->restart_cooldown_sec = 60;
-    ctx->restart_delay_sec = cfg->restart_delay;  /* Use configured restart delay */
+    ctx->restart_delay_sec = cfg->restart_delay;
     if (ctx->restart_delay_sec <= 0) {
-        ctx->restart_delay_sec = DEFAULT_RESTART_DELAY;  /* Fallback to default */
+        ctx->restart_delay_sec = DEFAULT_RESTART_DELAY;
     }
     ctx->last_restart_time = 0;
     ctx->restart_failures = 0;
@@ -46,6 +48,57 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     LOG_DEBUG("Service initialized: bin=%s, restart_delay=%d", 
               ctx->bin_path, ctx->restart_delay_sec);
     return 0;
+}
+
+/* 新增：获取 PID 文件锁 */
+int service_acquire_pid_lock(service_ctx_t *ctx) {
+    /* 确保 run 目录存在 */
+    char dir[PATH_MAX];
+    strncpy(dir, ctx->pid_path, sizeof(dir) - 1);
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = '\0';
+        mkdir_recursive(dir, 0755);
+    }
+    
+    ctx->pid_fd = open(ctx->pid_path, O_CREAT | O_RDWR, 0644);
+    if (ctx->pid_fd < 0) {
+        LOG_ERROR("Failed to open PID file: %s", strerror(errno));
+        return -1;
+    }
+    
+    struct flock fl = {
+        .l_type = F_WRLCK,
+        .l_whence = SEEK_SET,
+        .l_start = 0,
+        .l_len = 0
+    };
+    
+    if (fcntl(ctx->pid_fd, F_SETLK, &fl) < 0) {
+        LOG_ERROR("Another instance is running (locked): %s", strerror(errno));
+        close(ctx->pid_fd);
+        ctx->pid_fd = -1;
+        return -1;
+    }
+    
+    /* 写入 PID */
+    char pid_str[16];
+    snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
+    ftruncate(ctx->pid_fd, 0);
+    write(ctx->pid_fd, pid_str, strlen(pid_str));
+    
+    LOG_DEBUG("PID lock acquired: %s", ctx->pid_path);
+    return 0;
+}
+
+/* 新增：释放 PID 文件锁 */
+void service_release_pid_lock(service_ctx_t *ctx) {
+    if (ctx->pid_fd >= 0) {
+        close(ctx->pid_fd);
+        ctx->pid_fd = -1;
+    }
+    unlink(ctx->pid_path);
+    LOG_DEBUG("PID lock released");
 }
 
 int service_validate_config(service_ctx_t *ctx) {
@@ -91,12 +144,19 @@ int service_start(service_ctx_t *ctx) {
         return 0;
     }
     
+    /* 获取 PID 锁，防止多实例 */
+    if (service_acquire_pid_lock(ctx) != 0) {
+        LOG_ERROR("Failed to acquire PID lock, another instance may be running");
+        return -1;
+    }
+    
     LOG_INFO("Starting service: %s", ctx->bin_path);
     ctx->state = SERVICE_STARTING;
     
     if (service_validate_config(ctx) != 0) {
         LOG_ERROR("Config validation failed, aborting start");
         ctx->state = SERVICE_FAILED;
+        service_release_pid_lock(ctx);
         return -1;
     }
     
@@ -111,6 +171,7 @@ int service_start(service_ctx_t *ctx) {
     if (pid < 0) {
         LOG_ERROR("Fork failed: %s", strerror(errno));
         ctx->state = SERVICE_FAILED;
+        service_release_pid_lock(ctx);
         return -1;
     }
     
@@ -148,38 +209,56 @@ int service_start(service_ctx_t *ctx) {
         exit(1);
     }
     
-    FILE *fp = fopen(ctx->pid_path, "w");
-    if (fp) {
-        fprintf(fp, "%d\n", pid);
-        fclose(fp);
-    }
-    
     ctx->state = SERVICE_RUNNING;
     LOG_INFO("Service started with PID %d", pid);
     
     return service_wait_ready(ctx, 10);
 }
 
-int service_stop(service_ctx_t *ctx) {
-    LOG_INFO("Stopping service");
+/* 新增：优雅停止服务 */
+int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec) {
+    LOG_INFO("Stopping service gracefully (timeout=%ds)", graceful_timeout_sec);
     ctx->state = SERVICE_STOPPING;
     
     int pid = service_get_pid(ctx);
-    if (pid > 0) {
-        kill(pid, SIGTERM);
-        wait_for_pid_exit(pid, 5);
-        kill(pid, SIGKILL);
+    if (pid <= 0) {
+        ctx->state = SERVICE_STOPPED;
+        service_release_pid_lock(ctx);
+        return 0;
     }
     
-    service_kill_all(PROXY_BIN_NAME, SIGTERM);
-    usleep(200000);
+    /* 1. 发送 SIGTERM，给进程清理机会 */
+    kill(pid, SIGTERM);
+    
+    /* 2. 等待进程退出（遗言时间） */
+    int waited = 0;
+    while (waited < graceful_timeout_sec) {
+        if (!process_exists(pid)) {
+            LOG_INFO("Service exited gracefully after %d seconds", waited);
+            service_release_pid_lock(ctx);
+            ctx->state = SERVICE_STOPPED;
+            return 0;
+        }
+        sleep(1);
+        waited++;
+    }
+    
+    /* 3. 超时则强制 SIGKILL */
+    LOG_WARN("Service not responding, forcing kill");
+    kill(pid, SIGKILL);
+    wait_for_pid_exit(pid, 2);
+    service_release_pid_lock(ctx);
+    
+    /* 额外清理所有 sing-box 进程 */
     service_kill_all(PROXY_BIN_NAME, SIGKILL);
     
-    unlink(ctx->pid_path);
-    
     ctx->state = SERVICE_STOPPED;
-    LOG_INFO("Service stopped");
+    LOG_INFO("Service stopped (forced)");
     return 0;
+}
+
+int service_stop(service_ctx_t *ctx) {
+    return service_stop_graceful(ctx, 3);
 }
 
 int service_restart(service_ctx_t *ctx) {
@@ -188,7 +267,7 @@ int service_restart(service_ctx_t *ctx) {
     /* Reset API rate limit before restart to allow immediate sync */
     api_reset_rate_limit(&g_api_ctx);
     
-    service_stop(ctx);
+    service_stop_graceful(ctx, 3);
     
     /* Use configured restart delay */
     int delay = ctx->restart_delay_sec;

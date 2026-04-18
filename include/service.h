@@ -20,15 +20,17 @@ typedef struct {
     char user[64];
     char group[64];
     int restart_cooldown_sec;
-    int restart_delay_sec;      /* Added: delay before restart (seconds) */
+    int restart_delay_sec;
     time_t last_restart_time;
     int restart_failures;
     service_state_t state;
+    int pid_fd;  /* 新增：PID 文件锁文件描述符 */
 } service_ctx_t;
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
 int service_start(service_ctx_t *ctx);
 int service_stop(service_ctx_t *ctx);
+int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec);
 int service_restart(service_ctx_t *ctx);
 int service_check(service_ctx_t *ctx);
 int service_check_port(int port);
@@ -36,6 +38,8 @@ int service_get_pid(service_ctx_t *ctx);
 int service_wait_ready(service_ctx_t *ctx, int timeout_sec);
 int service_validate_config(service_ctx_t *ctx);
 int service_rotate_log(service_ctx_t *ctx);
+int service_acquire_pid_lock(service_ctx_t *ctx);
+void service_release_pid_lock(service_ctx_t *ctx);
 
 void service_set_cooldown(service_ctx_t *ctx, int seconds);
 int service_cooldown_active(service_ctx_t *ctx);
