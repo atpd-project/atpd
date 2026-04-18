@@ -35,31 +35,45 @@ if command -v git >/dev/null 2>&1 && [ -d "${PROJECT_ROOT}/.git" ]; then
             # Format: version-commit (e.g., 1.14.0-alpha.9-b73ae49b)
             VERSION="${BASE_VERSION}-${GIT_COMMIT}"
             BUILD_NUM=$(echo "$VERSION_RAW" | grep -oP '-\K[0-9]+(?=-g)' 2>/dev/null || echo "0")
+            DIRTY=""
         else
             # Exact tag match, no extra commits
             VERSION="$VERSION_RAW"
             BUILD_NUM="0"
+            DIRTY=""
         fi
         
         # Extract dirty flag
         if echo "$GIT_DESCRIBE" | grep -q "dirty"; then
             VERSION="${VERSION}-dirty"
+            DIRTY="-dirty"
         fi
     else
         # No tags - use 0.0.0-commit format
         VERSION="0.0.0-${COMMIT}"
         BUILD_NUM="0"
+        DIRTY=""
         
         # Check if working tree is dirty
         if ! git diff --quiet || ! git diff --cached --quiet; then
             VERSION="${VERSION}-dirty"
+            DIRTY="-dirty"
         fi
+    fi
+    
+    # Check if working tree is clean
+    if git diff --quiet && git diff --cached --quiet; then
+        CLEAN="1"
+    else
+        CLEAN="0"
     fi
 else
     VERSION="$DEFAULT_VERSION"
     BUILD_NUM="0"
     BRANCH="unknown"
     COMMIT="$DEFAULT_COMMIT"
+    DIRTY=""
+    CLEAN="0"
 fi
 
 # Parse version components
@@ -83,7 +97,8 @@ cat > "$VERSION_FILE" << EOF
 #define ATP_VERSION_BUILD     ${BUILD_NUM:-0}
 #define ATP_VERSION_COMMIT    "${COMMIT}"
 #define ATP_VERSION_BRANCH    "${BRANCH}"
-#define ATP_VERSION_CLEAN     $([ -z "$(echo "$VERSION" | grep dirty)" ] && echo "1" || echo "0")
+#define ATP_VERSION_DIRTY     "${DIRTY}"
+#define ATP_VERSION_CLEAN     ${CLEAN}
 
 #define ATP_BUILD_DATE        __DATE__
 #define ATP_BUILD_TIME        __TIME__
@@ -100,6 +115,7 @@ const char* atp_get_version_prerelease(void);
 int atp_get_version_build(void);
 const char* atp_get_version_commit(void);
 const char* atp_get_version_branch(void);
+int atp_is_dirty(void);
 int atp_is_clean(void);
 const char* atp_get_build_date(void);
 const char* atp_get_build_time(void);
