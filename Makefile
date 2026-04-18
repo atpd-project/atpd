@@ -57,26 +57,25 @@ HEADERS = $(wildcard $(INC_DIR)/*.h) $(wildcard $(INC_DIR)/cjson/*.h)
 # Additional flags for cJSON compilation
 CJSON_CFLAGS = -I$(INC_DIR)/cjson
 
-# Force target to always regenerate version header
-.PHONY: FORCE
-FORCE:
-
-# Always regenerate version header
-$(VERSION_H): FORCE
+# Force regeneration of version header
+.PHONY: version_force
+version_force:
 	@echo "Generating version header..."
 	@chmod +x scripts/gen_version.sh
 	@./scripts/gen_version.sh
 
-.PHONY: all clean distclean help version
+# Make version header depend on force (always regenerate)
+$(VERSION_H): version_force
 
-# Build all - depends on version header and binary
-all: $(VERSION_H) $(BIN_DIR)/$(TARGET)
+.PHONY: all clean distclean help
+
+# Build all - version header must be generated first
+all: version_force $(BIN_DIR)/$(TARGET)
 	@echo "Build complete: $(BIN_DIR)/$(TARGET)"
 
 # Show version information
-version: $(VERSION_H)
-	@echo "Version information:"
-	@echo "ATP_VERSION_STRING: $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
+version: version_force
+	@echo "Version: $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
 
 $(OBJ_DIR):
 	mkdir -p $(OBJ_DIR)
@@ -84,7 +83,7 @@ $(OBJ_DIR):
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
-# Generic rule for all .c files
+# Generic rule for all .c files - depends on version.h
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) $(VERSION_H) | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
