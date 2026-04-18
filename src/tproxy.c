@@ -829,3 +829,97 @@ int tproxy_prevent_loop(atp_config_t *cfg) {
 
     return 0;
 }	
+/* ============================================ */
+/* Missing TPROXY functions for backward compatibility */
+/* ============================================ */
+
+int tproxy_setup_ipv6(atp_config_t *cfg) {
+    if (!cfg->proxy_ipv6) {
+        LOG_DEBUG("IPv6 proxy disabled, skipping TPROXY setup");
+        return 0;
+    }
+
+    if (access(IP6TABLES_CMD, X_OK) != 0) {
+        LOG_WARN("ip6tables not found, IPv6 TPROXY setup skipped");
+        cfg->proxy_ipv6 = 0;
+        return 0;
+    }
+
+    LOG_INFO("Setting up IPv6 TPROXY chains");
+
+    tproxy_create_standard_chains(cfg, 6, "6");
+    tproxy_setup_divert_chain(cfg, 6, "6", cfg->mark_value6);
+    tproxy_setup_socket_match(cfg, 6, "6", "ATP6_DIVERT_0");
+    tproxy_setup_chain_jumps(cfg, 6, "6", 1);
+    tproxy_hook_main_chains(cfg, 6, "6");
+
+    LOG_INFO("IPv6 TPROXY setup complete");
+    return 0;
+}
+
+int tproxy_cleanup_ipv4(atp_config_t *cfg) {
+    LOG_INFO("Cleaning up IPv4 TPROXY chains");
+
+    tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", "-j ATP_PRE_0");
+    tproxy_rule_del(cfg, 4, "mangle", "OUTPUT", "-j ATP_OUT_0");
+
+    const char *chains[] = {
+        "ATP_PRE_0", "ATP_PRE_1",
+        "ATP_OUT_0", "ATP_OUT_1",
+        "ATP_DIVERT_0", "ATP_DIVERT_1",
+        "ATP_PROXY_IP_0", "ATP_PROXY_IP_1",
+        "ATP_BYPASS_IP_0", "ATP_BYPASS_IP_1",
+        "ATP_PROXY_IFACE_0", "ATP_PROXY_IFACE_1",
+        "ATP_BYPASS_IFACE_0", "ATP_BYPASS_IFACE_1",
+        "ATP_DNS_PRE_0", "ATP_DNS_PRE_1",
+        "ATP_DNS_OUT_0", "ATP_DNS_OUT_1",
+        "ATP_APP_0", "ATP_APP_1",
+        "ATP_MAC_0", "ATP_MAC_1",
+        NULL
+    };
+
+    for (int i = 0; chains[i] != NULL; i++) {
+        tproxy_chain_flush(cfg, 4, "mangle", chains[i]);
+        tproxy_chain_destroy(cfg, 4, "mangle", chains[i]);
+    }
+
+    LOG_INFO("IPv4 TPROXY cleanup complete");
+    return 0;
+}
+
+int tproxy_cleanup_ipv6(atp_config_t *cfg) {
+    if (!cfg->proxy_ipv6) return 0;
+
+    LOG_INFO("Cleaning up IPv6 TPROXY chains");
+
+    if (access(IP6TABLES_CMD, X_OK) != 0) {
+        LOG_DEBUG("ip6tables not found, skipping IPv6 cleanup");
+        return 0;
+    }
+
+    tproxy_rule_del(cfg, 6, "mangle", "PREROUTING", "-j ATP6_PRE_0");
+    tproxy_rule_del(cfg, 6, "mangle", "OUTPUT", "-j ATP6_OUT_0");
+
+    const char *chains[] = {
+        "ATP6_PRE_0", "ATP6_PRE_1",
+        "ATP6_OUT_0", "ATP6_OUT_1",
+        "ATP6_DIVERT_0", "ATP6_DIVERT_1",
+        "ATP6_PROXY_IP_0", "ATP6_PROXY_IP_1",
+        "ATP6_BYPASS_IP_0", "ATP6_BYPASS_IP_1",
+        "ATP6_PROXY_IFACE_0", "ATP6_PROXY_IFACE_1",
+        "ATP6_BYPASS_IFACE_0", "ATP6_BYPASS_IFACE_1",
+        "ATP6_DNS_PRE_0", "ATP6_DNS_PRE_1",
+        "ATP6_DNS_OUT_0", "ATP6_DNS_OUT_1",
+        "ATP6_APP_0", "ATP6_APP_1",
+        "ATP6_MAC_0", "ATP6_MAC_1",
+        NULL
+    };
+
+    for (int i = 0; chains[i] != NULL; i++) {
+        tproxy_chain_flush(cfg, 6, "mangle", chains[i]);
+        tproxy_chain_destroy(cfg, 6, "mangle", chains[i]);
+    }
+
+    LOG_INFO("IPv6 TPROXY cleanup complete");
+    return 0;
+}
