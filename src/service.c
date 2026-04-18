@@ -69,12 +69,12 @@ static int setup_run_directory_permissions(service_ctx_t *ctx) {
         return -1;
     }
     
-    if (chmod(run_dir, 0755) != 0) {
+    if (chmod(run_dir, 0750) != 0) {
         LOG_WARN("Failed to chmod %s: %s", run_dir, strerror(errno));
         return -1;
     }
     
-    LOG_DEBUG("Set permissions for %s to %s:%s", run_dir, ctx->user, ctx->group);
+    LOG_DEBUG("Set permissions for %s to %s:%s (0750)", run_dir, ctx->user, ctx->group);
     return 0;
 }
 
@@ -94,7 +94,7 @@ static int setup_work_directory_permissions(service_ctx_t *ctx) {
         return -1;
     }
     
-    if (chmod(ctx->work_dir, 0755) != 0) {
+    if (chmod(ctx->work_dir, 0750) != 0) {
         LOG_WARN("Failed to chmod %s: %s", ctx->work_dir, strerror(errno));
         return -1;
     }
@@ -142,7 +142,7 @@ int service_acquire_pid_lock(service_ctx_t *ctx) {
         mkdir_recursive(dir, 0755);
     }
     
-    ctx->pid_fd = open(ctx->pid_path, O_CREAT | O_RDWR, 0644);
+    ctx->pid_fd = open(ctx->pid_path, O_CREAT | O_RDWR, 0640);
     if (ctx->pid_fd < 0) {
         LOG_ERROR("Failed to open PID file: %s", strerror(errno));
         return -1;
@@ -257,8 +257,9 @@ int service_start(service_ctx_t *ctx) {
     }
     
     if (pid == 0) {
-        /* Child process: set umask for correct file permissions */
-        umask(022);
+        /* Child process: set restrictive umask for security */
+        /* 027 = 750 for directories, 640 for files */
+        umask(027);
         
         setsid();
         

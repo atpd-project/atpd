@@ -81,13 +81,6 @@ static void signal_handler(int sig) {
         LOG_INFO("Received SIGHUP, reloading configuration...");
         api_reset_rate_limit(&g_api_ctx);
         config_reload(&g_config);
-    } else if (sig == SIGCHLD) {
-        /* Reap zombie processes */
-        pid_t pid;
-        int status;
-        while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-            LOG_DEBUG("Reaped zombie process: PID=%d, status=%d", pid, status);
-        }
     }
 }
 
@@ -101,7 +94,10 @@ int atp_signal_setup(void) {
     if (sigaction(SIGTERM, &sa, NULL) < 0) return -1;
     if (sigaction(SIGINT, &sa, NULL) < 0) return -1;
     if (sigaction(SIGHUP, &sa, NULL) < 0) return -1;
-    if (sigaction(SIGCHLD, &sa, NULL) < 0) return -1;
+    
+    /* Auto-reap child processes without creating zombies */
+    /* Linux 2.6+ will automatically reap children when SIGCHLD is ignored */
+    signal(SIGCHLD, SIG_IGN);
     
     signal(SIGPIPE, SIG_IGN);
     return 0;
