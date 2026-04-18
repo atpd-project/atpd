@@ -17,6 +17,8 @@
 int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(service_ctx_t));
     
+    pthread_mutex_lock(&cfg->config_mutex);
+    
     snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s/bin/%s", cfg->data_dir, PROXY_BIN_NAME);
     snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s/sing-box/config.json", cfg->data_dir);
     snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/run/sing-box.log", cfg->data_dir);
@@ -25,6 +27,9 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     
     strncpy(ctx->user, cfg->core_user, sizeof(ctx->user) - 1);
     strncpy(ctx->group, cfg->core_group, sizeof(ctx->group) - 1);
+    
+    pthread_mutex_unlock(&cfg->config_mutex);
+    
     ctx->restart_cooldown_sec = 60;
     ctx->last_restart_time = 0;
     ctx->restart_failures = 0;
@@ -170,6 +175,11 @@ int service_stop(service_ctx_t *ctx) {
 
 int service_restart(service_ctx_t *ctx) {
     LOG_INFO("Restarting service");
+    
+    /* Reset API rate limit before restart to allow immediate sync */
+    extern api_ctx_t g_api_ctx;
+    api_reset_rate_limit(&g_api_ctx);
+    
     service_stop(ctx);
     sleep(2);
     return service_start(ctx);

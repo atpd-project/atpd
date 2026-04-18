@@ -76,6 +76,10 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->restart_delay = DEFAULT_RESTART_DELAY;
     cfg->clash_secret[0] = '\0';
     
+    /* API defaults */
+    cfg->api_port = DEFAULT_API_PORT;
+    strcpy(cfg->api_host, DEFAULT_API_HOST);
+    
     cfg->use_tproxy = 0;
     cfg->current_vpn_iface[0] = '\0';
 }
@@ -130,6 +134,8 @@ static void parse_key_value(const char *key, const char *value, atp_config_t *cf
     else if (strcmp(key, "USER_CLASH_MODE") == 0) strcpy(cfg->user_clash_mode, value);
     else if (strcmp(key, "RESTART_DELAY") == 0) cfg->restart_delay = atoi(value);
     else if (strcmp(key, "CLASH_SECRET") == 0) strcpy(cfg->clash_secret, value);
+    else if (strcmp(key, "API_PORT") == 0) cfg->api_port = atoi(value);
+    else if (strcmp(key, "API_HOST") == 0) strcpy(cfg->api_host, value);
     else if (strcmp(key, "CORE_USER_GROUP") == 0) {
         char *colon = strchr(value, ':');
         if (colon) {
@@ -208,6 +214,8 @@ int config_save(const char *path, atp_config_t *cfg) {
     fprintf(fp, "BYPASS_CN_IP=%d\n", cfg->bypass_cn_ip);
     fprintf(fp, "BLOCK_QUIC=%d\n", cfg->block_quic);
     fprintf(fp, "USER_CLASH_MODE=%s\n", cfg->user_clash_mode);
+    fprintf(fp, "API_HOST=%s\n", cfg->api_host);
+    fprintf(fp, "API_PORT=%d\n", cfg->api_port);
     
     fclose(fp);
     pthread_mutex_unlock(&cfg->config_mutex);
@@ -352,6 +360,7 @@ void config_print_summary(atp_config_t *cfg) {
     LOG_INFO("  CN IP Bypass: %s", cfg->bypass_cn_ip ? "enabled" : "disabled");
     LOG_INFO("  QUIC Block: %s", cfg->block_quic ? "enabled" : "disabled");
     LOG_INFO("  Clash Mode: %s", cfg->user_clash_mode);
+    LOG_INFO("  API: http://%s:%d", cfg->api_host, cfg->api_port);
     
     pthread_mutex_unlock(&cfg->config_mutex);
 }

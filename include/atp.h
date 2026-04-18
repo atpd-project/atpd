@@ -42,6 +42,8 @@
 #define DEFAULT_TABLE_ID    150
 #define DEFAULT_DNS_PORT    1053
 #define DEFAULT_RESTART_DELAY 2
+#define DEFAULT_API_PORT    9090
+#define DEFAULT_API_HOST    "127.0.0.1"
 
 #define CMD_TIMEOUT_SEC     5
 #define API_RETRY_COUNT     3
@@ -141,6 +143,10 @@ typedef struct {
     char user_clash_mode[32];
     int restart_delay;
     char clash_secret[128];
+    
+    /* API configuration */
+    int api_port;
+    char api_host[64];
     
     int use_tproxy;
     char current_vpn_iface[32];

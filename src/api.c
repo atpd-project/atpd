@@ -3,6 +3,7 @@
 #include "utils.h"
 #include <curl/curl.h>
 #include <time.h>
+#include <cjson/cJSON.h>
 
 struct api_response {
     char *data;
@@ -27,7 +28,9 @@ static size_t api_write_callback(void *contents, size_t size, size_t nmemb, void
 int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(api_ctx_t));
     
-    snprintf(ctx->base_url, sizeof(ctx->base_url), "http://127.0.0.1:9090");
+    /* Use configured host and port */
+    snprintf(ctx->base_url, sizeof(ctx->base_url), "http://%s:%d", 
+             cfg->api_host, cfg->api_port);
     
     if (cfg->clash_secret[0] != '\0') {
         strncpy(ctx->secret, cfg->clash_secret, sizeof(ctx->secret) - 1);
@@ -41,7 +44,8 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     ctx->last_http_code = 0;
     ctx->last_error[0] = '\0';
     
-    LOG_DEBUG("API initialized: %s", ctx->base_url);
+    LOG_INFO("API initialized: %s (secret=%s)", ctx->base_url, 
+             ctx->secret[0] ? "configured" : "not set");
     return 0;
 }
 
@@ -127,10 +131,7 @@ int api_patch_json(api_ctx_t *ctx, const char *path, const char *json_body) {
     struct api_response resp;
     int ret = api_do_request(ctx, "PATCH", path, json_body, &resp);
     
-    if (ret == 0 && ctx->last_http_code == 200) {
-        LOG_DEBUG("API PATCH %s succeeded (HTTP %d)", path, ctx->last_http_code);
-        return 0;
-    } else if (ret == 0 && ctx->last_http_code == 204) {
+    if (ret == 0 && (ctx->last_http_code == 200 || ctx->last_http_code == 204)) {
         LOG_DEBUG("API PATCH %s succeeded (HTTP %d)", path, ctx->last_http_code);
         return 0;
     }
@@ -173,7 +174,6 @@ int api_set_mode(api_ctx_t *ctx, const char *mode) {
         if (api_patch_json(ctx, "/configs", json_body) == 0) {
             LOG_INFO("API sync: mode set to [%s]", mode);
             
-            /* Update local config with mutex protection */
             pthread_mutex_lock(&g_config.config_mutex);
             strncpy(g_config.user_clash_mode, mode, sizeof(g_config.user_clash_mode) - 1);
             g_config.user_clash_mode[sizeof(g_config.user_clash_mode) - 1] = '\0';
@@ -209,55 +209,40 @@ int api_get_health(api_ctx_t *ctx, char *output, size_t size) {
 }
 
 int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
-    char response[4096];
-    char url[512];
-    char cmd[1024];
-    
     if (!ctx || !mode || size == 0) {
         return -1;
     }
     
-    snprintf(url, sizeof(url), "%s/configs", ctx->base_url);
+    /* Use libcurl via api_do_request instead of external curl command */
+    struct api_response resp;
+    int ret = api_do_request(ctx, "GET", "/configs", NULL, &resp);
     
-    if (ctx->secret[0] != '\0') {
-        snprintf(cmd, sizeof(cmd), 
-                 "curl -s --connect-timeout 3 --max-time 5 "
-                 "-H 'Authorization: Bearer %s' %s 2>/dev/null",
-                 ctx->secret, url);
-    } else {
-        snprintf(cmd, sizeof(cmd), 
-                 "curl -s --connect-timeout 3 --max-time 5 %s 2>/dev/null",
-                 url);
-    }
-    
-    if (exec_cmd(cmd, response, sizeof(response), 5) != 0) {
-        LOG_WARN("Failed to get mode from API");
+    if (ret != 0 || ctx->last_http_code != 200 || !resp.data) {
+        LOG_WARN("Failed to get mode from API: HTTP %d", ctx->last_http_code);
+        if (resp.data) free(resp.data);
         return -1;
     }
     
-    /* Simple string parsing: find "mode":"xxx" or "mode": "xxx" */
-    char *needle = strstr(response, "\"mode\":\"");
-    if (!needle) {
-        needle = strstr(response, "\"mode\": \"");
-    }
-    if (!needle) {
-        LOG_WARN("Failed to parse mode from API response");
+    /* Parse JSON using cJSON library */
+    cJSON *json = cJSON_Parse(resp.data);
+    free(resp.data);
+    
+    if (!json) {
+        LOG_WARN("Failed to parse JSON response");
         return -1;
     }
     
-    needle += 8;
-    if (*needle == ' ') needle++;
-    
-    char *end = strchr(needle, '"');
-    if (!end) {
+    cJSON *mode_item = cJSON_GetObjectItem(json, "mode");
+    if (!mode_item || !cJSON_IsString(mode_item)) {
+        LOG_WARN("No 'mode' field in JSON response");
+        cJSON_Delete(json);
         return -1;
     }
     
-    size_t len = end - needle;
-    if (len >= size) len = size - 1;
-    strncpy(mode, needle, len);
-    mode[len] = '\0';
+    strncpy(mode, mode_item->valuestring, size - 1);
+    mode[size - 1] = '\0';
     
+    cJSON_Delete(json);
     return 0;
 }
 

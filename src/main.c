@@ -61,6 +61,8 @@ static void signal_handler(int sig) {
         g_running = 0;
     } else if (sig == SIGHUP) {
         LOG_INFO("Received SIGHUP, reloading configuration...");
+        /* Reset API rate limit before reload to allow immediate sync */
+        api_reset_rate_limit(&g_api_ctx);
         config_reload(&g_config);
     }
 }
@@ -175,12 +177,10 @@ void atp_daemonize(void) {
 }
 
 int check_ip6tables_available(void) {
-    /* Check if binary exists */
     if (access("/system/bin/ip6tables", X_OK) != 0) {
         return 0;
     }
     
-    /* Check if kernel module works */
     char output[256];
     int ret = exec_cmd("/system/bin/ip6tables -L INPUT -n 2>/dev/null | head -1", 
                        output, sizeof(output), 3);
@@ -188,7 +188,6 @@ int check_ip6tables_available(void) {
         return 0;
     }
     
-    /* Check for common error indicators */
     if (strstr(output, "can't initialize") || 
         strstr(output, "No chain") ||
         strstr(output, "Protocol not supported")) {
