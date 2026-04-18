@@ -8,14 +8,14 @@ TARGET = atpd
 ifneq ($(ANDROID_NDK_ROOT),)
     CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
     CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\" -fPIC -fpie
-    CFLAGS += -I$(INC_DIR) -I$(INC_DIR)/cjson
+    CFLAGS += -I$(INC_DIR)
     LDFLAGS = -L/tmp/curl-musl/lib -lcurl -pthread -pie
     # Uncomment if HTTPS is needed
     # LDFLAGS += -lssl -lcrypto
 else
     CC = gcc
     CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
-    CFLAGS += -I$(INC_DIR) -I$(INC_DIR)/cjson
+    CFLAGS += -I$(INC_DIR)
     LDFLAGS = -lcurl -pthread
     # Uncomment if HTTPS is needed
     # LDFLAGS += -lssl -lcrypto
@@ -53,6 +53,9 @@ OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
 # Headers
 HEADERS = $(wildcard $(INC_DIR)/*.h) $(wildcard $(INC_DIR)/cjson/*.h)
 
+# Additional flags for cJSON compilation
+CJSON_CFLAGS = -I$(INC_DIR)/cjson
+
 .PHONY: all clean distclean help
 
 all: $(BIN_DIR)/$(TARGET)
@@ -64,9 +67,15 @@ $(OBJ_DIR):
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
+# Generic rule for all .c files
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
+
+# Special rule for cJSON.c (needs cjson header path)
+$(OBJ_DIR)/cjson/%.o: $(SRC_DIR)/cjson/%.c $(HEADERS) | $(OBJ_DIR)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CJSON_CFLAGS) -I$(INC_DIR) -c $< -o $@
 
 $(BIN_DIR)/$(TARGET): $(OBJS) | $(BIN_DIR)
 	$(CC) $(OBJS) -o $@ $(LDFLAGS)
