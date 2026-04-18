@@ -21,6 +21,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <pthread.h>
 
 #define ATP_VERSION         "1.0.0"
 #define ATP_NAME            "ATP (Advanced Transparent Proxy)"
@@ -143,6 +144,9 @@ typedef struct {
     
     int use_tproxy;
     char current_vpn_iface[32];
+    
+    /* Thread safety */
+    pthread_mutex_t config_mutex;
 } atp_config_t;
 
 extern atp_config_t g_config;

@@ -181,72 +181,38 @@ int atp_init(void) {
 
 void atp_cleanup(void) {
     atp_remove_pidfile();
+    pthread_mutex_destroy(&g_config.config_mutex);
 }
 
 void atp_show_status(void) {
     status_show(&g_config, &g_service_ctx, &g_api_ctx);
 }
 
-static void parallel_init_tasks(atp_config_t *cfg) {
-    pid_t pids[4];
-    int status;
-    int task_count = 0;
-    
-    /* Task 1: TPROXY rules (can run independently) */
-    pids[task_count] = fork();
-    if (pids[task_count] == 0) {
-        log_stage(INIT_STAGE_TPROXY, "Setting up TPROXY rules");
-        tproxy_setup_ipv4(cfg);
-        if (cfg->proxy_ipv6) {
-            tproxy_setup_ipv6(cfg);
-        }
-        exit(0);
-    }
-    task_count++;
-    
-    /* Task 2: Routing rules (can run independently) */
-    pids[task_count] = fork();
-    if (pids[task_count] == 0) {
-        log_stage(INIT_STAGE_ROUTING, "Setting up routing rules");
-        routing_setup_ipv4(cfg);
-        if (cfg->proxy_ipv6) {
-            routing_setup_ipv6(cfg);
-        }
-        exit(0);
-    }
-    task_count++;
-    
-    /* Task 3: DNS hijack (depends on tproxy, brief wait) */
-    pids[task_count] = fork();
-    if (pids[task_count] == 0) {
-        usleep(500000);
-        log_stage(INIT_STAGE_DNS, "Setting up DNS hijack");
-        tproxy_dns_hijack_setup(cfg, 4, cfg->dns_hijack);
-        tproxy_dns_hijack_setup(cfg, 6, cfg->dns_hijack);
-        exit(0);
-    }
-    task_count++;
-    
-    /* Task 4: GeoIP (async, non-blocking, runs in background) */
-    pids[task_count] = fork();
-    if (pids[task_count] == 0) {
-        log_stage(INIT_STAGE_GEOIP, "Setting up GeoIP (may run async)");
-        if (cfg->bypass_cn_ip) {
-            geoip_setup_ipset(cfg);
-        }
-        exit(0);
-    }
-    task_count++;
-    
-    /* Wait for critical tasks (1,2,3) but not GeoIP (task 4) */
-    for (int i = 0; i < 3; i++) {
-        waitpid(pids[i], &status, 0);
-        if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
-            LOG_WARN("Task %d exited with status %d", i, WEXITSTATUS(status));
-        }
+static void init_tasks(atp_config_t *cfg) {
+    /* TPROXY rules */
+    log_stage(INIT_STAGE_TPROXY, "Setting up TPROXY rules");
+    tproxy_setup_ipv4(cfg);
+    if (cfg->proxy_ipv6) {
+        tproxy_setup_ipv6(cfg);
     }
     
-    LOG_DEBUG("GeoIP task running in background (PID: %d)", pids[3]);
+    /* Routing rules */
+    log_stage(INIT_STAGE_ROUTING, "Setting up routing rules");
+    routing_setup_ipv4(cfg);
+    if (cfg->proxy_ipv6) {
+        routing_setup_ipv6(cfg);
+    }
+    
+    /* DNS hijack */
+    log_stage(INIT_STAGE_DNS, "Setting up DNS hijack");
+    tproxy_dns_hijack_setup(cfg, 4, cfg->dns_hijack);
+    tproxy_dns_hijack_setup(cfg, 6, cfg->dns_hijack);
+    
+    /* GeoIP (synchronous, uses built-in default list if download fails) */
+    if (cfg->bypass_cn_ip) {
+        log_stage(INIT_STAGE_GEOIP, "Setting up GeoIP");
+        geoip_setup_ipset(cfg);
+    }
     
     init_stage |= INIT_STAGE_COMPLETE;
 }
@@ -349,9 +315,10 @@ int main(int argc, char *argv[]) {
         service_start(&g_service_ctx);
     }
     
-    parallel_init_tasks(&g_config);
+    /* Initialize all network rules synchronously (no fork) */
+    init_tasks(&g_config);
     
-    /* Additional setup that must run after parallel tasks */
+    /* Additional setup that must run after main tasks */
     tproxy_block_quic(&g_config, g_config.block_quic);
     tproxy_block_loopback(&g_config, 1);
     tproxy_xfrm_bypass(&g_config);

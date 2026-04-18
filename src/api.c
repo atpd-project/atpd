@@ -31,6 +31,7 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     
     if (cfg->clash_secret[0] != '\0') {
         strncpy(ctx->secret, cfg->clash_secret, sizeof(ctx->secret) - 1);
+        ctx->secret[sizeof(ctx->secret) - 1] = '\0';
     }
     
     ctx->retry_count = API_RETRY_COUNT;
@@ -145,6 +146,7 @@ int api_get_json(api_ctx_t *ctx, const char *path, char *output, size_t size) {
     
     if (ret == 0 && ctx->last_http_code == 200 && resp.data) {
         strncpy(output, resp.data, size - 1);
+        output[size - 1] = '\0';
         free(resp.data);
         return 0;
     }
@@ -170,6 +172,13 @@ int api_set_mode(api_ctx_t *ctx, const char *mode) {
         
         if (api_patch_json(ctx, "/configs", json_body) == 0) {
             LOG_INFO("API sync: mode set to [%s]", mode);
+            
+            /* Update local config with mutex protection */
+            pthread_mutex_lock(&g_config.config_mutex);
+            strncpy(g_config.user_clash_mode, mode, sizeof(g_config.user_clash_mode) - 1);
+            g_config.user_clash_mode[sizeof(g_config.user_clash_mode) - 1] = '\0';
+            pthread_mutex_unlock(&g_config.config_mutex);
+            
             return 0;
         }
     }
@@ -199,6 +208,59 @@ int api_get_health(api_ctx_t *ctx, char *output, size_t size) {
     return api_get_json(ctx, "/health", output, size);
 }
 
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
+    char response[4096];
+    char url[512];
+    char cmd[1024];
+    
+    if (!ctx || !mode || size == 0) {
+        return -1;
+    }
+    
+    snprintf(url, sizeof(url), "%s/configs", ctx->base_url);
+    
+    if (ctx->secret[0] != '\0') {
+        snprintf(cmd, sizeof(cmd), 
+                 "curl -s --connect-timeout 3 --max-time 5 "
+                 "-H 'Authorization: Bearer %s' %s 2>/dev/null",
+                 ctx->secret, url);
+    } else {
+        snprintf(cmd, sizeof(cmd), 
+                 "curl -s --connect-timeout 3 --max-time 5 %s 2>/dev/null",
+                 url);
+    }
+    
+    if (exec_cmd(cmd, response, sizeof(response), 5) != 0) {
+        LOG_WARN("Failed to get mode from API");
+        return -1;
+    }
+    
+    /* Simple string parsing: find "mode":"xxx" or "mode": "xxx" */
+    char *needle = strstr(response, "\"mode\":\"");
+    if (!needle) {
+        needle = strstr(response, "\"mode\": \"");
+    }
+    if (!needle) {
+        LOG_WARN("Failed to parse mode from API response");
+        return -1;
+    }
+    
+    needle += 8;
+    if (*needle == ' ') needle++;
+    
+    char *end = strchr(needle, '"');
+    if (!end) {
+        return -1;
+    }
+    
+    size_t len = end - needle;
+    if (len >= size) len = size - 1;
+    strncpy(mode, needle, len);
+    mode[len] = '\0';
+    
+    return 0;
+}
+
 const char *api_mode_to_string(api_mode_t mode) {
     switch (mode) {
         case API_MODE_RULE:      return "Rule";
@@ -214,56 +276,4 @@ api_mode_t api_string_to_mode(const char *str) {
     if (strcmp(str, "Direct") == 0) return API_MODE_DIRECT;
     if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
     return API_MODE_RULE;
-}
-int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
-    char response[4096];
-    char url[512];
-    char cmd[1024];
-
-    if (!ctx || !mode || size == 0) {
-        return -1;
-    }
-
-    snprintf(url, sizeof(url), "%s/configs", ctx->base_url);
-
-    if (ctx->secret[0] != '\0') {
-        snprintf(cmd, sizeof(cmd),
-                 "curl -s --connect-timeout 3 --max-time 5 "
-                 "-H 'Authorization: Bearer %s' %s 2>/dev/null",
-                 ctx->secret, url);
-    } else {
-        snprintf(cmd, sizeof(cmd),
-                 "curl -s --connect-timeout 3 --max-time 5 %s 2>/dev/null",
-                 url);
-    }
-
-    if (exec_cmd(cmd, response, sizeof(response), 5) != 0) {
-        LOG_WARN("Failed to get mode from API");
-        return -1;
-    }
-
-    /* Simple string parsing: find "mode":"xxx" or "mode": "xxx" */
-    char *needle = strstr(response, "\"mode\":\"");
-    if (!needle) {
-        needle = strstr(response, "\"mode\": \"");
-    }
-    if (!needle) {
-        LOG_WARN("Failed to parse mode from API response");
-        return -1;
-    }
-
-    needle += 8;
-    if (*needle == ' ') needle++;
-
-    char *end = strchr(needle, '"');
-    if (!end) {
-        return -1;
-    }
-
-    size_t len = end - needle;
-    if (len >= size) len = size - 1;
-    strncpy(mode, needle, len);
-    mode[len] = '\0';
-
-    return 0;
 }
