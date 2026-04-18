@@ -22,7 +22,7 @@ atp_config_t g_config;
 
 static volatile sig_atomic_t g_running = 1;
 static service_ctx_t g_service_ctx;
-static api_ctx_t g_api_ctx;
+api_ctx_t g_api_ctx;
 
 /* Initialization stage flags */
 static int init_stage = 0;
@@ -37,18 +37,6 @@ static int init_stage = 0;
 
 /* Core features mask */
 #define INIT_STAGE_CORE_MASK (INIT_STAGE_TPROXY | INIT_STAGE_ROUTING | INIT_STAGE_DNS)
-
-/* Helper to set stage flag only on success */
-static void set_stage_on_success(int *stage, int flag, const char *msg, int success) {
-    if (success) {
-        if (!(*stage & flag)) {
-            LOG_INFO("%s", msg);
-            *stage |= flag;
-        }
-    } else {
-        LOG_ERROR("%s FAILED", msg);
-    }
-}
 
 /* Check if core features are ready */
 static int atp_core_ready(void) {
