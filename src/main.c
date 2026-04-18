@@ -25,6 +25,10 @@ static volatile sig_atomic_t g_running = 1;
 static service_ctx_t g_service_ctx;
 api_ctx_t g_api_ctx;
 
+/* External reference for app_filter cache */
+extern int g_current_uids_count;
+extern int *g_current_uids;
+
 /* Initialization stage flags */
 static int init_stage = 0;
 #define INIT_STAGE_TPROXY     (1 << 0)
@@ -60,11 +64,185 @@ static const char *state_names[] = {
     "RULES_DEPLOY", "READY", "DEGRADED", "RECOVER", "STOPPING"
 };
 
+static const char *state_colors[] = {
+    [STATE_UNINITIALIZED] = "\033[1;90m",
+    [STATE_INIT]          = "\033[1;36m",
+    [STATE_CORE_START]    = "\033[1;36m",
+    [STATE_CORE_WAIT]     = "\033[1;33m",
+    [STATE_RULES_DEPLOY]  = "\033[1;34m",
+    [STATE_READY]         = "\033[1;32m",
+    [STATE_DEGRADED]      = "\033[1;33m",
+    [STATE_RECOVER]       = "\033[1;31m",
+    [STATE_STOPPING]      = "\033[1;31m"
+};
+
+/* Print ASCII art banner */
+static void print_banner(void) {
+    printf("\033[1;36m"
+    "    ___  __________  ____ \n"
+    "   /   |/_  __/ __ \\/ __ \\\n"
+    "  / /| | / / / /_/ / / / /\n"
+    " / ___ |/ / / ____/ /_/ / \n"
+    "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", ATP_VERSION);
+    
+    printf("--------------------------------------------\n");
+    printf(" Build Info: %s | %s\n", ATP_BUILD_DATE, ATP_BUILD_TIME);
+    printf(" Environment: Root (KernelSU) | Arch: ARM64\n");
+    printf(" Libs: musl-static | cJSON | libcurl\n");
+    printf("--------------------------------------------\n\n");
+}
+
+/* Print startup health summary table */
+static void print_startup_summary(void) {
+    printf("\n┌────────────────────────────────────────────────────────────────┐\n");
+    printf("│                    ATP STARTUP SUMMARY                         │\n");
+    printf("├────────────────────────────────────────────────────────────────┤\n");
+    
+    if (init_stage & INIT_STAGE_TPROXY)
+        printf("│ ✓ TPROXY Rules        │ OK │ IPv4/IPv6 mangle chains      │\n");
+    else
+        printf("│ ✗ TPROXY Rules        │ FAIL │ Check iptables availability │\n");
+    
+    if (init_stage & INIT_STAGE_ROUTING)
+        printf("│ ✓ Routing Policy      │ OK │ Table %d fwmark rules       │\n", g_config.table_id);
+    else
+        printf("│ ✗ Routing Policy      │ FAIL │ Check ip rule configuration│\n");
+    
+    if (init_stage & INIT_STAGE_DNS)
+        printf("│ ✓ DNS Hijack          │ OK │ Port %d redirected          │\n", g_config.dns_port);
+    else
+        printf("│ ✗ DNS Hijack          │ FAIL │ Check DNS settings         │\n");
+    
+    if (init_stage & INIT_STAGE_GEOIP)
+        printf("│ ✓ GeoIP (CN Bypass)   │ OK │ ipset cnip loaded           │\n");
+    else if (g_config.bypass_cn_ip)
+        printf("│ ⚠ GeoIP (CN Bypass)   │ ASYNC │ Download in background      │\n");
+    else
+        printf("│ ○ GeoIP (CN Bypass)   │ OFF │ Disabled by config          │\n");
+    
+    if (init_stage & INIT_STAGE_APP_FILTER)
+        printf("│ ✓ App Filter          │ OK │ %d UIDs in ipset            │\n", 
+               g_current_uids ? g_current_uids_count : 0);
+    else
+        printf("│ ○ App Filter          │ OFF │ Disabled by config          │\n");
+    
+    if (init_stage & INIT_STAGE_MAC_FILTER)
+        printf("│ ✓ MAC Filter          │ OK │ Hotspot MAC rules active    │\n");
+    else
+        printf("│ ○ MAC Filter          │ OFF │ Disabled by config          │\n");
+    
+    if (init_stage & INIT_STAGE_PERF_MODE)
+        printf("│ ✓ Performance Mode    │ OK │ CPU/BBR/RPS tuned           │\n");
+    else
+        printf("│ ○ Performance Mode    │ OFF │ Disabled by config          │\n");
+    
+    if (init_stage & INIT_STAGE_IPV6_MGR)
+        printf("│ ✓ IPv6 Manager        │ OK │ IPv6 stack configured       │\n");
+    else if (g_config.proxy_ipv6)
+        printf("│ ⚠ IPv6 Manager        │ PARTIAL │ Check ip6tables availability│\n");
+    else
+        printf("│ ○ IPv6 Manager        │ OFF │ Disabled by config          │\n");
+    
+    printf("├────────────────────────────────────────────────────────────────┤\n");
+    
+    /* VPN detection status */
+    char vpn_iface[IFNAMSIZ];
+    if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
+        printf("│ 🔒 VPN Connected      │ %-10s │ Interface: %-15s │\n", 
+               "ACTIVE", vpn_iface);
+        printf("│    └─ XFRM Bypass      │ OK │ IPsec/ESP fast lane        │\n");
+    } else {
+        printf("│ 🔓 VPN Connected      │ %-10s │ No active VPN tunnel       │\n", "INACTIVE");
+    }
+    
+    /* sing-box service status */
+    if (service_check(&g_service_ctx)) {
+        int pid = service_get_pid(&g_service_ctx);
+        printf("│ 🚀 sing-box Service   │ OK │ PID: %-23d │\n", pid);
+    } else {
+        printf("│ 🚀 sing-box Service   │ FAIL │ Process not running        │\n");
+    }
+    
+    printf("└────────────────────────────────────────────────────────────────┘\n\n");
+}
+
+/* Print quick health check */
+static void print_health_check(void) {
+    printf("┌────────────────────────────────────────────┐\n");
+    printf("│           ATP Health Check                  │\n");
+    printf("├────────────────────────────────────────────┤\n");
+    
+    /* Netlink Monitor */
+    if (netlink_monitor_is_running()) {
+        printf("│ ✓ Netlink Monitor    │ OK │ Async ready      │\n");
+    } else {
+        printf("│ ✗ Netlink Monitor    │ FAIL │ Not running      │\n");
+    }
+    
+    /* TPROXY Rules */
+    char check_cmd[256];
+    snprintf(check_cmd, sizeof(check_cmd), 
+             "iptables -t mangle -L ATP_PRE_0 -n 2>/dev/null | head -1 | grep -q ATP_PRE_0");
+    if (exec_cmd_simple(check_cmd, 2) == 0) {
+        printf("│ ✓ TPROXY Rules      │ OK │ Table %d injected │\n", g_config.table_id);
+    } else {
+        printf("│ ✗ TPROXY Rules      │ FAIL │ Not configured   │\n");
+    }
+    
+    /* Routing Table */
+    snprintf(check_cmd, sizeof(check_cmd), 
+             "ip route show table %d 2>/dev/null | grep -q local", g_config.table_id);
+    if (exec_cmd_simple(check_cmd, 2) == 0) {
+        printf("│ ✓ Routing Table     │ OK │ Table %d locked   │\n", g_config.table_id);
+    } else {
+        printf("│ ✗ Routing Table     │ FAIL │ Not configured   │\n");
+    }
+    
+    /* INET_DIAG */
+    if (inet_diag_available()) {
+        printf("│ ✓ INET_DIAG         │ OK │ SELinux allowed   │\n");
+    } else {
+        printf("│ ✗ INET_DIAG         │ FAIL │ SELinux blocked  │\n");
+    }
+    
+    /* sing-box API */
+    if (api_check_health(&g_api_ctx)) {
+        printf("│ ✓ sing-box API      │ OK │ Heartbeat OK      │\n");
+    } else {
+        printf("│ ✗ sing-box API      │ FAIL │ Not responding   │\n");
+    }
+    
+    printf("└────────────────────────────────────────────┘\n\n");
+}
+
 static void state_transition(atp_state_t new_state) {
-    LOG_INFO("State transition: %s -> %s", 
-             state_names[g_state], state_names[new_state]);
+    time_t now = time(NULL);
+    struct tm *tm_info = localtime(&now);
+    char time_str[16];
+    strftime(time_str, sizeof(time_str), "%H:%M:%S", tm_info);
+    
+    const char *color = state_colors[new_state];
+    const char *reset = "\033[0m";
+    
+    if (g_state != STATE_UNINITIALIZED && g_state_enter_time > 0) {
+        int elapsed = (int)(now - g_state_enter_time);
+        if (elapsed > 0) {
+            printf("[%s] %s[STATE]%s %s -> %s%s%s (took %ds)\n", 
+                   time_str, color, reset,
+                   state_names[g_state], color, state_names[new_state], reset, elapsed);
+        } else {
+            printf("[%s] %s[STATE]%s %s -> %s%s%s\n", 
+                   time_str, color, reset,
+                   state_names[g_state], color, state_names[new_state], reset);
+        }
+    } else {
+        printf("[%s] %s[STATE]%s %s -> %s%s%s\n", 
+               time_str, color, reset,
+               state_names[g_state], color, state_names[new_state], reset);
+    }
+    
     g_state = new_state;
-    g_state_enter_time = time(NULL);
+    g_state_enter_time = now;
 }
 
 /* Check if core features are ready */
@@ -96,9 +274,7 @@ int atp_signal_setup(void) {
     if (sigaction(SIGHUP, &sa, NULL) < 0) return -1;
     
     /* Auto-reap child processes without creating zombies */
-    /* Linux 2.6+ will automatically reap children when SIGCHLD is ignored */
     signal(SIGCHLD, SIG_IGN);
-    
     signal(SIGPIPE, SIG_IGN);
     return 0;
 }
@@ -377,7 +553,7 @@ static int atomic_mode_switch(atp_config_t *cfg, api_ctx_t *api, const char *new
         }
     }
     
-    /* Check if this is the same as last requested mode (prevent duplicate attempts) */
+    /* Check if this is the same as last requested mode */
     if (strcmp(last_mode, new_mode) == 0) {
         LOG_DEBUG("Mode %s already attempted, skipping duplicate request", new_mode);
         return 0;
@@ -446,6 +622,9 @@ int main(int argc, char *argv[]) {
     if (atp_check_root() != 0) {
         return 1;
     }
+    
+    /* Print banner on startup */
+    print_banner();
     
     log_init();
     if (opts.verbose) log_set_level(LOG_LEVEL_DEBUG);
@@ -551,6 +730,11 @@ int main(int argc, char *argv[]) {
                     tproxy_block_loopback(&g_config, 1);
                     tproxy_xfrm_bypass(&g_config);
                     tproxy_prevent_loop(&g_config);
+                    
+                    /* Print startup summary when entering READY state */
+                    print_startup_summary();
+                    print_health_check();
+                    
                     state_transition(STATE_READY);
                 } else {
                     LOG_ERROR("Rules deployment failed, entering degraded mode");

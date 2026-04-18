@@ -25,6 +25,8 @@
 
 #define ATP_VERSION         "1.0.0"
 #define ATP_NAME            "ATP (Advanced Transparent Proxy)"
+#define ATP_BUILD_DATE      __DATE__
+#define ATP_BUILD_TIME      __TIME__
 
 #define ATP_DEFAULT_DIR     "/data/adb/atp"
 #define ATP_CONF_FILE       "atp.conf"
