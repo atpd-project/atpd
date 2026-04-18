@@ -15,6 +15,7 @@
 #include "ipv6_manager.h"
 #include "perf_mode.h"
 #include "inet_diag.h"
+#include "version.h"
 #include "utils.h"
 #include <libgen.h>
 #include <sys/stat.h>
@@ -73,18 +74,30 @@ static const char *state_colors[] = {
     [STATE_STOPPING]      = "\033[1;31m"
 };
 
-/* Print ASCII art banner */
+/* Print ASCII art banner with version info */
 static void print_banner(void) {
     printf("\033[1;36m"
     "    ___  __________  ____ \n"
     "   /   |/_  __/ __ \\/ __ \\\n"
     "  / /| | / / / /_/ / / / /\n"
     " / ___ |/ / / ____/ /_/ / \n"
-    "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", ATP_VERSION);
+    "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", 
+    atp_get_version());
     
     printf("--------------------------------------------\n");
-    printf(" Build Info: %s | %s\n", ATP_BUILD_DATE, ATP_BUILD_TIME);
-    printf(" Environment: Root (KernelSU) | Arch: ARM64\n");
+    printf(" Version:   %s\n", atp_get_full_version());
+    printf(" Build:     %s | %s\n", atp_get_build_date(), atp_get_build_time());
+    printf(" Compiler:  %s\n", atp_get_compiler());
+    printf(" Arch:      %s\n", atp_get_arch());
+    
+    if (atp_is_dirty()) {
+        printf("\033[1;33m Warning:  Uncommitted changes present\033[0m\n");
+    }
+    if (!atp_is_clean()) {
+        printf("\033[1;33m Note:     Working tree has modifications\033[0m\n");
+    }
+    
+    printf(" Environment: Root (KernelSU)\n");
     printf(" Libs: musl-static | cJSON | libcurl\n");
     printf("--------------------------------------------\n\n");
 }
@@ -118,7 +131,6 @@ static void print_startup_summary(void) {
         printf("│ ○ GeoIP (CN Bypass)   │ OFF │ Disabled by config          │\n");
     
     if (init_stage & INIT_STAGE_APP_FILTER) {
-        /* Use extern variables from app_filter.c */
         extern int g_current_uids_count;
         extern int *g_current_uids;
         printf("│ ✓ App Filter          │ OK │ %d UIDs in ipset            │\n", 
@@ -626,7 +638,7 @@ int main(int argc, char *argv[]) {
     if (opts.verbose) log_set_level(LOG_LEVEL_DEBUG);
     if (opts.quiet) log_set_level(LOG_LEVEL_ERROR);
     
-    LOG_INFO(ATP_NAME " v" ATP_VERSION " starting");
+    LOG_INFO(ATP_NAME " v%s starting", atp_get_version());
     
     config_set_defaults(&g_config);
     
