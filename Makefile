@@ -8,14 +8,14 @@ TARGET = atpd
 ifneq ($(ANDROID_NDK_ROOT),)
     CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
     CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -DATP_VERSION=\"$(VERSION)\" -fPIC -fpie
-    CFLAGS += -I$(INC_DIR)
+    CFLAGS += -I$(INC_DIR) -I$(INC_DIR)/cjson
     LDFLAGS = -L/tmp/curl-musl/lib -lcurl -pthread -pie
     # Uncomment if HTTPS is needed
     # LDFLAGS += -lssl -lcrypto
 else
     CC = gcc
     CFLAGS = -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
-    CFLAGS += -I$(INC_DIR)
+    CFLAGS += -I$(INC_DIR) -I$(INC_DIR)/cjson
     LDFLAGS = -lcurl -pthread
     # Uncomment if HTTPS is needed
     # LDFLAGS += -lssl -lcrypto
@@ -66,14 +66,8 @@ $(BIN_DIR):
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# Special rule for cjson in subdirectory
-$(OBJ_DIR)/cjson/%.o: $(SRC_DIR)/cjson/%.c $(HEADERS) | $(OBJ_DIR)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
-
-# Ensure cjson object is included
 $(BIN_DIR)/$(TARGET): $(OBJS) | $(BIN_DIR)
 	$(CC) $(OBJS) -o $@ $(LDFLAGS)
 
