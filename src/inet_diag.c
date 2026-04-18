@@ -16,6 +16,15 @@
 #define INET_DIAG_SOCKET_TIMEOUT_MS 3000
 #define NLMSG_TAIL(nmsg) ((struct rtattr*)(((char*)(nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
 
+/* Fallback definitions for older kernels */
+#ifndef SOCK_DIAG_BY_FAMILY
+#define SOCK_DIAG_BY_FAMILY 20
+#endif
+
+#ifndef INET_DIAG_REQ_BYTECODE
+#define INET_DIAG_REQ_BYTECODE 1
+#endif
+
 /* Netlink socket for INET_DIAG */
 static int g_diag_sock = -1;
 static pthread_mutex_t g_diag_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -60,8 +69,9 @@ void inet_diag_cleanup(void) {
 static void add_attr(struct nlmsghdr *nlh, int maxlen, int type, const void *data, int alen) {
     int len = RTA_LENGTH(alen);
     struct rtattr *rta;
+    int new_len = NLMSG_ALIGN(nlh->nlmsg_len) + len;
     
-    if (NLMSG_ALIGN(nlh->nlmsg_len) + len > maxlen) {
+    if (new_len > maxlen) {
         return;
     }
     
@@ -73,7 +83,7 @@ static void add_attr(struct nlmsghdr *nlh, int maxlen, int type, const void *dat
         memcpy(RTA_DATA(rta), data, alen);
     }
     
-    nlh->nlmsg_len = NLMSG_ALIGN(nlh->nlmsg_len) + len;
+    nlh->nlmsg_len = new_len;
 }
 
 /* Send diag request and receive response */
@@ -91,7 +101,7 @@ static int send_diag_request(struct inet_diag_req_v2 *req, char **response, size
     /* Build netlink message */
     nlh = (struct nlmsghdr*)buf;
     nlh->nlmsg_len = NLMSG_LENGTH(sizeof(*req));
-    nlh->nlmsg_type = req->sdiag_family == AF_INET ? SOCK_DIAG_BY_FAMILY : SOCK_DIAG_BY_FAMILY;
+    nlh->nlmsg_type = SOCK_DIAG_BY_FAMILY;
     nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
     nlh->nlmsg_seq = time(NULL);
     nlh->nlmsg_pid = getpid();
@@ -294,7 +304,7 @@ int inet_diag_get_connections(connection_info_t **conns, int *count, int protoco
                 list = new_list;
             }
             
-            parse_diagram_message(nh, &list[list_size]);
+            parse_diag_message(nh, &list[list_size]);
             list_size++;
         }
         free(response);
@@ -397,9 +407,6 @@ uint32_t inet_diag_get_socket_inode(int family, int protocol,
     req.id.idiag_dport = htons(dst_port);
     req.id.idiag_src[0] = src_ip;
     req.id.idiag_dst[0] = dst_ip;
-    
-    /* Add extended attribute to request socket inode */
-    add_attr((struct nlmsghdr*)&req, sizeof(req), INET_DIAG_REQ_BYTECODE, NULL, 0);
     
     if (send_diag_request(&req, &response, &resp_len) == 0 && response) {
         struct nlmsghdr *nh;
