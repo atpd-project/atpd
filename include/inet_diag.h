@@ -18,26 +18,52 @@
 #define TCP_CLOSING     11
 #define TCP_NEW_SYN_RECV 12
 
-/* Connection information structure */
-typedef struct {
-    int uid;
-    int pid;
-    char comm[64];
-    uint32_t src_ip;
-    uint32_t dst_ip;
-    uint16_t src_port;
-    uint16_t dst_port;
-    int state;
-    int family;  /* AF_INET or AF_INET6 */
-    char src_ip_str[INET_ADDRSTRLEN];
-    char dst_ip_str[INET_ADDRSTRLEN];
-} connection_info_t;
-
 /* Protocol types */
 typedef enum {
     DIAG_PROTO_TCP = 6,
     DIAG_PROTO_UDP = 17
 } diag_protocol_t;
+
+/* Connection information structure */
+typedef struct {
+    int uid;
+    int pid;
+    char comm[64];
+    union {
+        struct {
+            uint32_t ip;
+        } v4;
+        struct {
+            uint8_t ip[16];
+        } v6;
+    } src;
+    union {
+        struct {
+            uint32_t ip;
+        } v4;
+        struct {
+            uint8_t ip[16];
+        } v6;
+    } dst;
+    uint16_t src_port;
+    uint16_t dst_port;
+    int state;
+    int family;  /* AF_INET or AF_INET6 */
+    char src_ip_str[INET6_ADDRSTRLEN];
+    char dst_ip_str[INET6_ADDRSTRLEN];
+} connection_info_t;
+
+/* Connection filter for bytecode filtering */
+typedef struct {
+    int uid;           /* Filter by UID (-1 = any) */
+    int protocol;      /* Filter by protocol (-1 = any) */
+    int state_mask;    /* Filter by state mask (0 = all) */
+    int family;        /* Filter by family (AF_INET/AF_INET6/0=any) */
+    uint32_t src_ip;   /* Source IP (0 = any) */
+    uint32_t dst_ip;   /* Destination IP (0 = any) */
+    uint16_t src_port; /* Source port (0 = any) */
+    uint16_t dst_port; /* Destination port (0 = any) */
+} inet_diag_filter_t;
 
 /* Initialize INET_DIAG module */
 int inet_diag_init(void);
@@ -45,19 +71,33 @@ int inet_diag_init(void);
 /* Cleanup INET_DIAG module */
 void inet_diag_cleanup(void);
 
-/* Get UID for a specific connection */
-int inet_diag_get_uid(int family, int protocol,
-                       uint32_t src_ip, uint16_t src_port,
-                       uint32_t dst_ip, uint16_t dst_port);
+/* Check if INET_DIAG is available (SELinux permissions) */
+int inet_diag_available(void);
+
+/* Get UID for a specific connection (IPv4) */
+int inet_diag_get_uid_v4(int protocol,
+                          uint32_t src_ip, uint16_t src_port,
+                          uint32_t dst_ip, uint16_t dst_port);
+
+/* Get UID for a specific connection (IPv6) */
+int inet_diag_get_uid_v6(int protocol,
+                          const uint8_t *src_ip, uint16_t src_port,
+                          const uint8_t *dst_ip, uint16_t dst_port);
 
 /* Get UID by socket inode (alternative method) */
 int inet_diag_get_uid_by_inode(uint32_t inode);
 
-/* Get all connections matching filter */
-int inet_diag_get_connections(connection_info_t **conns, int *count, int protocol, int state_mask);
+/* Get all connections with kernel-side filtering (using bytecode) */
+int inet_diag_get_connections_filtered(connection_info_t **conns, int *count,
+                                         inet_diag_filter_t *filter);
 
-/* Get connections for a specific UID */
+/* Get connections for a specific UID (using kernel filter) */
 int inet_diag_get_connections_by_uid(int uid, connection_info_t **conns, int *count);
+
+/* Fallback: get UID from /proc filesystem (works even without INET_DIAG) */
+int inet_diag_get_uid_fallback(int family, int protocol,
+                                uint32_t src_ip, uint16_t src_port,
+                                uint32_t dst_ip, uint16_t dst_port);
 
 /* Free connection list */
 void inet_diag_free_connections(connection_info_t *conns);

@@ -39,20 +39,32 @@ typedef struct {
     time_t timestamp;
 } conn_cache_t;
 
+typedef struct {
+    uint8_t src_ip[16];
+    uint16_t src_port;
+    uint8_t dst_ip[16];
+    uint16_t dst_port;
+    int uid;
+    time_t timestamp;
+} conn_cache_v6_t;
+
 #define CONN_CACHE_SIZE 1024
 #define CONN_CACHE_TTL 5  /* seconds */
 
 static conn_cache_t g_conn_cache[CONN_CACHE_SIZE];
+static conn_cache_v6_t g_conn_cache_v6[CONN_CACHE_SIZE];
 static int g_conn_cache_count = 0;
+static int g_conn_cache_v6_count = 0;
 static pthread_mutex_t g_conn_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 /* Forward declarations */
 static int app_filter_load_package_cache(void);
 static int app_filter_uid_in_list(int uid, int *uid_list, int count);
 static int parse_user_id_from_line(const char *line);
-static int app_filter_check_connection_cached(int family, int protocol,
-                                                uint32_t src_ip, uint16_t src_port,
-                                                uint32_t dst_ip, uint16_t dst_port);
+static int app_filter_check_connection_cached_v4(uint32_t src_ip, uint16_t src_port,
+                                                   uint32_t dst_ip, uint16_t dst_port);
+static int app_filter_check_connection_cached_v6(const uint8_t *src_ip, uint16_t src_port,
+                                                   const uint8_t *dst_ip, uint16_t dst_port);
 
 /* Initialize INET_DIAG module */
 int app_filter_init(atp_config_t *cfg) {
@@ -72,13 +84,16 @@ int app_filter_init(atp_config_t *cfg) {
     
     /* Initialize INET_DIAG for connection-level control */
     if (inet_diag_init() != 0) {
-        LOG_WARN("INET_DIAG initialization failed, connection-level control disabled");
+        LOG_WARN("INET_DIAG initialization failed, using /proc fallback");
+    } else if (inet_diag_available()) {
+        LOG_DEBUG("INET_DIAG available for fine-grained connection control");
     } else {
-        LOG_DEBUG("INET_DIAG initialized for fine-grained connection control");
+        LOG_DEBUG("INET_DIAG unavailable, using /proc/net/tcp fallback");
     }
     
     /* Initialize connection cache */
     memset(g_conn_cache, 0, sizeof(g_conn_cache));
+    memset(g_conn_cache_v6, 0, sizeof(g_conn_cache_v6));
     pthread_mutex_init(&g_conn_cache_mutex, NULL);
     
     LOG_DEBUG("App filter initialized with ipset %s and connection cache", APP_IPSET_NAME);
@@ -382,10 +397,9 @@ void app_filter_free_uids(int *uids) {
     if (uids) free(uids);
 }
 
-/* Connection-level check with caching for performance */
-static int app_filter_check_connection_cached(int family, int protocol,
-                                                uint32_t src_ip, uint16_t src_port,
-                                                uint32_t dst_ip, uint16_t dst_port) {
+/* IPv4 connection-level check with caching */
+static int app_filter_check_connection_cached_v4(uint32_t src_ip, uint16_t src_port,
+                                                   uint32_t dst_ip, uint16_t dst_port) {
     time_t now = time(NULL);
     int uid = -1;
     
@@ -405,7 +419,7 @@ static int app_filter_check_connection_cached(int family, int protocol,
     pthread_mutex_unlock(&g_conn_cache_mutex);
     
     /* Not in cache, query via INET_DIAG */
-    uid = inet_diag_get_uid(family, protocol, src_ip, src_port, dst_ip, dst_port);
+    uid = inet_diag_get_uid_v4(IPPROTO_TCP, src_ip, src_port, dst_ip, dst_port);
     
     /* Add to cache */
     pthread_mutex_lock(&g_conn_cache_mutex);
@@ -432,21 +446,61 @@ static int app_filter_check_connection_cached(int family, int protocol,
     return uid;
 }
 
-/* Public API: Check if a connection should be proxied based on UID */
-int app_filter_should_proxy(int family, int protocol,
-                             uint32_t src_ip, uint16_t src_port,
-                             uint32_t dst_ip, uint16_t dst_port) {
-    int uid;
+/* IPv6 connection-level check with caching */
+static int app_filter_check_connection_cached_v6(const uint8_t *src_ip, uint16_t src_port,
+                                                   const uint8_t *dst_ip, uint16_t dst_port) {
+    time_t now = time(NULL);
+    int uid = -1;
     
-    /* Only TCP is supported for now */
-    if (protocol != IPPROTO_TCP) {
-        return 1;  /* Default: proxy */
+    /* Check cache first */
+    pthread_mutex_lock(&g_conn_cache_mutex);
+    for (int i = 0; i < g_conn_cache_v6_count; i++) {
+        if (memcmp(g_conn_cache_v6[i].src_ip, src_ip, 16) == 0 &&
+            g_conn_cache_v6[i].src_port == src_port &&
+            memcmp(g_conn_cache_v6[i].dst_ip, dst_ip, 16) == 0 &&
+            g_conn_cache_v6[i].dst_port == dst_port &&
+            (now - g_conn_cache_v6[i].timestamp) < CONN_CACHE_TTL) {
+            uid = g_conn_cache_v6[i].uid;
+            pthread_mutex_unlock(&g_conn_cache_mutex);
+            return uid;
+        }
     }
+    pthread_mutex_unlock(&g_conn_cache_mutex);
     
-    uid = app_filter_check_connection_cached(family, protocol, src_ip, src_port, dst_ip, dst_port);
+    /* Not in cache, query via INET_DIAG */
+    uid = inet_diag_get_uid_v6(IPPROTO_TCP, src_ip, src_port, dst_ip, dst_port);
+    
+    /* Add to cache */
+    pthread_mutex_lock(&g_conn_cache_mutex);
+    if (g_conn_cache_v6_count < CONN_CACHE_SIZE) {
+        memcpy(g_conn_cache_v6[g_conn_cache_v6_count].src_ip, src_ip, 16);
+        g_conn_cache_v6[g_conn_cache_v6_count].src_port = src_port;
+        memcpy(g_conn_cache_v6[g_conn_cache_v6_count].dst_ip, dst_ip, 16);
+        g_conn_cache_v6[g_conn_cache_v6_count].dst_port = dst_port;
+        g_conn_cache_v6[g_conn_cache_v6_count].uid = uid;
+        g_conn_cache_v6[g_conn_cache_v6_count].timestamp = now;
+        g_conn_cache_v6_count++;
+    } else {
+        /* FIFO eviction */
+        memmove(&g_conn_cache_v6[0], &g_conn_cache_v6[1], sizeof(conn_cache_v6_t) * (CONN_CACHE_SIZE - 1));
+        memcpy(g_conn_cache_v6[CONN_CACHE_SIZE - 1].src_ip, src_ip, 16);
+        g_conn_cache_v6[CONN_CACHE_SIZE - 1].src_port = src_port;
+        memcpy(g_conn_cache_v6[CONN_CACHE_SIZE - 1].dst_ip, dst_ip, 16);
+        g_conn_cache_v6[CONN_CACHE_SIZE - 1].dst_port = dst_port;
+        g_conn_cache_v6[CONN_CACHE_SIZE - 1].uid = uid;
+        g_conn_cache_v6[CONN_CACHE_SIZE - 1].timestamp = now;
+    }
+    pthread_mutex_unlock(&g_conn_cache_mutex);
+    
+    return uid;
+}
+
+/* Public API: Check if a connection should be proxied based on UID (IPv4) */
+int app_filter_should_proxy_v4(uint32_t src_ip, uint16_t src_port,
+                                uint32_t dst_ip, uint16_t dst_port) {
+    int uid = app_filter_check_connection_cached_v4(src_ip, src_port, dst_ip, dst_port);
     
     if (uid <= 0) {
-        /* Cannot determine UID, use rule-based decision */
         return 1;  /* Default: proxy */
     }
     
@@ -454,12 +508,49 @@ int app_filter_should_proxy(int family, int protocol,
     int in_list = app_filter_uid_in_list(uid, g_current_uids, g_current_uids_count);
     
     if (strcmp(g_config.app_proxy_mode, "blacklist") == 0) {
-        /* Blacklist mode: UIDs in list bypass, others proxy */
         return in_list ? 0 : 1;
     } else {
-        /* Whitelist mode: UIDs in list proxy, others bypass */
         return in_list ? 1 : 0;
     }
+}
+
+/* Public API: Check if a connection should be proxied based on UID (IPv6) */
+int app_filter_should_proxy_v6(const uint8_t *src_ip, uint16_t src_port,
+                                const uint8_t *dst_ip, uint16_t dst_port) {
+    int uid = app_filter_check_connection_cached_v6(src_ip, src_port, dst_ip, dst_port);
+    
+    if (uid <= 0) {
+        return 1;  /* Default: proxy */
+    }
+    
+    /* Check if UID is in our list */
+    int in_list = app_filter_uid_in_list(uid, g_current_uids, g_current_uids_count);
+    
+    if (strcmp(g_config.app_proxy_mode, "blacklist") == 0) {
+        return in_list ? 0 : 1;
+    } else {
+        return in_list ? 1 : 0;
+    }
+}
+
+/* Generic wrapper for family-agnostic calls */
+int app_filter_should_proxy(int family, int protocol,
+                             void *src_ip, uint16_t src_port,
+                             void *dst_ip, uint16_t dst_port) {
+    /* Only TCP is supported for now */
+    if (protocol != IPPROTO_TCP) {
+        return 1;
+    }
+    
+    if (family == AF_INET) {
+        return app_filter_should_proxy_v4(*(uint32_t*)src_ip, src_port,
+                                           *(uint32_t*)dst_ip, dst_port);
+    } else if (family == AF_INET6) {
+        return app_filter_should_proxy_v6((uint8_t*)src_ip, src_port,
+                                           (uint8_t*)dst_ip, dst_port);
+    }
+    
+    return 1;
 }
 
 static void app_filter_configure_chain(atp_config_t *cfg, int family) {
@@ -527,8 +618,12 @@ int app_filter_setup(atp_config_t *cfg) {
     LOG_INFO("App filter configured with %d UIDs using ipset %s (IPv6: %s)", 
              uid_count, APP_IPSET_NAME, cfg->proxy_ipv6 ? "enabled" : "disabled");
     
-    /* Also enable connection-level fine control if INET_DIAG is available */
-    LOG_INFO("Connection-level fine control is active for per-connection decisions");
+    /* Log INET_DIAG status for fine-grained control */
+    if (inet_diag_available()) {
+        LOG_INFO("Connection-level fine control active (INET_DIAG available)");
+    } else {
+        LOG_INFO("Connection-level fine control limited (INET_DIAG unavailable, using /proc fallback)");
+    }
     
     return 0;
 }
@@ -576,7 +671,9 @@ int app_filter_reload(atp_config_t *cfg) {
     /* Clear connection cache on reload */
     pthread_mutex_lock(&g_conn_cache_mutex);
     memset(g_conn_cache, 0, sizeof(g_conn_cache));
+    memset(g_conn_cache_v6, 0, sizeof(g_conn_cache_v6));
     g_conn_cache_count = 0;
+    g_conn_cache_v6_count = 0;
     pthread_mutex_unlock(&g_conn_cache_mutex);
     
     app_filter_cleanup(cfg);
@@ -584,8 +681,12 @@ int app_filter_reload(atp_config_t *cfg) {
 }
 
 /* Get UID for a specific connection (wrapper for external callers) */
-int app_filter_get_connection_uid(int family, int protocol,
-                                    uint32_t src_ip, uint16_t src_port,
-                                    uint32_t dst_ip, uint16_t dst_port) {
-    return app_filter_check_connection_cached(family, protocol, src_ip, src_port, dst_ip, dst_port);
+int app_filter_get_connection_uid_v4(uint32_t src_ip, uint16_t src_port,
+                                      uint32_t dst_ip, uint16_t dst_port) {
+    return app_filter_check_connection_cached_v4(src_ip, src_port, dst_ip, dst_port);
+}
+
+int app_filter_get_connection_uid_v6(const uint8_t *src_ip, uint16_t src_port,
+                                      const uint8_t *dst_ip, uint16_t dst_port) {
+    return app_filter_check_connection_cached_v6(src_ip, src_port, dst_ip, dst_port);
 }
