@@ -349,6 +349,27 @@ void app_filter_free_uids(int *uids) {
     if (uids) free(uids);
 }
 
+static void app_filter_configure_chain(atp_config_t *cfg, int family) {
+    const char *chain_name = (family == 4) ? "ATP_APP_0" : "ATP6_APP_0";
+    const char *table = "mangle";
+    
+    /* Flush existing rules in chain */
+    tproxy_chain_flush(cfg, family, table, chain_name);
+    
+    char rule[256];
+    if (strcmp(cfg->app_proxy_mode, "blacklist") == 0) {
+        /* Blacklist: UIDs in set go to ACCEPT (bypass), others go to RETURN (TPROXY) */
+        snprintf(rule, sizeof(rule), "-m set --match-set %s src -j ACCEPT", APP_IPSET_NAME);
+        tproxy_rule_add(cfg, family, table, chain_name, rule);
+        tproxy_rule_add(cfg, family, table, chain_name, "-j RETURN");
+    } else {
+        /* Whitelist: UIDs in set go to RETURN (TPROXY), others go to ACCEPT (bypass) */
+        snprintf(rule, sizeof(rule), "-m set --match-set %s src -j RETURN", APP_IPSET_NAME);
+        tproxy_rule_add(cfg, family, table, chain_name, rule);
+        tproxy_rule_add(cfg, family, table, chain_name, "-j ACCEPT");
+    }
+}
+
 int app_filter_setup(atp_config_t *cfg) {
     if (!cfg->app_proxy_enable) {
         LOG_DEBUG("App filter disabled");
@@ -382,24 +403,16 @@ int app_filter_setup(atp_config_t *cfg) {
     /* Add UIDs to ipset */
     app_filter_add_uids_to_ipset(uids, uid_count, cfg->app_proxy_mode);
     
-    /* Flush existing rules in ATP_APP_0 chain */
-    tproxy_chain_flush(cfg, 4, "mangle", "ATP_APP_0");
+    /* Configure IPv4 chain */
+    app_filter_configure_chain(cfg, 4);
     
-    /* Add single iptables rule using ipset */
-    char rule[256];
-    if (strcmp(cfg->app_proxy_mode, "blacklist") == 0) {
-        /* Blacklist: UIDs in set go to ACCEPT (bypass), others go to RETURN (TPROXY) */
-        snprintf(rule, sizeof(rule), "-m set --match-set %s src -j ACCEPT", APP_IPSET_NAME);
-        tproxy_rule_add(cfg, 4, "mangle", "ATP_APP_0", rule);
-        tproxy_rule_add(cfg, 4, "mangle", "ATP_APP_0", "-j RETURN");
-    } else {
-        /* Whitelist: UIDs in set go to RETURN (TPROXY), others go to ACCEPT (bypass) */
-        snprintf(rule, sizeof(rule), "-m set --match-set %s src -j RETURN", APP_IPSET_NAME);
-        tproxy_rule_add(cfg, 4, "mangle", "ATP_APP_0", rule);
-        tproxy_rule_add(cfg, 4, "mangle", "ATP_APP_0", "-j ACCEPT");
+    /* Configure IPv6 chain if enabled */
+    if (cfg->proxy_ipv6) {
+        app_filter_configure_chain(cfg, 6);
     }
     
-    LOG_INFO("App filter configured with %d UIDs using ipset %s", uid_count, APP_IPSET_NAME);
+    LOG_INFO("App filter configured with %d UIDs using ipset %s (IPv6: %s)", 
+             uid_count, APP_IPSET_NAME, cfg->proxy_ipv6 ? "enabled" : "disabled");
     return 0;
 }
 
@@ -414,8 +427,13 @@ int app_filter_cleanup(atp_config_t *cfg) {
              APP_IPSET_NAME, APP_IPSET_NAME);
     exec_cmd_simple(cmd, 5);
     
-    /* Flush chain */
+    /* Flush IPv4 chain */
     tproxy_chain_flush(cfg, 4, "mangle", "ATP_APP_0");
+    
+    /* Flush IPv6 chain if it exists */
+    if (cfg->proxy_ipv6) {
+        tproxy_chain_flush(cfg, 6, "mangle", "ATP6_APP_0");
+    }
     
     /* Free cached UIDs */
     if (g_current_uids) {
