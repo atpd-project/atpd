@@ -35,11 +35,16 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     pthread_mutex_unlock(&cfg->config_mutex);
     
     ctx->restart_cooldown_sec = 60;
+    ctx->restart_delay_sec = cfg->restart_delay;  /* Use configured restart delay */
+    if (ctx->restart_delay_sec <= 0) {
+        ctx->restart_delay_sec = DEFAULT_RESTART_DELAY;  /* Fallback to default */
+    }
     ctx->last_restart_time = 0;
     ctx->restart_failures = 0;
     ctx->state = SERVICE_STOPPED;
     
-    LOG_DEBUG("Service initialized: bin=%s", ctx->bin_path);
+    LOG_DEBUG("Service initialized: bin=%s, restart_delay=%d", 
+              ctx->bin_path, ctx->restart_delay_sec);
     return 0;
 }
 
@@ -184,7 +189,15 @@ int service_restart(service_ctx_t *ctx) {
     api_reset_rate_limit(&g_api_ctx);
     
     service_stop(ctx);
-    sleep(2);
+    
+    /* Use configured restart delay */
+    int delay = ctx->restart_delay_sec;
+    if (delay <= 0) {
+        delay = DEFAULT_RESTART_DELAY;
+    }
+    LOG_DEBUG("Waiting %d seconds before restart", delay);
+    sleep(delay);
+    
     return service_start(ctx);
 }
 

@@ -236,12 +236,8 @@ static int tproxy_reject_available(void) {
     return 1;
 }
 
-int tproxy_setup_ipv4(atp_config_t *cfg) {
-    LOG_INFO("Setting up IPv4 TPROXY chains");
-    
-    /* First, configure rp_filter (critical for TPROXY to work) */
-    tproxy_configure_rp_filter(cfg);
-    
+/* Helper function to create standard chains for a family */
+static void tproxy_create_standard_chains(atp_config_t *cfg, int family, const char *suffix) {
     const char *chains[] = {
         "ATP_PRE_0", "ATP_PRE_1",
         "ATP_OUT_0", "ATP_OUT_1",
@@ -258,37 +254,119 @@ int tproxy_setup_ipv4(atp_config_t *cfg) {
     };
     
     for (int i = 0; chains[i] != NULL; i++) {
-        tproxy_chain_create(cfg, 4, "mangle", chains[i]);
-        tproxy_chain_flush(cfg, 4, "mangle", chains[i]);
+        char chain_name[64];
+        if (suffix && suffix[0]) {
+            snprintf(chain_name, sizeof(chain_name), "%s%s", chains[i], suffix);
+        } else {
+            snprintf(chain_name, sizeof(chain_name), "%s", chains[i]);
+        }
+        tproxy_chain_create(cfg, family, "mangle", chain_name);
+        tproxy_chain_flush(cfg, family, "mangle", chain_name);
+    }
+}
+
+/* Helper function to setup DIVERT chain for established connections */
+static void tproxy_setup_divert_chain(atp_config_t *cfg, int family, const char *suffix, int mark) {
+    char chain_name[64];
+    char rule_buf[256];
+    
+    if (suffix && suffix[0]) {
+        snprintf(chain_name, sizeof(chain_name), "ATP_DIVERT_0%s", suffix);
+    } else {
+        snprintf(chain_name, sizeof(chain_name), "ATP_DIVERT_0");
     }
     
-    /* DIVERT chain optimization for established TCP connections */
-    /* This significantly improves throughput for existing connections */
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_DIVERT_0", "-j MARK --set-mark 20");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_DIVERT_0", "-j ACCEPT");
+    snprintf(rule_buf, sizeof(rule_buf), "-j MARK --set-mark %d", mark);
+    tproxy_rule_add(cfg, family, "mangle", chain_name, rule_buf);
+    tproxy_rule_add(cfg, family, "mangle", chain_name, "-j ACCEPT");
+}
+
+/* Helper function to setup socket match for established connections */
+static void tproxy_setup_socket_match(atp_config_t *cfg, int family, const char *suffix, const char *divert_chain) {
+    char chain_name[64];
+    char rule_buf[256];
+    
+    if (suffix && suffix[0]) {
+        snprintf(chain_name, sizeof(chain_name), "ATP_PRE_0%s", suffix);
+        snprintf(rule_buf, sizeof(rule_buf), "-p tcp -m socket --transparent -j %s", divert_chain);
+    } else {
+        snprintf(chain_name, sizeof(chain_name), "ATP_PRE_0");
+        snprintf(rule_buf, sizeof(rule_buf), "-p tcp -m socket --transparent -j %s", divert_chain);
+    }
+    
+    tproxy_rule_add(cfg, family, "mangle", chain_name, rule_buf);
+}
+
+/* Helper function to setup chain jumps */
+static void tproxy_setup_chain_jumps(atp_config_t *cfg, int family, const char *suffix, int has_conntrack) {
+    char pre_chain[64];
+    char out_chain[64];
+    (void)has_conntrack;
+    
+    if (suffix && suffix[0]) {
+        snprintf(pre_chain, sizeof(pre_chain), "ATP_PRE_0%s", suffix);
+        snprintf(out_chain, sizeof(out_chain), "ATP_OUT_0%s", suffix);
+    } else {
+        snprintf(pre_chain, sizeof(pre_chain), "ATP_PRE_0");
+        snprintf(out_chain, sizeof(out_chain), "ATP_OUT_0");
+    }
+    
+    /* PREROUTING jumps */
+    tproxy_rule_add(cfg, family, "mangle", pre_chain, "-j ATP_PROXY_IP_0");
+    tproxy_rule_add(cfg, family, "mangle", pre_chain, "-j ATP_BYPASS_IP_0");
+    tproxy_rule_add(cfg, family, "mangle", pre_chain, "-j ATP_PROXY_IFACE_0");
+    tproxy_rule_add(cfg, family, "mangle", pre_chain, "-j ATP_MAC_0");
+    tproxy_rule_add(cfg, family, "mangle", pre_chain, "-j ATP_DNS_PRE_0");
+    
+    /* OUTPUT jumps */
+    tproxy_rule_add(cfg, family, "mangle", out_chain, "-j ATP_PROXY_IP_0");
+    tproxy_rule_add(cfg, family, "mangle", out_chain, "-j ATP_BYPASS_IP_0");
+    tproxy_rule_add(cfg, family, "mangle", out_chain, "-j ATP_BYPASS_IFACE_0");
+    tproxy_rule_add(cfg, family, "mangle", out_chain, "-j ATP_APP_0");
+    tproxy_rule_add(cfg, family, "mangle", out_chain, "-j ATP_DNS_OUT_0");
+}
+
+/* Helper function to hook chains into PREROUTING and OUTPUT */
+static void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *suffix) {
+    char pre_chain[64];
+    char out_chain[64];
+    char hook_rule[64];
+    
+    if (suffix && suffix[0]) {
+        snprintf(pre_chain, sizeof(pre_chain), "ATP_PRE_0%s", suffix);
+        snprintf(out_chain, sizeof(out_chain), "ATP_OUT_0%s", suffix);
+    } else {
+        snprintf(pre_chain, sizeof(pre_chain), "ATP_PRE_0");
+        snprintf(out_chain, sizeof(out_chain), "ATP_OUT_0");
+    }
+    
+    snprintf(hook_rule, sizeof(hook_rule), "-j %s", pre_chain);
+    tproxy_rule_insert(cfg, family, "mangle", "PREROUTING", 1, hook_rule);
+    
+    snprintf(hook_rule, sizeof(hook_rule), "-j %s", out_chain);
+    tproxy_rule_insert(cfg, family, "mangle", "OUTPUT", 1, hook_rule);
+}
+
+int tproxy_setup_ipv4(atp_config_t *cfg) {
+    LOG_INFO("Setting up IPv4 TPROXY chains");
+    
+    /* First, configure rp_filter (critical for TPROXY to work) */
+    tproxy_configure_rp_filter(cfg);
+    
+    /* Create all standard chains */
+    tproxy_create_standard_chains(cfg, 4, "");
+    
+    /* Setup DIVERT chain for established TCP connections */
+    tproxy_setup_divert_chain(cfg, 4, "", cfg->mark_value);
     
     /* Socket match for established connections - bypass complex rules */
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_PRE_0", 
-                    "-p tcp -m socket --transparent -j ATP_DIVERT_0");
+    tproxy_setup_socket_match(cfg, 4, "", "ATP_DIVERT_0");
     
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_PRE_0", "-j ATP_PROXY_IP_0");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_PRE_0", "-j ATP_BYPASS_IP_0");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_PRE_0", "-j ATP_PROXY_IFACE_0");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_PRE_0", "-j ATP_MAC_0");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_PRE_0", "-j ATP_DNS_PRE_0");
+    /* Setup chain jumps */
+    tproxy_setup_chain_jumps(cfg, 4, "", 1);
     
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_OUT_0", "-j ATP_PROXY_IP_0");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_OUT_0", "-j ATP_BYPASS_IP_0");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_OUT_0", "-j ATP_BYPASS_IFACE_0");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_OUT_0", "-j ATP_APP_0");
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_OUT_0", "-j ATP_DNS_OUT_0");
-    
-    char hook_rule[64];
-    snprintf(hook_rule, sizeof(hook_rule), "-j ATP_PRE_0");
-    tproxy_rule_insert(cfg, 4, "mangle", "PREROUTING", 1, hook_rule);
-    
-    snprintf(hook_rule, sizeof(hook_rule), "-j ATP_OUT_0");
-    tproxy_rule_insert(cfg, 4, "mangle", "OUTPUT", 1, hook_rule);
+    /* Hook main chains into PREROUTING and OUTPUT */
+    tproxy_hook_main_chains(cfg, 4, "");
     
     LOG_INFO("IPv4 TPROXY setup complete with DIVERT optimization");
     return 0;
@@ -309,49 +387,20 @@ int tproxy_setup_ipv6(atp_config_t *cfg) {
     
     LOG_INFO("Setting up IPv6 TPROXY chains");
     
-    const char *chains[] = {
-        "ATP6_PRE_0", "ATP6_PRE_1",
-        "ATP6_OUT_0", "ATP6_OUT_1",
-        "ATP6_DIVERT_0", "ATP6_DIVERT_1",
-        "ATP6_PROXY_IP_0", "ATP6_PROXY_IP_1",
-        "ATP6_BYPASS_IP_0", "ATP6_BYPASS_IP_1",
-        "ATP6_PROXY_IFACE_0", "ATP6_PROXY_IFACE_1",
-        "ATP6_BYPASS_IFACE_0", "ATP6_BYPASS_IFACE_1",
-        "ATP6_DNS_PRE_0", "ATP6_DNS_PRE_1",
-        "ATP6_DNS_OUT_0", "ATP6_DNS_OUT_1",
-        "ATP6_APP_0", "ATP6_APP_1",
-        "ATP6_MAC_0", "ATP6_MAC_1",
-        NULL
-    };
+    /* Create all standard chains with "6" suffix */
+    tproxy_create_standard_chains(cfg, 6, "6");
     
-    for (int i = 0; chains[i] != NULL; i++) {
-        tproxy_chain_create(cfg, 6, "mangle", chains[i]);
-        tproxy_chain_flush(cfg, 6, "mangle", chains[i]);
-    }
+    /* Setup DIVERT chain for established TCP connections */
+    tproxy_setup_divert_chain(cfg, 6, "6", cfg->mark_value6);
     
-    /* DIVERT chain for IPv6 */
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_DIVERT_0", "-j MARK --set-mark 25");
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_DIVERT_0", "-j ACCEPT");
+    /* Socket match for established connections - bypass complex rules */
+    tproxy_setup_socket_match(cfg, 6, "6", "ATP6_DIVERT_0");
     
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_PRE_0", 
-                    "-p tcp -m socket --transparent -j ATP6_DIVERT_0");
+    /* Setup chain jumps */
+    tproxy_setup_chain_jumps(cfg, 6, "6", 1);
     
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_PRE_0", "-j ATP6_PROXY_IP_0");
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_PRE_0", "-j ATP6_BYPASS_IP_0");
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_PRE_0", "-j ATP6_PROXY_IFACE_0");
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_PRE_0", "-j ATP6_DNS_PRE_0");
-    
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_OUT_0", "-j ATP6_PROXY_IP_0");
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_OUT_0", "-j ATP6_BYPASS_IP_0");
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_OUT_0", "-j ATP6_BYPASS_IFACE_0");
-    tproxy_rule_add(cfg, 6, "mangle", "ATP6_OUT_0", "-j ATP6_DNS_OUT_0");
-    
-    char hook_rule[64];
-    snprintf(hook_rule, sizeof(hook_rule), "-j ATP6_PRE_0");
-    tproxy_rule_insert(cfg, 6, "mangle", "PREROUTING", 1, hook_rule);
-    
-    snprintf(hook_rule, sizeof(hook_rule), "-j ATP6_OUT_0");
-    tproxy_rule_insert(cfg, 6, "mangle", "OUTPUT", 1, hook_rule);
+    /* Hook main chains into PREROUTING and OUTPUT */
+    tproxy_hook_main_chains(cfg, 6, "6");
     
     LOG_INFO("IPv6 TPROXY setup complete");
     return 0;

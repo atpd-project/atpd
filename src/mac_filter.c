@@ -97,6 +97,46 @@ static int mac_filter_get_hotspot_interface(atp_config_t *cfg, char *iface, size
     return -1;
 }
 
+/* Helper function to configure MAC filter for a specific family */
+static void mac_filter_configure_chain(atp_config_t *cfg, int family, 
+                                        const char *chain_name, const char *hotspot_iface,
+                                        mac_addr_t *macs, int mac_count) {
+    const char *table = "mangle";
+    
+    /* Flush existing chain */
+    tproxy_chain_flush(cfg, family, table, chain_name);
+    
+    /* Add rules for each MAC address */
+    for (int i = 0; i < mac_count; i++) {
+        char rule[256];
+        
+        if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
+            /* Blacklist: bypassed MACs go to ACCEPT */
+            snprintf(rule, sizeof(rule), 
+                     "-i %s -m mac --mac-source %s -j ACCEPT",
+                     hotspot_iface, macs[i].addr_str);
+            tproxy_rule_add(cfg, family, table, chain_name, rule);
+        } else {
+            /* Whitelist: proxied MACs go to RETURN (continue to TPROXY) */
+            snprintf(rule, sizeof(rule), 
+                     "-i %s -m mac --mac-source %s -j RETURN",
+                     hotspot_iface, macs[i].addr_str);
+            tproxy_rule_add(cfg, family, table, chain_name, rule);
+        }
+    }
+    
+    /* Add default rule */
+    char rule[256];
+    if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
+        /* Blacklist: default is to proxy (RETURN -> TPROXY) */
+        snprintf(rule, sizeof(rule), "-i %s -j RETURN", hotspot_iface);
+    } else {
+        /* Whitelist: default is to bypass (ACCEPT) */
+        snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", hotspot_iface);
+    }
+    tproxy_rule_add(cfg, family, table, chain_name, rule);
+}
+
 int mac_filter_setup(atp_config_t *cfg) {
     if (!cfg->mac_filter_enable) {
         LOG_DEBUG("MAC filter disabled");
@@ -137,38 +177,16 @@ int mac_filter_setup(atp_config_t *cfg) {
         LOG_INFO("Whitelist mode: proxying %d MAC addresses", mac_count);
     }
     
-    /* Flush existing MAC chain */
-    tproxy_chain_flush(cfg, 4, "mangle", "ATP_MAC_0");
+    /* Configure IPv4 chain */
+    mac_filter_configure_chain(cfg, 4, "ATP_MAC_0", hotspot_iface, macs, mac_count);
     
-    /* Add rules for each MAC address */
-    for (int i = 0; i < mac_count; i++) {
-        char rule[256];
-        
-        if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
-            /* Blacklist: bypassed MACs go to ACCEPT */
-            snprintf(rule, sizeof(rule), 
-                     "-i %s -m mac --mac-source %s -j ACCEPT",
-                     hotspot_iface, macs[i].addr_str);
-            tproxy_rule_add(cfg, 4, "mangle", "ATP_MAC_0", rule);
-        } else {
-            /* Whitelist: proxied MACs go to RETURN (continue to TPROXY) */
-            snprintf(rule, sizeof(rule), 
-                     "-i %s -m mac --mac-source %s -j RETURN",
-                     hotspot_iface, macs[i].addr_str);
-            tproxy_rule_add(cfg, 4, "mangle", "ATP_MAC_0", rule);
-        }
+    /* Configure IPv6 chain if enabled */
+    if (cfg->proxy_ipv6) {
+        mac_filter_configure_chain(cfg, 6, "ATP6_MAC_0", hotspot_iface, macs, mac_count);
     }
     
-    /* Add default rule */
-    char rule[256];
-    if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
-        /* Blacklist: default is to proxy (RETURN -> TPROXY) */
-        snprintf(rule, sizeof(rule), "-i %s -j RETURN", hotspot_iface);
-    } else {
-        /* Whitelist: default is to bypass (ACCEPT) */
-        snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", hotspot_iface);
-    }
-    tproxy_rule_add(cfg, 4, "mangle", "ATP_MAC_0", rule);
+    LOG_INFO("MAC filter configured on %s (IPv6: %s)", 
+             hotspot_iface, cfg->proxy_ipv6 ? "enabled" : "disabled");
     
     mac_filter_free_list(macs);
     return 0;
@@ -179,7 +197,14 @@ int mac_filter_cleanup(atp_config_t *cfg) {
         return 0;
     }
     
+    /* Flush IPv4 chain */
     tproxy_chain_flush(cfg, 4, "mangle", "ATP_MAC_0");
+    
+    /* Flush IPv6 chain if it exists */
+    if (cfg->proxy_ipv6) {
+        tproxy_chain_flush(cfg, 6, "mangle", "ATP6_MAC_0");
+    }
+    
     LOG_INFO("MAC filter cleaned up");
     return 0;
 }

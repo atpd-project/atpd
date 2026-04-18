@@ -20,6 +20,7 @@ typedef struct {
     char user[64];
     char group[64];
     int restart_cooldown_sec;
+    int restart_delay_sec;      /* Added: delay before restart (seconds) */
     time_t last_restart_time;
     int restart_failures;
     service_state_t state;
@@ -44,7 +45,6 @@ pid_t service_find_process(const char *name);
 int service_kill_process(pid_t pid, int signal, int wait_sec);
 int service_kill_all(const char *name, int signal);
 
-// Add this function declaration
 void service_show_status(atp_config_t *cfg);
 
 #endif
