@@ -81,6 +81,13 @@ static void signal_handler(int sig) {
         LOG_INFO("Received SIGHUP, reloading configuration...");
         api_reset_rate_limit(&g_api_ctx);
         config_reload(&g_config);
+    } else if (sig == SIGCHLD) {
+        /* 回收僵尸进程 */
+        pid_t pid;
+        int status;
+        while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+            LOG_DEBUG("Reaped zombie process: PID=%d, status=%d", pid, status);
+        }
     }
 }
 
@@ -89,11 +96,12 @@ int atp_signal_setup(void) {
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
     
     if (sigaction(SIGTERM, &sa, NULL) < 0) return -1;
     if (sigaction(SIGINT, &sa, NULL) < 0) return -1;
     if (sigaction(SIGHUP, &sa, NULL) < 0) return -1;
+    if (sigaction(SIGCHLD, &sa, NULL) < 0) return -1;
     
     signal(SIGPIPE, SIG_IGN);
     return 0;
@@ -474,10 +482,8 @@ int main(int argc, char *argv[]) {
     atp_daemonize();
     atp_create_pidfile();
     
-    /* 状态机初始化 */
     state_transition(STATE_INIT);
     
-    /* 状态机主循环 */
     while (g_running) {
         switch (g_state) {
             case STATE_UNINITIALIZED:
@@ -526,14 +532,12 @@ int main(int argc, char *argv[]) {
                 break;
                 
             case STATE_READY:
-                /* 心跳检查优先 */
                 if (!api_check_health(&g_api_ctx)) {
                     LOG_ERROR("Heartbeat lost, entering recovery");
                     state_transition(STATE_RECOVER);
                     break;
                 }
                 
-                /* 规则自愈 */
                 {
                     static int heal_counter = 0;
                     heal_counter++;
@@ -550,7 +554,6 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 
-                /* GeoIP 状态检查 */
                 {
                     static int geoip_ready_logged = 0;
                     if (!geoip_ready_logged && geoip_async_is_complete()) {
@@ -560,7 +563,6 @@ int main(int argc, char *argv[]) {
                     }
                 }
                 
-                /* API 模式同步 */
                 {
                     static time_t last_api_sync = 0;
                     if (time(NULL) - last_api_sync > 300) {

@@ -15,9 +15,91 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <fcntl.h>
+#include <sys/file.h>
 
 /* External reference to global API context */
 extern api_ctx_t g_api_ctx;
+
+/* 安全地轮转日志文件 */
+static int safe_log_rotate(const char *log_path) {
+    struct stat st;
+    
+    if (stat(log_path, &st) != 0) {
+        return 0;
+    }
+    
+    int test_fd = open(log_path, O_RDONLY | O_NONBLOCK);
+    if (test_fd < 0) {
+        LOG_WARN("Log file %s is busy, skipping rotation", log_path);
+        return -1;
+    }
+    close(test_fd);
+    
+    char old_path[PATH_MAX];
+    snprintf(old_path, sizeof(old_path), "%s.1", log_path);
+    
+    unlink(old_path);
+    
+    if (rename(log_path, old_path) != 0) {
+        LOG_WARN("Failed to rotate log file: %s", strerror(errno));
+        return -1;
+    }
+    
+    LOG_DEBUG("Log rotated: %s -> %s", log_path, old_path);
+    return 0;
+}
+
+/* 设置 run 目录权限 */
+static int setup_run_directory_permissions(service_ctx_t *ctx) {
+    char run_dir[PATH_MAX];
+    snprintf(run_dir, sizeof(run_dir), "%s/run", 
+             ctx->work_dir ? ctx->work_dir : ATP_DEFAULT_DIR);
+    
+    struct passwd *pwd = getpwnam(ctx->user);
+    struct group *grp = getgrnam(ctx->group);
+    
+    if (!pwd || !grp) {
+        LOG_WARN("Cannot resolve user/group: %s:%s", ctx->user, ctx->group);
+        return -1;
+    }
+    
+    if (chown(run_dir, pwd->pw_uid, grp->gr_gid) != 0) {
+        LOG_WARN("Failed to chown %s: %s", run_dir, strerror(errno));
+        return -1;
+    }
+    
+    if (chmod(run_dir, 0755) != 0) {
+        LOG_WARN("Failed to chmod %s: %s", run_dir, strerror(errno));
+        return -1;
+    }
+    
+    LOG_DEBUG("Set permissions for %s to %s:%s", run_dir, ctx->user, ctx->group);
+    return 0;
+}
+
+/* 设置工作目录权限 */
+static int setup_work_directory_permissions(service_ctx_t *ctx) {
+    mkdir_recursive(ctx->work_dir, 0755);
+    
+    struct passwd *pwd = getpwnam(ctx->user);
+    struct group *grp = getgrnam(ctx->group);
+    
+    if (!pwd || !grp) {
+        return -1;
+    }
+    
+    if (chown(ctx->work_dir, pwd->pw_uid, grp->gr_gid) != 0) {
+        LOG_WARN("Failed to chown %s: %s", ctx->work_dir, strerror(errno));
+        return -1;
+    }
+    
+    if (chmod(ctx->work_dir, 0755) != 0) {
+        LOG_WARN("Failed to chmod %s: %s", ctx->work_dir, strerror(errno));
+        return -1;
+    }
+    
+    return 0;
+}
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(service_ctx_t));
@@ -50,9 +132,7 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     return 0;
 }
 
-/* 新增：获取 PID 文件锁 */
 int service_acquire_pid_lock(service_ctx_t *ctx) {
-    /* 确保 run 目录存在 */
     char dir[PATH_MAX];
     strncpy(dir, ctx->pid_path, sizeof(dir) - 1);
     char *slash = strrchr(dir, '/');
@@ -81,7 +161,6 @@ int service_acquire_pid_lock(service_ctx_t *ctx) {
         return -1;
     }
     
-    /* 写入 PID */
     char pid_str[16];
     snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
     ftruncate(ctx->pid_fd, 0);
@@ -91,7 +170,6 @@ int service_acquire_pid_lock(service_ctx_t *ctx) {
     return 0;
 }
 
-/* 新增：释放 PID 文件锁 */
 void service_release_pid_lock(service_ctx_t *ctx) {
     if (ctx->pid_fd >= 0) {
         close(ctx->pid_fd);
@@ -144,7 +222,6 @@ int service_start(service_ctx_t *ctx) {
         return 0;
     }
     
-    /* 获取 PID 锁，防止多实例 */
     if (service_acquire_pid_lock(ctx) != 0) {
         LOG_ERROR("Failed to acquire PID lock, another instance may be running");
         return -1;
@@ -160,12 +237,15 @@ int service_start(service_ctx_t *ctx) {
         return -1;
     }
     
+    /* 设置目录权限（降权前需要 root 权限） */
+    setup_run_directory_permissions(ctx);
+    setup_work_directory_permissions(ctx);
+    
+    /* 安全地轮转日志 */
+    safe_log_rotate(ctx->log_path);
+    
     service_kill_all(PROXY_BIN_NAME, SIGKILL);
     usleep(500000);
-    
-    char log_old[PATH_MAX];
-    snprintf(log_old, sizeof(log_old), "%s.1", ctx->log_path);
-    rename(ctx->log_path, log_old);
     
     pid_t pid = fork();
     if (pid < 0) {
@@ -176,6 +256,9 @@ int service_start(service_ctx_t *ctx) {
     }
     
     if (pid == 0) {
+        /* 子进程设置 umask */
+        umask(022);
+        
         setsid();
         
         signal(SIGPIPE, SIG_IGN);
@@ -215,7 +298,6 @@ int service_start(service_ctx_t *ctx) {
     return service_wait_ready(ctx, 10);
 }
 
-/* 新增：优雅停止服务 */
 int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec) {
     LOG_INFO("Stopping service gracefully (timeout=%ds)", graceful_timeout_sec);
     ctx->state = SERVICE_STOPPING;
@@ -227,10 +309,8 @@ int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec) {
         return 0;
     }
     
-    /* 1. 发送 SIGTERM，给进程清理机会 */
     kill(pid, SIGTERM);
     
-    /* 2. 等待进程退出（遗言时间） */
     int waited = 0;
     while (waited < graceful_timeout_sec) {
         if (!process_exists(pid)) {
@@ -243,13 +323,11 @@ int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec) {
         waited++;
     }
     
-    /* 3. 超时则强制 SIGKILL */
     LOG_WARN("Service not responding, forcing kill");
     kill(pid, SIGKILL);
     wait_for_pid_exit(pid, 2);
     service_release_pid_lock(ctx);
     
-    /* 额外清理所有 sing-box 进程 */
     service_kill_all(PROXY_BIN_NAME, SIGKILL);
     
     ctx->state = SERVICE_STOPPED;
@@ -264,12 +342,10 @@ int service_stop(service_ctx_t *ctx) {
 int service_restart(service_ctx_t *ctx) {
     LOG_INFO("Restarting service");
     
-    /* Reset API rate limit before restart to allow immediate sync */
     api_reset_rate_limit(&g_api_ctx);
     
     service_stop_graceful(ctx, 3);
     
-    /* Use configured restart delay */
     int delay = ctx->restart_delay_sec;
     if (delay <= 0) {
         delay = DEFAULT_RESTART_DELAY;
