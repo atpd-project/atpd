@@ -64,6 +64,7 @@ static void status_show_mode(atp_config_t *cfg, api_ctx_t *api) {
         printf("    └─ Routing:   %s\n", routing_mode);
     } else {
         printf("    └─ Routing:   %s (cached)\n", cfg->user_clash_mode);
+    }
 }
 
 static void status_show_vpn(void) {
@@ -221,7 +222,6 @@ static void status_show_traffic(void) {
     char rx_speed_str[32], tx_speed_str[32];
     iface_stats_t current_stats;
     iface_stats_t prev_stats;
-    int has_prev = 0;
     
     /* Detect active VPN interface */
     if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) != 0 || vpn_iface[0] == '\0') {
@@ -278,7 +278,6 @@ static void status_show_traffic(void) {
             printf("    ├─ Avg RX:   (sample too old, %.0fs)\n", elapsed);
             printf("    └─ Avg TX:   (sample too old, %.0fs)\n", elapsed);
         }
-        has_prev = 1;
     } else {
         printf("    ├─ Avg RX:   (first sample, run status again for speed)\n");
         printf("    └─ Avg TX:   (first sample, run status again for speed)\n");
