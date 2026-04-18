@@ -21,6 +21,9 @@ typedef enum {
     API_MODE_GOOGLE_VPN = 3
 } api_mode_t;
 
+/* Global API context (defined in main.c) */
+extern api_ctx_t g_api_ctx;
+
 int api_init(api_ctx_t *ctx, atp_config_t *cfg);
 int api_set_mode(api_ctx_t *ctx, const char *mode);
 int api_set_mode_by_enum(api_ctx_t *ctx, api_mode_t mode);
@@ -28,6 +31,7 @@ int api_get_config(api_ctx_t *ctx, char *output, size_t size);
 int api_get_rules(api_ctx_t *ctx, char *output, size_t size);
 int api_get_proxies(api_ctx_t *ctx, char *output, size_t size);
 int api_get_health(api_ctx_t *ctx, char *output, size_t size);
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
 
 int api_check_rate_limit(api_ctx_t *ctx);
 void api_reset_rate_limit(api_ctx_t *ctx);
@@ -38,5 +42,3 @@ int api_patch_json(api_ctx_t *ctx, const char *path, const char *json_body);
 int api_get_json(api_ctx_t *ctx, const char *path, char *output, size_t size);
 
 #endif
-
-int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
