@@ -57,22 +57,25 @@ HEADERS = $(wildcard $(INC_DIR)/*.h) $(wildcard $(INC_DIR)/cjson/*.h)
 # Additional flags for cJSON compilation
 CJSON_CFLAGS = -I$(INC_DIR)/cjson
 
-.PHONY: all clean distclean help version
+# Force target to always regenerate version header
+.PHONY: FORCE
+FORCE:
 
-# Generate version header before compilation
-$(VERSION_H):
+# Always regenerate version header
+$(VERSION_H): FORCE
 	@echo "Generating version header..."
 	@chmod +x scripts/gen_version.sh
 	@./scripts/gen_version.sh
 
-# Build all (depends on version header)
+.PHONY: all clean distclean help version
+
+# Build all - depends on version header and binary
 all: $(VERSION_H) $(BIN_DIR)/$(TARGET)
 	@echo "Build complete: $(BIN_DIR)/$(TARGET)"
 
 # Show version information
-version:
-	@./scripts/gen_version.sh
-	@echo "Version information generated in $(VERSION_H)"
+version: $(VERSION_H)
+	@echo "Version information:"
 	@echo "ATP_VERSION_STRING: $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
 
 $(OBJ_DIR):
@@ -95,11 +98,10 @@ $(BIN_DIR)/$(TARGET): $(OBJS) | $(BIN_DIR)
 	$(CC) $(OBJS) -o $@ $(LDFLAGS)
 
 clean:
-	rm -rf $(OBJ_DIR)
+	rm -rf $(OBJ_DIR) $(BIN_DIR)
 	rm -f $(VERSION_H)
 
 distclean: clean
-	rm -rf $(BIN_DIR)
 	rm -rf $(DIST_DIR)
 
 help:

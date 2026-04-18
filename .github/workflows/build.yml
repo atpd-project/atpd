@@ -38,7 +38,7 @@ jobs:
     
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: 0
 
@@ -61,7 +61,7 @@ jobs:
         
     - name: Cache libcurl build
       id: cache-curl
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: /tmp/curl-musl
         key: curl-musl-aarch64-unknown-${{ env.CURL_VERSION }}
@@ -114,53 +114,81 @@ jobs:
         make install
         echo "libcurl built with musl"
 
-    - name: Generate version header
+    - name: Manual build ATP with musl
       run: |
         cd ${{ github.workspace }}
-        # Force regenerate version.h
+        
+        export CFLAGS="-I/tmp/curl-musl/include -Wall -Wextra -O2 -pthread -static"
+        export LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
+        
+        echo "=== Manual build started ==="
+        
+        # Clean previous build
+        rm -rf build/
+        mkdir -p build/obj build/obj/cjson build/bin
+        
+        # Generate version header
+        echo "Generating version header..."
         rm -f include/version.h
         chmod +x scripts/gen_version.sh
         ./scripts/gen_version.sh
         echo "Generated version.h:"
         cat include/version.h
-
-    - name: Build ATP with musl
-      run: |
-        cd ${{ github.workspace }}
-        export CFLAGS="-I/tmp/curl-musl/include -Wall -Wextra -O2 -pthread -static"
-        export LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
+        echo ""
         
-        # Clean and rebuild
-        make clean
-        make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+        # Get version string for artifact naming
+        VERSION=$(grep ATP_VERSION_STRING include/version.h | cut -d'"' -f2)
+        echo "ATP_VERSION=${VERSION}" >> $GITHUB_ENV
+        echo "ATP version: ${VERSION}"
+        echo ""
         
-        # Verify build succeeded
-        if [ ! -f build/bin/atpd ]; then
-          echo "ERROR: Build failed - binary not created"
-          echo "Checking build directory contents:"
-          ls -la build/ 2>/dev/null || echo "build/ directory not found"
-          ls -la build/bin/ 2>/dev/null || echo "build/bin/ directory not found"
-          echo ""
-          echo "Checking make output for errors:"
-          make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" 2>&1 | tail -50
+        # Compile all source files
+        echo "=== Compiling source files ==="
+        
+        # Compile main source files
+        for src in src/*.c; do
+          if [ "$src" = "src/cjson/cJSON.c" ]; then
+            continue
+          fi
+          obj="build/obj/$(basename ${src%.c}.o)"
+          echo "  Compiling $src -> $obj"
+          $CC $CFLAGS -Iinclude -c "$src" -o "$obj"
+          if [ $? -ne 0 ]; then
+            echo "ERROR: Failed to compile $src"
+            exit 1
+          fi
+        done
+        
+        # Compile cJSON
+        echo "  Compiling src/cjson/cJSON.c -> build/obj/cjson/cJSON.o"
+        $CC $CFLAGS -Iinclude -Iinclude/cjson -c src/cjson/cJSON.c -o build/obj/cjson/cJSON.o
+        if [ $? -ne 0 ]; then
+          echo "ERROR: Failed to compile cJSON.c"
           exit 1
         fi
-
-    - name: Extract version from binary
-      id: version
-      run: |
-        cd ${{ github.workspace }}
-        # Extract version from generated header
-        VERSION=$(grep ATP_VERSION_STRING include/version.h | cut -d'"' -f2)
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "ATP version: ${VERSION}"
-
-    - name: Show binary info (before strip)
-      run: |
-        cd ${{ github.workspace }}
-        echo "Binary info before strip:"
-        file build/bin/atpd
-        ls -la build/bin/atpd
+        
+        echo ""
+        echo "=== Linking ==="
+        
+        # Link all object files
+        $CC build/obj/*.o build/obj/cjson/*.o -o build/bin/atpd $LDFLAGS
+        if [ $? -ne 0 ]; then
+          echo "ERROR: Failed to link"
+          exit 1
+        fi
+        
+        echo ""
+        echo "=== Build verification ==="
+        
+        # Verify binary exists
+        if [ -f build/bin/atpd ]; then
+          echo "✓ Binary created successfully"
+          ls -la build/bin/atpd
+          file build/bin/atpd
+        else
+          echo "✗ Binary not found!"
+          exit 1
+        fi
 
     - name: Strip debug symbols
       run: |
@@ -172,23 +200,33 @@ jobs:
     - name: Test binary
       run: |
         cd ${{ github.workspace }}
+        echo "=== Testing binary ==="
         # Test help output
+        echo "Help output:"
         ./build/bin/atpd --help 2>&1 | head -5 || true
+        echo ""
         # Test version output
+        echo "Version output:"
         ./build/bin/atpd --version 2>&1 || true
+        echo ""
         # Check if static linked
-        file build/bin/atpd | grep -q "statically linked" && echo "✓ Static linked" || echo "⚠ Not static linked"
+        if file build/bin/atpd | grep -q "statically linked"; then
+          echo "✓ Binary is statically linked"
+        else
+          echo "⚠ Binary is not statically linked"
+          file build/bin/atpd
+        fi
 
     - name: Upload artifact (dev branch)
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7.0.1
       if: github.ref == 'refs/heads/dev'
       with:
-        name: atpd-musl-aarch64-dev-${{ steps.version.outputs.version }}
+        name: atpd-musl-aarch64-dev-${{ env.ATP_VERSION }}
         path: build/bin/atpd
         if-no-files-found: error
 
     - name: Upload artifact (main branch - latest)
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7.0.1
       if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
       with:
         name: atpd-musl-aarch64-latest
@@ -196,10 +234,10 @@ jobs:
         if-no-files-found: error
 
     - name: Upload artifact (main branch - versioned)
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7.0.1
       if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
       with:
-        name: atpd-musl-aarch64-${{ steps.version.outputs.version }}
+        name: atpd-musl-aarch64-${{ env.ATP_VERSION }}
         path: build/bin/atpd
         if-no-files-found: error
 
@@ -208,15 +246,19 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: build/bin/atpd
-        name: "ATP ${{ steps.version.outputs.version }}"
+        name: "ATP ${{ env.ATP_VERSION }}"
         tag_name: ${{ github.ref_name }}
         body: |
-          ## ATP ${{ steps.version.outputs.version }}
+          ## ATP ${{ env.ATP_VERSION }}
           
           ### Build Information
-          - **Version:** ${{ steps.version.outputs.version }}
+          - **Version:** ${{ env.ATP_VERSION }}
           - **Commit:** ${{ github.sha }}
           - **Branch:** ${{ github.ref_name }}
+          - **Build Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          ### Changes
+          ${{ github.event.head_commit.message }}
           
           ### Installation
           ```bash
@@ -229,6 +271,9 @@ jobs:
           
           # Start ATP
           /data/adb/atp/bin/atpd start
+          
+          # Check status
+          /data/adb/atp/bin/atpd status
           ```
         generate_release_notes: true
         draft: false
