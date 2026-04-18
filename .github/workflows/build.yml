@@ -145,6 +145,11 @@ jobs:
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
         echo "ATP version: ${VERSION}"
 
+    - name: Get build date for release
+      id: build_date
+      run: |
+        echo "date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
     - name: Strip debug symbols
       run: |
         $STRIP build/bin/atpd
@@ -200,7 +205,7 @@ jobs:
           - **Version:** ${{ steps.version.outputs.version }}
           - **Commit:** ${{ github.sha }}
           - **Tag:** ${{ github.ref_name }}
-          - **Build Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          - **Build Date:** ${{ steps.build_date.outputs.date }}
           
           ### Features
           - TPROXY transparent proxy for IPv4/IPv6
