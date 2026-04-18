@@ -177,7 +177,6 @@ int tproxy_support_check(atp_config_t *cfg) {
     
     return ret == 0;
 }
-
 static int tproxy_configure_rp_filter(atp_config_t *cfg) {
     DIR *dir;
     struct dirent *entry;
@@ -350,31 +349,31 @@ int tproxy_setup_ipv4(atp_config_t *cfg) {
     
     LOG_INFO("IPv4 TPROXY setup complete with DIVERT optimization");
     return 0;
-
+}
 int tproxy_setup_ipv6(atp_config_t *cfg) {
     if (!cfg->proxy_ipv6) {
         LOG_DEBUG("IPv6 proxy disabled, skipping");
         return 0;
     }
-
+    
     if (access(IP6TABLES_CMD, X_OK) != 0) {
         LOG_WARN("ip6tables not found, IPv6 setup skipped");
         cfg->proxy_ipv6 = 0;
         return 0;
     }
-
+    
     LOG_INFO("Setting up IPv6 TPROXY chains");
-
+    
     tproxy_create_standard_chains(cfg, 6, "6");
-
+    
     tproxy_setup_divert_chain(cfg, 6, "6", cfg->mark_value6);
-
+    
     tproxy_setup_socket_match(cfg, 6, "6", "ATP6_DIVERT_0");
-
+    
     tproxy_setup_chain_jumps(cfg, 6, "6", 1);
-
+    
     tproxy_hook_main_chains(cfg, 6, "6");
-
+    
     LOG_INFO("IPv6 TPROXY setup complete");
     return 0;
 }
@@ -382,46 +381,46 @@ int tproxy_setup_ipv6(atp_config_t *cfg) {
 /* REDIRECT mode setup */
 int tproxy_setup_redirect_ipv4(atp_config_t *cfg) {
     LOG_INFO("Setting up IPv4 REDIRECT chains");
-
+    
     const char *table = "nat";
     char chain_name[64];
     char rule_buf[256];
-
+    
     snprintf(chain_name, sizeof(chain_name), "ATP_REDIRECT");
     tproxy_chain_create(cfg, 4, table, chain_name);
     tproxy_chain_flush(cfg, 4, table, chain_name);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d", cfg->tcp_port);
     tproxy_rule_add(cfg, 4, table, chain_name, rule_buf);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-j %s", chain_name);
     tproxy_rule_insert(cfg, 4, table, "PREROUTING", 1, rule_buf);
     tproxy_rule_insert(cfg, 4, table, "OUTPUT", 1, rule_buf);
-
+    
     LOG_INFO("IPv4 REDIRECT setup complete");
     return 0;
 }
 
 int tproxy_setup_redirect_ipv6(atp_config_t *cfg) {
     if (!cfg->proxy_ipv6) return 0;
-
+    
     LOG_INFO("Setting up IPv6 REDIRECT chains");
-
+    
     const char *table = "nat";
     char chain_name[64];
     char rule_buf[256];
-
+    
     snprintf(chain_name, sizeof(chain_name), "ATP6_REDIRECT");
     tproxy_chain_create(cfg, 6, table, chain_name);
     tproxy_chain_flush(cfg, 6, table, chain_name);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d", cfg->tcp_port);
     tproxy_rule_add(cfg, 6, table, chain_name, rule_buf);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-j %s", chain_name);
     tproxy_rule_insert(cfg, 6, table, "PREROUTING", 1, rule_buf);
     tproxy_rule_insert(cfg, 6, table, "OUTPUT", 1, rule_buf);
-
+    
     LOG_INFO("IPv6 REDIRECT setup complete");
     return 0;
 }
@@ -430,52 +429,52 @@ int tproxy_setup_redirect_ipv6(atp_config_t *cfg) {
 int tproxy_setup_enhance_ipv4(atp_config_t *cfg) {
     LOG_INFO("Setting up ENHANCE mode for IPv4 (TCP=REDIRECT:%d, UDP=TPROXY:%d)",
              cfg->redirect_tcp_port, cfg->udp_port);
-
+    
     const char *table_mangle = "mangle";
     const char *table_nat = "nat";
     char rule_buf[256];
     char chain_name[64];
-
+    
     /* TCP: REDIRECT in nat table */
     LOG_INFO("Setting up TCP REDIRECT chain (port %d)", cfg->redirect_tcp_port);
-
+    
     snprintf(chain_name, sizeof(chain_name), "ATP_REDIRECT_TCP");
     tproxy_chain_create(cfg, 4, table_nat, chain_name);
     tproxy_chain_flush(cfg, 4, table_nat, chain_name);
-
-    snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d",
+    
+    snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d", 
              cfg->redirect_tcp_port);
     tproxy_rule_add(cfg, 4, table_nat, chain_name, rule_buf);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j %s", chain_name);
     tproxy_rule_insert(cfg, 4, table_nat, "PREROUTING", 1, rule_buf);
     tproxy_rule_insert(cfg, 4, table_nat, "OUTPUT", 1, rule_buf);
-
+    
     /* UDP: TPROXY in mangle table */
-    LOG_INFO("Setting up UDP TPROXY chain (port %d, mark %d)",
+    LOG_INFO("Setting up UDP TPROXY chain (port %d, mark %d)", 
              cfg->udp_port, cfg->mark_value);
-
+    
     snprintf(chain_name, sizeof(chain_name), "ATP_UDP_TPROXY");
     tproxy_chain_create(cfg, 4, table_mangle, chain_name);
     tproxy_chain_flush(cfg, 4, table_mangle, chain_name);
-
-    snprintf(rule_buf, sizeof(rule_buf),
+    
+    snprintf(rule_buf, sizeof(rule_buf), 
              "-p udp -j TPROXY --on-port %d --tproxy-mark %d",
              cfg->udp_port, cfg->mark_value);
     tproxy_rule_add(cfg, 4, table_mangle, chain_name, rule_buf);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-p udp -j %s", chain_name);
     tproxy_rule_insert(cfg, 4, table_mangle, "PREROUTING", 1, rule_buf);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->mark_value);
     tproxy_rule_insert(cfg, 4, table_mangle, "OUTPUT", 1, rule_buf);
-
+    
     /* Bypass for core user */
-    snprintf(rule_buf, sizeof(rule_buf),
+    snprintf(rule_buf, sizeof(rule_buf), 
              "-p tcp -m owner --uid-owner %s --gid-owner %s -j ACCEPT",
              cfg->core_user, cfg->core_group);
     tproxy_rule_insert(cfg, 4, table_nat, "OUTPUT", 1, rule_buf);
-
+    
     LOG_INFO("IPv4 ENHANCE mode setup complete");
     return 0;
 }
@@ -485,64 +484,64 @@ int tproxy_setup_enhance_ipv6(atp_config_t *cfg) {
         LOG_DEBUG("IPv6 proxy disabled, skipping ENHANCE mode");
         return 0;
     }
-
+    
     LOG_INFO("Setting up ENHANCE mode for IPv6 (TCP=REDIRECT:%d, UDP=TPROXY:%d)",
              cfg->redirect_tcp_port, cfg->udp_port);
-
+    
     const char *table_mangle = "mangle";
     const char *table_nat = "nat";
     char rule_buf[256];
     char chain_name[64];
-
+    
     if (access(IP6TABLES_CMD, X_OK) != 0) {
         LOG_WARN("ip6tables not found, IPv6 ENHANCE mode skipped");
         return 0;
     }
-
+    
     /* TCP: REDIRECT in nat table */
     LOG_INFO("Setting up IPv6 TCP REDIRECT chain (port %d)", cfg->redirect_tcp_port);
-
+    
     snprintf(chain_name, sizeof(chain_name), "ATP6_REDIRECT_TCP");
     tproxy_chain_create(cfg, 6, table_nat, chain_name);
     tproxy_chain_flush(cfg, 6, table_nat, chain_name);
-
-    snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d",
+    
+    snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d", 
              cfg->redirect_tcp_port);
     tproxy_rule_add(cfg, 6, table_nat, chain_name, rule_buf);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j %s", chain_name);
     tproxy_rule_insert(cfg, 6, table_nat, "PREROUTING", 1, rule_buf);
     tproxy_rule_insert(cfg, 6, table_nat, "OUTPUT", 1, rule_buf);
-
+    
     /* UDP: TPROXY in mangle table */
-    LOG_INFO("Setting up IPv6 UDP TPROXY chain (port %d, mark %d)",
+    LOG_INFO("Setting up IPv6 UDP TPROXY chain (port %d, mark %d)", 
              cfg->udp_port, cfg->mark_value6);
-
+    
     snprintf(chain_name, sizeof(chain_name), "ATP6_UDP_TPROXY");
     tproxy_chain_create(cfg, 6, table_mangle, chain_name);
     tproxy_chain_flush(cfg, 6, table_mangle, chain_name);
-
-    snprintf(rule_buf, sizeof(rule_buf),
+    
+    snprintf(rule_buf, sizeof(rule_buf), 
              "-p udp -j TPROXY --on-port %d --tproxy-mark %d",
              cfg->udp_port, cfg->mark_value6);
     tproxy_rule_add(cfg, 6, table_mangle, chain_name, rule_buf);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-p udp -j %s", chain_name);
     tproxy_rule_insert(cfg, 6, table_mangle, "PREROUTING", 1, rule_buf);
-
+    
     snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->mark_value6);
     tproxy_rule_insert(cfg, 6, table_mangle, "OUTPUT", 1, rule_buf);
-
+    
     LOG_INFO("IPv6 ENHANCE mode setup complete");
     return 0;
 }
 
 int tproxy_cleanup_ipv4(atp_config_t *cfg) {
     LOG_INFO("Cleaning up IPv4 TPROXY chains");
-
+    
     tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", "-j ATP_PRE_0");
     tproxy_rule_del(cfg, 4, "mangle", "OUTPUT", "-j ATP_OUT_0");
-
+    
     const char *chains[] = {
         "ATP_PRE_0", "ATP_PRE_1",
         "ATP_OUT_0", "ATP_OUT_1",
@@ -557,27 +556,29 @@ int tproxy_cleanup_ipv4(atp_config_t *cfg) {
         "ATP_MAC_0", "ATP_MAC_1",
         NULL
     };
-
+    
     for (int i = 0; chains[i] != NULL; i++) {
         tproxy_chain_flush(cfg, 4, "mangle", chains[i]);
         tproxy_chain_destroy(cfg, 4, "mangle", chains[i]);
     }
-
+    
     LOG_INFO("IPv4 TPROXY cleanup complete");
     return 0;
 }
 
 int tproxy_cleanup_ipv6(atp_config_t *cfg) {
+    if (!cfg->proxy_ipv6) return 0;
+    
     LOG_INFO("Cleaning up IPv6 TPROXY chains");
-
+    
     if (access(IP6TABLES_CMD, X_OK) != 0) {
         LOG_DEBUG("ip6tables not found, skipping IPv6 cleanup");
         return 0;
     }
-
+    
     tproxy_rule_del(cfg, 6, "mangle", "PREROUTING", "-j ATP6_PRE_0");
     tproxy_rule_del(cfg, 6, "mangle", "OUTPUT", "-j ATP6_OUT_0");
-
+    
     const char *chains[] = {
         "ATP6_PRE_0", "ATP6_PRE_1",
         "ATP6_OUT_0", "ATP6_OUT_1",
@@ -592,15 +593,15 @@ int tproxy_cleanup_ipv6(atp_config_t *cfg) {
         "ATP6_MAC_0", "ATP6_MAC_1",
         NULL
     };
-
+    
     for (int i = 0; chains[i] != NULL; i++) {
         tproxy_chain_flush(cfg, 6, "mangle", chains[i]);
         tproxy_chain_destroy(cfg, 6, "mangle", chains[i]);
     }
-
+    
     LOG_INFO("IPv6 TPROXY cleanup complete");
     return 0;
-}}
+}
 
 static int tproxy_cleanup_enhance_ipv4(atp_config_t *cfg) {
     LOG_INFO("Cleaning up IPv4 ENHANCE mode");
@@ -638,7 +639,63 @@ static int tproxy_cleanup_enhance_ipv6(atp_config_t *cfg) {
     return 0;
 }
 
+/* Setup XFRM bypass for VPN traffic in both mangle and nat tables */
+int tproxy_xfrm_bypass(atp_config_t *cfg) {
+    LOG_INFO("Setting up XFRM bypass for VPN traffic");
+
+    /* ============================================ */
+    /* mangle table bypass (UDP traffic) */
+    /* ============================================ */
+    tproxy_chain_create(cfg, 4, "mangle", "XFRM_BYPASS");
+    tproxy_chain_flush(cfg, 4, "mangle", "XFRM_BYPASS");
+
+    tproxy_rule_add(cfg, 4, "mangle", "XFRM_BYPASS", "-p esp -j RETURN");
+    tproxy_rule_add(cfg, 4, "mangle", "XFRM_BYPASS", "-p udp --dport 4500 -j RETURN");
+    tproxy_rule_add(cfg, 4, "mangle", "XFRM_BYPASS", "-p udp --dport 500 -j RETURN");
+
+    tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", "-j XFRM_BYPASS");
+    tproxy_rule_insert(cfg, 4, "mangle", "PREROUTING", 1, "-j XFRM_BYPASS");
+
+    /* ============================================ */
+    /* nat table bypass (TCP traffic) - for MODE 3 compatibility */
+    /* ============================================ */
+    tproxy_chain_create(cfg, 4, "nat", "XFRM_BYPASS_NAT");
+    tproxy_chain_flush(cfg, 4, "nat", "XFRM_BYPASS_NAT");
+
+    tproxy_rule_add(cfg, 4, "nat", "XFRM_BYPASS_NAT", "-p esp -j RETURN");
+    tproxy_rule_add(cfg, 4, "nat", "XFRM_BYPASS_NAT", "-p udp --dport 4500 -j RETURN");
+    tproxy_rule_add(cfg, 4, "nat", "XFRM_BYPASS_NAT", "-p udp --dport 500 -j RETURN");
+
+    tproxy_rule_del(cfg, 4, "nat", "PREROUTING", "-j XFRM_BYPASS_NAT");
+    tproxy_rule_insert(cfg, 4, "nat", "PREROUTING", 1, "-j XFRM_BYPASS_NAT");
+
+    LOG_INFO("XFRM bypass configured for both mangle and nat tables");
+    return 0;
+}
+
+/* Cleanup XFRM bypass chains from both mangle and nat tables */
+int tproxy_cleanup_xfrm_bypass(atp_config_t *cfg) {
+    LOG_INFO("Cleaning up XFRM bypass chains");
+
+    /* Cleanup mangle table bypass */
+    tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", "-j XFRM_BYPASS");
+    tproxy_chain_flush(cfg, 4, "mangle", "XFRM_BYPASS");
+    tproxy_chain_destroy(cfg, 4, "mangle", "XFRM_BYPASS");
+
+    /* Cleanup nat table bypass */
+    tproxy_rule_del(cfg, 4, "nat", "PREROUTING", "-j XFRM_BYPASS_NAT");
+    tproxy_chain_flush(cfg, 4, "nat", "XFRM_BYPASS_NAT");
+    tproxy_chain_destroy(cfg, 4, "nat", "XFRM_BYPASS_NAT");
+
+    LOG_INFO("XFRM bypass chains cleaned up");
+    return 0;
+}
+
 int tproxy_cleanup_all(atp_config_t *cfg) {
+    /* Cleanup XFRM bypass first (independent of mode) */
+    tproxy_cleanup_xfrm_bypass(cfg);
+
+    /* Cleanup based on proxy mode */
     switch (cfg->proxy_mode) {
         case MODE_ENHANCE:
             tproxy_cleanup_enhance_ipv4(cfg);
@@ -804,22 +861,6 @@ int tproxy_block_loopback(atp_config_t *cfg, int enable) {
     return 0;
 }
 
-int tproxy_xfrm_bypass(atp_config_t *cfg) {
-    LOG_INFO("Setting up XFRM bypass chain");
-
-    tproxy_chain_create(cfg, 4, "mangle", "XFRM_BYPASS");
-    tproxy_chain_flush(cfg, 4, "mangle", "XFRM_BYPASS");
-
-    tproxy_rule_add(cfg, 4, "mangle", "XFRM_BYPASS", "-p esp -j RETURN");
-    tproxy_rule_add(cfg, 4, "mangle", "XFRM_BYPASS", "-p udp --dport 4500 -j RETURN");
-    tproxy_rule_add(cfg, 4, "mangle", "XFRM_BYPASS", "-p udp --dport 500 -j RETURN");
-
-    tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", "-j XFRM_BYPASS");
-    tproxy_rule_insert(cfg, 4, "mangle", "PREROUTING", 1, "-j XFRM_BYPASS");
-
-    return 0;
-}
-
 int tproxy_prevent_loop(atp_config_t *cfg) {
     char rule_buf[64];
     snprintf(rule_buf, sizeof(rule_buf), "-m mark --mark %d -j RETURN", cfg->mark_value);
@@ -827,99 +868,5 @@ int tproxy_prevent_loop(atp_config_t *cfg) {
     tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", rule_buf);
     tproxy_rule_insert(cfg, 4, "mangle", "PREROUTING", 1, rule_buf);
 
-    return 0;
-}	
-/* ============================================ */
-/* Missing TPROXY functions for backward compatibility */
-/* ============================================ */
-
-int tproxy_setup_ipv6(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) {
-        LOG_DEBUG("IPv6 proxy disabled, skipping TPROXY setup");
-        return 0;
-    }
-
-    if (access(IP6TABLES_CMD, X_OK) != 0) {
-        LOG_WARN("ip6tables not found, IPv6 TPROXY setup skipped");
-        cfg->proxy_ipv6 = 0;
-        return 0;
-    }
-
-    LOG_INFO("Setting up IPv6 TPROXY chains");
-
-    tproxy_create_standard_chains(cfg, 6, "6");
-    tproxy_setup_divert_chain(cfg, 6, "6", cfg->mark_value6);
-    tproxy_setup_socket_match(cfg, 6, "6", "ATP6_DIVERT_0");
-    tproxy_setup_chain_jumps(cfg, 6, "6", 1);
-    tproxy_hook_main_chains(cfg, 6, "6");
-
-    LOG_INFO("IPv6 TPROXY setup complete");
-    return 0;
-}
-
-int tproxy_cleanup_ipv4(atp_config_t *cfg) {
-    LOG_INFO("Cleaning up IPv4 TPROXY chains");
-
-    tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", "-j ATP_PRE_0");
-    tproxy_rule_del(cfg, 4, "mangle", "OUTPUT", "-j ATP_OUT_0");
-
-    const char *chains[] = {
-        "ATP_PRE_0", "ATP_PRE_1",
-        "ATP_OUT_0", "ATP_OUT_1",
-        "ATP_DIVERT_0", "ATP_DIVERT_1",
-        "ATP_PROXY_IP_0", "ATP_PROXY_IP_1",
-        "ATP_BYPASS_IP_0", "ATP_BYPASS_IP_1",
-        "ATP_PROXY_IFACE_0", "ATP_PROXY_IFACE_1",
-        "ATP_BYPASS_IFACE_0", "ATP_BYPASS_IFACE_1",
-        "ATP_DNS_PRE_0", "ATP_DNS_PRE_1",
-        "ATP_DNS_OUT_0", "ATP_DNS_OUT_1",
-        "ATP_APP_0", "ATP_APP_1",
-        "ATP_MAC_0", "ATP_MAC_1",
-        NULL
-    };
-
-    for (int i = 0; chains[i] != NULL; i++) {
-        tproxy_chain_flush(cfg, 4, "mangle", chains[i]);
-        tproxy_chain_destroy(cfg, 4, "mangle", chains[i]);
-    }
-
-    LOG_INFO("IPv4 TPROXY cleanup complete");
-    return 0;
-}
-
-int tproxy_cleanup_ipv6(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) return 0;
-
-    LOG_INFO("Cleaning up IPv6 TPROXY chains");
-
-    if (access(IP6TABLES_CMD, X_OK) != 0) {
-        LOG_DEBUG("ip6tables not found, skipping IPv6 cleanup");
-        return 0;
-    }
-
-    tproxy_rule_del(cfg, 6, "mangle", "PREROUTING", "-j ATP6_PRE_0");
-    tproxy_rule_del(cfg, 6, "mangle", "OUTPUT", "-j ATP6_OUT_0");
-
-    const char *chains[] = {
-        "ATP6_PRE_0", "ATP6_PRE_1",
-        "ATP6_OUT_0", "ATP6_OUT_1",
-        "ATP6_DIVERT_0", "ATP6_DIVERT_1",
-        "ATP6_PROXY_IP_0", "ATP6_PROXY_IP_1",
-        "ATP6_BYPASS_IP_0", "ATP6_BYPASS_IP_1",
-        "ATP6_PROXY_IFACE_0", "ATP6_PROXY_IFACE_1",
-        "ATP6_BYPASS_IFACE_0", "ATP6_BYPASS_IFACE_1",
-        "ATP6_DNS_PRE_0", "ATP6_DNS_PRE_1",
-        "ATP6_DNS_OUT_0", "ATP6_DNS_OUT_1",
-        "ATP6_APP_0", "ATP6_APP_1",
-        "ATP6_MAC_0", "ATP6_MAC_1",
-        NULL
-    };
-
-    for (int i = 0; chains[i] != NULL; i++) {
-        tproxy_chain_flush(cfg, 6, "mangle", chains[i]);
-        tproxy_chain_destroy(cfg, 6, "mangle", chains[i]);
-    }
-
-    LOG_INFO("IPv6 TPROXY cleanup complete");
     return 0;
 }

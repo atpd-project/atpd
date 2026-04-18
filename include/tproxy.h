@@ -11,6 +11,7 @@ int tproxy_setup_redirect_ipv6(atp_config_t *cfg);
 int tproxy_cleanup_ipv4(atp_config_t *cfg);
 int tproxy_cleanup_ipv6(atp_config_t *cfg);
 int tproxy_cleanup_all(atp_config_t *cfg);
+int tproxy_cleanup_xfrm_bypass(atp_config_t *cfg);
 
 int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode);
 int tproxy_dns_hijack_cleanup(atp_config_t *cfg, int family);
