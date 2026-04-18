@@ -10,6 +10,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #define PACKAGES_LIST_PATH "/data/system/packages.list"
 #define APP_IPSET_NAME "atp_app_uids"
@@ -30,6 +31,7 @@ static int *g_current_uids = NULL;
 /* Forward declarations */
 static int app_filter_load_package_cache(void);
 static int app_filter_uid_in_list(int uid, int *uid_list, int count);
+static int parse_user_id_from_line(const char *line);
 
 int app_filter_init(atp_config_t *cfg) {
     (void)cfg;
@@ -50,6 +52,53 @@ int app_filter_init(atp_config_t *cfg) {
     return 0;
 }
 
+/* Robust parsing of packages.list - handles variable field counts across Android versions */
+static int parse_user_id_from_line(const char *line) {
+    char *line_copy = strdup(line);
+    if (!line_copy) return 0;
+    
+    char *saveptr;
+    char *token;
+    int field_count = 0;
+    char *last_token = NULL;
+    
+    /* First pass: count fields */
+    token = strtok_r(line_copy, " ", &saveptr);
+    while (token) {
+        field_count++;
+        last_token = token;
+        token = strtok_r(NULL, " ", &saveptr);
+    }
+    
+    int user_id = 0;
+    
+    /* If we have at least 11 fields, the 11th field (index 10) is user_id */
+    if (field_count >= 11) {
+        free(line_copy);
+        line_copy = strdup(line);
+        if (!line_copy) return 0;
+        
+        saveptr = NULL;
+        token = strtok_r(line_copy, " ", &saveptr);
+        for (int i = 1; i < 11 && token; i++) {
+            token = strtok_r(NULL, " ", &saveptr);
+        }
+        if (token) {
+            user_id = atoi(token);
+        }
+    } else if (field_count == 10 || field_count == 9) {
+        /* Older Android versions don't have user_id field */
+        user_id = 0;
+    } else {
+        /* Unexpected format, log for debugging */
+        LOG_DEBUG("Unexpected packages.list line format (fields=%d): %s", field_count, line);
+        user_id = 0;
+    }
+    
+    free(line_copy);
+    return user_id;
+}
+
 static int app_filter_load_package_cache(void) {
     FILE *fp = fopen(PACKAGES_LIST_PATH, "r");
     if (!fp) {
@@ -57,7 +106,23 @@ static int app_filter_load_package_cache(void) {
         return -1;
     }
     
-    package_cache_t *cache = NULL;
+    /* Get file size for initial allocation estimate (exponential growth strategy) */
+    struct stat st;
+    int estimated_lines = 500;  /* Default estimate */
+    if (fstat(fileno(fp), &st) == 0 && st.st_size > 0) {
+        /* Rough estimate: each line is about 100-200 bytes */
+        estimated_lines = st.st_size / 100 + 100;
+        /* Cap at reasonable maximum */
+        if (estimated_lines > 10000) estimated_lines = 10000;
+    }
+    
+    package_cache_t *cache = malloc(sizeof(package_cache_t) * estimated_lines);
+    if (!cache) {
+        fclose(fp);
+        return -1;
+    }
+    
+    int cache_capacity = estimated_lines;
     int cache_count = 0;
     char line[1024];
     
@@ -65,31 +130,26 @@ static int app_filter_load_package_cache(void) {
         trim(line);
         if (line[0] == '#' || line[0] == '\0') continue;
         
-        /* Format: package_name uid debuggable profileable versionCode targetSdk user_id */
         char pkg_name[256];
         int uid;
-        int user_id = 0;
         
         if (sscanf(line, "%255s %d", pkg_name, &uid) == 2) {
-            /* Parse user_id if present (11th field for Android 11+) */
-            char *saveptr;
-            char *token = strtok_r(line, " ", &saveptr);
-            int field = 0;
-            while (token && field < 10) {
-                token = strtok_r(NULL, " ", &saveptr);
-                field++;
-            }
-            if (token) {
-                user_id = atoi(token);
+            int user_id = parse_user_id_from_line(line);
+            
+            /* Exponential growth: double capacity when needed */
+            if (cache_count >= cache_capacity) {
+                int new_capacity = cache_capacity * 2;
+                package_cache_t *new_cache = realloc(cache, sizeof(package_cache_t) * new_capacity);
+                if (!new_cache) {
+                    free(cache);
+                    fclose(fp);
+                    return -1;
+                }
+                cache = new_cache;
+                cache_capacity = new_capacity;
+                LOG_DEBUG("Package cache expanded to %d entries", new_capacity);
             }
             
-            package_cache_t *new_cache = realloc(cache, sizeof(package_cache_t) * (cache_count + 1));
-            if (!new_cache) {
-                free(cache);
-                fclose(fp);
-                return -1;
-            }
-            cache = new_cache;
             strncpy(cache[cache_count].package_name, pkg_name, sizeof(cache[cache_count].package_name) - 1);
             cache[cache_count].uid = uid;
             cache[cache_count].user_id = user_id;
@@ -99,11 +159,18 @@ static int app_filter_load_package_cache(void) {
     
     fclose(fp);
     
+    /* Shrink to exact size to save memory (optional) */
+    if (cache_count < cache_capacity) {
+        package_cache_t *new_cache = realloc(cache, sizeof(package_cache_t) * cache_count);
+        if (new_cache) cache = new_cache;
+    }
+    
     g_package_cache = cache;
     g_package_cache_count = cache_count;
     g_package_cache_loaded = 1;
     
-    LOG_DEBUG("Loaded %d package entries into cache", cache_count);
+    LOG_DEBUG("Loaded %d package entries into cache (initial estimate: %d, final capacity: %d)", 
+              cache_count, estimated_lines, cache_count);
     return 0;
 }
 
@@ -178,16 +245,30 @@ static int app_filter_add_uids_to_ipset(int *uids, int count, const char *mode) 
     snprintf(cmd, sizeof(cmd), "ipset flush %s 2>/dev/null", APP_IPSET_NAME);
     exec_cmd_simple(cmd, 5);
     
-    /* Build a command that adds all UIDs at once */
-    char uid_list[4096];
-    char *ptr = uid_list;
-    int remaining = sizeof(uid_list);
+    /* Calculate required buffer size: each UID takes up to 6 chars (5 digits + space) */
+    size_t buf_size = (size_t)count * 6 + 1;
+    char *uid_list = malloc(buf_size);
+    if (!uid_list) {
+        LOG_ERROR("Failed to allocate buffer for %d UIDs", count);
+        return -1;
+    }
     
-    for (int i = 0; i < count && remaining > 0; i++) {
+    char *ptr = uid_list;
+    size_t remaining = buf_size;
+    
+    for (int i = 0; i < count && remaining > 1; i++) {
         int written = snprintf(ptr, remaining, "%d ", uids[i]);
-        if (written <= 0 || written >= remaining) break;
+        if (written <= 0 || (size_t)written >= remaining) {
+            LOG_WARN("UID list buffer may be too small, truncating at %d UIDs", i);
+            break;
+        }
         ptr += written;
         remaining -= written;
+    }
+    
+    /* Remove trailing space */
+    if (ptr > uid_list) {
+        *(ptr - 1) = '\0';
     }
     
     /* Use a single ipset restore command for all UIDs */
@@ -197,6 +278,7 @@ static int app_filter_add_uids_to_ipset(int *uids, int count, const char *mode) 
              APP_IPSET_NAME, uid_list, APP_IPSET_NAME);
     exec_cmd_simple(cmd, 10);
     
+    free(uid_list);
     LOG_DEBUG("Added %d UIDs to ipset %s", count, APP_IPSET_NAME);
     return 0;
 }
