@@ -26,10 +26,6 @@ static volatile sig_atomic_t g_running = 1;
 static service_ctx_t g_service_ctx;
 api_ctx_t g_api_ctx;
 
-/* External reference for app_filter cache */
-extern int g_current_uids_count;
-extern int *g_current_uids;
-
 /* Initialization stage flags */
 static int init_stage = 0;
 #define INIT_STAGE_TPROXY     (1 << 0)
@@ -121,11 +117,15 @@ static void print_startup_summary(void) {
     else
         printf("│ ○ GeoIP (CN Bypass)   │ OFF │ Disabled by config          │\n");
     
-    if (init_stage & INIT_STAGE_APP_FILTER)
+    if (init_stage & INIT_STAGE_APP_FILTER) {
+        /* Use extern variables from app_filter.c */
+        extern int g_current_uids_count;
+        extern int *g_current_uids;
         printf("│ ✓ App Filter          │ OK │ %d UIDs in ipset            │\n", 
                g_current_uids ? g_current_uids_count : 0);
-    else
+    } else {
         printf("│ ○ App Filter          │ OFF │ Disabled by config          │\n");
+    }
     
     if (init_stage & INIT_STAGE_MAC_FILTER)
         printf("│ ✓ MAC Filter          │ OK │ Hotspot MAC rules active    │\n");
