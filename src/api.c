@@ -114,7 +114,9 @@ static int api_do_request(api_ctx_t *ctx, const char *method, const char *path,
     CURLcode res = curl_easy_perform(curl);
     
     if (res == CURLE_OK) {
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &ctx->last_http_code);
+	long http_code;
+	curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+	ctx->last_http_code = (int)http_code;
     } else {
         snprintf(ctx->last_error, sizeof(ctx->last_error), "curl error: %s", 
                  curl_easy_strerror(res));

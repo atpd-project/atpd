@@ -2,6 +2,7 @@
 #define ATP_APP_FILTER_H
 
 #include "atp.h"
+#include <stdint.h>
 
 typedef struct {
     int uid;
@@ -17,12 +18,21 @@ int app_filter_get_uid_by_package(const char *package_name, int user_id);
 int app_filter_resolve_packages(const char *packages_list, int **uids, int *count);
 void app_filter_free_uids(int *uids);
 
-/* New: Connection-level control */
+/* Connection-level control (IPv4) */
+int app_filter_should_proxy_v4(uint32_t src_ip, uint16_t src_port,
+                                uint32_t dst_ip, uint16_t dst_port);
+int app_filter_get_connection_uid_v4(uint32_t src_ip, uint16_t src_port,
+                                      uint32_t dst_ip, uint16_t dst_port);
+
+/* Connection-level control (IPv6) */
+int app_filter_should_proxy_v6(const uint8_t *src_ip, uint16_t src_port,
+                                const uint8_t *dst_ip, uint16_t dst_port);
+int app_filter_get_connection_uid_v6(const uint8_t *src_ip, uint16_t src_port,
+                                      const uint8_t *dst_ip, uint16_t dst_port);
+
+/* Generic wrapper (family-agnostic) - uses void* for IP addresses */
 int app_filter_should_proxy(int family, int protocol,
-                             uint32_t src_ip, uint16_t src_port,
-                             uint32_t dst_ip, uint16_t dst_port);
-int app_filter_get_connection_uid(int family, int protocol,
-                                    uint32_t src_ip, uint16_t src_port,
-                                    uint32_t dst_ip, uint16_t dst_port);
+                             void *src_ip, uint16_t src_port,
+                             void *dst_ip, uint16_t dst_port);
 
 #endif
