@@ -115,24 +115,26 @@ int mac_filter_setup(atp_config_t *cfg) {
         return 0;
     }
     
-    LOG_INFO("Setting up MAC filter on %s (%s mode)", 
-             hotspot_iface, cfg->mac_proxy_mode);
-    
     mac_addr_t *macs;
     int mac_count;
     const char *macs_list = NULL;
     
     if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
         macs_list = cfg->bypass_macs_list;
-        LOG_INFO("Blacklist mode: bypassing %d MAC addresses", mac_count);
     } else {
         macs_list = cfg->proxy_macs_list;
-        LOG_INFO("Whitelist mode: proxying %d MAC addresses", mac_count);
     }
     
     if (mac_filter_parse_list(macs_list, &macs, &mac_count) < 0) {
         LOG_ERROR("Failed to parse MAC address list");
         return -1;
+    }
+    
+    /* Log after parsing when mac_count is valid */
+    if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
+        LOG_INFO("Blacklist mode: bypassing %d MAC addresses", mac_count);
+    } else {
+        LOG_INFO("Whitelist mode: proxying %d MAC addresses", mac_count);
     }
     
     /* Flush existing MAC chain */
