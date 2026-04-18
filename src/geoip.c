@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "atp.h"
+#include "ipset.h"
 #include <curl/curl.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -70,7 +71,6 @@ int geoip_download_url(const char *url, const char *output_path, int timeout_sec
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_sec);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "ATPd/" ATP_VERSION);
-    /* Skip SSL verification for GeoIP downloads (trusted sources) */
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     
@@ -119,97 +119,33 @@ int geoip_download(atp_config_t *cfg) {
     }
 }
 
+/* Wrapper functions that call ipset.c implementation */
 int geoip_ipset_create(const char *name, int family, int hashsize, int maxelem) {
-    char cmd[MAX_CMD_LEN];
-    const char *family_str = (family == 4) ? "inet" : "inet6";
-    
-    snprintf(cmd, sizeof(cmd), 
-             "ipset create %s hash:net family %s hashsize %d maxelem %d 2>/dev/null",
-             name, family_str, hashsize, maxelem);
-    
-    return exec_cmd_simple(cmd, 5);
+    return ipset_create(name, family, hashsize, maxelem);
 }
 
 int geoip_ipset_destroy(const char *name) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "ipset destroy %s 2>/dev/null", name);
-    return exec_cmd_simple(cmd, 5);
+    return ipset_destroy(name);
 }
 
 int geoip_ipset_swap(const char *from, const char *to) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "ipset swap %s %s 2>/dev/null", from, to);
-    return exec_cmd_simple(cmd, 5);
+    return ipset_swap(from, to);
 }
 
 int geoip_ipset_exists(const char *name) {
-    char cmd[MAX_CMD_LEN];
-    char output[256];
-    
-    snprintf(cmd, sizeof(cmd), "ipset list %s 2>/dev/null | head -1", name);
-    
-    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0]) {
-        return 1;
-    }
-    return 0;
+    return ipset_exists(name);
 }
 
 int geoip_ipset_flush(const char *name) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "ipset flush %s 2>/dev/null", name);
-    return exec_cmd_simple(cmd, 5);
+    return ipset_flush(name);
 }
 
 int geoip_ipset_restore_file(const char *name, const char *filename) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), 
-             "awk '!/^[[:space:]]*#/ && NF > 0 {printf \"add %s %s\\n\", $0}' %s | ipset restore -exist 2>/dev/null",
-             name, name, filename);
-    return exec_cmd_simple(cmd, 30);
+    return ipset_restore_file(name, filename);
 }
 
 int geoip_parse_cidr_file(const char *input_path, const char *output_path, int family) {
-    FILE *fin = fopen(input_path, "r");
-    if (!fin) return -1;
-    
-    FILE *fout = fopen(output_path, "w");
-    if (!fout) {
-        fclose(fin);
-        return -1;
-    }
-    
-    char line[256];
-    struct in_addr ipv4;
-    struct in6_addr ipv6;
-    
-    while (fgets(line, sizeof(line), fin)) {
-        trim(line);
-        if (line[0] == '#' || line[0] == '\0') continue;
-        
-        char ip[128];
-        int prefix = 0;
-        
-        if (sscanf(line, "%127[^/]/%d", ip, &prefix) == 2) {
-            int valid = 0;
-            if (family == 4) {
-                if (inet_pton(AF_INET, ip, &ipv4) == 1 && prefix >= 0 && prefix <= 32) {
-                    valid = 1;
-                }
-            } else {
-                if (inet_pton(AF_INET6, ip, &ipv6) == 1 && prefix >= 0 && prefix <= 128) {
-                    valid = 1;
-                }
-            }
-            
-            if (valid) {
-                fprintf(fout, "%s\n", line);
-            }
-        }
-    }
-    
-    fclose(fin);
-    fclose(fout);
-    return 0;
+    return ipset_parse_cidr_file(input_path, output_path, family);
 }
 
 static int geoip_create_default_ipset(atp_config_t *cfg) {
@@ -219,9 +155,7 @@ static int geoip_create_default_ipset(atp_config_t *cfg) {
     geoip_ipset_create("cnip", 4, 8192, 65536);
     
     for (int i = 0; default_cn_cidrs[i] != NULL; i++) {
-        char cmd[MAX_CMD_LEN];
-        snprintf(cmd, sizeof(cmd), "ipset add cnip %s -exist", default_cn_cidrs[i]);
-        exec_cmd_simple(cmd, 2);
+        ipset_add_entry("cnip", default_cn_cidrs[i]);
     }
     
     int count = 0;

@@ -13,7 +13,7 @@ int geoip_check_update_needed(atp_config_t *cfg, int max_age_days);
 int geoip_force_update(atp_config_t *cfg);
 int geoip_async_is_complete(void);
 
-/* ipset operations */
+/* ipset operations - now wrappers around ipset.c */
 int geoip_ipset_create(const char *name, int family, int hashsize, int maxelem);
 int geoip_ipset_destroy(const char *name);
 int geoip_ipset_swap(const char *from, const char *to);
