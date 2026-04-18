@@ -174,6 +174,30 @@ void atp_daemonize(void) {
     open("/dev/null", O_WRONLY);
 }
 
+int check_ip6tables_available(void) {
+    /* Check if binary exists */
+    if (access("/system/bin/ip6tables", X_OK) != 0) {
+        return 0;
+    }
+    
+    /* Check if kernel module works */
+    char output[256];
+    int ret = exec_cmd("/system/bin/ip6tables -L INPUT -n 2>/dev/null | head -1", 
+                       output, sizeof(output), 3);
+    if (ret != 0) {
+        return 0;
+    }
+    
+    /* Check for common error indicators */
+    if (strstr(output, "can't initialize") || 
+        strstr(output, "No chain") ||
+        strstr(output, "Protocol not supported")) {
+        return 0;
+    }
+    
+    return 1;
+}
+
 int atp_init(void) {
     char dirs[3][PATH_MAX];
     snprintf(dirs[0], sizeof(dirs[0]), "%s/run", g_config.data_dir);
@@ -182,6 +206,16 @@ int atp_init(void) {
     
     for (int i = 0; i < 3; i++) {
         mkdir_recursive(dirs[i], 0755);
+    }
+    
+    /* Check ip6tables availability and auto-disable IPv6 if not available */
+    if (g_config.proxy_ipv6) {
+        if (!check_ip6tables_available()) {
+            LOG_WARN("ip6tables not available (binary missing or kernel module missing), IPv6 proxy will be disabled");
+            g_config.proxy_ipv6 = 0;
+        } else {
+            LOG_INFO("ip6tables available, IPv6 proxy enabled");
+        }
     }
     
     char runtime_path[PATH_MAX];
