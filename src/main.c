@@ -4,6 +4,7 @@
 #include "tproxy.h"
 #include "routing.h"
 #include "netlink.h"
+#include "netlink_monitor.h"
 #include "service.h"
 #include "geoip.h"
 #include "api.h"
@@ -225,6 +226,25 @@ void atp_show_status(void) {
     status_show(&g_config, &g_service_ctx, &g_api_ctx);
 }
 
+/* Initialize netlink monitor for instant VPN detection */
+static void init_netlink_monitor(atp_config_t *cfg) {
+    nl_monitor_config_t monitor_config;
+    
+    memset(&monitor_config, 0, sizeof(monitor_config));
+    monitor_config.callback = netlink_default_callback;
+    monitor_config.userdata = cfg;
+    monitor_config.monitor_links = 1;
+    monitor_config.monitor_addrs = 1;
+    monitor_config.monitor_routes = 0;  /* Optional, enable if needed */
+    monitor_config.monitor_vpn_only = 1; /* Only report VPN events */
+    
+    if (netlink_monitor_start(&monitor_config) != 0) {
+        LOG_WARN("Failed to start netlink monitor, falling back to polling mode");
+    } else {
+        LOG_INFO("Netlink monitor active, VPN handover latency reduced to microseconds");
+    }
+}
+
 static int init_tasks(atp_config_t *cfg) {
     int core_success = 1;
     int tproxy_ok = 0, routing_ok = 0, dns_ok = 0;
@@ -393,6 +413,7 @@ int main(int argc, char *argv[]) {
     if (opts.command == CMD_STOP) {
         service_init(&g_service_ctx, &g_config);
         service_stop(&g_service_ctx);
+        netlink_monitor_stop();
         tproxy_cleanup_all(&g_config);
         routing_cleanup_all(&g_config);
         app_filter_cleanup(&g_config);
@@ -410,6 +431,9 @@ int main(int argc, char *argv[]) {
     atp_daemonize();
     atp_create_pidfile();
     atp_init();
+    
+    /* Start netlink monitor for instant VPN detection */
+    init_netlink_monitor(&g_config);
     
     service_init(&g_service_ctx, &g_config);
     api_init(&g_api_ctx, &g_config);
@@ -479,6 +503,7 @@ int main(int argc, char *argv[]) {
     }
     
     service_stop(&g_service_ctx);
+    netlink_monitor_stop();
     tproxy_cleanup_all(&g_config);
     routing_cleanup_all(&g_config);
     app_filter_cleanup(&g_config);
