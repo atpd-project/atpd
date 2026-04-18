@@ -40,6 +40,9 @@ int ipv6_manager_backup(ipv6_backup_t *backup) {
     ipv6_read_sysctl("/proc/sys/net/ipv6/conf/all/autoconf", &backup->original_autoconf);
     ipv6_read_sysctl("/proc/sys/net/ipv6/conf/all/forwarding", &backup->original_forwarding);
     
+    /* Mark backup as valid */
+    backup->backup_exists = 1;
+    
     LOG_DEBUG("IPv6 backup: accept_ra=%d, autoconf=%d, forwarding=%d",
               backup->original_accept_ra, backup->original_autoconf, backup->original_forwarding);
     
@@ -56,7 +59,12 @@ int ipv6_manager_restore(ipv6_backup_t *backup) {
     ipv6_write_sysctl("/proc/sys/net/ipv6/conf/all/autoconf", backup->original_autoconf);
     ipv6_write_sysctl("/proc/sys/net/ipv6/conf/all/forwarding", backup->original_forwarding);
     
-    LOG_DEBUG("IPv6 settings restored");
+    LOG_DEBUG("IPv6 settings restored: accept_ra=%d, autoconf=%d, forwarding=%d",
+              backup->original_accept_ra, backup->original_autoconf, backup->original_forwarding);
+    
+    /* Mark backup as no longer valid after restore */
+    backup->backup_exists = 0;
+    
     return 0;
 }
 
@@ -102,7 +110,7 @@ int ipv6_manager_enable_all(void) {
     
     LOG_INFO("Enabling IPv6 on all interfaces");
     
-    /* Restore forwarding and RA */
+    /* Restore forwarding and RA - use conservative defaults */
     ipv6_write_sysctl("/proc/sys/net/ipv6/conf/all/forwarding", 1);
     ipv6_write_sysctl("/proc/sys/net/ipv6/conf/all/accept_ra", 1);
     ipv6_write_sysctl("/proc/sys/net/ipv6/conf/all/autoconf", 1);
@@ -156,6 +164,14 @@ int ipv6_manager_set_mode(atp_config_t *cfg, int mode) {
 }
 
 int ipv6_manager_init(atp_config_t *cfg) {
-    int mode = cfg->proxy_ipv6;
+    /* Convert proxy_ipv6 flag (0/1) to IPV6_MODE_* enum */
+    int mode;
+    if (cfg->proxy_ipv6 == -1) {
+        mode = IPV6_MODE_DISABLED;
+    } else if (cfg->proxy_ipv6 == 1) {
+        mode = IPV6_MODE_PROXY;
+    } else {
+        mode = IPV6_MODE_DEFAULT;
+    }
     return ipv6_manager_set_mode(cfg, mode);
 }
