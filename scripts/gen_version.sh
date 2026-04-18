@@ -14,45 +14,34 @@ DEFAULT_COMMIT="0000000"
 if command -v git >/dev/null 2>&1 && [ -d "${PROJECT_ROOT}/.git" ]; then
     cd "$PROJECT_ROOT"
     
-    # Get version from git describe (e.g., v0.0.1-alpha1-5-g1234567)
     GIT_DESCRIBE=$(git describe --tags --dirty=-dirty 2>/dev/null)
     
     if [ -n "$GIT_DESCRIBE" ]; then
-        # Parse version string
-        # Format: v0.0.1-alpha1-5-g1234567-dirty
         VERSION=$(echo "$GIT_DESCRIBE" | sed 's/^v//' | sed 's/-g[0-9a-f]*//' | sed 's/-[0-9]*$//')
-        # Extract build number (commits since tag)
         BUILD_NUM=$(echo "$GIT_DESCRIBE" | grep -oP '-\d+-g' | sed 's/-//g' | sed 's/g//' | head -1)
         if [ -z "$BUILD_NUM" ]; then
             BUILD_NUM="0"
         fi
-        # Extract dirty flag
         if echo "$GIT_DESCRIBE" | grep -q "dirty"; then
             DIRTY="-dirty"
         else
             DIRTY=""
         fi
     else
-        # No tags, use fallback
         VERSION="$DEFAULT_VERSION"
         BUILD_NUM="0"
         DIRTY=""
     fi
     
-    # Get branch name
     BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$DEFAULT_BRANCH")
-    
-    # Get short commit hash
     COMMIT=$(git rev-parse --short=7 HEAD 2>/dev/null || echo "$DEFAULT_COMMIT")
     
-    # Check if working tree is clean
     if git diff --quiet && git diff --cached --quiet; then
         CLEAN="1"
     else
         CLEAN="0"
     fi
 else
-    # No Git, use defaults
     VERSION="$DEFAULT_VERSION"
     BUILD_NUM="0"
     BRANCH="$DEFAULT_BRANCH"
@@ -83,6 +72,23 @@ cat > "$VERSION_FILE" << EOF
 #define ATP_BUILD_TIME        __TIME__
 #define ATP_BUILD_COMPILER    "aarch64-linux-musl-gcc"
 #define ATP_BUILD_ARCH        "ARM64"
+
+/* Function declarations */
+const char* atp_get_version(void);
+const char* atp_get_full_version(void);
+int atp_get_version_major(void);
+int atp_get_version_minor(void);
+int atp_get_version_patch(void);
+const char* atp_get_version_suffix(void);
+int atp_get_version_build(void);
+const char* atp_get_version_commit(void);
+const char* atp_get_version_branch(void);
+int atp_is_dirty(void);
+int atp_is_clean(void);
+const char* atp_get_build_date(void);
+const char* atp_get_build_time(void);
+const char* atp_get_compiler(void);
+const char* atp_get_arch(void);
 
 #endif /* ATP_VERSION_H */
 EOF

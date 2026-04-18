@@ -37,12 +37,10 @@ static const atp_version_t g_version = {
     .arch = ATP_BUILD_ARCH
 };
 
-/* Get version string */
 const char* atp_get_version(void) {
     return g_version.version;
 }
 
-/* Get full version info (with build details) */
 const char* atp_get_full_version(void) {
     static char full_version[256];
     
@@ -63,7 +61,6 @@ const char* atp_get_full_version(void) {
     return full_version;
 }
 
-/* Get version components */
 int atp_get_version_major(void) { return g_version.major; }
 int atp_get_version_minor(void) { return g_version.minor; }
 int atp_get_version_patch(void) { return g_version.patch; }
@@ -74,7 +71,6 @@ const char* atp_get_version_branch(void) { return g_version.branch; }
 int atp_is_dirty(void) { return g_version.dirty; }
 int atp_is_clean(void) { return g_version.clean; }
 
-/* Get build information */
 const char* atp_get_build_date(void) { return g_version.build_date; }
 const char* atp_get_build_time(void) { return g_version.build_time; }
 const char* atp_get_compiler(void) { return g_version.compiler; }
