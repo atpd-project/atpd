@@ -1,5 +1,6 @@
 #include "version.h"
 #include <stdio.h>
+#include <string.h>
 
 /* Version information structure */
 typedef struct {
@@ -78,46 +79,3 @@ const char* atp_get_build_date(void) { return g_version.build_date; }
 const char* atp_get_build_time(void) { return g_version.build_time; }
 const char* atp_get_compiler(void) { return g_version.compiler; }
 const char* atp_get_arch(void) { return g_version.arch; }
-
-/* Print full version banner */
-void atp_print_version_banner(void) {
-    printf("\033[1;36m"
-    "    ___  __________  ____ \n"
-    "   /   |/_  __/ __ \\/ __ \\\n"
-    "  / /| | / / / /_/ / / / /\n"
-    " / ___ |/ / / ____/ /_/ / \n"
-    "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", 
-    atp_get_version());
-    
-    printf("--------------------------------------------\n");
-    printf(" Version:   %s\n", atp_get_full_version());
-    printf(" Build:     %s | %s\n", atp_get_build_date(), atp_get_build_time());
-    printf(" Compiler:  %s\n", atp_get_compiler());
-    printf(" Arch:      %s\n", atp_get_arch());
-    
-    if (atp_is_dirty()) {
-        printf("\033[1;33m Warning:  Uncommitted changes present\033[0m\n");
-    }
-    
-    printf("--------------------------------------------\n\n");
-}
-
-/* Check if version matches a pattern (e.g., "0.0.1-alpha*") */
-int atp_version_matches(const char *pattern) {
-    /* Simple pattern matching - can be extended */
-    const char *v = atp_get_version();
-    const char *p = pattern;
-    
-    while (*p && *v) {
-        if (*p == '*') {
-            return 1;
-        }
-        if (*p != *v) {
-            return 0;
-        }
-        p++;
-        v++;
-    }
-    
-    return (*p == '*' || (*p == '\0' && *v == '\0'));
-}
