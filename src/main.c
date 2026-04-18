@@ -39,7 +39,7 @@ static int init_stage = 0;
 /* Core features mask */
 #define INIT_STAGE_CORE_MASK (INIT_STAGE_TPROXY | INIT_STAGE_ROUTING | INIT_STAGE_DNS)
 
-/* 状态机定义 */
+/* State machine definition */
 typedef enum {
     STATE_UNINITIALIZED = 0,
     STATE_INIT,
@@ -82,7 +82,7 @@ static void signal_handler(int sig) {
         api_reset_rate_limit(&g_api_ctx);
         config_reload(&g_config);
     } else if (sig == SIGCHLD) {
-        /* 回收僵尸进程 */
+        /* Reap zombie processes */
         pid_t pid;
         int status;
         while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
@@ -368,7 +368,7 @@ static int init_tasks(atp_config_t *cfg) {
     return core_success ? 0 : -1;
 }
 
-/* 原子性模式切换 */
+/* Atomic mode switch with config confirmation */
 static int atomic_mode_switch(atp_config_t *cfg, api_ctx_t *api, const char *new_mode) {
     if (api_set_mode(api, new_mode) != 0) {
         LOG_ERROR("Failed to set mode via API");

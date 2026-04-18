@@ -20,7 +20,7 @@
 /* External reference to global API context */
 extern api_ctx_t g_api_ctx;
 
-/* 安全地轮转日志文件 */
+/* Safely rotate log file - check if file is busy before rename */
 static int safe_log_rotate(const char *log_path) {
     struct stat st;
     
@@ -28,6 +28,7 @@ static int safe_log_rotate(const char *log_path) {
         return 0;
     }
     
+    /* Check if file is currently open by another process */
     int test_fd = open(log_path, O_RDONLY | O_NONBLOCK);
     if (test_fd < 0) {
         LOG_WARN("Log file %s is busy, skipping rotation", log_path);
@@ -49,7 +50,7 @@ static int safe_log_rotate(const char *log_path) {
     return 0;
 }
 
-/* 设置 run 目录权限 */
+/* Set permissions for run directory to target user */
 static int setup_run_directory_permissions(service_ctx_t *ctx) {
     char run_dir[PATH_MAX];
     snprintf(run_dir, sizeof(run_dir), "%s/run", 
@@ -77,7 +78,7 @@ static int setup_run_directory_permissions(service_ctx_t *ctx) {
     return 0;
 }
 
-/* 设置工作目录权限 */
+/* Set permissions for work directory to target user */
 static int setup_work_directory_permissions(service_ctx_t *ctx) {
     mkdir_recursive(ctx->work_dir, 0755);
     
@@ -237,11 +238,11 @@ int service_start(service_ctx_t *ctx) {
         return -1;
     }
     
-    /* 设置目录权限（降权前需要 root 权限） */
+    /* Set directory permissions before dropping root */
     setup_run_directory_permissions(ctx);
     setup_work_directory_permissions(ctx);
     
-    /* 安全地轮转日志 */
+    /* Safely rotate log file */
     safe_log_rotate(ctx->log_path);
     
     service_kill_all(PROXY_BIN_NAME, SIGKILL);
@@ -256,7 +257,7 @@ int service_start(service_ctx_t *ctx) {
     }
     
     if (pid == 0) {
-        /* 子进程设置 umask */
+        /* Child process: set umask for correct file permissions */
         umask(022);
         
         setsid();
@@ -309,6 +310,7 @@ int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec) {
         return 0;
     }
     
+    /* Send SIGTERM first, give process chance to clean up */
     kill(pid, SIGTERM);
     
     int waited = 0;
@@ -323,11 +325,13 @@ int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec) {
         waited++;
     }
     
+    /* Force kill if timeout exceeded */
     LOG_WARN("Service not responding, forcing kill");
     kill(pid, SIGKILL);
     wait_for_pid_exit(pid, 2);
     service_release_pid_lock(ctx);
     
+    /* Clean up any remaining processes */
     service_kill_all(PROXY_BIN_NAME, SIGKILL);
     
     ctx->state = SERVICE_STOPPED;
