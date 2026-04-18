@@ -165,11 +165,11 @@ static void handle_addr_message(struct nlmsghdr *nlh, iface_monitor_t *monitor) 
     }
 }
 
+/* VPN interface detection - kept for potential future use */
 static int is_vpn_interface(const char *ifname) {
-    return (strncmp(ifname, "ipsec", 5) == 0 ||
-            strncmp(ifname, "tun", 3) == 0 ||
-            strncmp(ifname, "wg", 2) == 0 ||
-            strncmp(ifname, "vpn", 3) == 0);
+    (void)ifname;  /* Suppress unused parameter warning */
+    /* VPN detection is handled by nl_vpn_detect() and nl_link_get_vpn_interface() */
+    return 0;
 }
 
 static void check_vpn_status(iface_monitor_t *monitor) {
