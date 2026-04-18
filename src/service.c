@@ -15,6 +15,9 @@
 #include <sys/stat.h>
 #include <time.h>
 
+/* External reference to global API context */
+extern api_ctx_t g_api_ctx;
+
 int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(service_ctx_t));
     
