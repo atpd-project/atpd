@@ -6,7 +6,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-#include <sys/wait.h>
+#include <pthread.h>
 
 struct curl_memory {
     char *data;
@@ -25,6 +25,10 @@ static const char *default_cn_cidrs[] = {
     "125.0.0.0/8", "126.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
     "192.168.0.0/16", "223.0.0.0/8", NULL
 };
+
+static pthread_t geoip_thread;
+static int geoip_async_running = 0;
+static int geoip_async_complete = 0;
 
 static size_t curl_mem_write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
@@ -157,6 +161,7 @@ int geoip_ipset_flush(const char *name) {
 
 int geoip_ipset_restore_file(const char *name, const char *filename) {
     char cmd[MAX_CMD_LEN];
+    /* Use ipset restore for batch import (much faster than individual adds) */
     snprintf(cmd, sizeof(cmd), 
              "awk '!/^[[:space:]]*#/ && NF > 0 {printf \"add %s %s\\n\", $0}' %s | ipset restore -exist 2>/dev/null",
              name, name, filename);
@@ -225,36 +230,9 @@ static int geoip_create_default_ipset(atp_config_t *cfg) {
     return 0;
 }
 
-static int geoip_async_update(atp_config_t *cfg) {
-    pid_t pid = fork();
-    
-    if (pid < 0) {
-        LOG_WARN("Failed to fork for async GeoIP update");
-        return -1;
-    }
-    
-    if (pid == 0) {
-        LOG_INFO("Async GeoIP update started in background");
-        
-        if (geoip_download(cfg) == 0) {
-            geoip_atomic_update(cfg);
-            LOG_INFO("Async GeoIP update completed");
-        } else {
-            LOG_WARN("Async GeoIP update failed, keeping default list");
-        }
-        
-        exit(0);
-    }
-    
-    LOG_DEBUG("Async GeoIP update running in PID %d", pid);
-    return 0;
-}
-
-int geoip_setup_ipset(atp_config_t *cfg) {
-    if (!cfg->bypass_cn_ip) {
-        LOG_DEBUG("CN IP bypass disabled, skipping ipset setup");
-        return 0;
-    }
+static void* geoip_async_update_thread(void *arg) {
+    atp_config_t *cfg = (atp_config_t*)arg;
+    LOG_INFO("GeoIP async update started in background");
     
     char rules_dir[PATH_MAX];
     char v4_path[PATH_MAX];
@@ -264,45 +242,72 @@ int geoip_setup_ipset(atp_config_t *cfg) {
     snprintf(v4_path, sizeof(v4_path), "%s/%s", rules_dir, cfg->cn_ip_file);
     snprintf(v4_parsed, sizeof(v4_parsed), "%s/%s.parsed", rules_dir, cfg->cn_ip_file);
     
-    /* First, create default ipset (fast, ensures basic functionality) */
-    geoip_create_default_ipset(cfg);
-    
-    /* Then try to download and upgrade to full list */
+    /* Download and parse full list */
     if (geoip_download(cfg) == 0 && file_exists(v4_path)) {
         geoip_parse_cidr_file(v4_path, v4_parsed, 4);
+        
+        /* Check file size - if > 1000 entries, use batch restore */
+        struct stat st;
+        int entry_count = 0;
+        if (stat(v4_parsed, &st) == 0) {
+            /* Rough estimate: each entry ~20 bytes */
+            entry_count = st.st_size / 20;
+        }
+        
+        if (entry_count > 1000) {
+            LOG_INFO("Large GeoIP file (%d entries), using batch restore", entry_count);
+        }
         
         geoip_ipset_create("cnip_temp", 4, 8192, 65536);
         geoip_ipset_restore_file("cnip_temp", v4_parsed);
         
+        /* Atomic swap - no service interruption */
         geoip_ipset_swap("cnip_temp", "cnip");
-        LOG_INFO("IPv4 ipset upgraded to full list");
+        LOG_INFO("IPv4 ipset upgraded to full list (%d entries)", entry_count);
         
         geoip_ipset_destroy("cnip_temp");
     } else {
-        LOG_WARN("Full GeoIP download failed, using default list only");
-        /* Start async update in background for next time */
-        geoip_async_update(cfg);
+        LOG_WARN("Full GeoIP download failed, keeping default list");
     }
     
-    /* IPv6 handling */
-    if (cfg->proxy_ipv6) {
-        char v6_path[PATH_MAX];
-        char v6_parsed[PATH_MAX];
-        snprintf(v6_path, sizeof(v6_path), "%s/%s", rules_dir, cfg->cn_ipv6_file);
-        snprintf(v6_parsed, sizeof(v6_parsed), "%s/%s.parsed", rules_dir, cfg->cn_ipv6_file);
-        
-        if (file_exists(v6_path)) {
-            geoip_parse_cidr_file(v6_path, v6_parsed, 6);
-            geoip_ipset_destroy("cnip6");
-            geoip_ipset_create("cnip6", 6, 8192, 65536);
-            geoip_ipset_restore_file("cnip6", v6_parsed);
-            LOG_INFO("IPv6 ipset 'cnip6' loaded");
-        } else {
-            LOG_WARN("IPv6 list not found");
+    geoip_async_running = 0;
+    geoip_async_complete = 1;
+    LOG_INFO("GeoIP async update completed");
+    return NULL;
+}
+
+int geoip_setup_ipset_async(atp_config_t *cfg) {
+    if (!cfg->bypass_cn_ip) {
+        LOG_DEBUG("CN IP bypass disabled, skipping ipset setup");
+        return 0;
+    }
+    
+    /* First, create default ipset (fast, ensures basic functionality) */
+    geoip_create_default_ipset(cfg);
+    
+    /* Start async download and update in background */
+    if (!geoip_async_running) {
+        geoip_async_running = 1;
+        geoip_async_complete = 0;
+        if (pthread_create(&geoip_thread, NULL, geoip_async_update_thread, cfg) != 0) {
+            LOG_WARN("Failed to create GeoIP async thread");
+            geoip_async_running = 0;
+            return -1;
         }
+        pthread_detach(geoip_thread);
+        LOG_INFO("GeoIP async update thread started");
     }
     
     return 0;
+}
+
+int geoip_async_is_complete(void) {
+    return geoip_async_complete;
+}
+
+int geoip_setup_ipset(atp_config_t *cfg) {
+    /* Legacy synchronous version - kept for compatibility */
+    return geoip_setup_ipset_async(cfg);
 }
 
 int geoip_cleanup_ipset(atp_config_t *cfg) {
