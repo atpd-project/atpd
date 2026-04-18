@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "atp.h"
+#include "api.h"
 #include <signal.h>
 #include <sys/wait.h>
 #include <pwd.h>
@@ -177,7 +178,6 @@ int service_restart(service_ctx_t *ctx) {
     LOG_INFO("Restarting service");
     
     /* Reset API rate limit before restart to allow immediate sync */
-    extern api_ctx_t g_api_ctx;
     api_reset_rate_limit(&g_api_ctx);
     
     service_stop(ctx);
