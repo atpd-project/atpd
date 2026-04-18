@@ -14,6 +14,7 @@
 #include "mac_filter.h"
 #include "ipv6_manager.h"
 #include "perf_mode.h"
+#include "inet_diag.h"
 #include "utils.h"
 #include <libgen.h>
 #include <sys/stat.h>
@@ -243,11 +244,6 @@ static void state_transition(atp_state_t new_state) {
     
     g_state = new_state;
     g_state_enter_time = now;
-}
-
-/* Check if core features are ready */
-static int atp_core_ready(void) {
-    return (init_stage & INIT_STAGE_CORE_MASK) == INIT_STAGE_CORE_MASK;
 }
 
 static void signal_handler(int sig) {
