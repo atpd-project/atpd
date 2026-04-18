@@ -41,7 +41,7 @@ SRCS = $(SRC_DIR)/api.c \
        $(SRC_DIR)/mac_filter.c \
        $(SRC_DIR)/main.c \
        $(SRC_DIR)/netlink.c \
-       $(SRC_DIR)/netlink_monitor.c \  
+       $(SRC_DIR)/netlink_monitor.c \
        $(SRC_DIR)/perf_mode.c \
        $(SRC_DIR)/routing.c \
        $(SRC_DIR)/service.c \
