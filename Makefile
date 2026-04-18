@@ -57,51 +57,49 @@ HEADERS = $(wildcard $(INC_DIR)/*.h) $(wildcard $(INC_DIR)/cjson/*.h)
 # Additional flags for cJSON compilation
 CJSON_CFLAGS = -I$(INC_DIR)/cjson
 
-# Force version header regeneration on every build
-.PHONY: version_force
-version_force:
+.PHONY: all clean distclean help version
+
+# Build all
+all: $(VERSION_H) $(OBJ_DIR) $(BIN_DIR) $(BIN_DIR)/$(TARGET)
+	@echo "Build complete: $(BIN_DIR)/$(TARGET)"
+
+# Generate version header
+$(VERSION_H):
 	@echo "Generating version header..."
 	@rm -f $(VERSION_H)
 	@chmod +x scripts/gen_version.sh
 	@./scripts/gen_version.sh
 
-# Version header depends on force (always regenerate)
-$(VERSION_H): version_force
+# Create directories
+$(OBJ_DIR):
+	@mkdir -p $(OBJ_DIR)
+	@mkdir -p $(OBJ_DIR)/cjson
 
-.PHONY: all clean distclean help
-
-# Build all - version header must be generated first
-all: $(VERSION_H) $(BIN_DIR)/$(TARGET)
-	@echo "Build complete: $(BIN_DIR)/$(TARGET)"
+$(BIN_DIR):
+	@mkdir -p $(BIN_DIR)
 
 # Show version information
 version: $(VERSION_H)
 	@echo "Version: $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
 
-$(OBJ_DIR):
-	mkdir -p $(OBJ_DIR)
-
-$(BIN_DIR):
-	mkdir -p $(BIN_DIR)
-
-# Generic rule for all .c files
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) $(VERSION_H) | $(OBJ_DIR)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
-
-# Special rule for cJSON.c (needs cjson header path)
-$(OBJ_DIR)/cjson/%.o: $(SRC_DIR)/cjson/%.c $(HEADERS) | $(OBJ_DIR)
-	@mkdir -p $(dir $@)
+# Compile cJSON
+$(OBJ_DIR)/cjson/cJSON.o: $(SRC_DIR)/cjson/cJSON.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $(CJSON_CFLAGS) -I$(INC_DIR) -c $< -o $@
 
+# Compile all other source files
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) $(VERSION_H) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
+
+# Link object files
 $(BIN_DIR)/$(TARGET): $(OBJS) | $(BIN_DIR)
 	$(CC) $(OBJS) -o $@ $(LDFLAGS)
 
+# Clean
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
-	rm -f $(VERSION_H)
 
 distclean: clean
+	rm -f $(VERSION_H)
 	rm -rf $(DIST_DIR)
 
 help:
@@ -111,5 +109,5 @@ help:
 	@echo "  all              - Build the main target (default)"
 	@echo "  version          - Generate and show version information"
 	@echo "  clean            - Remove build artifacts"
-	@echo "  distclean        - Remove build artifacts and distribution"
+	@echo "  distclean        - Remove build artifacts, version.h, and distribution"
 	@echo "  help             - Show this help"
