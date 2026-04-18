@@ -3,12 +3,9 @@ name: Build ATP for Android (musl)
 on:
   push:
     branches: [dev, main]
-    tags:
-      - 'v*'
     paths:
       - 'src/**'
       - 'include/**'
-      - 'scripts/**'
       - 'Makefile'
       - '.github/workflows/**'
       - '!**.md'
@@ -20,7 +17,6 @@ on:
     paths:
       - 'src/**'
       - 'include/**'
-      - 'scripts/**'
       - 'Makefile'
       - '!.github/workflows/clean.yml'
   workflow_dispatch:
@@ -31,6 +27,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Skip CI for commits containing [skip ci] or [skip actions]
     if: |
       (github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, '[skip actions]')) ||
       github.event_name == 'pull_request' ||
@@ -40,12 +37,14 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
+        fetch-depth: 0  # Need full history for version detection
 
     - name: Setup musl toolchain
       run: |
         wget https://github.com/cross-tools/musl-cross/releases/download/20250929/aarch64-unknown-linux-musl.tar.xz
         tar -xJf aarch64-unknown-linux-musl.tar.xz
+        # Debug: show what was extracted
+        find "$PWD" -maxdepth 3 -name "*-gcc" | head -5
         TOOLCHAIN_BIN=$(find "$PWD" -maxdepth 3 -name "aarch64-unknown-linux-musl-gcc" | head -1 | xargs -I{} dirname {})
         if [ -z "$TOOLCHAIN_BIN" ]; then
           echo "ERROR: could not find aarch64-unknown-linux-musl-gcc"
@@ -58,7 +57,15 @@ jobs:
         echo "AR=aarch64-unknown-linux-musl-ar" >> $GITHUB_ENV
         echo "RANLIB=aarch64-unknown-linux-musl-ranlib" >> $GITHUB_ENV
         echo "STRIP=aarch64-unknown-linux-musl-strip" >> $GITHUB_ENV
-        
+
+    - name: Generate version header
+      run: |
+        cd ${{ github.workspace }}
+        chmod +x scripts/gen_version.sh
+        ./scripts/gen_version.sh
+        echo "Generated version.h:"
+        cat include/version.h
+
     - name: Cache libcurl build
       id: cache-curl
       uses: actions/cache@v4
@@ -114,35 +121,17 @@ jobs:
         make install
         echo "libcurl built with musl"
 
-    - name: Generate version header
-      run: |
-        cd ${{ github.workspace }}
-        rm -f include/version.h
-        chmod +x scripts/gen_version.sh
-        ./scripts/gen_version.sh
-        echo "Generated version.h:"
-        cat include/version.h
-
     - name: Build ATP with musl
       run: |
         cd ${{ github.workspace }}
         export CFLAGS="-I/tmp/curl-musl/include -Wall -Wextra -O2 -pthread -static"
         export LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
-        
-        # Clean and build using Makefile
         make clean
         make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
-        
-        # Verify build succeeded
-        if [ ! -f build/bin/atpd ]; then
-          echo "ERROR: Build failed - binary not created"
-          exit 1
-        fi
-        
-        echo "Build successful!"
+        file build/bin/atpd
         ls -la build/bin/atpd
 
-    - name: Extract version from binary
+    - name: Extract version for artifact naming
       id: version
       run: |
         cd ${{ github.workspace }}
@@ -150,35 +139,18 @@ jobs:
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
         echo "ATP version: ${VERSION}"
 
-    - name: Show binary info (before strip)
-      run: |
-        cd ${{ github.workspace }}
-        echo "Binary info before strip:"
-        file build/bin/atpd
-        ls -la build/bin/atpd
-
     - name: Strip debug symbols
       run: |
-        cd ${{ github.workspace }}
         $STRIP build/bin/atpd
         echo "Stripped binary size:"
         ls -la build/bin/atpd
 
     - name: Test binary
       run: |
-        cd ${{ github.workspace }}
-        # Test help output
-        ./build/bin/atpd --help 2>&1 | head -5 || true
-        echo ""
-        # Test version output
-        ./build/bin/atpd --version 2>&1 || true
-        echo ""
+        # Check TLS section alignment
+        readelf -l build/bin/atpd | grep -A2 TLS || echo "No TLS section"
         # Check if static linked
-        if file build/bin/atpd | grep -q "statically linked"; then
-          echo "✓ Binary is statically linked"
-        else
-          echo "⚠ Binary is not statically linked"
-        fi
+        file build/bin/atpd
 
     - name: Upload artifact (dev branch)
       uses: actions/upload-artifact@v4
@@ -188,15 +160,7 @@ jobs:
         path: build/bin/atpd
         if-no-files-found: error
 
-    - name: Upload artifact (main branch - latest)
-      uses: actions/upload-artifact@v4
-      if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
-      with:
-        name: atpd-musl-aarch64-latest
-        path: build/bin/atpd
-        if-no-files-found: error
-
-    - name: Upload artifact (main branch - versioned)
+    - name: Upload artifact (main branch)
       uses: actions/upload-artifact@v4
       if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
       with:
@@ -204,40 +168,13 @@ jobs:
         path: build/bin/atpd
         if-no-files-found: error
 
-    - name: Create Release
+    - name: Create release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
         files: build/bin/atpd
         name: "ATP ${{ steps.version.outputs.version }}"
         tag_name: ${{ github.ref_name }}
-        body: |
-          ## ATP ${{ steps.version.outputs.version }}
-          
-          ### Build Information
-          - **Version:** ${{ steps.version.outputs.version }}
-          - **Commit:** ${{ github.sha }}
-          - **Branch:** ${{ github.ref_name }}
-          - **Build Date:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          
-          ### Changes
-          ${{ github.event.head_commit.message }}
-          
-          ### Installation
-          ```bash
-          # Download and install
-          wget -O /data/adb/atp/bin/atpd "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/atpd"
-          chmod 755 /data/adb/atp/bin/atpd
-          
-          # Apply SELinux policy (if using INET_DIAG)
-          /data/adb/atp/bin/sepolicy_atp.sh start
-          
-          # Start ATP
-          /data/adb/atp/bin/atpd start
-          
-          # Check status
-          /data/adb/atp/bin/atpd status
-          ```
         generate_release_notes: true
         draft: false
         prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}

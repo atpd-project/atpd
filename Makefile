@@ -69,6 +69,7 @@ $(VERSION_H):
 	@rm -f $(VERSION_H)
 	@chmod +x scripts/gen_version.sh
 	@./scripts/gen_version.sh
+	@echo "Generated $(VERSION_H)"
 
 # Create directories
 $(OBJ_DIR):
@@ -80,10 +81,18 @@ $(BIN_DIR):
 
 # Show version information
 version: $(VERSION_H)
-	@echo "Version: $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
+	@echo "ATP Version Information:"
+	@echo "  Version:   $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Major:     $$(grep ATP_VERSION_MAJOR $(VERSION_H) | cut -d' ' -f3)"
+	@echo "  Minor:     $$(grep ATP_VERSION_MINOR $(VERSION_H) | cut -d' ' -f3)"
+	@echo "  Patch:     $$(grep ATP_VERSION_PATCH $(VERSION_H) | cut -d' ' -f3)"
+	@echo "  Suffix:    $$(grep ATP_VERSION_SUFFIX $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Build:     $$(grep ATP_VERSION_BUILD $(VERSION_H) | cut -d' ' -f3)"
+	@echo "  Commit:    $$(grep ATP_VERSION_COMMIT $(VERSION_H) | cut -d'"' -f2)"
+	@echo "  Branch:    $$(grep ATP_VERSION_BRANCH $(VERSION_H) | cut -d'"' -f2)"
 
 # Compile cJSON
-$(OBJ_DIR)/cjson/cJSON.o: $(SRC_DIR)/cjson/cJSON.c | $(OBJ_DIR)
+$(OBJ_DIR)/cjson/cJSON.o: $(SRC_DIR)/cjson/cJSON.c $(HEADERS) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) $(CJSON_CFLAGS) -I$(INC_DIR) -c $< -o $@
 
 # Compile all other source files
@@ -111,3 +120,14 @@ help:
 	@echo "  clean            - Remove build artifacts"
 	@echo "  distclean        - Remove build artifacts, version.h, and distribution"
 	@echo "  help             - Show this help"
+	@echo ""
+	@echo "Variables:"
+	@echo "  CC               - C compiler (default: gcc or NDK clang)"
+	@echo "  CFLAGS           - Compiler flags"
+	@echo "  LDFLAGS          - Linker flags"
+	@echo ""
+	@echo "Examples:"
+	@echo "  make all                     - Build with default settings"
+	@echo "  make clean && make           - Clean rebuild"
+	@echo "  make version                 - Show version info"
+	@echo "  make CC=gcc CFLAGS=-O0       - Build with debug flags"
