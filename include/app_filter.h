@@ -17,4 +17,12 @@ int app_filter_get_uid_by_package(const char *package_name, int user_id);
 int app_filter_resolve_packages(const char *packages_list, int **uids, int *count);
 void app_filter_free_uids(int *uids);
 
+/* New: Connection-level control */
+int app_filter_should_proxy(int family, int protocol,
+                             uint32_t src_ip, uint16_t src_port,
+                             uint32_t dst_ip, uint16_t dst_port);
+int app_filter_get_connection_uid(int family, int protocol,
+                                    uint32_t src_ip, uint16_t src_port,
+                                    uint32_t dst_ip, uint16_t dst_port);
+
 #endif

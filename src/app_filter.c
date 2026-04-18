@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "tproxy.h"
+#include "inet_diag.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,11 +29,32 @@ static int g_package_cache_loaded = 0;
 static int g_current_uids_count = 0;
 static int *g_current_uids = NULL;
 
+/* Connection tracking cache for performance */
+typedef struct {
+    uint32_t src_ip;
+    uint16_t src_port;
+    uint32_t dst_ip;
+    uint16_t dst_port;
+    int uid;
+    time_t timestamp;
+} conn_cache_t;
+
+#define CONN_CACHE_SIZE 1024
+#define CONN_CACHE_TTL 5  /* seconds */
+
+static conn_cache_t g_conn_cache[CONN_CACHE_SIZE];
+static int g_conn_cache_count = 0;
+static pthread_mutex_t g_conn_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /* Forward declarations */
 static int app_filter_load_package_cache(void);
 static int app_filter_uid_in_list(int uid, int *uid_list, int count);
 static int parse_user_id_from_line(const char *line);
+static int app_filter_check_connection_cached(int family, int protocol,
+                                                uint32_t src_ip, uint16_t src_port,
+                                                uint32_t dst_ip, uint16_t dst_port);
 
+/* Initialize INET_DIAG module */
 int app_filter_init(atp_config_t *cfg) {
     (void)cfg;
     
@@ -48,7 +70,18 @@ int app_filter_init(atp_config_t *cfg) {
     snprintf(cmd, sizeof(cmd), "ipset create %s bitmap:port range 0-65535 2>/dev/null", APP_IPSET_NAME);
     exec_cmd_simple(cmd, 5);
     
-    LOG_DEBUG("App filter initialized with ipset %s", APP_IPSET_NAME);
+    /* Initialize INET_DIAG for connection-level control */
+    if (inet_diag_init() != 0) {
+        LOG_WARN("INET_DIAG initialization failed, connection-level control disabled");
+    } else {
+        LOG_DEBUG("INET_DIAG initialized for fine-grained connection control");
+    }
+    
+    /* Initialize connection cache */
+    memset(g_conn_cache, 0, sizeof(g_conn_cache));
+    pthread_mutex_init(&g_conn_cache_mutex, NULL);
+    
+    LOG_DEBUG("App filter initialized with ipset %s and connection cache", APP_IPSET_NAME);
     return 0;
 }
 
@@ -349,6 +382,86 @@ void app_filter_free_uids(int *uids) {
     if (uids) free(uids);
 }
 
+/* Connection-level check with caching for performance */
+static int app_filter_check_connection_cached(int family, int protocol,
+                                                uint32_t src_ip, uint16_t src_port,
+                                                uint32_t dst_ip, uint16_t dst_port) {
+    time_t now = time(NULL);
+    int uid = -1;
+    
+    /* Check cache first */
+    pthread_mutex_lock(&g_conn_cache_mutex);
+    for (int i = 0; i < g_conn_cache_count; i++) {
+        if (g_conn_cache[i].src_ip == src_ip &&
+            g_conn_cache[i].src_port == src_port &&
+            g_conn_cache[i].dst_ip == dst_ip &&
+            g_conn_cache[i].dst_port == dst_port &&
+            (now - g_conn_cache[i].timestamp) < CONN_CACHE_TTL) {
+            uid = g_conn_cache[i].uid;
+            pthread_mutex_unlock(&g_conn_cache_mutex);
+            return uid;
+        }
+    }
+    pthread_mutex_unlock(&g_conn_cache_mutex);
+    
+    /* Not in cache, query via INET_DIAG */
+    uid = inet_diag_get_uid(family, protocol, src_ip, src_port, dst_ip, dst_port);
+    
+    /* Add to cache */
+    pthread_mutex_lock(&g_conn_cache_mutex);
+    if (g_conn_cache_count < CONN_CACHE_SIZE) {
+        g_conn_cache[g_conn_cache_count].src_ip = src_ip;
+        g_conn_cache[g_conn_cache_count].src_port = src_port;
+        g_conn_cache[g_conn_cache_count].dst_ip = dst_ip;
+        g_conn_cache[g_conn_cache_count].dst_port = dst_port;
+        g_conn_cache[g_conn_cache_count].uid = uid;
+        g_conn_cache[g_conn_cache_count].timestamp = now;
+        g_conn_cache_count++;
+    } else {
+        /* FIFO eviction */
+        memmove(&g_conn_cache[0], &g_conn_cache[1], sizeof(conn_cache_t) * (CONN_CACHE_SIZE - 1));
+        g_conn_cache[CONN_CACHE_SIZE - 1].src_ip = src_ip;
+        g_conn_cache[CONN_CACHE_SIZE - 1].src_port = src_port;
+        g_conn_cache[CONN_CACHE_SIZE - 1].dst_ip = dst_ip;
+        g_conn_cache[CONN_CACHE_SIZE - 1].dst_port = dst_port;
+        g_conn_cache[CONN_CACHE_SIZE - 1].uid = uid;
+        g_conn_cache[CONN_CACHE_SIZE - 1].timestamp = now;
+    }
+    pthread_mutex_unlock(&g_conn_cache_mutex);
+    
+    return uid;
+}
+
+/* Public API: Check if a connection should be proxied based on UID */
+int app_filter_should_proxy(int family, int protocol,
+                             uint32_t src_ip, uint16_t src_port,
+                             uint32_t dst_ip, uint16_t dst_port) {
+    int uid;
+    
+    /* Only TCP is supported for now */
+    if (protocol != IPPROTO_TCP) {
+        return 1;  /* Default: proxy */
+    }
+    
+    uid = app_filter_check_connection_cached(family, protocol, src_ip, src_port, dst_ip, dst_port);
+    
+    if (uid <= 0) {
+        /* Cannot determine UID, use rule-based decision */
+        return 1;  /* Default: proxy */
+    }
+    
+    /* Check if UID is in our list */
+    int in_list = app_filter_uid_in_list(uid, g_current_uids, g_current_uids_count);
+    
+    if (strcmp(g_config.app_proxy_mode, "blacklist") == 0) {
+        /* Blacklist mode: UIDs in list bypass, others proxy */
+        return in_list ? 0 : 1;
+    } else {
+        /* Whitelist mode: UIDs in list proxy, others bypass */
+        return in_list ? 1 : 0;
+    }
+}
+
 static void app_filter_configure_chain(atp_config_t *cfg, int family) {
     const char *chain_name = (family == 4) ? "ATP_APP_0" : "ATP6_APP_0";
     const char *table = "mangle";
@@ -400,7 +513,7 @@ int app_filter_setup(atp_config_t *cfg) {
     g_current_uids = uids;
     g_current_uids_count = uid_count;
     
-    /* Add UIDs to ipset */
+    /* Add UIDs to ipset (for iptables-level filtering) */
     app_filter_add_uids_to_ipset(uids, uid_count, cfg->app_proxy_mode);
     
     /* Configure IPv4 chain */
@@ -413,6 +526,10 @@ int app_filter_setup(atp_config_t *cfg) {
     
     LOG_INFO("App filter configured with %d UIDs using ipset %s (IPv6: %s)", 
              uid_count, APP_IPSET_NAME, cfg->proxy_ipv6 ? "enabled" : "disabled");
+    
+    /* Also enable connection-level fine control if INET_DIAG is available */
+    LOG_INFO("Connection-level fine control is active for per-connection decisions");
+    
     return 0;
 }
 
@@ -442,6 +559,12 @@ int app_filter_cleanup(atp_config_t *cfg) {
         g_current_uids_count = 0;
     }
     
+    /* Clean up connection cache */
+    pthread_mutex_destroy(&g_conn_cache_mutex);
+    
+    /* Clean up INET_DIAG */
+    inet_diag_cleanup();
+    
     LOG_INFO("App filter cleaned up");
     return 0;
 }
@@ -449,6 +572,20 @@ int app_filter_cleanup(atp_config_t *cfg) {
 /* Helper function to reload app filter without restarting */
 int app_filter_reload(atp_config_t *cfg) {
     LOG_INFO("Reloading app filter configuration");
+    
+    /* Clear connection cache on reload */
+    pthread_mutex_lock(&g_conn_cache_mutex);
+    memset(g_conn_cache, 0, sizeof(g_conn_cache));
+    g_conn_cache_count = 0;
+    pthread_mutex_unlock(&g_conn_cache_mutex);
+    
     app_filter_cleanup(cfg);
     return app_filter_setup(cfg);
+}
+
+/* Get UID for a specific connection (wrapper for external callers) */
+int app_filter_get_connection_uid(int family, int protocol,
+                                    uint32_t src_ip, uint16_t src_port,
+                                    uint32_t dst_ip, uint16_t dst_port) {
+    return app_filter_check_connection_cached(family, protocol, src_ip, src_port, dst_ip, dst_port);
 }

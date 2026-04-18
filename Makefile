@@ -35,6 +35,7 @@ SRCS = $(SRC_DIR)/api.c \
        $(SRC_DIR)/cli.c \
        $(SRC_DIR)/config.c \
        $(SRC_DIR)/geoip.c \
+       $(SRC_DIR)/inet_diag.c \
        $(SRC_DIR)/ipset.c \
        $(SRC_DIR)/ipv6_manager.c \
        $(SRC_DIR)/logger.c \
