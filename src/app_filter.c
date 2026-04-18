@@ -171,13 +171,13 @@ static void app_filter_free_package_list(char **packages, int count) {
 
 static int app_filter_add_uids_to_ipset(int *uids, int count, const char *mode) {
     if (count == 0) return 0;
+    (void)mode;
     
     /* Flush existing ipset */
     char cmd[MAX_CMD_LEN];
     snprintf(cmd, sizeof(cmd), "ipset flush %s 2>/dev/null", APP_IPSET_NAME);
     exec_cmd_simple(cmd, 5);
     
-    /* Batch add UIDs to ipset using a single shell command */
     /* Build a command that adds all UIDs at once */
     char uid_list[4096];
     char *ptr = uid_list;
