@@ -8,6 +8,10 @@
 #ifndef ATP_ATP_H
 #define ATP_ATP_H
 
+#ifndef ATP_NAME
+#define ATP_NAME "ATP"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
