@@ -16,10 +16,10 @@ outputs:
     value: ${{ steps.setup.outputs.strip }}
   curl-include-path:
     description: 'Path to libcurl include dir'
-    value: ${{ env.CURL_INSTALL_DIR }}/include
+    value: /tmp/curl-musl/include
   curl-lib-path:
     description: 'Path to libcurl lib dir'
-    value: ${{ env.CURL_INSTALL_DIR }}/lib
+    value: /tmp/curl-musl/lib
 
 runs:
   using: composite
@@ -27,7 +27,7 @@ runs:
     - name: Load version configuration
       shell: bash
       run: |
-        source .github/env/versions.env
+        source .github/env/versions.conf
         echo "MUSL_TOOLCHAIN_URL=$MUSL_TOOLCHAIN_URL" >> $GITHUB_ENV
         echo "MUSL_TOOLCHAIN_TRIPLET=$MUSL_TOOLCHAIN_TRIPLET" >> $GITHUB_ENV
         echo "CURL_VERSION=$CURL_VERSION" >> $GITHUB_ENV
@@ -60,7 +60,7 @@ runs:
       id: cache-curl
       uses: actions/cache@v4
       with:
-        path: ${{ env.CURL_INSTALL_DIR }}
+        path: /tmp/curl-musl
         key: curl-musl-${{ env.CURL_VERSION }}
 
     - name: Build libcurl
