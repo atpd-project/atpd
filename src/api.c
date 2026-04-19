@@ -1,8 +1,17 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2025 ATP Project
+ *
+ * Clash API client implementation using libcurl and cJSON
+ */
+
 #include "api.h"
 #include "logger.h"
 #include "utils.h"
 #include <curl/curl.h>
 #include <time.h>
+#include <stdlib.h>
+#include <pthread.h>
 #include <cjson/cJSON.h>
 
 struct api_response {
@@ -43,7 +52,7 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     ctx->last_call_time = 0;
     ctx->last_http_code = 0;
     ctx->last_error[0] = '\0';
-    ctx->timeout_sec = 2;  /* 默认 2 秒超时 */
+    ctx->timeout_sec = 2;
     
     LOG_INFO("API initialized: %s (secret=%s, timeout=%ds)", 
              ctx->base_url, ctx->secret[0] ? "configured" : "not set", ctx->timeout_sec);
@@ -72,7 +81,6 @@ void api_reset_rate_limit(api_ctx_t *ctx) {
     LOG_DEBUG("API rate limit reset");
 }
 
-/* 带超时的 API 请求 */
 static int api_do_request_with_timeout(api_ctx_t *ctx, const char *method, 
                                         const char *path, const char *body,
                                         struct api_response *response, int timeout_sec) {
@@ -257,11 +265,11 @@ int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
 
 const char *api_mode_to_string(api_mode_t mode) {
     switch (mode) {
-        case API_MODE_RULE:      return "Rule";
-        case API_MODE_GLOBAL:    return "Global";
-        case API_MODE_DIRECT:    return "Direct";
+        case API_MODE_RULE:       return "Rule";
+        case API_MODE_GLOBAL:     return "Global";
+        case API_MODE_DIRECT:     return "Direct";
         case API_MODE_GOOGLE_VPN: return "Google VPN";
-        default:                 return "Rule";
+        default:                  return "Rule";
     }
 }
 
@@ -272,7 +280,6 @@ api_mode_t api_string_to_mode(const char *str) {
     return API_MODE_RULE;
 }
 
-/* 新增：确认配置已加载 */
 int api_wait_for_config_loaded(api_ctx_t *ctx, const char *expected_mode, int timeout_sec) {
     char current_mode[64];
     int waited_ms = 0;
@@ -287,7 +294,7 @@ int api_wait_for_config_loaded(api_ctx_t *ctx, const char *expected_mode, int ti
                 return 0;
             }
         }
-        usleep(200000);  /* 200ms */
+        usleep(200000);
         waited_ms += 200;
     }
     

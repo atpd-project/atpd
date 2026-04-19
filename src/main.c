@@ -756,17 +756,30 @@ int main(int argc, char *argv[]) {
         print_version();
         return 0;
     }
-    
+
     if (opts.command == CMD_STATUS) {
-        config_set_defaults(&g_config);
-        if (opts.config_dir[0]) {
-            strncpy(g_config.data_dir, opts.config_dir, sizeof(g_config.data_dir) - 1);
-            g_config.data_dir[sizeof(g_config.data_dir) - 1] = '\0';
-        }
-        service_init(&g_service_ctx, &g_config);
-        atp_show_status();
-        return 0;
+    config_set_defaults(&g_config);
+    if (opts.config_dir[0]) {
+        strncpy(g_config.data_dir, opts.config_dir, sizeof(g_config.data_dir) - 1);
+        g_config.data_dir[sizeof(g_config.data_dir) - 1] = '\0';
     }
+
+    /* Load configuration file */
+    char conf_path[PATH_MAX];
+    snprintf(conf_path, sizeof(conf_path), "%s/%s",
+             g_config.data_dir, ATP_CONF_FILE);
+    if (file_exists(conf_path)) {
+        config_load(conf_path, &g_config);
+    }
+
+    /* Initialize service and API contexts */
+    service_init(&g_service_ctx, &g_config);
+    api_init(&g_api_ctx, &g_config);
+
+    /* Show status */
+    atp_show_status();
+    return 0;
+}
     
     if (atp_check_root() != 0) {
         return 1;
