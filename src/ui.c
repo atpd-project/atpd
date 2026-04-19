@@ -62,6 +62,12 @@ void ui_set_width(int width) {
     g_initialized = 1;
 }
 
+static int g_force_no_color = 0;
+
+void ui_set_no_color(int enable) {
+    g_force_no_color = enable;
+}
+
 /* Ensure UI is initialized */
 static void ensure_init(void) {
     if (!g_initialized) ui_init();

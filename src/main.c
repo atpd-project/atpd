@@ -459,35 +459,31 @@ static int do_restart(atp_options_t *opts) {
 
 static int do_status(atp_options_t *opts) {
     char conf_path[PATH_MAX];
-    
+
     if (find_config_file(conf_path, sizeof(conf_path), opts->config_file) != 0) {
         print_config_error(conf_path);
         return 1;
     }
-    
+
     config_set_defaults(&g_config);
     config_load(conf_path, &g_config);
-    
-    logger_init();
-    log_set_level(opts->log_level);
+
     if (opts->no_color) {
-        log_set_color(0);
+        ui_set_no_color(1);
     }
     ui_init();
-    
-    LOG_INFO("Configuration loaded from %s", conf_path);
-    
+
     char pid_path[PATH_MAX];
     snprintf(pid_path, sizeof(pid_path), "%s/%s", g_config.data_dir, ATP_PID_FILE);
-    
+
     service_ctx_t svc;
     memset(&svc, 0, sizeof(svc));
     service_init(&svc, &g_config);
-    
+
     api_init(&g_api_ctx, &g_config);
-    
+
     status_show(&g_config, &svc, &g_api_ctx);
-    
+
     return 0;
 }
 

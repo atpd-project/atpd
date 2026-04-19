@@ -163,4 +163,5 @@ const char* ui_emoji_uptime(void);
 const char* ui_emoji_cpu(void);
 const char* ui_emoji_memory(void);
 
+void ui_set_no_color(int enable);
 #endif /* ATP_UI_H */
