@@ -83,6 +83,8 @@ void config_set_defaults(atp_config_t *cfg) {
     
     cfg->use_tproxy = 0;
     cfg->current_vpn_iface[0] = '\0';
+    /* UI defaults */
+    cfg->ui_emoji_enabled = 1;   /* Emoji ON by default */
 }
 
 static void parse_key_value(const char *key, const char *value, atp_config_t *cfg) {
@@ -138,6 +140,7 @@ static void parse_key_value(const char *key, const char *value, atp_config_t *cf
     else if (strcmp(key, "CLASH_SECRET") == 0) strcpy(cfg->clash_secret, value);
     else if (strcmp(key, "API_PORT") == 0) cfg->api_port = atoi(value);
     else if (strcmp(key, "API_HOST") == 0) strcpy(cfg->api_host, value);
+    else if (strcmp(key, "UI_EMOJI_ENABLED") == 0) cfg->ui_emoji_enabled = atoi(value);
     else if (strcmp(key, "CORE_USER_GROUP") == 0) {
         char *colon = strchr(value, ':');
         if (colon) {

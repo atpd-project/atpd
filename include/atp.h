@@ -1,6 +1,11 @@
 #ifndef ATP_H
 #define ATP_H
 
+/* Project name */
+#ifndef ATP_NAME
+#define ATP_NAME "ATP"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
