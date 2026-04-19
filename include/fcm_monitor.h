@@ -2,6 +2,7 @@
 #define ATP_FCM_MONITOR_H
 
 #include "atp.h"
+#include <stdint.h>
 
 /* Callback when FCM connection is detected */
 typedef void (*fcm_callback_t)(const char *remote_ip, uint16_t remote_port, void *userdata);
