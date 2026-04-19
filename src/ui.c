@@ -219,15 +219,15 @@ void ui_table_end(void) {
 /* ============================================ */
 
 void ui_status_ok(const char *label) {
-    ui_table_subrow_emoji_color("✓", label, "OK", COLOR_GREEN);
+    ui_table_subrow_emoji_color(ui_emoji_ok(), label, "OK", COLOR_GREEN);
 }
 
 void ui_status_fail(const char *label) {
-    ui_table_subrow_emoji_color("✗", label, "FAIL", COLOR_RED);
+    ui_table_subrow_emoji_color(ui_emoji_fail(), label, "FAIL", COLOR_RED);
 }
 
 void ui_status_warn(const char *label) {
-    ui_table_subrow_emoji_color("⚠", label, "WARN", COLOR_YELLOW);
+    ui_table_subrow_emoji_color(ui_emoji_warning(), label, "WARN", COLOR_YELLOW);
 }
 
 void ui_status_off(const char *label) {
@@ -296,9 +296,17 @@ void ui_banner(void) {
     "   /   |/_  __/ __ \\/ __ \\\n"
     "  / /| | / / / /_/ / / / /\n"
     " / ___ |/ / / ____/ /_/ / \n"
-    "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", 
-    "1.0.0");  /* Version will be replaced by caller */
-    
+    "/_/  |_/_/ /_/    /_____/  \033[0m\n");
+    ui_separator();
+}
+
+void ui_banner_with_version(const char *version) {
+    printf("\033[1;36m"
+    "    ___  __________  ____ \n"
+    "   /   |/_  __/ __ \\/ __ \\\n"
+    "  / /| | / / / /_/ / / / /\n"
+    " / ___ |/ / / ____/ /_/ / \n"
+    "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", version);
     ui_separator();
 }
 
@@ -306,6 +314,14 @@ void ui_banner(void) {
 /* Emoji helpers                                */
 /* ============================================ */
 
+/* Status emojis */
+const char* ui_emoji_ok(void) { return "✓"; }
+const char* ui_emoji_fail(void) { return "✗"; }
+const char* ui_emoji_warning(void) { return "⚠"; }
+const char* ui_emoji_info(void) { return "ℹ"; }
+const char* ui_emoji_success(void) { return "✅"; }
+
+/* VPN emojis */
 const char* ui_emoji_vpn(int connected) {
     return connected ? "🔒" : "🔓";
 }
@@ -314,38 +330,27 @@ const char* ui_emoji_service(int running) {
     return running ? "🚀" : "⏹️";
 }
 
+/* Network interface emojis */
+const char* ui_emoji_mobile(void) { return "📱"; }
 const char* ui_emoji_wifi(int connected) {
     return connected ? "📶" : "⚠";
 }
+const char* ui_emoji_hotspot(void) { return "🔥"; }
+const char* ui_emoji_usb(void) { return "🔌"; }
 
-const char* ui_emoji_mobile(void) {
-    return "📱";
-}
+/* Filter emojis */
+const char* ui_emoji_app_filter(void) { return "📱"; }
+const char* ui_emoji_mac_filter(void) { return "🔢"; }
+const char* ui_emoji_geo_bypass(void) { return "🌏"; }
 
-const char* ui_emoji_hotspot(void) {
-    return "🔥";
-}
+/* Traffic emojis */
+const char* ui_emoji_download(void) { return "📥"; }
+const char* ui_emoji_upload(void) { return "📤"; }
+const char* ui_emoji_speed_up(void) { return "📈"; }
+const char* ui_emoji_speed_down(void) { return "📉"; }
 
-const char* ui_emoji_usb(void) {
-    return "🔌";
-}
-
-const char* ui_emoji_ok(void) {
-    return "✓";
-}
-
-const char* ui_emoji_fail(void) {
-    return "✗";
-}
-
-const char* ui_emoji_warning(void) {
-    return "⚠";
-}
-
-const char* ui_emoji_info(void) {
-    return "ℹ";
-}
-
-const char* ui_emoji_success(void) {
-    return "✅";
-}
+/* System emojis */
+const char* ui_emoji_temperature(void) { return "🌡️"; }
+const char* ui_emoji_uptime(void) { return "⏱️"; }
+const char* ui_emoji_cpu(void) { return "⚙️"; }
+const char* ui_emoji_memory(void) { return "💾"; }

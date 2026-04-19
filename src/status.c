@@ -138,7 +138,7 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
     get_binary_version(PROXY_BIN_PATH, version_str, sizeof(version_str));
 
-    ui_table_row_color("🚀 RUNNING", "sing-box", COLOR_GREEN);
+    ui_table_row_color(ui_emoji_service(1), "sing-box", COLOR_GREEN);
     ui_table_subrow_int("├─", "PID", pid);
     ui_table_subrow("├─", "Uptime", uptime_str);
     ui_table_subrow("├─", "Memory", mem_str);
@@ -168,9 +168,9 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
         if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
         else if (strcmp(current_mode, "Google VPN") == 0) color = COLOR_GREEN;
-        ui_table_row_color("🎮 MODE", current_mode, color);
+        ui_table_row_color(ui_emoji_info(), current_mode, color);
     } else {
-        ui_table_row_color("🎮 MODE", cfg->user_clash_mode, COLOR_YELLOW);
+        ui_table_row_color(ui_emoji_info(), cfg->user_clash_mode, COLOR_YELLOW);
         ui_table_warning("API unavailable, using cached value");
     }
 
@@ -309,13 +309,13 @@ static void status_show_vpn(void) {
     }
 
     if (!has_vpn) {
-        ui_table_row_color("🔓 STATE", "DISCONNECTED", COLOR_RED);
+        ui_table_row_color(ui_emoji_vpn(0), "DISCONNECTED", COLOR_RED);
         ui_table_end();
         return;
     }
 
     ui_table_subrow("├─", "Interface", vpn_iface);
-    ui_table_subrow_color("├─", "🔒 State", "CONNECTED", COLOR_GREEN);
+    ui_table_subrow_color("├─", ui_emoji_vpn(1), "CONNECTED", COLOR_GREEN);
 
     /* Traffic stats */
     if (get_iface_traffic(vpn_iface, &rx_bytes, &tx_bytes) == 0) {
@@ -450,22 +450,22 @@ void status_show_config(atp_config_t *cfg) {
     char mobile_status[64];
     snprintf(mobile_status, sizeof(mobile_status), "%s -> %s",
              cfg->mobile_iface, cfg->proxy_mobile ? "PROXIED" : "BYPASS");
-    ui_table_subrow("├─", ui_emoji_mobile(), mobile_status);
+    ui_table_subrow_emoji("├─", ui_emoji_mobile(), mobile_status);
 
     char wifi_status[64];
     snprintf(wifi_status, sizeof(wifi_status), "%s -> %s",
              cfg->wifi_iface, cfg->proxy_wifi ? "PROXIED" : "BYPASS");
-    ui_table_subrow("├─", ui_emoji_wifi(1), wifi_status);
+    ui_table_subrow_emoji("├─", ui_emoji_wifi(1), wifi_status);
 
     char hotspot_status[64];
     snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s",
              cfg->hotspot_iface, cfg->proxy_hotspot ? "PROXIED" : "BYPASS");
-    ui_table_subrow("├─", ui_emoji_hotspot(), hotspot_status);
+    ui_table_subrow_emoji("├─", ui_emoji_hotspot(), hotspot_status);
 
     char usb_status[64];
     snprintf(usb_status, sizeof(usb_status), "%s -> %s",
              cfg->usb_iface, cfg->proxy_usb ? "PROXIED" : "BYPASS");
-    ui_table_subrow("└─", ui_emoji_usb(), usb_status);
+    ui_table_subrow_emoji("└─", ui_emoji_usb(), usb_status);
 
     ui_table_end();
 
@@ -477,25 +477,25 @@ void status_show_config(atp_config_t *cfg) {
     if (cfg->app_proxy_enable) {
         char app_status[128];
         snprintf(app_status, sizeof(app_status), "ENABLED (%s mode)", cfg->app_proxy_mode);
-        ui_table_subrow("├─", ui_emoji_mobile(), app_status);
+        ui_table_subrow_emoji("├─", ui_emoji_mobile(), app_status);
     } else {
-        ui_table_subrow("├─", ui_emoji_mobile(), "DISABLED");
+        ui_table_subrow_emoji("├─", ui_emoji_mobile(), "DISABLED");
     }
 
     /* MAC Filter */
     if (cfg->mac_filter_enable) {
         char mac_status[128];
         snprintf(mac_status, sizeof(mac_status), "ENABLED (%s mode)", cfg->mac_proxy_mode);
-        ui_table_subrow("├─", "🔢", mac_status);
+        ui_table_subrow_emoji("├─", "🔢", mac_status);
     } else {
-        ui_table_subrow("├─", "🔢", "DISABLED");
+        ui_table_subrow_emoji("├─", "🔢", "DISABLED");
     }
 
     /* CN IP Bypass */
     if (cfg->bypass_cn_ip) {
-        ui_table_subrow("└─", "🌏", "ENABLED (ipset cnip)");
+        ui_table_subrow_emoji("└─", "🌏", "ENABLED (ipset cnip)");
     } else {
-        ui_table_subrow("└─", "🌏", "DISABLED");
+        ui_table_subrow_emoji("└─", "🌏", "DISABLED");
     }
 
     ui_table_end();

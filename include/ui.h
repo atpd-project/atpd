@@ -119,23 +119,48 @@ void ui_key_value_color(const char *key, const char *value, const char *color);
 /* Banner output                                */
 /* ============================================ */
 
-/* Print ATP logo banner with version */
+/* Print ATP logo banner (version must be printed separately) */
 void ui_banner(void);
+
+/* Print banner with version (convenience function) */
+void ui_banner_with_version(const char *version);
 
 /* ============================================ */
 /* Emoji helpers (returns emoji string)        */
 /* ============================================ */
 
-const char* ui_emoji_vpn(int connected);
-const char* ui_emoji_service(int running);
-const char* ui_emoji_wifi(int connected);
-const char* ui_emoji_mobile(void);
-const char* ui_emoji_hotspot(void);
-const char* ui_emoji_usb(void);
+/* Status emojis */
 const char* ui_emoji_ok(void);
 const char* ui_emoji_fail(void);
 const char* ui_emoji_warning(void);
 const char* ui_emoji_info(void);
 const char* ui_emoji_success(void);
 
-#endif
+/* VPN emojis */
+const char* ui_emoji_vpn(int connected);
+const char* ui_emoji_service(int running);
+
+/* Network interface emojis */
+const char* ui_emoji_mobile(void);
+const char* ui_emoji_wifi(int connected);
+const char* ui_emoji_hotspot(void);
+const char* ui_emoji_usb(void);
+
+/* Filter emojis */
+const char* ui_emoji_app_filter(void);
+const char* ui_emoji_mac_filter(void);
+const char* ui_emoji_geo_bypass(void);
+
+/* Traffic emojis */
+const char* ui_emoji_download(void);
+const char* ui_emoji_upload(void);
+const char* ui_emoji_speed_up(void);
+const char* ui_emoji_speed_down(void);
+
+/* System emojis */
+const char* ui_emoji_temperature(void);
+const char* ui_emoji_uptime(void);
+const char* ui_emoji_cpu(void);
+const char* ui_emoji_memory(void);
+
+#endif /* ATP_UI_H */
