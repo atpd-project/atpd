@@ -8,6 +8,8 @@ int tproxy_setup_ipv4(atp_config_t *cfg);
 int tproxy_setup_ipv6(atp_config_t *cfg);
 int tproxy_setup_redirect_ipv4(atp_config_t *cfg);
 int tproxy_setup_redirect_ipv6(atp_config_t *cfg);
+int tproxy_setup_enhance_ipv4(atp_config_t *cfg);
+int tproxy_setup_enhance_ipv6(atp_config_t *cfg);
 int tproxy_cleanup_ipv4(atp_config_t *cfg);
 int tproxy_cleanup_ipv6(atp_config_t *cfg);
 int tproxy_cleanup_all(atp_config_t *cfg);
