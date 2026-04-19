@@ -1,0 +1,89 @@
+name: Build ATP binary
+description: Compiles ATP daemon with musl
+
+inputs:
+  cc-path:
+    description: 'Path to musl-gcc'
+    required: true
+  ar-path:
+    description: 'Path to musl-ar'
+    required: true
+  ranlib-path:
+    description: 'Path to musl-ranlib'
+    required: true
+  strip-path:
+    description: 'Path to musl-strip'
+    required: true
+  curl-include-path:
+    description: 'Path to libcurl include dir'
+    required: true
+  curl-lib-path:
+    description: 'Path to libcurl lib dir'
+    required: true
+
+outputs:
+  version:
+    description: 'ATP version'
+    value: ${{ steps.build.outputs.version }}
+  binary-path:
+    description: 'Path to compiled binary'
+    value: ${{ steps.build.outputs.binary }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate version header
+      shell: bash
+      run: |
+        chmod +x scripts/gen_version.sh
+        ./scripts/gen_version.sh
+        echo "Generated version.h:"
+        cat include/version.h
+
+    - name: Cache build objects
+      uses: actions/cache@v4
+      with:
+        path: build/obj
+        key: obj-${{ runner.os }}-${{ hashFiles('src/**/*.c', 'include/**/*.h') }}
+        restore-keys: |
+          obj-${{ runner.os }}-
+
+    - name: Build ATP
+      id: build
+      shell: bash
+      run: |
+        export CC="${{ inputs.cc-path }}"
+        export AR="${{ inputs.ar-path }}"
+        export RANLIB="${{ inputs.ranlib-path }}"
+        export STRIP="${{ inputs.strip-path }}"
+        
+        echo "=== Build Environment ==="
+        echo "CC: $CC"
+        echo "CURL_INCLUDE: ${{ inputs.curl-include-path }}"
+        echo "CURL_LIB: ${{ inputs.curl-lib-path }}"
+        echo "=========================="
+        
+        make clean
+        make -j$(nproc) \
+          EXTRA_CFLAGS="-I${{ inputs.curl-include-path }}" \
+          EXTRA_LDFLAGS="-L${{ inputs.curl-lib-path }} -lcurl -pthread -static"
+        
+        file build/bin/atpd
+        ls -la build/bin/atpd
+        
+        echo "binary=build/bin/atpd" >> $GITHUB_OUTPUT
+
+    - name: Extract version
+      id: version
+      shell: bash
+      run: |
+        VERSION=$(grep ATP_VERSION_STRING include/version.h | cut -d'"' -f2)
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "ATP version: ${VERSION}"
+
+    - name: Strip binary
+      shell: bash
+      run: |
+        ${{ inputs.strip-path }} build/bin/atpd
+        echo "Stripped binary size:"
+        ls -la build/bin/atpd

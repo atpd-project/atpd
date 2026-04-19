@@ -33,7 +33,7 @@ jobs:
       (!contains(github.event.head_commit.message, '[skip actions]'))
     
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      version: ${{ steps.build-atp.outputs.version }}
       build_date: ${{ steps.build_date.outputs.date }}
     
     steps:
@@ -46,71 +46,30 @@ jobs:
       id: setup
       uses: ./.github/actions/setup-musl-env
 
-    - name: Generate version header
-      run: |
-        chmod +x scripts/gen_version.sh
-        ./scripts/gen_version.sh
-        echo "Generated version.h:"
-        cat include/version.h
-
-    - name: Cache build objects
-      uses: actions/cache@v4
-      with:
-        path: build/obj
-        key: obj-${{ runner.os }}-${{ hashFiles('src/**/*.c', 'include/**/*.h') }}
-        restore-keys: |
-          obj-${{ runner.os }}-
-
     - name: Build ATP
-      run: |
-        export CC="${{ steps.setup.outputs.cc-path }}"
-        export AR="${{ steps.setup.outputs.ar-path }}"
-        export RANLIB="${{ steps.setup.outputs.ranlib-path }}"
-        export STRIP="${{ steps.setup.outputs.strip-path }}"
-        
-        CURL_INCLUDE="${{ steps.setup.outputs.curl-include-path }}"
-        CURL_LIB="${{ steps.setup.outputs.curl-lib-path }}"
-        
-        echo "=== Build Environment ==="
-        echo "CC: $CC"
-        echo "CURL_INCLUDE: $CURL_INCLUDE"
-        echo "CURL_LIB: $CURL_LIB"
-        echo "=========================="
-        
-        make clean
-        make -j$(nproc) \
-          EXTRA_CFLAGS="-I$CURL_INCLUDE" \
-          EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
-        
-        file build/bin/atpd
-        ls -la build/bin/atpd
-
-    - name: Extract version
-      id: version
-      run: |
-        VERSION=$(grep ATP_VERSION_STRING include/version.h | cut -d'"' -f2)
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "ATP version: ${VERSION}"
+      id: build-atp
+      uses: ./.github/actions/build-atp
+      with:
+        cc-path: ${{ steps.setup.outputs.cc-path }}
+        ar-path: ${{ steps.setup.outputs.ar-path }}
+        ranlib-path: ${{ steps.setup.outputs.ranlib-path }}
+        strip-path: ${{ steps.setup.outputs.strip-path }}
+        curl-include-path: ${{ steps.setup.outputs.curl-include-path }}
+        curl-lib-path: ${{ steps.setup.outputs.curl-lib-path }}
 
     - name: Get build date
       id: build_date
       run: |
         echo "date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
-    - name: Strip binary
-      run: |
-        ${{ steps.setup.outputs.strip-path }} build/bin/atpd
-        echo "Stripped binary size:"
-        ls -la build/bin/atpd
-
     - name: Build summary
       if: success()
       run: |
-        BINARY_SIZE=$(ls -lh build/bin/atpd | awk '{print $5}')
+        BINARY_SIZE=$(ls -lh ${{ steps.build-atp.outputs.binary-path }} | awk '{print $5}')
         echo "### ✅ Build Summary" >> $GITHUB_STEP_SUMMARY
         echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
         echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-        echo "| Version | ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Version | ${{ steps.build-atp.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
         echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
         echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
         echo "| Binary size | $BINARY_SIZE |" >> $GITHUB_STEP_SUMMARY
@@ -130,22 +89,22 @@ jobs:
       uses: actions/upload-artifact@v4
       if: github.ref == 'refs/heads/dev'
       with:
-        name: atpd-dev-${{ steps.version.outputs.version }}
-        path: build/bin/atpd
+        name: atpd-dev-${{ steps.build-atp.outputs.version }}
+        path: ${{ steps.build-atp.outputs.binary-path }}
 
     - name: Upload artifact (main)
       uses: actions/upload-artifact@v4
       if: github.ref == 'refs/heads/main'
       with:
-        name: atpd-${{ steps.version.outputs.version }}
-        path: build/bin/atpd
+        name: atpd-${{ steps.build-atp.outputs.version }}
+        path: ${{ steps.build-atp.outputs.binary-path }}
 
     - name: Upload artifact (tag)
       uses: actions/upload-artifact@v4
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        name: atpd-${{ steps.version.outputs.version }}
-        path: build/bin/atpd
+        name: atpd-${{ steps.build-atp.outputs.version }}
+        path: ${{ steps.build-atp.outputs.binary-path }}
 
   # ============================================
   # Job 2: Create Release (only on tags)
