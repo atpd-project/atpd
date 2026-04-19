@@ -19,12 +19,7 @@
 #define THERMAL_TEMP_WARN 75000
 #define THERMAL_TEMP_CRITICAL 85000
 
-/* External reference for service context */
-extern service_ctx_t g_service_ctx;
-extern api_ctx_t g_api_ctx;
-
 /* Use logger.h colors - no redefinition needed */
-/* COLOR_RESET, COLOR_RED, COLOR_GREEN, COLOR_YELLOW, COLOR_CYAN are from logger.h */
 
 static const char* proxy_mode_to_string(atp_config_t *cfg) {
     switch (cfg->proxy_mode) {
@@ -144,8 +139,8 @@ static int get_cpu_temperature(void) {
 }
 
 /* Show PROXY CORE module */
-static void status_show_proxy_core(void) {
-    int pid = service_get_pid(&g_service_ctx);
+static void status_show_proxy_core(service_ctx_t *svc) {
+    int pid = service_get_pid(svc);
     char uptime_str[64];
     char mem_str[32];
     char cpu_str[16];
@@ -188,20 +183,20 @@ static void status_show_proxy_core(void) {
 }
 
 /* Show CLASH MODE module */
-static void status_show_clash_mode(atp_config_t *cfg) {
+static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ctx_t *svc) {
     char current_mode[64] = {0};
     int api_ok = 0;
 
     print_separator();
     print_table_header("CLASH MODE");
 
-    if (service_get_pid(&g_service_ctx) <= 0) {
+    if (service_get_pid(svc) <= 0) {
         print_table_row_with_color("MODE", "N/A (service stopped)", COLOR_YELLOW);
         print_table_end();
         return;
     }
 
-    if (api_get_mode(&g_api_ctx, current_mode, sizeof(current_mode)) == 0) {
+    if (api_get_mode(api, current_mode, sizeof(current_mode)) == 0) {
         api_ok = 1;
     }
 
@@ -492,22 +487,22 @@ void status_show_config(atp_config_t *cfg) {
     print_table_header("INTERFACE CONTROL");
 
     char mobile_status[64];
-    snprintf(mobile_status, sizeof(mobile_status), "%s → %s",
+    snprintf(mobile_status, sizeof(mobile_status), "%s -> %s",
              cfg->mobile_iface, cfg->proxy_mobile ? "PROXIED" : "BYPASS");
     print_table_subrow("├─", "MOBILE", mobile_status);
 
     char wifi_status[64];
-    snprintf(wifi_status, sizeof(wifi_status), "%s → %s",
+    snprintf(wifi_status, sizeof(wifi_status), "%s -> %s",
              cfg->wifi_iface, cfg->proxy_wifi ? "PROXIED" : "BYPASS");
     print_table_subrow("├─", "WIFI", wifi_status);
 
     char hotspot_status[64];
-    snprintf(hotspot_status, sizeof(hotspot_status), "%s → %s",
+    snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s",
              cfg->hotspot_iface, cfg->proxy_hotspot ? "PROXIED" : "BYPASS");
     print_table_subrow("├─", "HOTSPOT", hotspot_status);
 
     char usb_status[64];
-    snprintf(usb_status, sizeof(usb_status), "%s → %s",
+    snprintf(usb_status, sizeof(usb_status), "%s -> %s",
              cfg->usb_iface, cfg->proxy_usb ? "PROXIED" : "BYPASS");
     print_table_subrow("└─", "USB", usb_status);
 
@@ -547,15 +542,12 @@ void status_show_config(atp_config_t *cfg) {
 
 /* Main status show function */
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
-    (void)svc;
-    (void)api;
-    
     printf("\n" COLOR_CYAN "=== ATP Status ===\n" COLOR_RESET "\n");
 
-    status_show_proxy_core();
+    status_show_proxy_core(svc);
     printf("\n");
 
-    status_show_clash_mode(cfg);
+    status_show_clash_mode(cfg, api, svc);
     printf("\n");
 
     status_show_monitors();
