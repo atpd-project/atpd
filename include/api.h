@@ -10,11 +10,6 @@
 
 #include "atp.h"
 
-/* API retry and rate limit configuration */
-#define API_RETRY_COUNT 3
-#define API_RETRY_DELAY_MS 500
-#define API_MIN_INTERVAL_MS 100
-
 /* External global configuration (defined in main.c) */
 extern atp_config_t g_config;
 
