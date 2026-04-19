@@ -130,10 +130,11 @@ jobs:
     - name: Build ATP with musl
       run: |
         cd ${{ github.workspace }}
-        export CFLAGS="-I/tmp/curl-musl/include -Wall -Wextra -O2 -pthread -static"
-        export LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
         make clean
-        make CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS"
+        make \
+          CC="$CC" \
+          EXTRA_CFLAGS="-I/tmp/curl-musl/include" \
+          EXTRA_LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
         file build/bin/atpd
         ls -la build/bin/atpd
 
@@ -162,7 +163,7 @@ jobs:
         file build/bin/atpd
 
     # ============================================
-    # 场景 1: 无 tag 编译 - 只上传 artifact
+    # Scenario 1: dev/main branch without tag - upload artifact only
     # ============================================
     - name: Upload artifact (dev branch, no tag)
       uses: actions/upload-artifact@v4
@@ -181,7 +182,7 @@ jobs:
         if-no-files-found: error
 
     # ============================================
-    # 场景 2: 有 tag 编译 - 上传 artifact + 创建 Release
+    # Scenario 2: Tag build - upload artifact + create Release
     # ============================================
     - name: Upload artifact (tag build)
       uses: actions/upload-artifact@v4
