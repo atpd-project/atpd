@@ -28,6 +28,10 @@ static volatile sig_atomic_t g_running = 1;
 static service_ctx_t g_service_ctx;
 api_ctx_t g_api_ctx;
 
+/* Forward declarations */
+static int atomic_mode_switch(atp_config_t *cfg, api_ctx_t *api, const char *new_mode);
+static void on_fcm_connection(const char *remote_ip, uint16_t remote_port, void *userdata);
+
 /* Initialization stage flags */
 static int init_stage = 0;
 #define INIT_STAGE_TPROXY     (1 << 0)
@@ -103,74 +107,73 @@ static void print_banner(void) {
     printf(" Features: FCM Monitor | Netlink Monitor\n");
     printf("--------------------------------------------\n\n");
 }
-
 /* Print startup health summary table */
 static void print_startup_summary(void) {
     extern int g_current_uids_count;
     extern int *g_current_uids;
     char vpn_iface[IFNAMSIZ];
-    
+
     printf("\n┌────────────────────────────────────────────────────────────────┐\n");
     printf("│                    ATP STARTUP SUMMARY                         │\n");
     printf("├────────────────────────────────────────────────────────────────┤\n");
-    
+
     if (init_stage & INIT_STAGE_TPROXY)
         printf("│ ✓ TPROXY Rules        │ OK │ IPv4/IPv6 mangle chains      │\n");
     else
         printf("│ ✗ TPROXY Rules        │ FAIL │ Check iptables availability │\n");
-    
+
     if (init_stage & INIT_STAGE_ROUTING)
         printf("│ ✓ Routing Policy      │ OK │ Table %d fwmark rules       │\n", g_config.table_id);
     else
         printf("│ ✗ Routing Policy      │ FAIL │ Check ip rule configuration│\n");
-    
+
     if (init_stage & INIT_STAGE_DNS)
         printf("│ ✓ DNS Hijack          │ OK │ Port %d redirected          │\n", g_config.dns_port);
     else
         printf("│ ✗ DNS Hijack          │ FAIL │ Check DNS settings         │\n");
-    
+
     if (init_stage & INIT_STAGE_GEOIP)
         printf("│ ✓ GeoIP (CN Bypass)   │ OK │ ipset cnip loaded           │\n");
     else if (g_config.bypass_cn_ip)
         printf("│ ⚠ GeoIP (CN Bypass)   │ ASYNC │ Download in background      │\n");
     else
         printf("│ ○ GeoIP (CN Bypass)   │ OFF │ Disabled by config          │\n");
-    
+
     if (init_stage & INIT_STAGE_APP_FILTER) {
-        printf("│ ✓ App Filter          │ OK │ %d UIDs in ipset            │\n", 
+        printf("│ ✓ App Filter          │ OK │ %d UIDs in ipset            │\n",
                g_current_uids ? g_current_uids_count : 0);
     } else {
         printf("│ ○ App Filter          │ OFF │ Disabled by config          │\n");
     }
-    
+
     if (init_stage & INIT_STAGE_MAC_FILTER)
         printf("│ ✓ MAC Filter          │ OK │ Hotspot MAC rules active    │\n");
     else
         printf("│ ○ MAC Filter          │ OFF │ Disabled by config          │\n");
-    
+
     if (init_stage & INIT_STAGE_PERF_MODE)
         printf("│ ✓ Performance Mode    │ OK │ CPU/BBR/RPS tuned           │\n");
     else
         printf("│ ○ Performance Mode    │ OFF │ Disabled by config          │\n");
-    
+
     if (init_stage & INIT_STAGE_IPV6_MGR)
         printf("│ ✓ IPv6 Manager        │ OK │ IPv6 stack configured       │\n");
     else if (g_config.proxy_ipv6)
         printf("│ ⚠ IPv6 Manager        │ PARTIAL │ Check ip6tables availability│\n");
     else
         printf("│ ○ IPv6 Manager        │ OFF │ Disabled by config          │\n");
-    
+
     printf("├────────────────────────────────────────────────────────────────┤\n");
-    
+
     /* VPN detection status */
     if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
-        printf("│ 🔒 VPN Connected      │ %-10s │ Interface: %-15s │\n", 
+        printf("│ 🔒 VPN Connected      │ %-10s │ Interface: %-15s │\n",
                "ACTIVE", vpn_iface);
         printf("│    └─ XFRM Bypass      │ OK │ IPsec/ESP fast lane        │\n");
     } else {
         printf("│ 🔓 VPN Connected      │ %-10s │ No active VPN tunnel       │\n", "INACTIVE");
     }
-    
+
     /* sing-box service status */
     if (service_check(&g_service_ctx)) {
         int pid = service_get_pid(&g_service_ctx);
@@ -178,73 +181,74 @@ static void print_startup_summary(void) {
     } else {
         printf("│ 🚀 sing-box Service   │ FAIL │ Process not running        │\n");
     }
-    
+
     /* FCM monitor status */
     if (fcm_monitor_is_running()) {
         printf("│ 🔍 FCM Monitor        │ OK │ Google VPN detection active │\n");
     } else {
         printf("│ 🔍 FCM Monitor        │ OFF │ Auto-switch disabled       │\n");
     }
-    
+
     printf("└────────────────────────────────────────────────────────────────┘\n\n");
 }
 
 /* Print quick health check */
 static void print_health_check(void) {
     char check_cmd[256];
-    
+
     printf("┌────────────────────────────────────────────┐\n");
     printf("│           ATP Health Check                  │\n");
     printf("├────────────────────────────────────────────┤\n");
-    
+
     /* Netlink Monitor */
     if (netlink_monitor_is_running()) {
         printf("│ ✓ Netlink Monitor    │ OK │ Async ready      │\n");
     } else {
         printf("│ ✗ Netlink Monitor    │ FAIL │ Not running      │\n");
     }
-    
+
     /* FCM Monitor */
     if (fcm_monitor_is_running()) {
         printf("│ ✓ FCM Monitor        │ OK │ Detecting FCM    │\n");
     } else {
         printf("│ ✗ FCM Monitor        │ FAIL │ Not running      │\n");
     }
-    
+
     /* TPROXY Rules */
-    snprintf(check_cmd, sizeof(check_cmd), 
+    snprintf(check_cmd, sizeof(check_cmd),
              "iptables -t mangle -L ATP_PRE_0 -n 2>/dev/null | head -1 | grep -q ATP_PRE_0");
     if (exec_cmd_simple(check_cmd, 2) == 0) {
         printf("│ ✓ TPROXY Rules      │ OK │ Table %d injected │\n", g_config.table_id);
     } else {
         printf("│ ✗ TPROXY Rules      │ FAIL │ Not configured   │\n");
     }
-    
+
     /* Routing Table */
-    snprintf(check_cmd, sizeof(check_cmd), 
+    snprintf(check_cmd, sizeof(check_cmd),
              "ip route show table %d 2>/dev/null | grep -q local", g_config.table_id);
     if (exec_cmd_simple(check_cmd, 2) == 0) {
         printf("│ ✓ Routing Table     │ OK │ Table %d locked   │\n", g_config.table_id);
     } else {
         printf("│ ✗ Routing Table     │ FAIL │ Not configured   │\n");
     }
-    
+
     /* INET_DIAG */
     if (inet_diag_available()) {
         printf("│ ✓ INET_DIAG         │ OK │ SELinux allowed   │\n");
     } else {
         printf("│ ✗ INET_DIAG         │ FAIL │ SELinux blocked  │\n");
     }
-    
+
     /* sing-box API */
     if (api_check_health(&g_api_ctx)) {
         printf("│ ✓ sing-box API      │ OK │ Heartbeat OK      │\n");
     } else {
         printf("│ ✗ sing-box API      │ FAIL │ Not responding   │\n");
     }
-    
+
     printf("└────────────────────────────────────────────┘\n\n");
 }
+
 static void state_transition(atp_state_t new_state) {
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
@@ -457,7 +461,6 @@ void atp_cleanup(void) {
 void atp_show_status(void) {
     status_show(&g_config, &g_service_ctx, &g_api_ctx);
 }
-
 /* Initialize netlink monitor for VPN detection */
 static void init_netlink_monitor(atp_config_t *cfg) {
     nl_monitor_config_t monitor_config;
@@ -474,15 +477,6 @@ static void init_netlink_monitor(atp_config_t *cfg) {
         LOG_WARN("Failed to start netlink monitor, falling back to polling mode");
     } else {
         LOG_INFO("Netlink monitor active, VPN handover latency reduced to microseconds");
-    }
-}
-
-/* Initialize FCM monitor for Google VPN auto-detection */
-static void init_fcm_monitor(atp_config_t *cfg) {
-    if (fcm_monitor_start(on_fcm_connection, cfg) != 0) {
-        LOG_WARN("Failed to start FCM monitor, Google VPN auto-switch disabled");
-    } else {
-        LOG_INFO("FCM monitor active, Google VPN detection enabled (1s polling)");
     }
 }
 
@@ -545,6 +539,15 @@ static void on_fcm_connection(const char *remote_ip, uint16_t remote_port, void 
 
     /* Atomic mode switch */
     atomic_mode_switch(cfg, &g_api_ctx, "Google VPN");
+}
+
+/* Initialize FCM monitor for Google VPN auto-detection */
+static void init_fcm_monitor(atp_config_t *cfg) {
+    if (fcm_monitor_start(on_fcm_connection, cfg) != 0) {
+        LOG_WARN("Failed to start FCM monitor, Google VPN auto-switch disabled");
+    } else {
+        LOG_INFO("FCM monitor active, Google VPN detection enabled (1s polling)");
+    }
 }
 static int init_tasks(atp_config_t *cfg) {
     int core_success = 1;
