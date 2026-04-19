@@ -137,59 +137,74 @@ jobs:
         prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
 
   # ============================================
-  # Job 3: Update Known Good Commits (only on dev push)
+  # Job 3: Update Known Good Commits Issue (only on dev push)
   # ============================================
   update-known-good:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/dev' && success()
     permissions:
-      contents: write
+      issues: write
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
 
-    - name: Update README
+    - name: Update Known Good Commits Issue
       run: |
+        ISSUE_NUMBER=1
         COMMIT=$(git rev-parse --short HEAD)
         DATE=$(date +%Y-%m-%d)
         TITLE=$(git log -1 --format=%s | sed 's/|/\\|/g')
         NEW_ROW="| \`$COMMIT\` | $DATE | ✅ | $TITLE |"
         
-        if ! grep -q "^## Known Good Commits" README.md; then
-          echo "Table not found, skipping"
-          exit 0
-        fi
+        # Get current issue body
+        curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+             -H "Accept: application/vnd.github.v3+json" \
+             "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" \
+             > issue.json
         
-        sed -i "/^|--------/a $NEW_ROW" README.md
-        echo "Added row: $NEW_ROW"
+        BODY=$(jq -r '.body' issue.json)
         
-        # Keep only last 5 entries (2 header rows + 5 data rows = 7 lines starting with |)
-        awk '
-          BEGIN { in_table = 0; count = 0 }
-          /^## Known Good Commits/ { in_table = 1; print; next }
-          in_table && /^\|/ { 
+        # Insert new row after header separator
+        BODY=$(echo "$BODY" | sed "/^|--------/a $NEW_ROW")
+        
+        # Keep only last 5 entries (2 header rows + 5 data rows = 7 lines)
+        BODY=$(echo "$BODY" | awk '
+          BEGIN { in_table = 0; count = 0; header = ""; rows = "" }
+          /^# Known Good Commits/ { header = header $0 "\n"; next }
+          /^This issue tracks/ { header = header $0 "\n"; next }
+          /^---/ { header = header $0 "\n"; next }
+          /^\|/ { 
             count++
-            if (count <= 7) print
+            if (count <= 7) rows = rows $0 "\n"
             next
           }
-          in_table && /^$/ { in_table = 0 }
-          !in_table { print }
-        ' README.md > README.tmp && mv README.tmp README.md
+          /^\*Last updated/ { 
+            print header
+            print rows
+            print
+            next
+          }
+          { print }
+        ')
         
-        echo "Table trimmed to last 5 entries"
-
-    - name: Commit and push
-      run: |
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git add README.md
-        if git diff --cached --quiet; then
-          echo "No changes to commit"
-        else
-          git commit -m "docs: update known good commits [skip ci]"
-          git push
-        fi
+        # Update last updated timestamp
+        TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+        BODY=$(echo "$BODY" | sed "s/\*Last updated:.*/\*Last updated: $TIMESTAMP\*/")
+        
+        # Escape for JSON
+        BODY_ESCAPED=$(echo "$BODY" | jq -Rs '.')
+        
+        # Update issue
+        echo "{\"body\": $BODY_ESCAPED}" | \
+        curl -s -X PATCH \
+             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+             -H "Accept: application/vnd.github.v3+json" \
+             -H "Content-Type: application/json" \
+             "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" \
+             -d @-
+        
+        echo "✅ Issue #$ISSUE_NUMBER updated with commit $COMMIT"
