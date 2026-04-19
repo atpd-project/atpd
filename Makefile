@@ -72,6 +72,18 @@ TARGET = build/bin/atpd
 # Build targets
 .PHONY: all clean install install-android distclean
 
+# Generate version header
+include/version.h: scripts/gen_version.sh
+	@echo "Generating version.h..."
+	@chmod +x scripts/gen_version.sh
+	@./scripts/gen_version.sh
+
+# Ensure version.o depends on version.h
+src/version.o: include/version.h
+
+# Ensure version.h is generated before build
+all: include/version.h $(TARGET)
+
 all: $(TARGET)
 
 $(TARGET): $(OBJ)

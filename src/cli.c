@@ -14,7 +14,7 @@
 #include <stdlib.h>
 
 static const char *copyright =
-    ATP_NAME " v" ATP_VERSION "\n"
+    ATP_NAME " v" ATP_VERSION_STRING "\n"
     "Copyright (C) 2024-2025 ATP Project\n"
     "License: GPL v3\n";
 
@@ -37,7 +37,7 @@ void print_usage(const char *progname) {
     const char *base = strrchr(progname, '/');
     base = base ? base + 1 : progname;
 
-    printf(ATP_NAME " v" ATP_VERSION "\n\n");
+    printf(ATP_NAME " v" ATP_VERSION_STRING "\n\n");
     printf("Usage: %s [options] command\n\n", base);
     printf("Options:\n");
     printf("  -c, --config FILE   Specify configuration file\n");
@@ -67,10 +67,7 @@ void print_usage(const char *progname) {
 }
 
 void print_version(void) {
-    printf("%s", copyright);
-    printf("Build: %s %s\n", ATP_BUILD_DATE, ATP_BUILD_TIME);
-    printf("Compiler: %s\n", ATP_BUILD_COMPILER);
-    printf("Arch: %s\n", ATP_BUILD_ARCH);
+    printf("atpd version %s\n", atp_get_version());
 }
 
 void print_help(const char *progname) {
