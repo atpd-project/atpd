@@ -159,12 +159,28 @@ jobs:
         TITLE=$(git log -1 --format=%s | sed 's/|/\\|/g')
         NEW_ROW="| \`$COMMIT\` | $DATE | ✅ | $TITLE |"
         
-        if grep -q "^## Known Good Commits" README.md; then
-          sed -i "/^|--------/a $NEW_ROW" README.md
-          echo "Added row: $NEW_ROW"
-        else
+        if ! grep -q "^## Known Good Commits" README.md; then
           echo "Table not found, skipping"
+          exit 0
         fi
+        
+        sed -i "/^|--------/a $NEW_ROW" README.md
+        echo "Added row: $NEW_ROW"
+        
+        # Keep only last 5 entries (2 header rows + 5 data rows = 7 lines starting with |)
+        awk '
+          BEGIN { in_table = 0; count = 0 }
+          /^## Known Good Commits/ { in_table = 1; print; next }
+          in_table && /^\|/ { 
+            count++
+            if (count <= 7) print
+            next
+          }
+          in_table && /^$/ { in_table = 0 }
+          !in_table { print }
+        ' README.md > README.tmp && mv README.tmp README.md
+        
+        echo "Table trimmed to last 5 entries"
 
     - name: Commit and push
       run: |
