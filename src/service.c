@@ -540,3 +540,28 @@ int service_kill_all(const char *name, int signal) {
     
     return killed;
 }
+int service_monitor(service_ctx_t *ctx) {
+    if (!ctx) return -1;
+
+    if (ctx->state == SERVICE_RUNNING) {
+        if (!service_check(ctx)) {
+            LOG_WARN("Service died unexpectedly");
+            ctx->state = SERVICE_FAILED;
+
+            if (!service_cooldown_active(ctx)) {
+                LOG_INFO("Attempting to restart service");
+                if (service_start(ctx) == 0) {
+                    ctx->restart_failures = 0;
+                    ctx->last_restart_time = time(NULL);
+                } else {
+                    ctx->restart_failures++;
+                    LOG_ERROR("Failed to restart service (failures: %d)",
+                              ctx->restart_failures);
+                }
+            }
+        }
+    }
+
+    service_rotate_log(ctx);
+    return 0;
+}

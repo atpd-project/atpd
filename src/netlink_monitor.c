@@ -385,3 +385,24 @@ void netlink_default_callback(nl_event_type_t event, const char *iface, void *us
             break;
     }
 }
+int netlink_monitor_init(atp_config_t *cfg) {
+    nl_monitor_config_t config = {
+        .monitor_links = 1,
+        .monitor_addrs = 1,
+        .monitor_routes = 0,
+        .monitor_vpn_only = 0,
+        .callback = netlink_default_callback,
+        .userdata = cfg
+    };
+    return netlink_monitor_start(&config);
+}
+
+int netlink_monitor_poll(int timeout_ms) {
+    (void)timeout_ms;
+    usleep(100000);
+    return 0;
+}
+
+void netlink_monitor_cleanup(void) {
+    netlink_monitor_stop();
+}

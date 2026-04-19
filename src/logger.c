@@ -207,3 +207,11 @@ void log_set_color(int enable) {
 void log_rotate(void) {
     log_rotate_if_needed();
 }
+void logger_init(void) {
+    log_init();
+}
+
+void logger_close(void) {
+    /* Close syslog if opened */
+    /* No explicit cleanup needed for file logging */
+}

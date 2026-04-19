@@ -320,3 +320,15 @@ void fcm_monitor_refresh_cache(void) {
     pthread_mutex_unlock(&g_fcm_mutex);
     refresh_fcm_ips();
 }
+int fcm_monitor_init(atp_config_t *cfg) {
+    (void)cfg;
+    return 0;
+}
+
+void fcm_monitor_poll(void) {
+    /* Polling handled by background thread */
+}
+
+void fcm_monitor_cleanup(void) {
+    fcm_monitor_stop();
+}

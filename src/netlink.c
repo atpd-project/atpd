@@ -113,3 +113,12 @@ int nl_vpn_detect(void) {
 int nl_link_get_vpn_interface(char *iface, size_t size) {
     return netlink_get_active_vpn(iface, size);
 }
+
+int netlink_init(void) {
+    /* Netlink is initialized on-demand, nothing to do here */
+    return 0;
+}
+
+void netlink_cleanup(void) {
+    /* Nothing to clean up */
+}
