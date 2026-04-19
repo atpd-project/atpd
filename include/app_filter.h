@@ -1,7 +1,15 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2025 ATP Project
+ *
+ * Application filter header
+ */
+
 #ifndef ATP_APP_FILTER_H
 #define ATP_APP_FILTER_H
 
 #include "atp.h"
+#include <stdint.h>
 
 typedef struct {
     int uid;
@@ -38,4 +46,4 @@ int app_filter_should_proxy(int family, int protocol,
                              void *src_ip, uint16_t src_port,
                              void *dst_ip, uint16_t dst_port);
 
-#endif
+#endif /* ATP_APP_FILTER_H */
