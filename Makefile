@@ -32,6 +32,7 @@ SRCS = $(SRC_DIR)/api.c \
        $(SRC_DIR)/cjson/cJSON.c \
        $(SRC_DIR)/cli.c \
        $(SRC_DIR)/config.c \
+       $(SRC_DIR)/fcm_monitor.c \
        $(SRC_DIR)/geoip.c \
        $(SRC_DIR)/inet_diag.c \
        $(SRC_DIR)/ipset.c \
