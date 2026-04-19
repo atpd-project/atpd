@@ -121,6 +121,7 @@ static void print_row(const char *label, const char *value, int indent) {
     /* Print label and value */
     printf("%-*s  %s\n", label_width, label, truncated_value);
 }
+
 /* ============================================ */
 /* Basic output functions                       */
 /* ============================================ */
@@ -175,10 +176,10 @@ void ui_table_row_color(const char *label, const char *value, const char *color)
     int label_width = get_label_width();
     int max_value_width = g_term_width - 2 - label_width - 4;
     if (max_value_width < 10) max_value_width = 10;
-
+    
     char truncated_value[512];
     truncate_string(value, truncated_value, max_value_width);
-
+    
     printf("  %s%-*s" COLOR_RESET "  %s\n", color, label_width, label, truncated_value);
 }
 
@@ -194,13 +195,13 @@ void ui_table_subrow_color(const char *prefix, const char *label, const char *va
     int label_width = get_label_width();
     int max_value_width = g_term_width - 4 - label_width - 4;
     if (max_value_width < 10) max_value_width = 10;
-
+    
     char truncated_value[512];
     truncate_string(value, truncated_value, max_value_width);
-
+    
     char combined_label[128];
     snprintf(combined_label, sizeof(combined_label), "%s%s", prefix, label);
-
+    
     printf("    %s%-*s" COLOR_RESET "  %s\n", color, label_width, combined_label, truncated_value);
 }
 
@@ -248,9 +249,9 @@ void ui_table_info(const char *message) {
 
 void ui_table_end(void) {
     ensure_init();
-    /* Empty - just a blank line for spacing */
     printf("\n");
 }
+
 /* ============================================ */
 /* Status indicator functions                   */
 /* ============================================ */
@@ -346,11 +347,11 @@ void ui_banner_with_version(const char *version) {
     "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", version);
     ui_separator();
 }
+
 /* ============================================ */
 /* Emoji helpers (adaptive based on config)     */
 /* ============================================ */
 
-/* Status emojis */
 const char* ui_emoji_ok(void) { 
     return g_config.ui_emoji_enabled ? "✓" : "[OK]"; 
 }
@@ -371,7 +372,6 @@ const char* ui_emoji_success(void) {
     return g_config.ui_emoji_enabled ? "✅" : "[OK]"; 
 }
 
-/* VPN emojis */
 const char* ui_emoji_vpn(int connected) {
     if (g_config.ui_emoji_enabled) {
         return connected ? "🔒" : "🔓";
@@ -386,7 +386,6 @@ const char* ui_emoji_service(int running) {
     return running ? "[RUNNING]" : "[STOPPED]";
 }
 
-/* Network interface emojis */
 const char* ui_emoji_mobile(void) { 
     return g_config.ui_emoji_enabled ? "📱" : "[MOBILE]"; 
 }
@@ -406,7 +405,6 @@ const char* ui_emoji_usb(void) {
     return g_config.ui_emoji_enabled ? "🔌" : "[USB]"; 
 }
 
-/* Filter emojis */
 const char* ui_emoji_app_filter(void) { 
     return g_config.ui_emoji_enabled ? "📱" : "[APP]"; 
 }
@@ -419,7 +417,6 @@ const char* ui_emoji_geo_bypass(void) {
     return g_config.ui_emoji_enabled ? "🌏" : "[CN]"; 
 }
 
-/* Traffic emojis */
 const char* ui_emoji_download(void) { 
     return g_config.ui_emoji_enabled ? "📥" : "[RX]"; 
 }
@@ -436,7 +433,6 @@ const char* ui_emoji_speed_down(void) {
     return g_config.ui_emoji_enabled ? "📉" : "[TX SPD]"; 
 }
 
-/* System emojis */
 const char* ui_emoji_temperature(void) { 
     return g_config.ui_emoji_enabled ? "🌡️" : "[TEMP]"; 
 }
