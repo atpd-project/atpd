@@ -68,10 +68,19 @@ jobs:
         export RANLIB="${{ steps.setup.outputs.ranlib-path }}"
         export STRIP="${{ steps.setup.outputs.strip-path }}"
         
+        CURL_INCLUDE="${{ steps.setup.outputs.curl-include-path }}"
+        CURL_LIB="${{ steps.setup.outputs.curl-lib-path }}"
+        
+        echo "=== Build Environment ==="
+        echo "CC: $CC"
+        echo "CURL_INCLUDE: $CURL_INCLUDE"
+        echo "CURL_LIB: $CURL_LIB"
+        echo "=========================="
+        
         make clean
         make -j$(nproc) \
-          EXTRA_CFLAGS="-I${{ steps.setup.outputs.curl-include-path }}" \
-          EXTRA_LDFLAGS="-L${{ steps.setup.outputs.curl-lib-path }} -lcurl -pthread -static"
+          EXTRA_CFLAGS="-I$CURL_INCLUDE" \
+          EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
         
         file build/bin/atpd
         ls -la build/bin/atpd
