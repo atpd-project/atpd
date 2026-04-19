@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <netinet/in.h>
+#include <string.h>
 
 /* TCP states (same as kernel) */
 #define TCP_ESTABLISHED 1
@@ -84,9 +85,6 @@ int inet_diag_get_uid_v6(int protocol,
                           const uint8_t *src_ip, uint16_t src_port,
                           const uint8_t *dst_ip, uint16_t dst_port);
 
-/* Get UID by socket inode (alternative method) */
-int inet_diag_get_uid_by_inode(uint32_t inode);
-
 /* Get all connections with kernel-side filtering (using bytecode) */
 int inet_diag_get_connections_filtered(connection_info_t **conns, int *count,
                                          inet_diag_filter_t *filter);
@@ -94,7 +92,17 @@ int inet_diag_get_connections_filtered(connection_info_t **conns, int *count,
 /* Get connections for a specific UID (using kernel filter) */
 int inet_diag_get_connections_by_uid(int uid, connection_info_t **conns, int *count);
 
-/* Fallback: get UID from /proc filesystem (works even without INET_DIAG) */
+/* Get all connections (simplified wrapper) */
+static inline int inet_diag_get_connections(connection_info_t **conns, int *count,
+                                             int protocol, int state_mask) {
+    inet_diag_filter_t filter;
+    memset(&filter, 0, sizeof(filter));
+    filter.protocol = protocol;
+    filter.state_mask = state_mask;
+    return inet_diag_get_connections_filtered(conns, count, &filter);
+}
+
+/* Fallback: get UID from /proc filesystem (works without INET_DIAG) */
 int inet_diag_get_uid_fallback(int family, int protocol,
                                 uint32_t src_ip, uint16_t src_port,
                                 uint32_t dst_ip, uint16_t dst_port);

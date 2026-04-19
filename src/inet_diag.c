@@ -123,6 +123,36 @@ void inet_diag_cleanup(void) {
     LOG_DEBUG("INET_DIAG module cleaned up");
 }
 
+/* Add attribute to netlink message */
+static void add_attr(struct nlmsghdr *nlh, int maxlen, int type, const void *data, int alen) {
+    int len = RTA_LENGTH(alen);
+    struct rtattr *rta;
+    int new_len = NLMSG_ALIGN(nlh->nlmsg_len) + len;
+    
+    if (new_len > maxlen) {
+        return;
+    }
+    
+    rta = (struct rtattr*)NLMSG_TAIL(nlh);
+    rta->rta_type = type;
+    rta->rta_len = len;
+    
+    if (data) {
+        memcpy(RTA_DATA(rta), data, alen);
+    }
+    
+    nlh->nlmsg_len = new_len;
+}
+
+/* Build bytecode filter for UID filtering */
+static int build_uid_filter(struct inet_diag_req_v2 *req, int uid) {
+    /* Simplified: we'll filter in userspace for now */
+    /* Full BPF implementation would go here */
+    (void)req;
+    (void)uid;
+    return 0;
+}
+
 /* Send diag request and receive response */
 static int send_diag_request(struct inet_diag_req_v2 *req, char **response, size_t *resp_len) {
     struct sockaddr_nl addr;
@@ -317,7 +347,7 @@ int inet_diag_get_uid_v6(int protocol,
     int uid = -1;
     
     if (!inet_diag_available()) {
-        return -1;
+        return -1;  /* Fallback not easily implemented for IPv6 */
     }
     
     pthread_mutex_lock(&g_diag_mutex);
@@ -421,6 +451,10 @@ int inet_diag_get_connections_filtered(connection_info_t **conns, int *count,
         req.sdiag_family = families[f];
         req.sdiag_protocol = (filter && filter->protocol > 0) ? filter->protocol : IPPROTO_TCP;
         req.idiag_states = (filter && filter->state_mask) ? filter->state_mask : (1 << TCP_ESTABLISHED);
+        
+        if (filter && filter->uid > 0) {
+            build_uid_filter(&req, filter->uid);
+        }
         
         if (send_diag_request(&req, &response, &resp_len) == 0 && response) {
             struct nlmsghdr *nh;
