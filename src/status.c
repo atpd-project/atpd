@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "netlink.h"
+#include "netlink_monitor.h"
 #include "service.h"
 #include "api.h"
 #include "fcm_monitor.h"
@@ -11,20 +12,19 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <dirent.h>
 
 #define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
 #define THERMAL_TEMP_WARN 75000
 #define THERMAL_TEMP_CRITICAL 85000
 
-/* Color definitions */
-#define COLOR_RESET     "\033[0m"
-#define COLOR_RED       "\033[1;31m"
-#define COLOR_GREEN     "\033[1;32m"
-#define COLOR_YELLOW    "\033[1;33m"
-#define COLOR_CYAN      "\033[1;36m"
-#define COLOR_WHITE     "\033[0;37m"
-#define COLOR_BOLD      "\033[1m"
+/* External reference for service context */
+extern service_ctx_t g_service_ctx;
+extern api_ctx_t g_api_ctx;
+
+/* Use logger.h colors - no redefinition needed */
+/* COLOR_RESET, COLOR_RED, COLOR_GREEN, COLOR_YELLOW, COLOR_CYAN are from logger.h */
 
 static const char* proxy_mode_to_string(atp_config_t *cfg) {
     switch (cfg->proxy_mode) {
@@ -45,10 +45,6 @@ static void print_table_header(const char *title) {
     printf(COLOR_CYAN "├─────────────────────────────────────────────────────────────────┤\n" COLOR_RESET);
 }
 
-static void print_table_row(const char *label, const char *value) {
-    printf("│ %-15s │ %-45s │\n", label, value);
-}
-
 static void print_table_row_with_color(const char *label, const char *value, const char *color) {
     printf("│ %-15s │ %s%-45s" COLOR_RESET " │\n", label, color, value);
 }
@@ -59,6 +55,12 @@ static void print_table_subrow(const char *prefix, const char *label, const char
 
 static void print_table_subrow_with_color(const char *prefix, const char *label, const char *value, const char *color) {
     printf("│  %s%-13s │ %s%-45s" COLOR_RESET " │\n", prefix, label, color, value);
+}
+
+static void print_table_subrow_int(const char *prefix, const char *label, int value) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", value);
+    print_table_subrow(prefix, label, buf);
 }
 
 static void print_table_end(void) {
@@ -142,8 +144,8 @@ static int get_cpu_temperature(void) {
 }
 
 /* Show PROXY CORE module */
-static void status_show_proxy_core(service_ctx_t *svc) {
-    int pid = service_get_pid(svc);
+static void status_show_proxy_core(void) {
+    int pid = service_get_pid(&g_service_ctx);
     char uptime_str[64];
     char mem_str[32];
     char cpu_str[16];
@@ -174,7 +176,7 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     get_binary_version(PROXY_BIN_PATH, version_str, sizeof(version_str));
 
     print_table_row_with_color("RUNNING", "sing-box", COLOR_GREEN);
-    print_table_subrow("├─", "PID", pid > 0 ? "12345" : "N/A");
+    print_table_subrow_int("├─", "PID", pid);
     print_table_subrow("├─", "Uptime", uptime_str);
     print_table_subrow("├─", "Memory", mem_str);
     print_table_subrow("├─", "CPU", cpu_str);
@@ -186,7 +188,7 @@ static void status_show_proxy_core(service_ctx_t *svc) {
 }
 
 /* Show CLASH MODE module */
-static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api) {
+static void status_show_clash_mode(atp_config_t *cfg) {
     char current_mode[64] = {0};
     int api_ok = 0;
 
@@ -199,7 +201,7 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api) {
         return;
     }
 
-    if (api_get_mode(api, current_mode, sizeof(current_mode)) == 0) {
+    if (api_get_mode(&g_api_ctx, current_mode, sizeof(current_mode)) == 0) {
         api_ok = 1;
     }
 
@@ -332,7 +334,7 @@ static int save_traffic_state(const iface_stats_t *stats) {
 }
 
 /* Show VPN STATUS module */
-static void status_show_vpn(atp_config_t *cfg) {
+static void status_show_vpn(void) {
     char vpn_iface[IFNAMSIZ] = {0};
     unsigned long long rx_bytes = 0, tx_bytes = 0;
     char rx_str[32], tx_str[32];
@@ -479,7 +481,7 @@ void status_show_config(atp_config_t *cfg) {
     snprintf(dns_str, sizeof(dns_str), "%s (port %d)",
              cfg->dns_hijack ? "ENABLED" : "DISABLED", cfg->dns_port);
     print_table_subrow("├─", "DNS Hijack", dns_str);
-    print_table_subrow("├─", "Table ID", cfg->table_id);
+    print_table_subrow_int("├─", "Table ID", cfg->table_id);
     snprintf(mark_str, sizeof(mark_str), "IPv4=0x%x, IPv6=0x%x", cfg->mark_value, cfg->mark_value6);
     print_table_subrow("└─", "Mark", mark_str);
 
@@ -545,18 +547,21 @@ void status_show_config(atp_config_t *cfg) {
 
 /* Main status show function */
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
+    (void)svc;
+    (void)api;
+    
     printf("\n" COLOR_CYAN "=== ATP Status ===\n" COLOR_RESET "\n");
 
-    status_show_proxy_core(svc);
+    status_show_proxy_core();
     printf("\n");
 
-    status_show_clash_mode(cfg, api);
+    status_show_clash_mode(cfg);
     printf("\n");
 
     status_show_monitors();
     printf("\n");
 
-    status_show_vpn(cfg);
+    status_show_vpn();
     printf("\n");
 
     status_show_system();
