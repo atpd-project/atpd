@@ -96,23 +96,31 @@ static void print_banner(void) {
     "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", 
     atp_get_version());
     
-    printf("--------------------------------------------\n");
-    printf(" Version:   %s\n", atp_get_full_version());
-    printf(" Build:     %s | %s\n", atp_get_build_date(), atp_get_build_time());
-    printf(" Compiler:  %s\n", atp_get_compiler());
-    printf(" Arch:      %s\n", atp_get_arch());
+    ui_separator();
+    
+    char version_buf[256];
+    snprintf(version_buf, sizeof(version_buf), "%s", atp_get_full_version());
+    ui_key_value("Version", version_buf);
+    
+    char build_buf[128];
+    snprintf(build_buf, sizeof(build_buf), "%s | %s", atp_get_build_date(), atp_get_build_time());
+    ui_key_value("Build", build_buf);
+    
+    ui_key_value("Compiler", atp_get_compiler());
+    ui_key_value("Arch", atp_get_arch());
     
     if (atp_is_dirty()) {
-        printf("\033[1;33m Warning:  Uncommitted changes present\033[0m\n");
+        ui_warn("Warning: Uncommitted changes present");
     }
     if (!atp_is_clean()) {
-        printf("\033[1;33m Note:     Working tree has modifications\033[0m\n");
+        ui_info("Note: Working tree has modifications");
     }
     
-    printf(" Environment: Root (KernelSU)\n");
-    printf(" Libs: musl-static | cJSON | libcurl\n");
-    printf(" Features: FCM Monitor | Netlink Monitor | VPN-Aware Health\n");
-    printf("--------------------------------------------\n\n");
+    ui_key_value("Environment", "Root (KernelSU)");
+    ui_key_value("Libraries", "musl-static | cJSON | libcurl");
+    ui_key_value("Features", "FCM Monitor | Netlink Monitor | VPN-Aware Health");
+    ui_separator();
+    ui_blank();
 }
 
 /* Print startup health summary table using UI module */
@@ -121,9 +129,8 @@ static void print_startup_summary(void) {
     extern int *g_current_uids;
     char vpn_iface[IFNAMSIZ];
     char status_buf[64];
-    char pid_buf[32];
 
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("ATP STARTUP SUMMARY");
 
     /* TPROXY Rules */
@@ -153,7 +160,8 @@ static void print_startup_summary(void) {
     if (init_stage & INIT_STAGE_GEOIP) {
         ui_status_ok("GeoIP (CN Bypass)");
     } else if (g_config.bypass_cn_ip) {
-        ui_table_subrow_color("├─", "GeoIP (CN Bypass)", "ASYNC - Download in background", COLOR_YELLOW);
+        ui_status_async("GeoIP (CN Bypass)");
+        ui_table_info("Download in background");
     } else {
         ui_status_off("GeoIP (CN Bypass)");
     }
@@ -185,7 +193,8 @@ static void print_startup_summary(void) {
     if (init_stage & INIT_STAGE_IPV6_MGR) {
         ui_status_ok("IPv6 Manager");
     } else if (g_config.proxy_ipv6) {
-        ui_table_subrow_color("├─", "IPv6 Manager", "PARTIAL - Check ip6tables", COLOR_YELLOW);
+        ui_status_warn("IPv6 Manager");
+        ui_table_info("Check ip6tables availability");
     } else {
         ui_status_off("IPv6 Manager");
     }
@@ -204,8 +213,8 @@ static void print_startup_summary(void) {
     /* sing-box service status */
     if (service_check(&g_service_ctx)) {
         int pid = service_get_pid(&g_service_ctx);
-        snprintf(pid_buf, sizeof(pid_buf), "PID: %d", pid);
-        ui_table_subrow_emoji(ui_emoji_service(1), "sing-box Service", pid_buf);
+        snprintf(status_buf, sizeof(status_buf), "PID: %d", pid);
+        ui_table_subrow_emoji(ui_emoji_service(1), "sing-box Service", status_buf);
     } else {
         ui_table_subrow_emoji_color(ui_emoji_service(0), "sing-box Service", "Process not running", COLOR_RED);
     }
@@ -218,7 +227,7 @@ static void print_health_check(void) {
     char check_cmd[256];
     char status_buf[64];
 
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("ATP HEALTH CHECK");
 
     /* Netlink Monitor */
@@ -271,6 +280,7 @@ static void print_health_check(void) {
 
     ui_table_end();
 }
+
 static void state_transition(atp_state_t new_state) {
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
@@ -572,6 +582,7 @@ static void on_fcm_connection(const char *remote_ip, uint16_t remote_port, void 
     /* Atomic mode switch */
     atomic_mode_switch(cfg, &g_api_ctx, "Google VPN");
 }
+
 static int init_tasks(atp_config_t *cfg) {
     int core_success = 1;
     int tproxy_ok = 0, routing_ok = 0, dns_ok = 0;

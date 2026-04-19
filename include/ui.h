@@ -27,6 +27,10 @@
 #define COLOR_BOLD      "\033[1m"
 #endif
 
+/* ============================================ */
+/* Initialization                               */
+/* ============================================ */
+
 /* Initialize UI module (auto-detects terminal width) */
 void ui_init(void);
 
@@ -37,8 +41,27 @@ int ui_get_width(void);
 void ui_set_width(int width);
 
 /* ============================================ */
+/* Basic output functions (auto-formatted)     */
+/* ============================================ */
+
+/* Print a title/header line */
+void ui_title(const char *title);
+
+/* Print a subtitle line */
+void ui_subtitle(const char *subtitle);
+
+/* Print a separator line */
+void ui_separator(void);
+
+/* Print a blank line */
+void ui_blank(void);
+
+/* ============================================ */
 /* Table drawing functions                      */
 /* ============================================ */
+
+/* Start a new table */
+void ui_table_begin(void);
 
 /* Draw table separator line */
 void ui_table_sep(void);
@@ -59,11 +82,27 @@ void ui_table_subrow_int(const char *prefix, const char *label, int value);
 void ui_table_subrow_emoji(const char *emoji, const char *label, const char *value);
 void ui_table_subrow_emoji_color(const char *emoji, const char *label, const char *value, const char *color);
 
+/* Draw a warning/error/info row that spans both columns */
+void ui_table_warning(const char *message);
+void ui_table_error(const char *message);
+void ui_table_info(const char *message);
+
 /* End current table */
 void ui_table_end(void);
 
 /* ============================================ */
-/* Simple status output functions               */
+/* Status indicator functions                   */
+/* ============================================ */
+
+/* Print status indicator with emoji */
+void ui_status_ok(const char *label);
+void ui_status_fail(const char *label);
+void ui_status_warn(const char *label);
+void ui_status_off(const char *label);
+void ui_status_async(const char *label);
+
+/* ============================================ */
+/* Simple message output functions              */
 /* ============================================ */
 
 /* Print colored info message */
@@ -72,11 +111,16 @@ void ui_success(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void ui_warn(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void ui_error(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
-/* Print status indicator with emoji */
-void ui_status_ok(const char *label);
-void ui_status_fail(const char *label);
-void ui_status_warn(const char *label);
-void ui_status_off(const char *label);
+/* Print key-value pair */
+void ui_key_value(const char *key, const char *value);
+void ui_key_value_color(const char *key, const char *value, const char *color);
+
+/* ============================================ */
+/* Banner output                                */
+/* ============================================ */
+
+/* Print ATP logo banner with version */
+void ui_banner(void);
 
 /* ============================================ */
 /* Emoji helpers (returns emoji string)        */
@@ -91,5 +135,7 @@ const char* ui_emoji_usb(void);
 const char* ui_emoji_ok(void);
 const char* ui_emoji_fail(void);
 const char* ui_emoji_warning(void);
+const char* ui_emoji_info(void);
+const char* ui_emoji_success(void);
 
 #endif

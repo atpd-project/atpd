@@ -9,6 +9,7 @@
 static int g_term_width = 80;
 static int g_content_width = 0;
 static int g_initialized = 0;
+static int g_in_table = 0;
 
 /* Get terminal width dynamically */
 static int get_terminal_width(void) {
@@ -51,7 +52,52 @@ static void ensure_init(void) {
     if (!g_initialized) ui_init();
 }
 
-/* Draw separator line */
+/* Helper: truncate string to fit width */
+static void truncate_string(const char *src, char *dst, int max_len) {
+    int len = strlen(src);
+    if (len <= max_len) {
+        strcpy(dst, src);
+    } else {
+        strncpy(dst, src, max_len - 3);
+        dst[max_len - 3] = '\0';
+        strcat(dst, "...");
+    }
+}
+
+/* ============================================ */
+/* Basic output functions                       */
+/* ============================================ */
+
+void ui_title(const char *title) {
+    ensure_init();
+    printf("\n" COLOR_CYAN "=== %s ===\n" COLOR_RESET, title);
+}
+
+void ui_subtitle(const char *subtitle) {
+    ensure_init();
+    printf(COLOR_CYAN "--- %s ---\n" COLOR_RESET, subtitle);
+}
+
+void ui_separator(void) {
+    ensure_init();
+    printf(COLOR_CYAN);
+    for (int i = 0; i < g_term_width; i++) printf("-");
+    printf(COLOR_RESET "\n");
+}
+
+void ui_blank(void) {
+    printf("\n");
+}
+
+/* ============================================ */
+/* Table drawing functions                      */
+/* ============================================ */
+
+void ui_table_begin(void) {
+    ensure_init();
+    g_in_table = 1;
+}
+
 void ui_table_sep(void) {
     ensure_init();
     printf(COLOR_CYAN);
@@ -59,7 +105,6 @@ void ui_table_sep(void) {
     printf(COLOR_RESET "\n");
 }
 
-/* Draw table header with centered title */
 void ui_table_header(const char *title) {
     ensure_init();
     int title_len = strlen(title);
@@ -73,19 +118,6 @@ void ui_table_header(const char *title) {
     ui_table_sep();
 }
 
-/* Helper: truncate string to fit width */
-static void truncate_string(const char *src, char *dst, int max_len) {
-    int len = strlen(src);
-    if (len <= max_len) {
-        strcpy(dst, src);
-    } else {
-        strncpy(dst, src, max_len - 3);
-        dst[max_len - 3] = '\0';
-        strcat(dst, "...");
-    }
-}
-
-/* Draw two-column row */
 void ui_table_row(const char *label, const char *value) {
     ensure_init();
     int label_width = 15;
@@ -109,7 +141,6 @@ void ui_table_row_color(const char *label, const char *value, const char *color)
            label_width, label, color, value_width, truncated_value);
 }
 
-/* Draw sub-row */
 void ui_table_subrow(const char *prefix, const char *label, const char *value) {
     ensure_init();
     int prefix_len = strlen(prefix);
@@ -142,7 +173,6 @@ void ui_table_subrow_int(const char *prefix, const char *label, int value) {
     ui_table_subrow(prefix, label, buf);
 }
 
-/* Draw sub-row with emoji prefix */
 void ui_table_subrow_emoji(const char *emoji, const char *label, const char *value) {
     char prefix[32];
     snprintf(prefix, sizeof(prefix), "%s ", emoji);
@@ -155,12 +185,63 @@ void ui_table_subrow_emoji_color(const char *emoji, const char *label, const cha
     ui_table_subrow_color(prefix, label, value, color);
 }
 
-/* End table */
-void ui_table_end(void) {
-    ui_table_sep();
+void ui_table_warning(const char *message) {
+    ensure_init();
+    char truncated[256];
+    int max_len = g_content_width - 2;
+    truncate_string(message, truncated, max_len);
+    printf("│ %s⚠ %-*s" COLOR_RESET " │\n", COLOR_YELLOW, max_len - 4, truncated);
 }
 
-/* Simple status output functions */
+void ui_table_error(const char *message) {
+    ensure_init();
+    char truncated[256];
+    int max_len = g_content_width - 2;
+    truncate_string(message, truncated, max_len);
+    printf("│ %s✗ %-*s" COLOR_RESET " │\n", COLOR_RED, max_len - 4, truncated);
+}
+
+void ui_table_info(const char *message) {
+    ensure_init();
+    char truncated[256];
+    int max_len = g_content_width - 2;
+    truncate_string(message, truncated, max_len);
+    printf("│ %sℹ %-*s" COLOR_RESET " │\n", COLOR_CYAN, max_len - 4, truncated);
+}
+
+void ui_table_end(void) {
+    ui_table_sep();
+    g_in_table = 0;
+}
+
+/* ============================================ */
+/* Status indicator functions                   */
+/* ============================================ */
+
+void ui_status_ok(const char *label) {
+    ui_table_subrow_emoji_color("✓", label, "OK", COLOR_GREEN);
+}
+
+void ui_status_fail(const char *label) {
+    ui_table_subrow_emoji_color("✗", label, "FAIL", COLOR_RED);
+}
+
+void ui_status_warn(const char *label) {
+    ui_table_subrow_emoji_color("⚠", label, "WARN", COLOR_YELLOW);
+}
+
+void ui_status_off(const char *label) {
+    ui_table_subrow_emoji_color("○", label, "OFF", COLOR_WHITE);
+}
+
+void ui_status_async(const char *label) {
+    ui_table_subrow_emoji_color("⏳", label, "ASYNC", COLOR_YELLOW);
+}
+
+/* ============================================ */
+/* Simple message output functions              */
+/* ============================================ */
+
 void ui_info(const char *fmt, ...) {
     va_list args;
     printf(COLOR_CYAN);
@@ -197,24 +278,34 @@ void ui_error(const char *fmt, ...) {
     printf(COLOR_RESET "\n");
 }
 
-/* Status indicator functions */
-void ui_status_ok(const char *label) {
-    ui_table_subrow_emoji_color("✓", label, "OK", COLOR_GREEN);
+void ui_key_value(const char *key, const char *value) {
+    printf("  %-20s: %s\n", key, value);
 }
 
-void ui_status_fail(const char *label) {
-    ui_table_subrow_emoji_color("✗", label, "FAIL", COLOR_RED);
+void ui_key_value_color(const char *key, const char *value, const char *color) {
+    printf("  %-20s: %s%s%s\n", key, color, value, COLOR_RESET);
 }
 
-void ui_status_warn(const char *label) {
-    ui_table_subrow_emoji_color("⚠", label, "WARN", COLOR_YELLOW);
+/* ============================================ */
+/* Banner output                                */
+/* ============================================ */
+
+void ui_banner(void) {
+    printf("\033[1;36m"
+    "    ___  __________  ____ \n"
+    "   /   |/_  __/ __ \\/ __ \\\n"
+    "  / /| | / / / /_/ / / / /\n"
+    " / ___ |/ / / ____/ /_/ / \n"
+    "/_/  |_/_/ /_/    /_____/  v%s\033[0m\n", 
+    "1.0.0");  /* Version will be replaced by caller */
+    
+    ui_separator();
 }
 
-void ui_status_off(const char *label) {
-    ui_table_subrow_emoji_color("○", label, "OFF", COLOR_WHITE);
-}
+/* ============================================ */
+/* Emoji helpers                                */
+/* ============================================ */
 
-/* Emoji helpers */
 const char* ui_emoji_vpn(int connected) {
     return connected ? "🔒" : "🔓";
 }
@@ -249,4 +340,12 @@ const char* ui_emoji_fail(void) {
 
 const char* ui_emoji_warning(void) {
     return "⚠";
+}
+
+const char* ui_emoji_info(void) {
+    return "ℹ";
+}
+
+const char* ui_emoji_success(void) {
+    return "✅";
 }

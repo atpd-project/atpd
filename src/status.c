@@ -116,7 +116,7 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     char fds_str[16];
     char version_str[64];
 
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("PROXY CORE");
 
     if (pid <= 0) {
@@ -153,9 +153,8 @@ static void status_show_proxy_core(service_ctx_t *svc) {
 /* Show CLASH MODE module */
 static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ctx_t *svc) {
     char current_mode[64] = {0};
-    int api_ok = 0;
 
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("CLASH MODE");
 
     if (service_get_pid(svc) <= 0) {
@@ -165,10 +164,6 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
     }
 
     if (api_get_mode(api, current_mode, sizeof(current_mode)) == 0) {
-        api_ok = 1;
-    }
-
-    if (api_ok) {
         const char *color = COLOR_GREEN;
         if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
@@ -176,8 +171,7 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
         ui_table_row_color("🎮 MODE", current_mode, color);
     } else {
         ui_table_row_color("🎮 MODE", cfg->user_clash_mode, COLOR_YELLOW);
-        printf("│                 │ %s[cached, API unavailable]%-*s" COLOR_RESET " │\n", 
-               COLOR_YELLOW, ui_get_width() - 43, "");
+        ui_table_warning("API unavailable, using cached value");
     }
 
     ui_table_end();
@@ -189,7 +183,7 @@ static void status_show_monitors(void) {
     time_t now = time(NULL);
     char fcm_status[64];
 
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("MONITORS");
 
     /* Netlink Monitor */
@@ -307,7 +301,7 @@ static void status_show_vpn(void) {
     iface_stats_t prev_stats;
     int has_vpn = 0;
 
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("VPN STATUS");
 
     if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
@@ -321,8 +315,6 @@ static void status_show_vpn(void) {
     }
 
     ui_table_subrow("├─", "Interface", vpn_iface);
-
-    /* State */
     ui_table_subrow_color("├─", "🔒 State", "CONNECTED", COLOR_GREEN);
 
     /* Traffic stats */
@@ -389,7 +381,7 @@ static void status_show_system(void) {
     struct stat st;
     char uptime_str[64];
 
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("SYSTEM");
 
     /* CPU Temperature */
@@ -428,10 +420,10 @@ void status_show_config(atp_config_t *cfg) {
     char ports_str[64];
     char mark_str[64];
 
-    printf("\n" COLOR_CYAN "=== ATP Configuration ===\n" COLOR_RESET "\n");
+    ui_title("ATP Configuration");
 
     /* Configuration */
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("CONFIGURATION");
 
     ui_table_subrow("├─", "Proxy Mode", proxy_mode_to_string(cfg));
@@ -452,58 +444,58 @@ void status_show_config(atp_config_t *cfg) {
     ui_table_end();
 
     /* Interface Control */
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("INTERFACE CONTROL");
 
     char mobile_status[64];
     snprintf(mobile_status, sizeof(mobile_status), "%s -> %s",
              cfg->mobile_iface, cfg->proxy_mobile ? "PROXIED" : "BYPASS");
-    ui_table_subrow("├─", "📱 MOBILE", mobile_status);
+    ui_table_subrow("├─", ui_emoji_mobile(), mobile_status);
 
     char wifi_status[64];
     snprintf(wifi_status, sizeof(wifi_status), "%s -> %s",
              cfg->wifi_iface, cfg->proxy_wifi ? "PROXIED" : "BYPASS");
-    ui_table_subrow("├─", "📶 WIFI", wifi_status);
+    ui_table_subrow("├─", ui_emoji_wifi(1), wifi_status);
 
     char hotspot_status[64];
     snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s",
              cfg->hotspot_iface, cfg->proxy_hotspot ? "PROXIED" : "BYPASS");
-    ui_table_subrow("├─", "🔥 HOTSPOT", hotspot_status);
+    ui_table_subrow("├─", ui_emoji_hotspot(), hotspot_status);
 
     char usb_status[64];
     snprintf(usb_status, sizeof(usb_status), "%s -> %s",
              cfg->usb_iface, cfg->proxy_usb ? "PROXIED" : "BYPASS");
-    ui_table_subrow("└─", "🔌 USB", usb_status);
+    ui_table_subrow("└─", ui_emoji_usb(), usb_status);
 
     ui_table_end();
 
     /* Filters */
-    ui_table_sep();
+    ui_table_begin();
     ui_table_header("FILTERS");
 
     /* App Filter */
     if (cfg->app_proxy_enable) {
         char app_status[128];
         snprintf(app_status, sizeof(app_status), "ENABLED (%s mode)", cfg->app_proxy_mode);
-        ui_table_subrow("├─", "📱 App Filter", app_status);
+        ui_table_subrow("├─", ui_emoji_mobile(), app_status);
     } else {
-        ui_table_subrow("├─", "📱 App Filter", "DISABLED");
+        ui_table_subrow("├─", ui_emoji_mobile(), "DISABLED");
     }
 
     /* MAC Filter */
     if (cfg->mac_filter_enable) {
         char mac_status[128];
         snprintf(mac_status, sizeof(mac_status), "ENABLED (%s mode)", cfg->mac_proxy_mode);
-        ui_table_subrow("├─", "🔢 MAC Filter", mac_status);
+        ui_table_subrow("├─", "🔢", mac_status);
     } else {
-        ui_table_subrow("├─", "🔢 MAC Filter", "DISABLED");
+        ui_table_subrow("├─", "🔢", "DISABLED");
     }
 
     /* CN IP Bypass */
     if (cfg->bypass_cn_ip) {
-        ui_table_subrow("└─", "🌏 CN IP Bypass", "ENABLED (ipset cnip)");
+        ui_table_subrow("└─", "🌏", "ENABLED (ipset cnip)");
     } else {
-        ui_table_subrow("└─", "🌏 CN IP Bypass", "DISABLED");
+        ui_table_subrow("└─", "🌏", "DISABLED");
     }
 
     ui_table_end();
@@ -511,22 +503,19 @@ void status_show_config(atp_config_t *cfg) {
 
 /* Main status show function */
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
-    /* Initialize UI module (auto-detects terminal width) */
-    ui_init();
-    
-    printf("\n" COLOR_CYAN "=== ATP Status ===\n" COLOR_RESET "\n");
+    ui_title("ATP Status");
 
     status_show_proxy_core(svc);
-    printf("\n");
+    ui_blank();
 
     status_show_clash_mode(cfg, api, svc);
-    printf("\n");
+    ui_blank();
 
     status_show_monitors();
-    printf("\n");
+    ui_blank();
 
     status_show_vpn();
-    printf("\n");
+    ui_blank();
 
     status_show_system();
 }
