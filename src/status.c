@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <dirent.h>
 
 #define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
@@ -19,7 +20,27 @@
 #define THERMAL_TEMP_WARN 75000
 #define THERMAL_TEMP_CRITICAL 85000
 
-/* Use logger.h colors - no redefinition needed */
+/* Terminal width */
+static int g_term_width = 80;
+static int g_content_width = 0;
+
+/* Get terminal width dynamically */
+static int get_terminal_width(void) {
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0) {
+        return w.ws_col;
+    }
+    return 80;  /* Default fallback */
+}
+
+/* Initialize terminal settings */
+static void init_terminal(void) {
+    g_term_width = get_terminal_width();
+    /* Min 60, Max 120 */
+    if (g_term_width < 60) g_term_width = 60;
+    if (g_term_width > 120) g_term_width = 120;
+    g_content_width = g_term_width - 4;  /* Account for borders */
+}
 
 static const char* proxy_mode_to_string(atp_config_t *cfg) {
     switch (cfg->proxy_mode) {
@@ -31,35 +52,99 @@ static const char* proxy_mode_to_string(atp_config_t *cfg) {
     }
 }
 
+/* Print dynamic separator line */
 static void print_separator(void) {
-    printf(COLOR_CYAN "┌─────────────────────────────────────────────────────────────────┐\n" COLOR_RESET);
+    printf(COLOR_CYAN);
+    for (int i = 0; i < g_term_width; i++) printf("─");
+    printf(COLOR_RESET "\n");
 }
 
+/* Print table header with centered title */
 static void print_table_header(const char *title) {
-    printf(COLOR_CYAN "│ %-63s │\n" COLOR_RESET, title);
-    printf(COLOR_CYAN "├─────────────────────────────────────────────────────────────────┤\n" COLOR_RESET);
+    int title_len = strlen(title);
+    int padding = (g_term_width - title_len - 4) / 2;
+    
+    printf(COLOR_CYAN "│");
+    for (int i = 0; i < padding; i++) printf(" ");
+    printf("%s", title);
+    for (int i = 0; i < g_term_width - title_len - padding - 4; i++) printf(" ");
+    printf("│\n" COLOR_RESET);
+    print_separator();
 }
 
+/* Print two-column row */
 static void print_table_row_with_color(const char *label, const char *value, const char *color) {
-    printf("│ %-15s │ %s%-45s" COLOR_RESET " │\n", label, color, value);
+    int label_width = 15;
+    int value_width = g_content_width - label_width - 2;
+    
+    /* Truncate value if too long */
+    char truncated_value[256];
+    if ((int)strlen(value) > value_width) {
+        strncpy(truncated_value, value, value_width - 3);
+        truncated_value[value_width - 3] = '\0';
+        strcat(truncated_value, "...");
+    } else {
+        strcpy(truncated_value, value);
+    }
+    
+    printf("│ %-*s │ %s%-*s" COLOR_RESET " │\n", 
+           label_width, label, color, value_width, truncated_value);
 }
 
+/* Print sub-row with prefix (├─, └─, etc.) */
 static void print_table_subrow(const char *prefix, const char *label, const char *value) {
-    printf("│  %s%-13s │ %-45s │\n", prefix, label, value);
+    int prefix_len = strlen(prefix);
+    int label_width = 13 - prefix_len;
+    int value_width = g_content_width - 15 - 2;
+    
+    char truncated_value[256];
+    if ((int)strlen(value) > value_width) {
+        strncpy(truncated_value, value, value_width - 3);
+        truncated_value[value_width - 3] = '\0';
+        strcat(truncated_value, "...");
+    } else {
+        strcpy(truncated_value, value);
+    }
+    
+    printf("│  %s%-*s │ %-*s │\n", 
+           prefix, label_width, label, value_width, truncated_value);
 }
 
+/* Print sub-row with color */
 static void print_table_subrow_with_color(const char *prefix, const char *label, const char *value, const char *color) {
-    printf("│  %s%-13s │ %s%-45s" COLOR_RESET " │\n", prefix, label, color, value);
+    int prefix_len = strlen(prefix);
+    int label_width = 13 - prefix_len;
+    int value_width = g_content_width - 15 - 2;
+    
+    char truncated_value[256];
+    if ((int)strlen(value) > value_width) {
+        strncpy(truncated_value, value, value_width - 3);
+        truncated_value[value_width - 3] = '\0';
+        strcat(truncated_value, "...");
+    } else {
+        strcpy(truncated_value, value);
+    }
+    
+    printf("│  %s%-*s │ %s%-*s" COLOR_RESET " │\n", 
+           prefix, label_width, label, color, value_width, truncated_value);
 }
 
+/* Print sub-row with integer value */
 static void print_table_subrow_int(const char *prefix, const char *label, int value) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%d", value);
     print_table_subrow(prefix, label, buf);
 }
 
+/* Print sub-row with emoji and value */
+static void print_table_subrow_emoji(const char *emoji, const char *label, const char *value) {
+    char prefix[32];
+    snprintf(prefix, sizeof(prefix), "%s ", emoji);
+    print_table_subrow(prefix, label, value);
+}
+
 static void print_table_end(void) {
-    printf(COLOR_CYAN "└─────────────────────────────────────────────────────────────────┘\n" COLOR_RESET);
+    print_separator();
 }
 
 /* Format uptime in human readable format */
@@ -170,7 +255,7 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
     get_binary_version(PROXY_BIN_PATH, version_str, sizeof(version_str));
 
-    print_table_row_with_color("RUNNING", "sing-box", COLOR_GREEN);
+    print_table_row_with_color("🚀 RUNNING", "sing-box", COLOR_GREEN);
     print_table_subrow_int("├─", "PID", pid);
     print_table_subrow("├─", "Uptime", uptime_str);
     print_table_subrow("├─", "Memory", mem_str);
@@ -205,10 +290,11 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
         if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
         else if (strcmp(current_mode, "Google VPN") == 0) color = COLOR_GREEN;
-        print_table_row_with_color("MODE", current_mode, color);
+        print_table_row_with_color("🎮 MODE", current_mode, color);
     } else {
-        print_table_row_with_color("MODE", cfg->user_clash_mode, COLOR_YELLOW);
-        printf("│                 │ %s[cached, API unavailable]%-24s" COLOR_RESET " │\n", COLOR_YELLOW, "");
+        print_table_row_with_color("🎮 MODE", cfg->user_clash_mode, COLOR_YELLOW);
+        printf("│                 │ %s[cached, API unavailable]%-*s" COLOR_RESET " │\n", 
+               COLOR_YELLOW, g_content_width - 43, "");
     }
 
     print_table_end();
@@ -346,7 +432,7 @@ static void status_show_vpn(void) {
     }
 
     if (!has_vpn) {
-        print_table_row_with_color("STATE", "DISCONNECTED", COLOR_RED);
+        print_table_row_with_color("🔓 STATE", "DISCONNECTED", COLOR_RED);
         print_table_end();
         return;
     }
@@ -354,15 +440,15 @@ static void status_show_vpn(void) {
     print_table_subrow("├─", "Interface", vpn_iface);
 
     /* State */
-    print_table_subrow_with_color("├─", "State", "CONNECTED", COLOR_GREEN);
+    print_table_subrow_with_color("├─", "🔒 State", "CONNECTED", COLOR_GREEN);
 
     /* Traffic stats */
     if (get_iface_traffic(vpn_iface, &rx_bytes, &tx_bytes) == 0) {
         format_bytes(rx_str, sizeof(rx_str), rx_bytes);
         format_bytes(tx_str, sizeof(tx_str), tx_bytes);
 
-        print_table_subrow("├─", "Total RX", rx_str);
-        print_table_subrow("├─", "Total TX", tx_str);
+        print_table_subrow("├─", "📥 Total RX", rx_str);
+        print_table_subrow("├─", "📤 Total TX", tx_str);
 
         memset(&current_stats, 0, sizeof(current_stats));
         strncpy(current_stats.iface, vpn_iface, IFNAMSIZ - 1);
@@ -390,24 +476,24 @@ static void status_show_vpn(void) {
 
                 char speed_info[64];
                 snprintf(speed_info, sizeof(speed_info), "%s (over %.0fs)", rx_speed_str, elapsed);
-                print_table_subrow("├─", "Avg RX Speed", speed_info);
+                print_table_subrow("├─", "📈 Avg RX Speed", speed_info);
                 snprintf(speed_info, sizeof(speed_info), "%s (over %.0fs)", tx_speed_str, elapsed);
-                print_table_subrow("└─", "Avg TX Speed", speed_info);
+                print_table_subrow("└─", "📉 Avg TX Speed", speed_info);
             } else {
-                print_table_subrow("├─", "Avg RX Speed", "(sampling...)");
-                print_table_subrow("└─", "Avg TX Speed", "(sampling...)");
+                print_table_subrow("├─", "📈 Avg RX Speed", "(sampling...)");
+                print_table_subrow("└─", "📉 Avg TX Speed", "(sampling...)");
             }
         } else {
-            print_table_subrow("├─", "Avg RX Speed", "(first sample)");
-            print_table_subrow("└─", "Avg TX Speed", "(first sample)");
+            print_table_subrow("├─", "📈 Avg RX Speed", "(first sample)");
+            print_table_subrow("└─", "📉 Avg TX Speed", "(first sample)");
         }
 
         save_traffic_state(&current_stats);
     } else {
-        print_table_subrow("├─", "Total RX", "N/A");
-        print_table_subrow("├─", "Total TX", "N/A");
-        print_table_subrow("├─", "Avg RX Speed", "N/A");
-        print_table_subrow("└─", "Avg TX Speed", "N/A");
+        print_table_subrow("├─", "📥 Total RX", "N/A");
+        print_table_subrow("├─", "📤 Total TX", "N/A");
+        print_table_subrow("├─", "📈 Avg RX Speed", "N/A");
+        print_table_subrow("└─", "📉 Avg TX Speed", "N/A");
     }
 
     print_table_end();
@@ -428,16 +514,16 @@ static void status_show_system(void) {
         char temp_str[32];
         if (temp >= THERMAL_TEMP_CRITICAL / 1000) {
             snprintf(temp_str, sizeof(temp_str), "%d°C [CRITICAL]", temp);
-            print_table_subrow_with_color("├─", "CPU Temp", temp_str, COLOR_RED);
+            print_table_subrow_with_color("├─", "🌡️ CPU Temp", temp_str, COLOR_RED);
         } else if (temp >= THERMAL_TEMP_WARN / 1000) {
             snprintf(temp_str, sizeof(temp_str), "%d°C [WARN]", temp);
-            print_table_subrow_with_color("├─", "CPU Temp", temp_str, COLOR_YELLOW);
+            print_table_subrow_with_color("├─", "🌡️ CPU Temp", temp_str, COLOR_YELLOW);
         } else {
             snprintf(temp_str, sizeof(temp_str), "%d°C", temp);
-            print_table_subrow_with_color("├─", "CPU Temp", temp_str, COLOR_GREEN);
+            print_table_subrow_with_color("├─", "🌡️ CPU Temp", temp_str, COLOR_GREEN);
         }
     } else {
-        print_table_subrow("├─", "CPU Temp", "N/A");
+        print_table_subrow("├─", "🌡️ CPU Temp", "N/A");
     }
 
     /* Daemon Uptime */
@@ -446,9 +532,9 @@ static void status_show_system(void) {
         time_t now = time(NULL);
         int elapsed = (int)(now - st.st_mtime);
         format_uptime_human(elapsed, uptime_str, sizeof(uptime_str));
-        print_table_subrow("└─", "Daemon Uptime", uptime_str);
+        print_table_subrow("└─", "⏱️ Daemon Uptime", uptime_str);
     } else {
-        print_table_subrow("└─", "Daemon Uptime", "N/A");
+        print_table_subrow("└─", "⏱️ Daemon Uptime", "N/A");
     }
 
     print_table_end();
@@ -489,22 +575,22 @@ void status_show_config(atp_config_t *cfg) {
     char mobile_status[64];
     snprintf(mobile_status, sizeof(mobile_status), "%s -> %s",
              cfg->mobile_iface, cfg->proxy_mobile ? "PROXIED" : "BYPASS");
-    print_table_subrow("├─", "MOBILE", mobile_status);
+    print_table_subrow("├─", "📱 MOBILE", mobile_status);
 
     char wifi_status[64];
     snprintf(wifi_status, sizeof(wifi_status), "%s -> %s",
              cfg->wifi_iface, cfg->proxy_wifi ? "PROXIED" : "BYPASS");
-    print_table_subrow("├─", "WIFI", wifi_status);
+    print_table_subrow("├─", "📶 WIFI", wifi_status);
 
     char hotspot_status[64];
     snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s",
              cfg->hotspot_iface, cfg->proxy_hotspot ? "PROXIED" : "BYPASS");
-    print_table_subrow("├─", "HOTSPOT", hotspot_status);
+    print_table_subrow("├─", "🔥 HOTSPOT", hotspot_status);
 
     char usb_status[64];
     snprintf(usb_status, sizeof(usb_status), "%s -> %s",
              cfg->usb_iface, cfg->proxy_usb ? "PROXIED" : "BYPASS");
-    print_table_subrow("└─", "USB", usb_status);
+    print_table_subrow("└─", "🔌 USB", usb_status);
 
     print_table_end();
 
@@ -516,25 +602,25 @@ void status_show_config(atp_config_t *cfg) {
     if (cfg->app_proxy_enable) {
         char app_status[128];
         snprintf(app_status, sizeof(app_status), "ENABLED (%s mode)", cfg->app_proxy_mode);
-        print_table_subrow("├─", "App Filter", app_status);
+        print_table_subrow("├─", "📱 App Filter", app_status);
     } else {
-        print_table_subrow("├─", "App Filter", "DISABLED");
+        print_table_subrow("├─", "📱 App Filter", "DISABLED");
     }
 
     /* MAC Filter */
     if (cfg->mac_filter_enable) {
         char mac_status[128];
         snprintf(mac_status, sizeof(mac_status), "ENABLED (%s mode)", cfg->mac_proxy_mode);
-        print_table_subrow("├─", "MAC Filter", mac_status);
+        print_table_subrow("├─", "🔢 MAC Filter", mac_status);
     } else {
-        print_table_subrow("├─", "MAC Filter", "DISABLED");
+        print_table_subrow("├─", "🔢 MAC Filter", "DISABLED");
     }
 
     /* CN IP Bypass */
     if (cfg->bypass_cn_ip) {
-        print_table_subrow("└─", "CN IP Bypass", "ENABLED (ipset cnip)");
+        print_table_subrow("└─", "🌏 CN IP Bypass", "ENABLED (ipset cnip)");
     } else {
-        print_table_subrow("└─", "CN IP Bypass", "DISABLED");
+        print_table_subrow("└─", "🌏 CN IP Bypass", "DISABLED");
     }
 
     print_table_end();
@@ -542,6 +628,9 @@ void status_show_config(atp_config_t *cfg) {
 
 /* Main status show function */
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
+    /* Initialize terminal width */
+    init_terminal();
+    
     printf("\n" COLOR_CYAN "=== ATP Status ===\n" COLOR_RESET "\n");
 
     status_show_proxy_core(svc);
