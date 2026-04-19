@@ -34,8 +34,11 @@ static const struct option long_options[] = {
 static const char *short_options = "c:fdvqFtnhV";
 
 void print_usage(const char *progname) {
+    const char *base = strrchr(progname, '/');
+    base = base ? base + 1 : progname;
+
     printf(ATP_NAME " v" ATP_VERSION "\n\n");
-    printf("Usage: %s [options] command\n\n", progname);
+    printf("Usage: %s [options] command\n\n", base);
     printf("Options:\n");
     printf("  -c, --config FILE   Specify configuration file\n");
     printf("  -t                  Test configuration and exit (same as 'check')\n");
@@ -56,11 +59,11 @@ void print_usage(const char *progname) {
     printf("  check               Check configuration syntax and validity\n");
     printf("  update-geoip        Update GeoIP database\n");
     printf("\nExamples:\n");
-    printf("  %s status                     # Show status\n", progname);
-    printf("  %s -c ./my.conf start         # Start with custom config\n", progname);
-    printf("  %s -f -v start                # Start in foreground with verbose log\n", progname);
-    printf("  %s -t                         # Test configuration\n", progname);
-    printf("  %s stop --force               # Stop without confirmation\n", progname);
+    printf("  %s status                       # Show status\n", base);
+    printf("  %s -c atp.conf start            # Start with custom config\n", base);
+    printf("  %s -f -v start                  # Start in foreground with verbose log\n", base);
+    printf("  %s -t                           # Test configuration\n", base);
+    printf("  %s stop --force                 # Stop without confirmation\n", base);
 }
 
 void print_version(void) {
