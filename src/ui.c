@@ -62,11 +62,11 @@ static void ensure_init(void) {
 
 /* Get adaptive label width based on terminal size */
 static int get_label_width(void) {
-    if (g_term_width >= 110) return 16;   /* Large tablet landscape / desktop */
-    if (g_term_width >= 80)  return 14;   /* Small tablet landscape / large tablet portrait */
-    if (g_term_width >= 60)  return 12;   /* Phone landscape / small tablet portrait */
-    if (g_term_width >= 40)  return 10;   /* Phone portrait */
-    return 8;                              /* Very small screen */
+    if (g_term_width >= 110) return 16;
+    if (g_term_width >= 80)  return 14;
+    if (g_term_width >= 60)  return 12;
+    if (g_term_width >= 40)  return 10;
+    return 8;
 }
 
 /* Helper: truncate string to fit width */
@@ -87,13 +87,11 @@ static void truncate_string(const char *src, char *dst, int max_len) {
 static void print_section_header(const char *title) {
     int title_len = strlen(title);
     
-    /* For narrow screens, use simple format */
     if (g_term_width < 60) {
         printf("\n=== %s ===\n", title);
         return;
     }
     
-    /* For wider screens, use padded format */
     int available = g_term_width - 4;
     int total_pad = available - title_len;
     int left_pad = total_pad / 2;
@@ -104,22 +102,6 @@ static void print_section_header(const char *title) {
     printf(" %s ", title);
     for (int i = 0; i < right_pad; i++) printf("=");
     printf("\n");
-}
-
-/* Print aligned row with label and value */
-static void print_row(const char *label, const char *value, int indent) {
-    int label_width = get_label_width();
-    int max_value_width = g_term_width - indent - label_width - 4;
-    if (max_value_width < 10) max_value_width = 10;
-    
-    char truncated_value[512];
-    truncate_string(value, truncated_value, max_value_width);
-    
-    /* Print indent */
-    for (int i = 0; i < indent; i++) printf(" ");
-    
-    /* Print label and value */
-    printf("%-*s  %s\n", label_width, label, truncated_value);
 }
 
 /* ============================================ */
@@ -153,12 +135,10 @@ void ui_blank(void) {
 
 void ui_table_begin(void) {
     ensure_init();
-    /* Empty - header will be printed by ui_table_header */
 }
 
 void ui_table_sep(void) {
     ensure_init();
-    /* Empty - no separator needed in plain text mode */
 }
 
 void ui_table_header(const char *title) {
@@ -168,7 +148,14 @@ void ui_table_header(const char *title) {
 
 void ui_table_row(const char *label, const char *value) {
     ensure_init();
-    print_row(label, value, 2);
+    int label_width = get_label_width();
+    int max_value_width = g_term_width - 2 - label_width - 4;
+    if (max_value_width < 10) max_value_width = 10;
+    
+    char truncated_value[512];
+    truncate_string(value, truncated_value, max_value_width);
+    
+    printf("  %-*s  %s\n", label_width, label, truncated_value);
 }
 
 void ui_table_row_color(const char *label, const char *value, const char *color) {
@@ -180,14 +167,25 @@ void ui_table_row_color(const char *label, const char *value, const char *color)
     char truncated_value[512];
     truncate_string(value, truncated_value, max_value_width);
     
-    printf("  %s%-*s" COLOR_RESET "  %s\n", color, label_width, label, truncated_value);
+    /* Combine label and value for single-line display with color */
+    /* This matches status.c's usage: ui_table_row_color(ui_emoji_service(1), "sing-box", COLOR_GREEN) */
+    printf("  %s%s" COLOR_RESET "  %s\n", color, label, truncated_value);
 }
 
 void ui_table_subrow(const char *prefix, const char *label, const char *value) {
     ensure_init();
-    char combined_label[128];
-    snprintf(combined_label, sizeof(combined_label), "%s%s", prefix, label);
-    print_row(combined_label, value, 4);
+    int label_width = get_label_width();
+    int max_value_width = g_term_width - 4 - label_width - 4;
+    if (max_value_width < 10) max_value_width = 10;
+    
+    char truncated_value[512];
+    truncate_string(value, truncated_value, max_value_width);
+    
+    /* Ignore tree symbols for plain text, just use spaces for indentation */
+    /* status.c passes "├─" or "└─" as prefix */
+    (void)prefix;  /* Suppress unused warning */
+    
+    printf("    %-*s  %s\n", label_width, label, truncated_value);
 }
 
 void ui_table_subrow_color(const char *prefix, const char *label, const char *value, const char *color) {
@@ -199,10 +197,9 @@ void ui_table_subrow_color(const char *prefix, const char *label, const char *va
     char truncated_value[512];
     truncate_string(value, truncated_value, max_value_width);
     
-    char combined_label[128];
-    snprintf(combined_label, sizeof(combined_label), "%s%s", prefix, label);
+    (void)prefix;  /* Suppress unused warning */
     
-    printf("    %s%-*s" COLOR_RESET "  %s\n", color, label_width, combined_label, truncated_value);
+    printf("    %s%s" COLOR_RESET "  %s\n", color, label, truncated_value);
 }
 
 void ui_table_subrow_int(const char *prefix, const char *label, int value) {
@@ -212,15 +209,33 @@ void ui_table_subrow_int(const char *prefix, const char *label, int value) {
 }
 
 void ui_table_subrow_emoji(const char *emoji, const char *label, const char *value) {
-    char prefix[32];
-    snprintf(prefix, sizeof(prefix), "%s ", emoji);
-    ui_table_subrow(prefix, label, value);
+    ensure_init();
+    int label_width = get_label_width();
+    int max_value_width = g_term_width - 4 - label_width - 4;
+    if (max_value_width < 10) max_value_width = 10;
+    
+    char truncated_value[512];
+    truncate_string(value, truncated_value, max_value_width);
+    
+    char combined[128];
+    snprintf(combined, sizeof(combined), "%s %s", emoji, label);
+    
+    printf("    %-*s  %s\n", label_width + 2, combined, truncated_value);
 }
 
 void ui_table_subrow_emoji_color(const char *emoji, const char *label, const char *value, const char *color) {
-    char prefix[32];
-    snprintf(prefix, sizeof(prefix), "%s ", emoji);
-    ui_table_subrow_color(prefix, label, value, color);
+    ensure_init();
+    int label_width = get_label_width();
+    int max_value_width = g_term_width - 4 - label_width - 4;
+    if (max_value_width < 10) max_value_width = 10;
+    
+    char truncated_value[512];
+    truncate_string(value, truncated_value, max_value_width);
+    
+    char combined[128];
+    snprintf(combined, sizeof(combined), "%s %s", emoji, label);
+    
+    printf("    %s%s" COLOR_RESET "  %s\n", color, combined, truncated_value);
 }
 
 void ui_table_warning(const char *message) {
