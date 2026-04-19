@@ -23,8 +23,7 @@
 #include <net/if.h>
 #include <pthread.h>
 
-#define ATP_VERSION         "1.0.0"
-#define ATP_NAME            "ATP (Advanced Transparent Proxy)"
+#define ATP_NAME            "atpd"
 #define ATP_BUILD_DATE      __DATE__
 #define ATP_BUILD_TIME      __TIME__
 
