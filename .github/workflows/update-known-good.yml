@@ -1,17 +1,9 @@
 name: Update Known Good Commits
 
 on:
-  push:
-    branches: [dev]
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'Makefile'
-      - 'scripts/**'
-      - '!**.md'
-      - '!docs/**'
-      - '!examples/**'
   workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-update]
 
 jobs:
   update-readme:
@@ -43,23 +35,12 @@ jobs:
         
         # Check if table exists
         if ! grep -q "^## Known Good Commits" README.md; then
-          echo "Table not found in README.md"
-          exit 0
+          echo "Error: '## Known Good Commits' table not found in README.md"
+          exit 1
         fi
         
         # Insert new row after the header separator line
-        awk -v row="$NEW_ROW" '
-          BEGIN { inserted=0 }
-          /^## Known Good Commits/ { found=1 }
-          found && !inserted && /^\|--------/ { 
-            print
-            print row
-            inserted=1
-            found=2
-            next
-          }
-          { print }
-        ' README.md > README.tmp && mv README.tmp README.md
+        sed -i "/^|--------/a $NEW_ROW" README.md
         
         echo "Added row: $NEW_ROW"
 
