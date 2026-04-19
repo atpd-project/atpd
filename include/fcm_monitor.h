@@ -3,6 +3,7 @@
 
 #include "atp.h"
 #include <stdint.h>
+#include <time.h>
 
 /* Callback when FCM connection is detected */
 typedef void (*fcm_callback_t)(const char *remote_ip, uint16_t remote_port, void *userdata);
@@ -15,6 +16,9 @@ void fcm_monitor_stop(void);
 
 /* Check if monitor is running */
 int fcm_monitor_is_running(void);
+
+/* Get last detection time (0 if never) */
+time_t fcm_monitor_get_last_detection(void);
 
 /* Force refresh of FCM IP cache (for testing) */
 void fcm_monitor_refresh_cache(void);

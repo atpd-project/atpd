@@ -6,5 +6,6 @@
 #include "api.h"
 
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api);
+void status_show_config(atp_config_t *cfg);
 
 #endif

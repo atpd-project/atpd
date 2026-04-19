@@ -60,6 +60,10 @@ static int g_monitor_running = 0;
 static fcm_callback_t g_callback = NULL;
 static void *g_userdata = NULL;
 
+/* Last detection time for status display */
+static time_t g_last_detection_time = 0;
+static pthread_mutex_t g_last_detection_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 /* Resolve domain to IP address */
 static int resolve_domain(const char *domain, struct in_addr *ips, int max_ips) {
     struct addrinfo hints, *res, *p;
@@ -192,6 +196,13 @@ static void add_tracked_connection(uint32_t src_ip, uint16_t src_port,
     pthread_mutex_unlock(&g_tracked_mutex);
 }
 
+/* Update last detection time */
+static void update_last_detection(void) {
+    pthread_mutex_lock(&g_last_detection_mutex);
+    g_last_detection_time = time(NULL);
+    pthread_mutex_unlock(&g_last_detection_mutex);
+}
+
 /* Monitor thread main loop */
 static void* fcm_monitor_loop(void *arg) {
     (void)arg;
@@ -223,6 +234,9 @@ static void* fcm_monitor_loop(void *arg) {
                         /* Add to tracking */
                         add_tracked_connection(conns[i].src.v4.ip, conns[i].src_port,
                                                conns[i].dst.v4.ip, conns[i].dst_port);
+                        
+                        /* Update last detection time */
+                        update_last_detection();
                         
                         /* Trigger callback */
                         if (g_callback) {
@@ -259,6 +273,7 @@ int fcm_monitor_start(fcm_callback_t callback, void *userdata) {
     g_callback = callback;
     g_userdata = userdata;
     g_monitor_running = 1;
+    g_last_detection_time = 0;
     
     /* Initial cache refresh */
     refresh_fcm_ips();
@@ -287,6 +302,15 @@ void fcm_monitor_stop(void) {
 /* Check if monitor is running */
 int fcm_monitor_is_running(void) {
     return g_monitor_running;
+}
+
+/* Get last detection time (0 if never) */
+time_t fcm_monitor_get_last_detection(void) {
+    time_t last;
+    pthread_mutex_lock(&g_last_detection_mutex);
+    last = g_last_detection_time;
+    pthread_mutex_unlock(&g_last_detection_mutex);
+    return last;
 }
 
 /* Force refresh of IP cache (for testing) */
