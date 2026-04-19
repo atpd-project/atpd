@@ -14,8 +14,7 @@
 #include "api.h"
 #include "netlink.h"
 #include "netlink_monitor.h"
-#include "firewall.h"
-#include "app_filter.h"
+// #include "app_filter.h"
 #include "fcm_monitor.h"
 #include "perf_mode.h"
 #include "status.h"
@@ -272,10 +271,6 @@ static int do_start(atp_options_t *opts) {
         goto cleanup;
     }
 
-    if (firewall_init(&g_config) < 0) {
-        LOG_ERROR("Failed to initialize firewall");
-        goto cleanup;
-    }
 
     if (g_config.app_proxy_enable) {
         if (app_filter_init(&g_config) < 0) {
@@ -317,9 +312,6 @@ static int do_start(atp_options_t *opts) {
         LOG_ERROR("Failed to start sing-box");
     }
 
-    if (firewall_apply(&g_config) < 0) {
-        LOG_ERROR("Failed to apply firewall rules");
-    }
 
     if (g_config.app_proxy_enable) {
         if (app_filter_setup(&g_config) < 0) {
@@ -357,7 +349,6 @@ static int do_start(atp_options_t *opts) {
 
     LOG_INFO("Shutting down...");
 
-    firewall_cleanup(&g_config);
 
     if (g_config.app_proxy_enable) {
         app_filter_cleanup(&g_config);
