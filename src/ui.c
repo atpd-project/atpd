@@ -62,7 +62,6 @@ void ui_set_width(int width) {
     g_initialized = 1;
 }
 
-}
 
 /* Ensure UI is initialized */
 static void ensure_init(void) {
