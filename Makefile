@@ -20,23 +20,6 @@ CFLAGS += -DATP_CONF_FILE=\"atp.conf\"
 CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
 CFLAGS += -DATP_LOG_FILE=\"run/atp.log\"
 CFLAGS += -DATP_COMMAND_SOCKET=\"run/atpd.sock\"
-CFLAGS += -DDEFAULT_TCP_PORT=1536
-CFLAGS += -DDEFAULT_UDP_PORT=1536
-CFLAGS += -DDEFAULT_REDIRECT_TCP_PORT=7891
-CFLAGS += -DDEFAULT_DNS_PORT=1053
-CFLAGS += -DDEFAULT_MARK=20
-CFLAGS += -DDEFAULT_MARK6=21
-CFLAGS += -DDEFAULT_TABLE_ID=150
-CFLAGS += -DDEFAULT_API_PORT=9090
-CFLAGS += -DDEFAULT_API_HOST=\"127.0.0.1\"
-CFLAGS += -DDEFAULT_RESTART_DELAY=5
-CFLAGS += -DMODE_AUTO=0
-CFLAGS += -DMODE_TPROXY=1
-CFLAGS += -DMODE_REDIRECT=2
-CFLAGS += -DMODE_ENHANCE=3
-CFLAGS += -DDNS_HIJACK_OFF=0
-CFLAGS += -DDNS_HIJACK_TPROXY=1
-CFLAGS += -DDNS_HIJACK_REDIRECT=2
 
 # Allow external flags to be appended (do not override internal flags)
 CFLAGS += $(EXTRA_CFLAGS)
@@ -64,7 +47,6 @@ SRC = \
     src/api.c \
     src/netlink.c \
     src/netlink_monitor.c \
-    src/firewall.c \
     src/app_filter.c \
     src/fcm_monitor.c \
     src/perf_mode.c \
