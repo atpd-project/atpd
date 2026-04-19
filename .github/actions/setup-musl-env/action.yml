@@ -1,0 +1,89 @@
+name: Setup musl build environment
+description: Installs musl toolchain and builds libcurl
+
+outputs:
+  cc-path:
+    description: 'Path to musl-gcc'
+    value: ${{ steps.setup.outputs.cc }}
+  ar-path:
+    description: 'Path to musl-ar'
+    value: ${{ steps.setup.outputs.ar }}
+  ranlib-path:
+    description: 'Path to musl-ranlib'
+    value: ${{ steps.setup.outputs.ranlib }}
+  strip-path:
+    description: 'Path to musl-strip'
+    value: ${{ steps.setup.outputs.strip }}
+  curl-include-path:
+    description: 'Path to libcurl include dir'
+    value: ${{ env.CURL_INSTALL_DIR }}/include
+  curl-lib-path:
+    description: 'Path to libcurl lib dir'
+    value: ${{ env.CURL_INSTALL_DIR }}/lib
+
+runs:
+  using: composite
+  steps:
+    - name: Load version configuration
+      shell: bash
+      run: |
+        source .github/env/versions.env
+        echo "MUSL_TOOLCHAIN_URL=$MUSL_TOOLCHAIN_URL" >> $GITHUB_ENV
+        echo "MUSL_TOOLCHAIN_TRIPLET=$MUSL_TOOLCHAIN_TRIPLET" >> $GITHUB_ENV
+        echo "CURL_VERSION=$CURL_VERSION" >> $GITHUB_ENV
+        echo "CURL_DOWNLOAD_URL=$CURL_DOWNLOAD_URL" >> $GITHUB_ENV
+        echo "CURL_INSTALL_DIR=/tmp/curl-musl" >> $GITHUB_ENV
+        echo "CURL_BUILD_DIR=/tmp/curl-build" >> $GITHUB_ENV
+        echo "ATP_VERSION=$ATP_VERSION" >> $GITHUB_ENV
+
+    - name: Setup musl toolchain
+      id: setup
+      shell: bash
+      run: |
+        wget -q "$MUSL_TOOLCHAIN_URL" -O toolchain.tar.xz
+        tar -xJf toolchain.tar.xz
+        
+        TOOLCHAIN_BIN=$(find "$PWD" -maxdepth 3 -name "$MUSL_TOOLCHAIN_TRIPLET-gcc" | head -1 | xargs -I{} dirname {})
+        if [ -z "$TOOLCHAIN_BIN" ]; then
+          echo "ERROR: could not find $MUSL_TOOLCHAIN_TRIPLET-gcc"
+          exit 1
+        fi
+        
+        echo "$TOOLCHAIN_BIN" >> $GITHUB_PATH
+        
+        echo "cc=$TOOLCHAIN_BIN/$MUSL_TOOLCHAIN_TRIPLET-gcc" >> $GITHUB_OUTPUT
+        echo "ar=$TOOLCHAIN_BIN/$MUSL_TOOLCHAIN_TRIPLET-ar" >> $GITHUB_OUTPUT
+        echo "ranlib=$TOOLCHAIN_BIN/$MUSL_TOOLCHAIN_TRIPLET-ranlib" >> $GITHUB_OUTPUT
+        echo "strip=$TOOLCHAIN_BIN/$MUSL_TOOLCHAIN_TRIPLET-strip" >> $GITHUB_OUTPUT
+
+    - name: Cache libcurl
+      id: cache-curl
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CURL_INSTALL_DIR }}
+        key: curl-musl-${{ env.CURL_VERSION }}
+
+    - name: Build libcurl
+      if: steps.cache-curl.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        mkdir -p "$CURL_BUILD_DIR" && cd "$CURL_BUILD_DIR"
+        curl -L "$CURL_DOWNLOAD_URL" -o curl.tar.gz
+        tar -xzf curl.tar.gz --strip-components=1
+        
+        ./configure \
+          --host="$MUSL_TOOLCHAIN_TRIPLET" \
+          --prefix="$CURL_INSTALL_DIR" \
+          --disable-shared \
+          --enable-static \
+          --disable-ldap --disable-ldaps --disable-rtsp --disable-dict \
+          --disable-telnet --disable-tftp --disable-pop3 --disable-imap \
+          --disable-smtp --disable-gopher --disable-mqtt --disable-smb \
+          --disable-ntlm --disable-ntlm-wb --disable-tls-srp \
+          --disable-cookies --disable-dateparse --disable-dnsshuffle \
+          --disable-alt-svc --disable-hsts \
+          --without-ssl --without-zlib --without-brotli --without-zstd \
+          --without-libpsl --without-libidn2 --without-libgsasl --without-librtmp
+        
+        make -j$(nproc) && make install
+        rm -rf "$CURL_BUILD_DIR"

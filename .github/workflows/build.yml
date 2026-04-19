@@ -10,36 +10,31 @@ on:
       - 'include/**'
       - 'scripts/**'
       - 'Makefile'
-      - '.github/workflows/**'
+      - '.github/**'
       - '!**.md'
       - '!docs/**'
       - '!examples/**'
-      - '!.github/workflows/clean.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'scripts/**'
-      - 'Makefile'
-      - '!.github/workflows/clean.yml'
   workflow_dispatch:
 
-env:
-  CURL_VERSION: 8.6.0
-
 jobs:
+  # ============================================
+  # Job 1: Build
+  # ============================================
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
-      pages: write
     
     if: |
-      (github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, '[skip actions]')) ||
-      github.event_name == 'pull_request' ||
-      github.event_name == 'workflow_dispatch'
+      (!contains(github.event.head_commit.message, '[skip ci]')) &&
+      (!contains(github.event.head_commit.message, '[skip actions]'))
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_date: ${{ steps.build_date.outputs.date }}
     
     steps:
     - name: Checkout code
@@ -47,210 +42,170 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Setup musl toolchain
-      run: |
-        wget https://github.com/cross-tools/musl-cross/releases/download/20250929/aarch64-unknown-linux-musl.tar.xz
-        tar -xJf aarch64-unknown-linux-musl.tar.xz
-        TOOLCHAIN_BIN=$(find "$PWD" -maxdepth 3 -name "aarch64-unknown-linux-musl-gcc" | head -1 | xargs -I{} dirname {})
-        if [ -z "$TOOLCHAIN_BIN" ]; then
-          echo "ERROR: could not find aarch64-unknown-linux-musl-gcc"
-          find "$PWD" -maxdepth 4 -type f -name "*gcc*"
-          exit 1
-        fi
-        echo "Found toolchain at: $TOOLCHAIN_BIN"
-        echo "$TOOLCHAIN_BIN" >> $GITHUB_PATH
-        echo "CC=aarch64-unknown-linux-musl-gcc" >> $GITHUB_ENV
-        echo "AR=aarch64-unknown-linux-musl-ar" >> $GITHUB_ENV
-        echo "RANLIB=aarch64-unknown-linux-musl-ranlib" >> $GITHUB_ENV
-        echo "STRIP=aarch64-unknown-linux-musl-strip" >> $GITHUB_ENV
+    - name: Setup build environment
+      id: setup
+      uses: ./.github/actions/setup-musl-env
 
     - name: Generate version header
       run: |
-        cd ${{ github.workspace }}
         chmod +x scripts/gen_version.sh
         ./scripts/gen_version.sh
         echo "Generated version.h:"
         cat include/version.h
 
-    - name: Cache libcurl build
-      id: cache-curl
+    - name: Cache build objects
       uses: actions/cache@v4
       with:
-        path: /tmp/curl-musl
-        key: curl-musl-aarch64-unknown-${{ env.CURL_VERSION }}
+        path: build/obj
+        key: obj-${{ runner.os }}-${{ hashFiles('src/**/*.c', 'include/**/*.h') }}
         restore-keys: |
-          curl-musl-aarch64-unknown-
+          obj-${{ runner.os }}-
 
-    - name: Build libcurl with musl
-      if: steps.cache-curl.outputs.cache-hit != 'true'
+    - name: Build ATP
       run: |
-        cd /tmp
-        curl -L https://github.com/curl/curl/releases/download/curl-8_6_0/curl-8.6.0.tar.gz -o curl.tar.gz
-        tar -xzf curl.tar.gz
-        cd curl-8.6.0
-
-        ./configure \
-          --host=aarch64-unknown-linux-musl \
-          --prefix=/tmp/curl-musl \
-          --disable-shared \
-          --enable-static \
-          --disable-ldap \
-          --disable-ldaps \
-          --disable-rtsp \
-          --disable-dict \
-          --disable-telnet \
-          --disable-tftp \
-          --disable-pop3 \
-          --disable-imap \
-          --disable-smtp \
-          --disable-gopher \
-          --disable-mqtt \
-          --disable-smb \
-          --disable-ntlm \
-          --disable-ntlm-wb \
-          --disable-tls-srp \
-          --disable-cookies \
-          --disable-dateparse \
-          --disable-dnsshuffle \
-          --disable-alt-svc \
-          --disable-hsts \
-          --without-ssl \
-          --without-zlib \
-          --without-brotli \
-          --without-zstd \
-          --without-libpsl \
-          --without-libidn2 \
-          --without-libgsasl \
-          --without-librtmp
-
-        make -j$(nproc)
-        make install
-        echo "libcurl built with musl"
-
-    - name: Build ATP with musl
-      run: |
-        cd ${{ github.workspace }}
+        export CC="${{ steps.setup.outputs.cc-path }}"
+        export AR="${{ steps.setup.outputs.ar-path }}"
+        export RANLIB="${{ steps.setup.outputs.ranlib-path }}"
+        export STRIP="${{ steps.setup.outputs.strip-path }}"
+        
         make clean
-        make \
-          CC="$CC" \
-          EXTRA_CFLAGS="-I/tmp/curl-musl/include" \
-          EXTRA_LDFLAGS="-L/tmp/curl-musl/lib -lcurl -pthread -static"
+        make -j$(nproc) \
+          EXTRA_CFLAGS="-I${{ steps.setup.outputs.curl-include-path }}" \
+          EXTRA_LDFLAGS="-L${{ steps.setup.outputs.curl-lib-path }} -lcurl -pthread -static"
+        
         file build/bin/atpd
         ls -la build/bin/atpd
 
-    - name: Extract version for artifact naming
+    - name: Extract version
       id: version
       run: |
-        cd ${{ github.workspace }}
         VERSION=$(grep ATP_VERSION_STRING include/version.h | cut -d'"' -f2)
         echo "version=${VERSION}" >> $GITHUB_OUTPUT
         echo "ATP version: ${VERSION}"
 
-    - name: Get build date for release
+    - name: Get build date
       id: build_date
       run: |
         echo "date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
 
-    - name: Strip debug symbols
+    - name: Strip binary
       run: |
-        $STRIP build/bin/atpd
+        ${{ steps.setup.outputs.strip-path }} build/bin/atpd
         echo "Stripped binary size:"
         ls -la build/bin/atpd
 
-    - name: Test binary
+    - name: Build summary
+      if: success()
       run: |
-        readelf -l build/bin/atpd | grep -A2 TLS || echo "No TLS section"
-        file build/bin/atpd
+        BINARY_SIZE=$(ls -lh build/bin/atpd | awk '{print $5}')
+        echo "### ✅ Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Version | ${{ steps.version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Binary size | $BINARY_SIZE |" >> $GITHUB_STEP_SUMMARY
+        echo "| Build date | ${{ steps.build_date.outputs.date }} |" >> $GITHUB_STEP_SUMMARY
 
     - name: Notify on failure
       if: failure()
       run: |
-        echo "❌ Build failed for commit ${{ github.sha }}"
-        echo "Branch: ${{ github.ref_name }}"
-        echo "Check logs at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        echo "### ❌ Build Failed" >> $GITHUB_STEP_SUMMARY
+        echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+        echo "| Logs | [View](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |" >> $GITHUB_STEP_SUMMARY
 
-    # ============================================
-    # Scenario 1: dev/main branch without tag - upload artifact only
-    # ============================================
-    - name: Upload artifact (dev branch, no tag)
+    - name: Upload artifact (dev)
       uses: actions/upload-artifact@v4
-      if: github.ref == 'refs/heads/dev' && !startsWith(github.ref, 'refs/tags/')
+      if: github.ref == 'refs/heads/dev'
       with:
-        name: atpd-musl-aarch64-dev-${{ steps.version.outputs.version }}
+        name: atpd-dev-${{ steps.version.outputs.version }}
         path: build/bin/atpd
-        if-no-files-found: error
 
-    - name: Trigger known good commits update
-      if: success() && github.ref == 'refs/heads/dev' && !startsWith(github.ref, 'refs/tags/')
-      run: |
-        curl -X POST \
-          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/${{ github.repository }}/actions/workflows/update-known-good.yml/dispatches \
-          -d '{"ref":"dev"}'
-
-    - name: Upload artifact (main branch, no tag)
+    - name: Upload artifact (main)
       uses: actions/upload-artifact@v4
-      if: github.ref == 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')
+      if: github.ref == 'refs/heads/main'
       with:
-        name: atpd-musl-aarch64-${{ steps.version.outputs.version }}
+        name: atpd-${{ steps.version.outputs.version }}
         path: build/bin/atpd
-        if-no-files-found: error
 
-    # ============================================
-    # Scenario 2: Tag build - upload artifact + create Release
-    # ============================================
-    - name: Upload artifact (tag build)
+    - name: Upload artifact (tag)
       uses: actions/upload-artifact@v4
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        name: atpd-musl-aarch64-${{ steps.version.outputs.version }}
+        name: atpd-${{ steps.version.outputs.version }}
         path: build/bin/atpd
-        if-no-files-found: error
+
+  # ============================================
+  # Job 2: Create Release (only on tags)
+  # ============================================
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') && success()
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: atpd-${{ needs.build.outputs.version }}
+        path: .
 
     - name: Create Release
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
+      uses: ./.github/actions/create-release
       with:
-        files: build/bin/atpd
-        name: "ATP ${{ steps.version.outputs.version }}"
-        tag_name: ${{ github.ref_name }}
-        body: |
-          ## ATP ${{ steps.version.outputs.version }}
-          
-          ### Build Information
-          - **Version:** ${{ steps.version.outputs.version }}
-          - **Commit:** ${{ github.sha }}
-          - **Tag:** ${{ github.ref_name }}
-          - **Build Date:** ${{ steps.build_date.outputs.date }}
-          
-          ### Features
-          - TPROXY transparent proxy for IPv4/IPv6
-          - Performance optimization (CPU/BBR/RPS/RFS)
-          - Application filter by UID (per-app proxy control)
-          - MAC filter for hotspot devices
-          - GeoIP CN bypass with atomic ipset update
-          - INET_DIAG UID detection (connection-level control)
-          - Netlink async VPN monitoring (microsecond response)
-          - State machine lifecycle management
-          - Thermal throttling protection (75°C)
-          - Persistent traffic statistics
-          
-          ### Installation
-          ```bash
-          # Download and install
-          wget -O /data/adb/atp/bin/atpd "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/atpd"
-          chmod 755 /data/adb/atp/bin/atpd
-          
-          # Apply SELinux policy (if using INET_DIAG)
-          /data/adb/atp/bin/sepolicy_atp.sh start
-          
-          # Start ATP
-          /data/adb/atp/bin/atpd start
-          
-          # Check status
-          /data/adb/atp/bin/atpd status
-          ```
-        generate_release_notes: true
-        draft: false
+        binary-path: atpd
+        version: ${{ needs.build.outputs.version }}
+        tag-name: ${{ github.ref_name }}
+        build-date: ${{ needs.build.outputs.build_date }}
+        commit-sha: ${{ github.sha }}
         prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+
+  # ============================================
+  # Job 3: Update Known Good Commits (only on dev push)
+  # ============================================
+  update-known-good:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/dev' && success()
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Update README
+      run: |
+        COMMIT=$(git rev-parse --short HEAD)
+        DATE=$(date +%Y-%m-%d)
+        TITLE=$(git log -1 --format=%s | sed 's/|/\\|/g')
+        NEW_ROW="| \`$COMMIT\` | $DATE | ✅ | $TITLE |"
+        
+        if grep -q "^## Known Good Commits" README.md; then
+          sed -i "/^|--------/a $NEW_ROW" README.md
+          echo "Added row: $NEW_ROW"
+        else
+          echo "Table not found, skipping"
+        fi
+
+    - name: Commit and push
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add README.md
+        if git diff --cached --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "docs: update known good commits [skip ci]"
+          git push
+        fi
