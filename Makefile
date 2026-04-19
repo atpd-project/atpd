@@ -1,127 +1,159 @@
-# Makefile for ATP (Advanced Transparent Proxy)
+# ATP - Advanced Transparent Proxy
+# Makefile for Android NDK build
 
-PROJECT_NAME = atp
-TARGET = atpd
+# Project version
+VERSION = 1.0.0
 
-# Detect NDK environment
-ifneq ($(ANDROID_NDK_ROOT),)
-    CC = $(ANDROID_NDK_ROOT)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
-    CFLAGS = -Wall -Wextra -O2 -pthread -D__ANDROID__ -fPIC -fpie
-    CFLAGS += -I$(INC_DIR)
-    LDFLAGS = -L/tmp/curl-musl/lib -lcurl -pthread -pie
-else
-    CC = gcc
-    CFLAGS = -Wall -Wextra -O2 -pthread
-    CFLAGS += -I$(INC_DIR)
-    LDFLAGS = -lcurl -pthread
+# Installation paths
+PREFIX = /data/adb/atp
+BINDIR = $(PREFIX)/bin
+RUNDIR = $(PREFIX)/run
+RULESDIR = $(PREFIX)/rules
+SINGBOXDIR = $(PREFIX)/sing-box
+
+# Compiler and flags
+CC ?= gcc
+CFLAGS = -Wall -Wextra -O2 -fPIC -D_GNU_SOURCE
+CFLAGS += -Iinclude -Iinclude/cjson -DVERSION=\"$(VERSION)\"
+CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"
+CFLAGS += -DATP_CONF_FILE=\"atp.conf\"
+CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
+CFLAGS += -DATP_LOG_FILE=\"run/atp.log\"
+CFLAGS += -DATP_COMMAND_SOCKET=\"run/atpd.sock\"
+CFLAGS += -DDEFAULT_TCP_PORT=1536
+CFLAGS += -DDEFAULT_UDP_PORT=1536
+CFLAGS += -DDEFAULT_REDIRECT_TCP_PORT=7891
+CFLAGS += -DDEFAULT_DNS_PORT=1053
+CFLAGS += -DDEFAULT_MARK=20
+CFLAGS += -DDEFAULT_MARK6=21
+CFLAGS += -DDEFAULT_TABLE_ID=150
+CFLAGS += -DDEFAULT_API_PORT=9090
+CFLAGS += -DDEFAULT_API_HOST=\"127.0.0.1\"
+CFLAGS += -DDEFAULT_RESTART_DELAY=5
+CFLAGS += -DMODE_AUTO=0
+CFLAGS += -DMODE_TPROXY=1
+CFLAGS += -DMODE_REDIRECT=2
+CFLAGS += -DMODE_ENHANCE=3
+CFLAGS += -DDNS_HIJACK_OFF=0
+CFLAGS += -DDNS_HIJACK_TPROXY=1
+CFLAGS += -DDNS_HIJACK_REDIRECT=2
+
+# Allow external flags to be appended (do not override internal flags)
+CFLAGS += $(EXTRA_CFLAGS)
+
+# Debug build
+ifdef DEBUG
+CFLAGS += -g -DATP_DEBUG -O0
 endif
 
-# Directories
-SRC_DIR = src
-INC_DIR = include
-OBJ_DIR = build/obj
-BIN_DIR = build/bin
-DIST_DIR = dist
+# Libraries
+LIBS = -lpthread -lcurl
 
-# Version header (auto-generated)
-VERSION_H = $(INC_DIR)/version.h
+# Linker flags
+LDFLAGS ?=
+LDFLAGS += $(EXTRA_LDFLAGS)
 
 # Source files
-SRCS = $(SRC_DIR)/api.c \
-       $(SRC_DIR)/app_filter.c \
-       $(SRC_DIR)/cjson/cJSON.c \
-       $(SRC_DIR)/cli.c \
-       $(SRC_DIR)/config.c \
-       $(SRC_DIR)/fcm_monitor.c \
-       $(SRC_DIR)/geoip.c \
-       $(SRC_DIR)/inet_diag.c \
-       $(SRC_DIR)/ipset.c \
-       $(SRC_DIR)/ipv6_manager.c \
-       $(SRC_DIR)/logger.c \
-       $(SRC_DIR)/mac_filter.c \
-       $(SRC_DIR)/main.c \
-       $(SRC_DIR)/netlink.c \
-       $(SRC_DIR)/netlink_monitor.c \
-       $(SRC_DIR)/perf_mode.c \
-       $(SRC_DIR)/routing.c \
-       $(SRC_DIR)/service.c \
-       $(SRC_DIR)/status.c \
-       $(SRC_DIR)/tproxy.c \
-       $(SRC_DIR)/ui.c \
-       $(SRC_DIR)/utils.c \
-       $(SRC_DIR)/version.c
+SRC = \
+    src/main.c \
+    src/config.c \
+    src/config_validator.c \
+    src/logger.c \
+    src/utils.c \
+    src/service.c \
+    src/api.c \
+    src/netlink.c \
+    src/netlink_monitor.c \
+    src/firewall.c \
+    src/app_filter.c \
+    src/fcm_monitor.c \
+    src/perf_mode.c \
+    src/status.c \
+    src/ui.c \
+    src/cli.c \
+    src/tproxy.c \
+    src/routing.c \
+    src/geoip.c \
+    src/ipset.c \
+    src/mac_filter.c \
+    src/ipv6_manager.c \
+    src/inet_diag.c \
+    src/version.c \
+    src/cjson/cJSON.c
 
-OBJS = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
+# Object files
+OBJ = $(SRC:.c=.o)
 
-# Headers
-HEADERS = $(wildcard $(INC_DIR)/*.h) $(wildcard $(INC_DIR)/cjson/*.h)
+# Output binary
+TARGET = build/bin/atpd
 
-# Additional flags for cJSON compilation
-CJSON_CFLAGS = -I$(INC_DIR)/cjson
+# Build targets
+.PHONY: all clean install install-android distclean
 
-.PHONY: all clean distclean help version
+all: $(TARGET)
 
-# Build all
-all: $(VERSION_H) $(OBJ_DIR) $(BIN_DIR) $(BIN_DIR)/$(TARGET)
-	@echo "Build complete: $(BIN_DIR)/$(TARGET)"
+$(TARGET): $(OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS) $(LDFLAGS)
+	@echo "  LD      $@"
 
-# Generate version header
-$(VERSION_H):
-	@echo "Generating version header..."
-	@rm -f $(VERSION_H)
-	@chmod +x scripts/gen_version.sh
-	@./scripts/gen_version.sh
-	@echo "Generated $(VERSION_H)"
+%.o: %.c
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Create directories
-$(OBJ_DIR):
-	@mkdir -p $(OBJ_DIR)
-	@mkdir -p $(OBJ_DIR)/cjson
-
-$(BIN_DIR):
-	@mkdir -p $(BIN_DIR)
-
-# Show version information
-version: $(VERSION_H)
-	@echo "ATP Version Information:"
-	@echo "  Version:        $$(grep ATP_VERSION_STRING $(VERSION_H) | cut -d'"' -f2)"
-	@echo "  Major:          $$(grep ATP_VERSION_MAJOR $(VERSION_H) | cut -d' ' -f3)"
-	@echo "  Minor:          $$(grep ATP_VERSION_MINOR $(VERSION_H) | cut -d' ' -f3)"
-	@echo "  Patch:          $$(grep ATP_VERSION_PATCH $(VERSION_H) | cut -d' ' -f3)"
-	@echo "  Prerelease:     $$(grep ATP_VERSION_PRERELEASE $(VERSION_H) | cut -d'"' -f2)"
-	@echo "  Build:          $$(grep ATP_VERSION_BUILD $(VERSION_H) | cut -d' ' -f3)"
-	@echo "  Commit:         $$(grep ATP_VERSION_COMMIT $(VERSION_H) | cut -d'"' -f2)"
-	@echo "  Branch:         $$(grep ATP_VERSION_BRANCH $(VERSION_H) | cut -d'"' -f2)"
-	@echo "  Dirty:          $$(grep ATP_VERSION_DIRTY $(VERSION_H) | cut -d'"' -f2)"
-	@echo "  Clean:          $$(grep ATP_VERSION_CLEAN $(VERSION_H) | cut -d' ' -f3)"
-
-
-# Compile cJSON
-$(OBJ_DIR)/cjson/cJSON.o: $(SRC_DIR)/cjson/cJSON.c $(HEADERS) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) $(CJSON_CFLAGS) -I$(INC_DIR) -c $< -o $@
-
-# Compile all other source files
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) $(VERSION_H) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
-
-# Link object files
-$(BIN_DIR)/$(TARGET): $(OBJS) | $(BIN_DIR)
-	$(CC) $(OBJS) -o $@ $(LDFLAGS)
-
-# Clean
 clean:
-	rm -rf $(OBJ_DIR) $(BIN_DIR)
+	rm -rf build/
+	rm -f src/*.o
+	rm -f src/cjson/*.o
 
 distclean: clean
-	rm -f $(VERSION_H)
-	rm -rf $(DIST_DIR)
+	rm -f $(TARGET)
 
+install: $(TARGET)
+	@echo "Installing ATP to $(PREFIX)"
+	@mkdir -p $(BINDIR)
+	@mkdir -p $(RUNDIR)
+	@mkdir -p $(RULESDIR)
+	@mkdir -p $(SINGBOXDIR)
+	@cp $(TARGET) $(BINDIR)/
+	@chmod 755 $(BINDIR)/atpd
+	@echo "ATP installed successfully"
+
+install-android: $(TARGET)
+	adb push $(TARGET) $(BINDIR)/
+	adb shell chmod 755 $(BINDIR)/atpd
+	adb shell mkdir -p $(RUNDIR)
+	adb shell mkdir -p $(RULESDIR)
+	adb shell mkdir -p $(SINGBOXDIR)
+	@echo "ATP pushed to device"
+
+uninstall:
+	rm -f $(BINDIR)/atpd
+	@echo "ATP uninstalled"
+
+# Create release tarball
+release: clean
+	@mkdir -p release/atp-$(VERSION)
+	@cp -r src include scripts Makefile README.md release/atp-$(VERSION)/
+	@cd release && tar -czf atp-$(VERSION).tar.gz atp-$(VERSION)
+	@echo "Release package: release/atp-$(VERSION).tar.gz"
+
+# Help
 help:
 	@echo "ATP Build System"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all              - Build the main target (default)"
-	@echo "  version          - Generate and show version information"
-	@echo "  clean            - Remove build artifacts"
-	@echo "  distclean        - Remove build artifacts, version.h, and distribution"
-	@echo "  help             - Show this help"
+	@echo "  all             Build atpd binary"
+	@echo "  clean           Remove build artifacts"
+	@echo "  distclean       Remove everything"
+	@echo "  install         Install to $(PREFIX)"
+	@echo "  install-android Push to device via adb"
+	@echo "  uninstall       Remove from $(PREFIX)"
+	@echo "  release         Create release tarball"
+	@echo ""
+	@echo "Variables:"
+	@echo "  CC              C compiler (default: gcc)"
+	@echo "  DEBUG=1         Build with debug symbols"
+	@echo "  EXTRA_CFLAGS    Additional compiler flags"
+	@echo "  EXTRA_LDFLAGS   Additional linker flags"

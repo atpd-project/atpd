@@ -14,6 +14,13 @@
 #include <sys/ioctl.h>
 #include <stdarg.h>
 
+/* Force disable color output */
+static int g_force_no_color = 0;
+
+void ui_set_no_color(int enable) {
+    g_force_no_color = enable;
+}
+
 /* External global configuration */
 extern atp_config_t g_config;
 
