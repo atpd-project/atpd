@@ -14,7 +14,7 @@
 #include "api.h"
 #include "netlink.h"
 #include "netlink_monitor.h"
-// #include "app_filter.h"
+#include "app_filter.h"
 #include "fcm_monitor.h"
 #include "perf_mode.h"
 #include "status.h"
