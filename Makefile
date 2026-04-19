@@ -47,6 +47,7 @@ SRCS = $(SRC_DIR)/api.c \
        $(SRC_DIR)/service.c \
        $(SRC_DIR)/status.c \
        $(SRC_DIR)/tproxy.c \
+       $(SRC_DIR)/ui.c \
        $(SRC_DIR)/utils.c \
        $(SRC_DIR)/version.c
 

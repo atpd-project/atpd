@@ -17,6 +17,7 @@
 #include "perf_mode.h"
 #include "inet_diag.h"
 #include "version.h"
+#include "ui.h"
 #include "utils.h"
 #include <libgen.h>
 #include <sys/stat.h>
@@ -114,148 +115,162 @@ static void print_banner(void) {
     printf("--------------------------------------------\n\n");
 }
 
-/* Print startup health summary table */
+/* Print startup health summary table using UI module */
 static void print_startup_summary(void) {
     extern int g_current_uids_count;
     extern int *g_current_uids;
     char vpn_iface[IFNAMSIZ];
-    
-    printf("\n┌────────────────────────────────────────────────────────────────┐\n");
-    printf("│                    ATP STARTUP SUMMARY                         │\n");
-    printf("├────────────────────────────────────────────────────────────────┤\n");
-    
-    if (init_stage & INIT_STAGE_TPROXY)
-        printf("│ ✓ TPROXY Rules        │ OK │ IPv4/IPv6 mangle chains      │\n");
-    else
-        printf("│ ✗ TPROXY Rules        │ FAIL │ Check iptables availability │\n");
-    
-    if (init_stage & INIT_STAGE_ROUTING)
-        printf("│ ✓ Routing Policy      │ OK │ Table %d fwmark rules       │\n", g_config.table_id);
-    else
-        printf("│ ✗ Routing Policy      │ FAIL │ Check ip rule configuration│\n");
-    
-    if (init_stage & INIT_STAGE_DNS)
-        printf("│ ✓ DNS Hijack          │ OK │ Port %d redirected          │\n", g_config.dns_port);
-    else
-        printf("│ ✗ DNS Hijack          │ FAIL │ Check DNS settings         │\n");
-    
-    if (init_stage & INIT_STAGE_GEOIP)
-        printf("│ ✓ GeoIP (CN Bypass)   │ OK │ ipset cnip loaded           │\n");
-    else if (g_config.bypass_cn_ip)
-        printf("│ ⚠ GeoIP (CN Bypass)   │ ASYNC │ Download in background      │\n");
-    else
-        printf("│ ○ GeoIP (CN Bypass)   │ OFF │ Disabled by config          │\n");
-    
-    if (init_stage & INIT_STAGE_APP_FILTER) {
-        printf("│ ✓ App Filter          │ OK │ %d UIDs in ipset            │\n", 
-               g_current_uids ? g_current_uids_count : 0);
+    char status_buf[64];
+    char pid_buf[32];
+
+    ui_table_sep();
+    ui_table_header("ATP STARTUP SUMMARY");
+
+    /* TPROXY Rules */
+    if (init_stage & INIT_STAGE_TPROXY) {
+        ui_status_ok("TPROXY Rules");
     } else {
-        printf("│ ○ App Filter          │ OFF │ Disabled by config          │\n");
+        ui_status_fail("TPROXY Rules");
     }
-    
-    if (init_stage & INIT_STAGE_MAC_FILTER)
-        printf("│ ✓ MAC Filter          │ OK │ Hotspot MAC rules active    │\n");
-    else
-        printf("│ ○ MAC Filter          │ OFF │ Disabled by config          │\n");
-    
-    if (init_stage & INIT_STAGE_PERF_MODE)
-        printf("│ ✓ Performance Mode    │ OK │ CPU/BBR/RPS tuned           │\n");
-    else
-        printf("│ ○ Performance Mode    │ OFF │ Disabled by config          │\n");
-    
-    if (init_stage & INIT_STAGE_IPV6_MGR)
-        printf("│ ✓ IPv6 Manager        │ OK │ IPv6 stack configured       │\n");
-    else if (g_config.proxy_ipv6)
-        printf("│ ⚠ IPv6 Manager        │ PARTIAL │ Check ip6tables availability│\n");
-    else
-        printf("│ ○ IPv6 Manager        │ OFF │ Disabled by config          │\n");
-    
-    printf("├────────────────────────────────────────────────────────────────┤\n");
-    
+
+    /* Routing Policy */
+    if (init_stage & INIT_STAGE_ROUTING) {
+        snprintf(status_buf, sizeof(status_buf), "Table %d fwmark rules", g_config.table_id);
+        ui_table_subrow("├─", "Routing Policy", status_buf);
+    } else {
+        ui_status_fail("Routing Policy");
+    }
+
+    /* DNS Hijack */
+    if (init_stage & INIT_STAGE_DNS) {
+        snprintf(status_buf, sizeof(status_buf), "Port %d redirected", g_config.dns_port);
+        ui_table_subrow("├─", "DNS Hijack", status_buf);
+    } else {
+        ui_status_fail("DNS Hijack");
+    }
+
+    /* GeoIP (CN Bypass) */
+    if (init_stage & INIT_STAGE_GEOIP) {
+        ui_status_ok("GeoIP (CN Bypass)");
+    } else if (g_config.bypass_cn_ip) {
+        ui_table_subrow_color("├─", "GeoIP (CN Bypass)", "ASYNC - Download in background", COLOR_YELLOW);
+    } else {
+        ui_status_off("GeoIP (CN Bypass)");
+    }
+
+    /* App Filter */
+    if (init_stage & INIT_STAGE_APP_FILTER) {
+        snprintf(status_buf, sizeof(status_buf), "%d UIDs in ipset", 
+                 g_current_uids ? g_current_uids_count : 0);
+        ui_table_subrow("├─", "App Filter", status_buf);
+    } else {
+        ui_status_off("App Filter");
+    }
+
+    /* MAC Filter */
+    if (init_stage & INIT_STAGE_MAC_FILTER) {
+        ui_status_ok("MAC Filter");
+    } else {
+        ui_status_off("MAC Filter");
+    }
+
+    /* Performance Mode */
+    if (init_stage & INIT_STAGE_PERF_MODE) {
+        ui_status_ok("Performance Mode");
+    } else {
+        ui_status_off("Performance Mode");
+    }
+
+    /* IPv6 Manager */
+    if (init_stage & INIT_STAGE_IPV6_MGR) {
+        ui_status_ok("IPv6 Manager");
+    } else if (g_config.proxy_ipv6) {
+        ui_table_subrow_color("├─", "IPv6 Manager", "PARTIAL - Check ip6tables", COLOR_YELLOW);
+    } else {
+        ui_status_off("IPv6 Manager");
+    }
+
+    ui_table_sep();
+
     /* VPN detection status */
     if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
-        printf("│ 🔒 VPN Connected      │ %-10s │ Interface: %-15s │\n", 
-               "ACTIVE", vpn_iface);
-        printf("│    └─ XFRM Bypass      │ OK │ IPsec/ESP fast lane        │\n");
+        snprintf(status_buf, sizeof(status_buf), "Interface: %s", vpn_iface);
+        ui_table_subrow_emoji_color(ui_emoji_vpn(1), "VPN Connected", status_buf, COLOR_GREEN);
+        ui_table_subrow("└─", "XFRM Bypass", "OK - IPsec/ESP fast lane");
     } else {
-        printf("│ 🔓 VPN Connected      │ %-10s │ No active VPN tunnel       │\n", "INACTIVE");
+        ui_table_subrow_emoji_color(ui_emoji_vpn(0), "VPN Connected", "No active VPN tunnel", COLOR_WHITE);
     }
-    
+
     /* sing-box service status */
     if (service_check(&g_service_ctx)) {
         int pid = service_get_pid(&g_service_ctx);
-        printf("│ 🚀 sing-box Service   │ OK │ PID: %-23d │\n", pid);
+        snprintf(pid_buf, sizeof(pid_buf), "PID: %d", pid);
+        ui_table_subrow_emoji(ui_emoji_service(1), "sing-box Service", pid_buf);
     } else {
-        printf("│ 🚀 sing-box Service   │ FAIL │ Process not running        │\n");
+        ui_table_subrow_emoji_color(ui_emoji_service(0), "sing-box Service", "Process not running", COLOR_RED);
     }
-    
-    /* FCM monitor status */
-    if (fcm_monitor_is_running()) {
-        printf("│ 🔍 FCM Monitor        │ OK │ Google VPN detection active │\n");
-    } else {
-        printf("│ 🔍 FCM Monitor        │ OFF │ Auto-switch disabled       │\n");
-    }
-    
-    printf("└────────────────────────────────────────────────────────────────┘\n\n");
+
+    ui_table_end();
 }
 
-/* Print quick health check */
+/* Print quick health check using UI module */
 static void print_health_check(void) {
     char check_cmd[256];
-    
-    printf("┌────────────────────────────────────────────┐\n");
-    printf("│           ATP Health Check                  │\n");
-    printf("├────────────────────────────────────────────┤\n");
-    
+    char status_buf[64];
+
+    ui_table_sep();
+    ui_table_header("ATP HEALTH CHECK");
+
     /* Netlink Monitor */
     if (netlink_monitor_is_running()) {
-        printf("│ ✓ Netlink Monitor    │ OK │ Async ready      │\n");
+        ui_table_subrow_emoji_color("✓", "Netlink Monitor", "OK - Async ready", COLOR_GREEN);
     } else {
-        printf("│ ✗ Netlink Monitor    │ FAIL │ Not running      │\n");
+        ui_table_subrow_emoji_color("✗", "Netlink Monitor", "FAIL - Not running", COLOR_RED);
     }
-    
+
     /* FCM Monitor */
     if (fcm_monitor_is_running()) {
-        printf("│ ✓ FCM Monitor        │ OK │ Detecting FCM    │\n");
+        ui_table_subrow_emoji_color("✓", "FCM Monitor", "OK - Detecting Google VPN", COLOR_GREEN);
     } else {
-        printf("│ ✗ FCM Monitor        │ FAIL │ Not running      │\n");
+        ui_table_subrow_emoji_color("✗", "FCM Monitor", "FAIL - Not running", COLOR_RED);
     }
-    
+
     /* TPROXY Rules */
     snprintf(check_cmd, sizeof(check_cmd), 
              "iptables -t mangle -L ATP_PRE_0 -n 2>/dev/null | head -1 | grep -q ATP_PRE_0");
     if (exec_cmd_simple(check_cmd, 2) == 0) {
-        printf("│ ✓ TPROXY Rules      │ OK │ Table %d injected │\n", g_config.table_id);
+        snprintf(status_buf, sizeof(status_buf), "OK - Table %d injected", g_config.table_id);
+        ui_table_subrow_emoji_color("✓", "TPROXY Rules", status_buf, COLOR_GREEN);
     } else {
-        printf("│ ✗ TPROXY Rules      │ FAIL │ Not configured   │\n");
+        ui_table_subrow_emoji_color("✗", "TPROXY Rules", "FAIL - Not configured", COLOR_RED);
     }
-    
+
     /* Routing Table */
     snprintf(check_cmd, sizeof(check_cmd), 
              "ip route show table %d 2>/dev/null | grep -q local", g_config.table_id);
     if (exec_cmd_simple(check_cmd, 2) == 0) {
-        printf("│ ✓ Routing Table     │ OK │ Table %d locked   │\n", g_config.table_id);
+        snprintf(status_buf, sizeof(status_buf), "OK - Table %d locked", g_config.table_id);
+        ui_table_subrow_emoji_color("✓", "Routing Table", status_buf, COLOR_GREEN);
     } else {
-        printf("│ ✗ Routing Table     │ FAIL │ Not configured   │\n");
+        ui_table_subrow_emoji_color("✗", "Routing Table", "FAIL - Not configured", COLOR_RED);
     }
-    
+
     /* INET_DIAG */
     if (inet_diag_available()) {
-        printf("│ ✓ INET_DIAG         │ OK │ SELinux allowed   │\n");
+        ui_table_subrow_emoji_color("✓", "INET_DIAG", "OK - SELinux allowed", COLOR_GREEN);
     } else {
-        printf("│ ✗ INET_DIAG         │ FAIL │ SELinux blocked  │\n");
+        ui_table_subrow_emoji_color("✗", "INET_DIAG", "FAIL - SELinux blocked", COLOR_RED);
     }
-    
+
     /* sing-box API */
     if (api_check_health(&g_api_ctx)) {
-        printf("│ ✓ sing-box API      │ OK │ Heartbeat OK      │\n");
+        ui_table_subrow_emoji_color("✓", "sing-box API", "OK - Heartbeat OK", COLOR_GREEN);
     } else {
-        printf("│ ✗ sing-box API      │ FAIL │ Not responding   │\n");
+        ui_table_subrow_emoji_color("✗", "sing-box API", "FAIL - Not responding", COLOR_RED);
     }
-    
-    printf("└────────────────────────────────────────────┘\n\n");
-}
 
+    ui_table_end();
+}
 static void state_transition(atp_state_t new_state) {
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
@@ -557,7 +572,6 @@ static void on_fcm_connection(const char *remote_ip, uint16_t remote_port, void 
     /* Atomic mode switch */
     atomic_mode_switch(cfg, &g_api_ctx, "Google VPN");
 }
-
 static int init_tasks(atp_config_t *cfg) {
     int core_success = 1;
     int tproxy_ok = 0, routing_ok = 0, dns_ok = 0;
@@ -714,6 +728,9 @@ static int init_tasks(atp_config_t *cfg) {
 int main(int argc, char *argv[]) {
     atp_options_t opts;
     memset(&opts, 0, sizeof(opts));
+    
+    /* Initialize UI module for consistent output */
+    ui_init();
     
     if (parse_arguments(argc, argv, &opts) != 0) {
         return 1;
