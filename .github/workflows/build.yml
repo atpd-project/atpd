@@ -162,6 +162,13 @@ jobs:
         readelf -l build/bin/atpd | grep -A2 TLS || echo "No TLS section"
         file build/bin/atpd
 
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "❌ Build failed for commit ${{ github.sha }}"
+        echo "Branch: ${{ github.ref_name }}"
+        echo "Check logs at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
     # ============================================
     # Scenario 1: dev/main branch without tag - upload artifact only
     # ============================================

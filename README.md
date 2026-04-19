@@ -4,6 +4,15 @@ High-performance transparent proxy daemon for Android with TPROXY/REDIRECT suppo
 
 ---
 
+## Known Good Commits
+
+| Commit | Date | Status | Description |
+|--------|------|--------|-------------|
+| `最新` | 2026-04-19 | ✅ | CLI UX improvements |
+| `de11688` | 2026-04-19 | ✅ | Stable base version |
+
+---
+
 ## Features
 
 | Feature | Description |
