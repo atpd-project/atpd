@@ -23,4 +23,7 @@ time_t fcm_monitor_get_last_detection(void);
 /* Force refresh of FCM IP cache (for testing) */
 void fcm_monitor_refresh_cache(void);
 
+int fcm_monitor_init(atp_config_t *cfg);
+void fcm_monitor_poll(void);
+void fcm_monitor_cleanup(void);
 #endif

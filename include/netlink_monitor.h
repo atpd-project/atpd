@@ -38,4 +38,7 @@ int netlink_monitor_is_running(void);
 /* Default callback that integrates with existing routing module */
 void netlink_default_callback(nl_event_type_t event, const char *iface, void *userdata);
 
+int netlink_monitor_init(atp_config_t *cfg);
+int netlink_monitor_poll(int timeout_ms);
+void netlink_monitor_cleanup(void);
 #endif

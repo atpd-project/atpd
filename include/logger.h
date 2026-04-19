@@ -44,6 +44,8 @@ typedef struct {
     pthread_mutex_t mutex;
 } log_config_t;
 
+void logger_init(void);
+void logger_close(void);
 void log_init(void);
 void log_set_level(log_level_t level);
 void log_set_target(int targets);

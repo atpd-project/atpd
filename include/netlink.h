@@ -15,4 +15,6 @@ int netlink_get_iface_info(const char *iface, void *info);
 int nl_vpn_detect(void);
 int nl_link_get_vpn_interface(char *iface, size_t size);
 
+int netlink_init(void);
+void netlink_cleanup(void);
 #endif

@@ -51,4 +51,5 @@ int service_kill_all(const char *name, int signal);
 
 void service_show_status(atp_config_t *cfg);
 
+int service_monitor(service_ctx_t *ctx);
 #endif
