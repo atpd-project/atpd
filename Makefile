@@ -70,7 +70,7 @@ OBJ = $(SRC:.c=.o)
 TARGET = build/bin/atpd
 
 # Build targets
-.PHONY: all clean install install-android distclean
+.PHONY: clean install install-android distclean
 
 # Generate version header
 include/version.h: scripts/gen_version.sh
