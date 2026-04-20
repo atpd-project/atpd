@@ -157,6 +157,7 @@ int epoll_remove_fd(int fd) {
     return 0;
 }
 
+static void epoll_stop(void);
 static void handle_signal_fd(int fd, void *data) {
     struct signalfd_siginfo siginfo;
     ssize_t len;
