@@ -2,7 +2,8 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
  *
- * Clash API client header - Native async socket implementation
+ * Clash API client - Pure async epoll-driven state machine
+ * Zero blocking, zero libcurl, zero legacy
  */
 
 #ifndef ATP_API_H
@@ -13,10 +14,10 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <time.h>
 
 typedef enum {
     API_STATE_IDLE = 0,
-    API_STATE_RESOLVING,
     API_STATE_CONNECTING,
     API_STATE_SENDING,
     API_STATE_RECEIVING,
@@ -33,7 +34,7 @@ typedef struct api_request {
     struct api_ctx *ctx;
     api_state_t state;
     int sock_fd;
-    char method[16];
+    char method[8];
     char path[256];
     char *body;
     char host[64];
@@ -51,10 +52,9 @@ typedef struct api_request {
     
     int http_code;
     int content_length;
-    int chunked;
+    int headers_complete;
     size_t bytes_to_read;
     size_t body_received;
-    int headers_complete;
     
     api_callback_t callback;
     void *userdata;
@@ -64,15 +64,10 @@ typedef struct api_request {
 
 typedef struct api_ctx {
     char base_url[128];
-    char secret[128];
-    int retry_count;
-    int retry_delay_ms;
-    time_t last_call_time;
-    int min_interval_ms;
+    char secret[64];
+    int timeout_sec;
     int last_http_code;
     char last_error[256];
-    int timeout_sec;
-    
     api_request_t *pending_requests;
 } api_ctx_t;
 
@@ -88,16 +83,13 @@ extern api_ctx_t g_api_ctx;
 int api_init(api_ctx_t *ctx, atp_config_t *cfg);
 void api_cleanup(api_ctx_t *ctx);
 
-int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
-                      const char *body, api_callback_t callback, void *userdata);
-
-int api_get_fds(api_ctx_t *ctx, int *fds, int max_fds);
-int api_process(api_ctx_t *ctx);
-int api_handle_event(api_ctx_t *ctx, int fd, int events);
-
 int api_get_mode_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata);
 int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
+
+int api_get_fds(api_ctx_t *ctx, int *fds, int max_fds);
+int api_handle_event(api_ctx_t *ctx, int fd, int events);
+int api_process(api_ctx_t *ctx);
 
 int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
 
@@ -105,4 +97,3 @@ const char *api_mode_to_string(api_mode_t mode);
 api_mode_t api_string_to_mode(const char *str);
 
 #endif /* ATP_API_H */
-int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);

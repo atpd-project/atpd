@@ -3,6 +3,7 @@
  * Copyright (C) 2024-2025 ATP Project
  *
  * Clash API client - Pure async epoll-driven state machine
+ * Zero blocking, zero libcurl, zero legacy
  */
 
 #include "api.h"
@@ -14,7 +15,6 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <time.h>
 #include <sys/epoll.h>
 #include <strings.h>
 #include <cjson/cJSON.h>
@@ -25,8 +25,6 @@ static void api_request_cleanup(api_request_t *req);
 static int api_socket_connect(api_request_t *req);
 static int api_parse_headers(api_request_t *req);
 static const char *api_extract_body(api_request_t *req);
-int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
-                              const char *body, api_callback_t callback, void *userdata);
 
 static void api_parse_url(const char *base_url, char *host, int *port) {
     const char *start;
@@ -123,7 +121,6 @@ static int api_build_http_request(api_request_t *req) {
     req->send_len = header_len + body_len;
     req->send_offset = 0;
     
-    LOG_DEBUG("API: built request (%zu bytes)", req->send_len);
     return 0;
 }
 
@@ -169,7 +166,6 @@ static int api_socket_connect(api_request_t *req) {
         if (connect(req->sock_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
             req->state = API_STATE_SENDING;
             api_build_http_request(req);
-            LOG_DEBUG("API: local connection established");
             return 0;
         }
         
@@ -287,13 +283,10 @@ static int api_parse_headers(api_request_t *req) {
     char *body_start = header_end + 4;
     req->body_received = req->recv_offset - (body_start - req->recv_buf);
     
-    LOG_DEBUG("API: headers parsed, HTTP %d, Content-Length: %d, bytes_to_read: %zu",
-              req->http_code, req->content_length, req->bytes_to_read);
-    
     return 1;
 }
 
-int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
+static int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
                               const char *body, api_callback_t callback, void *userdata) {
     api_request_t *req = calloc(1, sizeof(api_request_t));
     if (!req) return -1;
@@ -318,7 +311,6 @@ int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
         req->state = API_STATE_ERROR;
     }
     
-    LOG_DEBUG("API: async request %s %s", method, path);
     return 0;
 }
 
@@ -431,7 +423,10 @@ int api_handle_event(api_ctx_t *ctx, int fd, int events) {
                         }
                     } else {
                         req->body_received += recvd;
-                        if (req->bytes_to_read > 0 && req->body_received >= req->bytes_to_read) {
+                        if (req->body_received > req->bytes_to_read) {
+                            LOG_ERROR("API: response body exceeds Content-Length");
+                            req->state = API_STATE_ERROR;
+                        } else if (req->body_received == req->bytes_to_read) {
                             req->state = API_STATE_DONE;
                         }
                     }
@@ -461,7 +456,7 @@ int api_process(api_ctx_t *ctx) {
         int should_remove = 0;
         
         if (now - req->start_time > ctx->timeout_sec) {
-            LOG_WARN("API: request timeout");
+            LOG_WARN("API: request timeout (%ds)", ctx->timeout_sec);
             req->state = API_STATE_ERROR;
         }
         
@@ -497,32 +492,9 @@ int api_process(api_ctx_t *ctx) {
     return 0;
 }
 
-static const char *api_extract_body(api_request_t *req) {
-    if (!req->recv_buf) return NULL;
-    char *body = strstr(req->recv_buf, "\r\n\r\n");
-    return body ? body + 4 : NULL;
-}
-
-const char *api_mode_to_string(api_mode_t mode) {
-    switch (mode) {
-        case API_MODE_RULE:       return "Rule";
-        case API_MODE_GLOBAL:     return "Global";
-        case API_MODE_DIRECT:     return "Direct";
-        case API_MODE_GOOGLE_VPN: return "Google VPN";
-        default:                  return "Rule";
-    }
-}
-
-api_mode_t api_string_to_mode(const char *str) {
-    if (strcmp(str, "Global") == 0) return API_MODE_GLOBAL;
-    if (strcmp(str, "Direct") == 0) return API_MODE_DIRECT;
-    if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
-    return API_MODE_RULE;
-}
-
 int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
     if (!ctx || !mode || size == 0) return -1;
-
+    
     api_request_t *req = ctx->pending_requests;
     while (req) {
         if (req->state == API_STATE_DONE && req->http_code == 200) {
@@ -544,6 +516,29 @@ int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
         }
         req = req->next;
     }
-
+    
     return -1;
+}
+
+static const char *api_extract_body(api_request_t *req) {
+    if (!req->recv_buf) return NULL;
+    char *body = strstr(req->recv_buf, "\r\n\r\n");
+    return body ? body + 4 : NULL;
+}
+
+const char *api_mode_to_string(api_mode_t mode) {
+    switch (mode) {
+        case API_MODE_RULE:       return "Rule";
+        case API_MODE_GLOBAL:     return "Global";
+        case API_MODE_DIRECT:     return "Direct";
+        case API_MODE_GOOGLE_VPN: return "Google VPN";
+        default:                  return "Rule";
+    }
+}
+
+api_mode_t api_string_to_mode(const char *str) {
+    if (strcmp(str, "Global") == 0) return API_MODE_GLOBAL;
+    if (strcmp(str, "Direct") == 0) return API_MODE_DIRECT;
+    if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
+    return API_MODE_RULE;
 }
