@@ -35,6 +35,8 @@ runs:
     - name: Generate version header
       shell: bash
       run: |
+        # Force regeneration to avoid make timestamp issues
+        rm -f include/version.h
         chmod +x scripts/gen_version.sh
         ./scripts/gen_version.sh
         echo "Generated version.h:"
