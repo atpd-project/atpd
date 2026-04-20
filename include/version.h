@@ -7,3 +7,7 @@
 #define ATP_VERSION_STRING    "0.0.1-90411f9"
 
 #endif
+const char* atp_get_version(void);
+int atp_get_version_major(void);
+int atp_get_version_minor(void);
+int atp_get_version_patch(void);
