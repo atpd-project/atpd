@@ -84,8 +84,6 @@ src/version.o: include/version.h
 # Ensure version.h is generated before build
 all: include/version.h $(TARGET)
 
-all: $(TARGET)
-
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS) $(LDFLAGS)
