@@ -11,3 +11,4 @@ const char* atp_get_version(void);
 int atp_get_version_major(void);
 int atp_get_version_minor(void);
 int atp_get_version_patch(void);
+const char* atp_get_version(void);
