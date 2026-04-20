@@ -4,9 +4,9 @@ High-performance transparent proxy daemon for Android with TPROXY/REDIRECT suppo
 
 ---
 
-[! [Build Status](https://github.com/atpd-project/atpd/actions/workflows/build.yml/badge.svg)](https://github.com/atpd-project/atpd/actions)
-[! [License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[!!Platform: Android](https://img.shields.io/badge/Platform-Android-green.svg)](https://www.android.com/)
+[![Build Status](https://github.com/atpd-project/atpd/actions/workflows/build.yml/badge.svg)](https://github.com/atpd-project/atpd/actions)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Platform: Android](https://img.shields.io/badge/Platform-Android-green.svg)](https://www.android.com/)
 
 ---
 
