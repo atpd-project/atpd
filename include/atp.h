@@ -176,3 +176,11 @@ void atp_show_status(void);
 #endif
 
 #include "version.h"
+
+/* Epoll event loop */
+int epoll_init(void);
+void epoll_cleanup(void);
+int epoll_add_fd(int fd, void *callback_data);
+int epoll_remove_fd(int fd);
+void epoll_run(void);
+void epoll_stop(void);
