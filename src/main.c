@@ -322,9 +322,6 @@ static int do_start(atp_options_t *opts) {
         LOG_ERROR("Failed to start sing-box");
     }
     
-        LOG_ERROR("Failed to apply firewall rules");
-    }
-    
     if (g_config.app_proxy_enable) {
         if (app_filter_setup(&g_config) < 0) {
             LOG_WARN("Failed to setup app filter rules");
@@ -342,7 +339,6 @@ static int do_start(atp_options_t *opts) {
     run_event_loop(svc, &g_api_ctx);
     
     LOG_INFO("Shutting down...");
-    
     
     if (g_config.app_proxy_enable) {
         app_filter_cleanup(&g_config);
@@ -366,6 +362,7 @@ cleanup:
     
     return 0;
 }
+
 
 static int do_stop(atp_options_t *opts) {
     char conf_path[PATH_MAX];
