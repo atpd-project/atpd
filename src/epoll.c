@@ -15,6 +15,9 @@
 #include <string.h>
 #include <stdlib.h>
 
+extern volatile sig_atomic_t g_reload;
+extern volatile sig_atomic_t g_show_status;
+
 #define MAX_EPOLL_EVENTS 16
 
 static int g_epoll_fd = -1;
@@ -218,6 +221,35 @@ void epoll_run(void) {
     }
     
     LOG_INFO("Epoll event loop stopped");
+}
+
+int epoll_run_once(int timeout_ms) {
+    struct epoll_event events[MAX_EPOLL_EVENTS];
+    int nfds;
+
+    if (!g_epoll_running) {
+        epoll_add_fd(g_sig_fd, handle_signal_fd, NULL);
+        g_epoll_running = 1;
+    }
+
+    nfds = epoll_wait(g_epoll_fd, events, MAX_EPOLL_EVENTS, timeout_ms);
+    if (nfds < 0) {
+        if (errno == EINTR) {
+            return 0;
+        }
+        LOG_ERROR("epoll_wait: %s", strerror(errno));
+        return -1;
+    }
+
+    for (int i = 0; i < nfds; i++) {
+        int idx = (int)(intptr_t)events[i].data.ptr;
+        if (idx >= 0 && idx < g_callback_count) {
+            g_callbacks[idx].callback(g_callbacks[idx].fd,
+                                      g_callbacks[idx].data);
+        }
+    }
+
+    return nfds;
 }
 
 void epoll_stop(void) {
