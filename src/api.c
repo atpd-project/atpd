@@ -268,8 +268,16 @@ static int api_parse_headers(api_request_t *req) {
     
     char *cl = strcasestr(req->recv_buf, "Content-Length:");
     if (cl) {
-        req->content_length = atoi(cl + 15);
-        req->bytes_to_read = req->content_length;
+        cl = strchr(cl, ':');
+        if (cl) {
+            cl++;
+            while (*cl == ' ') cl++;
+            req->content_length = strtol(cl, NULL, 10);
+            req->bytes_to_read = req->content_length;
+        } else {
+            req->content_length = -1;
+            req->bytes_to_read = 0;
+        }
     } else {
         req->content_length = -1;
         req->bytes_to_read = 0;
@@ -282,6 +290,9 @@ static int api_parse_headers(api_request_t *req) {
     
     char *body_start = header_end + 4;
     req->body_received = req->recv_offset - (body_start - req->recv_buf);
+    
+    LOG_DEBUG("API: headers parsed, HTTP %d, Content-Length: %d, body_received: %zu, bytes_to_read: %zu",
+              req->http_code, req->content_length, req->body_received, req->bytes_to_read);
     
     return 1;
 }
@@ -417,16 +428,22 @@ int api_handle_event(api_ctx_t *ctx, int fd, int events) {
                     
                     if (!req->headers_complete) {
                         if (api_parse_headers(req)) {
-                            if (req->bytes_to_read == 0) {
+                            char *body_start = strstr(req->recv_buf, "\r\n\r\n") + 4;
+                            req->body_received = req->recv_offset - (body_start - req->recv_buf);
+                            
+                            if (req->body_received >= req->bytes_to_read) {
                                 req->state = API_STATE_DONE;
+                                LOG_DEBUG("API: response complete in header parsing");
                             }
                         }
                     } else {
                         req->body_received += recvd;
+                        
                         if (req->body_received > req->bytes_to_read) {
-                            LOG_ERROR("API: response body exceeds Content-Length");
+                            LOG_ERROR("API: response body exceeds Content-Length (%zu > %zu)",
+                                      req->body_received, req->bytes_to_read);
                             req->state = API_STATE_ERROR;
-                        } else if (req->body_received == req->bytes_to_read) {
+                        } else if (req->body_received >= req->bytes_to_read) {
                             req->state = API_STATE_DONE;
                         }
                     }
@@ -462,13 +479,18 @@ int api_process(api_ctx_t *ctx) {
         
         if (req->state == API_STATE_DONE) {
             ctx->last_http_code = req->http_code;
+            const char *body = api_extract_body(req);
+            
+            LOG_DEBUG("API: request success, HTTP %d, body: %s",
+                      req->http_code, body ? body : "(null)");
+            
             if (req->callback) {
-                const char *body = api_extract_body(req);
                 req->callback(req->http_code, body, req->userdata);
             }
             should_remove = 1;
         } else if (req->state == API_STATE_ERROR) {
             ctx->last_http_code = 0;
+            LOG_DEBUG("API: request failed");
             if (req->callback) {
                 req->callback(0, NULL, req->userdata);
             }
@@ -521,9 +543,12 @@ int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
 }
 
 static const char *api_extract_body(api_request_t *req) {
-    if (!req->recv_buf) return NULL;
+    if (!req->recv_buf || req->recv_offset == 0) return NULL;
     char *body = strstr(req->recv_buf, "\r\n\r\n");
-    return body ? body + 4 : NULL;
+    if (!body) return NULL;
+    body += 4;
+    if ((size_t)(body - req->recv_buf) >= req->recv_offset) return NULL;
+    return body;
 }
 
 const char *api_mode_to_string(api_mode_t mode) {
