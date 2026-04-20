@@ -27,3 +27,6 @@ int fcm_monitor_init(atp_config_t *cfg);
 void fcm_monitor_poll(void);
 void fcm_monitor_cleanup(void);
 #endif
+
+int fcm_monitor_get_fd(void);
+void fcm_monitor_handle(void);

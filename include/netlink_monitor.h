@@ -42,3 +42,6 @@ int netlink_monitor_init(atp_config_t *cfg);
 int netlink_monitor_poll(int timeout_ms);
 void netlink_monitor_cleanup(void);
 #endif
+
+int netlink_monitor_get_fd(void);
+void netlink_monitor_handle(void);

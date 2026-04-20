@@ -2,27 +2,73 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
  *
- * Clash API client header
+ * Clash API client - Pure async epoll-driven state machine
+ * Zero blocking, zero libcurl, zero legacy
  */
 
 #ifndef ATP_API_H
 #define ATP_API_H
 
 #include "atp.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <time.h>
 
-/* External global configuration (defined in main.c) */
-extern atp_config_t g_config;
+typedef enum {
+    API_STATE_IDLE = 0,
+    API_STATE_CONNECTING,
+    API_STATE_SENDING,
+    API_STATE_RECEIVING,
+    API_STATE_DONE,
+    API_STATE_ERROR
+} api_state_t;
 
-typedef struct {
+struct api_request;
+
+typedef void (*api_callback_t)(int http_code, const char *response, void *userdata);
+
+typedef struct api_request {
+    struct api_request *next;
+    struct api_ctx *ctx;
+    api_state_t state;
+    int sock_fd;
+    char method[8];
+    char path[256];
+    char *body;
+    char host[64];
+    int port;
+    struct addrinfo *addr_info;
+    struct addrinfo *current_addr;
+    
+    char *send_buf;
+    size_t send_len;
+    size_t send_offset;
+    
+    char *recv_buf;
+    size_t recv_size;
+    size_t recv_offset;
+    
+    int http_code;
+    int content_length;
+    int headers_complete;
+    size_t bytes_to_read;
+    size_t body_received;
+    
+    api_callback_t callback;
+    void *userdata;
+    
+    time_t start_time;
+} api_request_t;
+
+typedef struct api_ctx {
     char base_url[128];
-    char secret[128];
-    int retry_count;
-    int retry_delay_ms;
-    time_t last_call_time;
-    int min_interval_ms;
+    char secret[64];
+    int timeout_sec;
     int last_http_code;
     char last_error[256];
-    int timeout_sec;
+    api_request_t *pending_requests;
 } api_ctx_t;
 
 typedef enum {
@@ -32,35 +78,22 @@ typedef enum {
     API_MODE_GOOGLE_VPN = 3
 } api_mode_t;
 
-/* Global API context (defined in main.c) */
 extern api_ctx_t g_api_ctx;
 
-/* Initialize API context */
 int api_init(api_ctx_t *ctx, atp_config_t *cfg);
+void api_cleanup(api_ctx_t *ctx);
 
-/* API operations */
-int api_set_mode(api_ctx_t *ctx, const char *mode);
-int api_set_mode_by_enum(api_ctx_t *ctx, api_mode_t mode);
-int api_get_config(api_ctx_t *ctx, char *output, size_t size);
-int api_get_rules(api_ctx_t *ctx, char *output, size_t size);
-int api_get_proxies(api_ctx_t *ctx, char *output, size_t size);
-int api_get_health(api_ctx_t *ctx, char *output, size_t size);
+int api_get_mode_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
+int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata);
+int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
+
+int api_get_fds(api_ctx_t *ctx, int *fds, int max_fds);
+int api_handle_event(api_ctx_t *ctx, int fd, int events);
+int api_process(api_ctx_t *ctx);
+
 int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
 
-/* Rate limiting */
-int api_check_rate_limit(api_ctx_t *ctx);
-void api_reset_rate_limit(api_ctx_t *ctx);
-
-/* Mode conversion utilities */
 const char *api_mode_to_string(api_mode_t mode);
 api_mode_t api_string_to_mode(const char *str);
-
-/* Low-level HTTP operations */
-int api_patch_json(api_ctx_t *ctx, const char *path, const char *json_body);
-int api_get_json(api_ctx_t *ctx, const char *path, char *output, size_t size);
-
-/* Utility functions */
-int api_wait_for_config_loaded(api_ctx_t *ctx, const char *expected_mode, int timeout_sec);
-int api_check_health(api_ctx_t *ctx);
 
 #endif /* ATP_API_H */

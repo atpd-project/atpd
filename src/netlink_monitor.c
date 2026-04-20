@@ -406,3 +406,59 @@ int netlink_monitor_poll(int timeout_ms) {
 void netlink_monitor_cleanup(void) {
     netlink_monitor_stop();
 }
+
+int netlink_monitor_get_fd(void) {
+    return g_monitor_sock;
+}
+
+void netlink_monitor_handle(void) {
+    char buf[NL_BUF_SIZE];
+    struct sockaddr_nl sa;
+    struct iovec iov = { buf, sizeof(buf) };
+    struct msghdr msg = {
+        .msg_name = &sa,
+        .msg_namelen = sizeof(sa),
+        .msg_iov = &iov,
+        .msg_iovlen = 1
+    };
+    ssize_t len;
+
+    if (g_monitor_sock < 0) {
+        return;
+    }
+
+    len = recvmsg(g_monitor_sock, &msg, MSG_DONTWAIT);
+    if (len < 0) {
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            LOG_DEBUG("recvmsg error: %s", strerror(errno));
+        }
+        return;
+    }
+
+    struct nlmsghdr *nh;
+    for (nh = (struct nlmsghdr*)buf; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+        if (nh->nlmsg_type == NLMSG_DONE) {
+            break;
+        }
+        if (nh->nlmsg_type == NLMSG_ERROR) {
+            struct nlmsgerr *err = (struct nlmsgerr*)NLMSG_DATA(nh);
+            LOG_DEBUG("Netlink error: %d", err->error);
+            continue;
+        }
+
+        if (g_monitor_config.monitor_links &&
+            (nh->nlmsg_type == RTM_NEWLINK || nh->nlmsg_type == RTM_DELLINK)) {
+            handle_link_message(nh);
+        }
+
+        if (g_monitor_config.monitor_addrs &&
+            (nh->nlmsg_type == RTM_NEWADDR || nh->nlmsg_type == RTM_DELADDR)) {
+            handle_addr_message(nh);
+        }
+
+        if (g_monitor_config.monitor_routes &&
+            (nh->nlmsg_type == RTM_NEWROUTE || nh->nlmsg_type == RTM_DELROUTE)) {
+            handle_route_message(nh);
+        }
+    }
+}

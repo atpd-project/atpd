@@ -61,6 +61,7 @@ SRC = \
     src/ipv6_manager.c \
     src/inet_diag.c \
     src/version.c \
+    src/epoll.c \
     src/cjson/cJSON.c
 
 # Object files

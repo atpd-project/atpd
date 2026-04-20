@@ -347,7 +347,6 @@ int service_stop(service_ctx_t *ctx) {
 int service_restart(service_ctx_t *ctx) {
     LOG_INFO("Restarting service");
     
-    api_reset_rate_limit(&g_api_ctx);
     
     service_stop_graceful(ctx, 3);
     
@@ -564,4 +563,15 @@ int service_monitor(service_ctx_t *ctx) {
 
     service_rotate_log(ctx);
     return 0;
+}
+
+int service_get_fd(service_ctx_t *ctx) {
+    (void)ctx;
+    return -1;
+}
+
+void service_handle(service_ctx_t *ctx) {
+    if (ctx) {
+        service_monitor(ctx);
+    }
 }
