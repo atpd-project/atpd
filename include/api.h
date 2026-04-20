@@ -92,6 +92,7 @@ int api_handle_event(api_ctx_t *ctx, int fd, int events);
 int api_process(api_ctx_t *ctx);
 
 int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
+int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size);
 
 const char *api_mode_to_string(api_mode_t mode);
 api_mode_t api_string_to_mode(const char *str);
