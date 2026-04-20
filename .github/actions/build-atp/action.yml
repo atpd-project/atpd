@@ -35,7 +35,6 @@ runs:
     - name: Generate version header
       shell: bash
       run: |
-        # Force regeneration to avoid make timestamp issues
         rm -f include/version.h
         chmod +x scripts/gen_version.sh
         ./scripts/gen_version.sh
@@ -51,35 +50,35 @@ runs:
           obj-${{ runner.os }}-
 
     - name: Build ATP
-  id: build
-  shell: bash
-  run: |
-    export CC="${{ inputs.cc-path }}"
-    export AR="${{ inputs.ar-path }}"
-    export RANLIB="${{ inputs.ranlib-path }}"
-    export STRIP="${{ inputs.strip-path }}"
-    
-    CURL_INCLUDE="${{ inputs.curl-include-path }}"
-    CURL_LIB="${{ inputs.curl-lib-path }}"
-    
-    echo "=== Build Environment ==="
-    echo "CC: $CC"
-    echo "CURL_INCLUDE: $CURL_INCLUDE"
-    echo "CURL_LIB: $CURL_LIB"
-    echo "=========================="
-    
-    # Force remove version.h to ensure regeneration by make
-    rm -f include/version.h
-    
-    make clean
-    make -j$(nproc) \
-      EXTRA_CFLAGS="-I$CURL_INCLUDE" \
-      EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
-    
-    file build/bin/atpd
-    ls -la build/bin/atpd
-    
-    echo "binary=build/bin/atpd" >> $GITHUB_OUTPUT        
+      id: build
+      shell: bash
+      run: |
+        export CC="${{ inputs.cc-path }}"
+        export AR="${{ inputs.ar-path }}"
+        export RANLIB="${{ inputs.ranlib-path }}"
+        export STRIP="${{ inputs.strip-path }}"
+        
+        CURL_INCLUDE="${{ inputs.curl-include-path }}"
+        CURL_LIB="${{ inputs.curl-lib-path }}"
+        
+        echo "=== Build Environment ==="
+        echo "CC: $CC"
+        echo "CURL_INCLUDE: $CURL_INCLUDE"
+        echo "CURL_LIB: $CURL_LIB"
+        echo "=========================="
+        
+        ./scripts/gen_version.sh
+        touch include/version.h
+        
+        make clean
+        make -j$(nproc) \
+          EXTRA_CFLAGS="-I$CURL_INCLUDE" \
+          EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
+        
+        file build/bin/atpd
+        ls -la build/bin/atpd
+        
+        echo "binary=build/bin/atpd" >> $GITHUB_OUTPUT
 
     - name: Extract version
       id: version
