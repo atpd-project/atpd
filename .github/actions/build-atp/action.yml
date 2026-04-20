@@ -50,11 +50,12 @@ runs:
         echo "CURL_LIB: $CURL_LIB"
         echo "=========================="
         
-        make clean
-        rm -rf build/
-        rm -f src/*.o src/cjson/*.o
+        chmod +x scripts/gen_version.sh
+        ./scripts/gen_version.sh
+        cat include/version.h
         
-        make -B -j$(nproc) \
+        make clean
+        make -j$(nproc) \
           EXTRA_CFLAGS="-I$CURL_INCLUDE" \
           EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
         
