@@ -31,7 +31,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <signal.h>
 #include <getopt.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -39,6 +38,9 @@
 #include <errno.h>
 #include <pthread.h>
 #include <libgen.h>
+#include <sys/epoll.h>
+#include <sys/signalfd.h>
+#include <signal.h>
 
 /* Global API context */
 api_ctx_t g_api_ctx;
@@ -50,41 +52,8 @@ static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload = 0;
 static volatile sig_atomic_t g_show_status = 0;
 
-static void signal_handler(int sig) {
-    switch (sig) {
-        case SIGTERM:
-        case SIGINT:
-            g_running = 0;
-            break;
-        case SIGHUP:
-            g_reload = 1;
-            break;
-        case SIGUSR1:
-            g_show_status = 1;
-            break;
-        case SIGCHLD:
-            while (waitpid(-1, NULL, WNOHANG) > 0);
-            break;
-        default:
-            break;
-    }
-}
-
-static void setup_signals(void) {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = signal_handler;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = SA_RESTART;
-    
-    sigaction(SIGTERM, &sa, NULL);
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGHUP, &sa, NULL);
-    sigaction(SIGUSR1, &sa, NULL);
-    sigaction(SIGCHLD, &sa, NULL);
-    
-    signal(SIGPIPE, SIG_IGN);
-}
+static int g_epoll_fd = -1;
+static int g_sig_fd = -1;
 
 static void daemonize(void) {
     pid_t pid = fork();
@@ -211,6 +180,168 @@ static int confirm_operation(const char *operation, int force) {
     
     return (response[0] == 'y' || response[0] == 'Y');
 }
+static int epoll_init(void) {
+    sigset_t mask;
+
+    g_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (g_epoll_fd < 0) {
+        LOG_ERROR("epoll_create1 failed: %s", strerror(errno));
+        return -1;
+    }
+
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGTERM);
+    sigaddset(&mask, SIGINT);
+    sigaddset(&mask, SIGHUP);
+    sigaddset(&mask, SIGUSR1);
+
+    if (sigprocmask(SIG_BLOCK, &mask, NULL) < 0) {
+        LOG_ERROR("sigprocmask failed: %s", strerror(errno));
+        close(g_epoll_fd);
+        g_epoll_fd = -1;
+        return -1;
+    }
+
+    g_sig_fd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (g_sig_fd < 0) {
+        LOG_ERROR("signalfd failed: %s", strerror(errno));
+        close(g_epoll_fd);
+        g_epoll_fd = -1;
+        return -1;
+    }
+
+    LOG_INFO("Epoll initialized, epoll_fd=%d, sig_fd=%d", g_epoll_fd, g_sig_fd);
+    return 0;
+}
+
+static void epoll_cleanup(void) {
+    if (g_sig_fd >= 0) {
+        close(g_sig_fd);
+        g_sig_fd = -1;
+    }
+    if (g_epoll_fd >= 0) {
+        close(g_epoll_fd);
+        g_epoll_fd = -1;
+    }
+    LOG_INFO("Epoll cleaned up");
+}
+
+static int epoll_add_fd(int fd, void (*callback)(int, void*), void *data) {
+    struct epoll_event ev;
+    (void)callback;
+    (void)data;
+
+    if (g_epoll_fd < 0 || fd < 0) {
+        return -1;
+    }
+
+    ev.events = EPOLLIN;
+    ev.data.fd = fd;
+
+    if (epoll_ctl(g_epoll_fd, EPOLL_CTL_ADD, fd, &ev) < 0) {
+        LOG_ERROR("epoll_ctl ADD fd=%d: %s", fd, strerror(errno));
+        return -1;
+    }
+
+    LOG_DEBUG("Added fd=%d to epoll", fd);
+    return 0;
+}
+
+static void handle_signal_fd(int fd, void *data) {
+    struct signalfd_siginfo siginfo;
+    ssize_t len;
+
+    (void)data;
+
+    len = read(fd, &siginfo, sizeof(siginfo));
+    if (len != sizeof(siginfo)) {
+        if (len < 0 && errno != EAGAIN) {
+            LOG_ERROR("read signalfd: %s", strerror(errno));
+        }
+        return;
+    }
+
+    switch (siginfo.ssi_signo) {
+        case SIGTERM:
+        case SIGINT:
+            LOG_INFO("Received signal %d, shutting down", siginfo.ssi_signo);
+            g_running = 0;
+            break;
+        case SIGHUP:
+            LOG_INFO("Received SIGHUP, reloading configuration");
+            g_reload = 1;
+            break;
+        case SIGUSR1:
+            LOG_INFO("Received SIGUSR1, showing status");
+            g_show_status = 1;
+            break;
+        default:
+            break;
+    }
+}
+
+static void handle_netlink_fd(int fd, void *data) {
+    (void)fd;
+    (void)data;
+    netlink_monitor_handle();
+}
+
+static void run_event_loop(service_ctx_t *svc, api_ctx_t *api) {
+    struct epoll_event events[8];
+    int netlink_fd = netlink_monitor_get_fd();
+    int nfds;
+
+    epoll_add_fd(g_sig_fd, handle_signal_fd, NULL);
+
+    if (netlink_fd >= 0) {
+        epoll_add_fd(netlink_fd, handle_netlink_fd, NULL);
+    }
+
+    LOG_INFO("Event loop started");
+
+    while (g_running) {
+        nfds = epoll_wait(g_epoll_fd, events, 8, 500);
+        if (nfds < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            LOG_ERROR("epoll_wait: %s", strerror(errno));
+            break;
+        }
+
+        for (int i = 0; i < nfds; i++) {
+            int fd = events[i].data.fd;
+
+            if (fd == g_sig_fd) {
+                handle_signal_fd(fd, NULL);
+            } else if (fd == netlink_fd) {
+                handle_netlink_fd(fd, NULL);
+            }
+        }
+
+        fcm_monitor_poll();
+
+        if (svc) {
+            service_monitor(svc);
+        }
+
+        if (g_reload) {
+            LOG_INFO("Reloading configuration...");
+            config_reload(&g_config);
+            if (g_config.app_proxy_enable) {
+                app_filter_reload(&g_config);
+            }
+            g_reload = 0;
+        }
+
+        if (g_show_status) {
+            status_show(&g_config, svc, api);
+            g_show_status = 0;
+        }
+    }
+
+    LOG_INFO("Event loop stopped");
+}
 static int do_start(atp_options_t *opts) {
     char conf_path[PATH_MAX];
     char pid_path[PATH_MAX];
@@ -242,8 +373,6 @@ static int do_start(atp_options_t *opts) {
         daemonize();
     }
 
-    setup_signals();
-
     if (write_pid_file(pid_path) < 0) {
         return 1;
     }
@@ -266,11 +395,15 @@ static int do_start(atp_options_t *opts) {
 
     LOG_INFO("ATP daemon starting (v" ATP_VERSION_STRING ")");
 
+    if (epoll_init() < 0) {
+        LOG_ERROR("Failed to initialize epoll");
+        goto cleanup;
+    }
+
     if (netlink_init() < 0) {
         LOG_ERROR("Failed to initialize netlink");
         goto cleanup;
     }
-
 
     if (g_config.app_proxy_enable) {
         if (app_filter_init(&g_config) < 0) {
@@ -312,6 +445,9 @@ static int do_start(atp_options_t *opts) {
         LOG_ERROR("Failed to start sing-box");
     }
 
+    if (firewall_apply(&g_config) < 0) {
+        LOG_ERROR("Failed to apply firewall rules");
+    }
 
     if (g_config.app_proxy_enable) {
         if (app_filter_setup(&g_config) < 0) {
@@ -327,28 +463,11 @@ static int do_start(atp_options_t *opts) {
 
     LOG_INFO("ATP daemon started successfully");
 
-    while (g_running) {
-        netlink_monitor_poll(1000);
-        fcm_monitor_poll();
-        service_monitor(svc);
-
-        if (g_reload) {
-            LOG_INFO("Reloading configuration...");
-            config_reload(&g_config);
-            if (g_config.app_proxy_enable) {
-                app_filter_reload(&g_config);
-            }
-            g_reload = 0;
-        }
-
-        if (g_show_status) {
-            status_show(&g_config, svc, &g_api_ctx);
-            g_show_status = 0;
-        }
-    }
+    run_event_loop(svc, &g_api_ctx);
 
     LOG_INFO("Shutting down...");
 
+    firewall_cleanup(&g_config);
 
     if (g_config.app_proxy_enable) {
         app_filter_cleanup(&g_config);
@@ -366,6 +485,7 @@ static int do_start(atp_options_t *opts) {
     netlink_cleanup();
 
 cleanup:
+    epoll_cleanup();
     remove_pid_file(pid_path);
     logger_close();
 
@@ -375,7 +495,7 @@ static int do_stop(atp_options_t *opts) {
     char conf_path[PATH_MAX];
     char pid_path[PATH_MAX];
     int config_loaded = 0;
-    
+
     if (opts->config_file[0]) {
         if (access(opts->config_file, R_OK) == 0) {
             config_set_defaults(&g_config);
@@ -390,19 +510,19 @@ static int do_stop(atp_options_t *opts) {
             config_loaded = 1;
         }
     }
-    
+
     if (config_loaded) {
         snprintf(pid_path, sizeof(pid_path), "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
         snprintf(pid_path, sizeof(pid_path), "%s/%s", ATP_DEFAULT_DIR, ATP_PID_FILE);
     }
-    
+
     FILE *fp = fopen(pid_path, "r");
     if (!fp) {
         fprintf(stderr, "atpd: Daemon is not running (no PID file)\n");
         return 1;
     }
-    
+
     int pid;
     if (fscanf(fp, "%d", &pid) != 1) {
         fprintf(stderr, "atpd: Invalid PID file\n");
@@ -410,21 +530,21 @@ static int do_stop(atp_options_t *opts) {
         return 1;
     }
     fclose(fp);
-    
+
     if (kill(pid, 0) < 0) {
         fprintf(stderr, "atpd: Daemon is not running (stale PID file)\n");
         unlink(pid_path);
         return 1;
     }
-    
+
     if (!confirm_operation("stop", opts->force)) {
         fprintf(stderr, "Aborted.\n");
         return 0;
     }
-    
+
     printf("Stopping daemon (PID: %d)...\n", pid);
     kill(pid, SIGTERM);
-    
+
     for (int i = 0; i < 50; i++) {
         if (kill(pid, 0) < 0) {
             printf("Daemon stopped\n");
@@ -433,27 +553,26 @@ static int do_stop(atp_options_t *opts) {
         }
         usleep(100000);
     }
-    
+
     printf("Daemon not responding, forcing kill...\n");
     kill(pid, SIGKILL);
     unlink(pid_path);
-    
+
     return 0;
 }
-
 static int do_restart(atp_options_t *opts) {
     if (!confirm_operation("restart", opts->force)) {
         fprintf(stderr, "Aborted.\n");
         return 0;
     }
-    
+
     int ret = do_stop(opts);
     if (ret != 0) {
         return ret;
     }
-    
+
     sleep(2);
-    
+
     return do_start(opts);
 }
 
@@ -490,7 +609,7 @@ static int do_status(atp_options_t *opts) {
 static int do_reload(atp_options_t *opts) {
     char conf_path[PATH_MAX];
     char pid_path[PATH_MAX];
-    
+
     if (opts->config_file[0]) {
         if (access(opts->config_file, R_OK) != 0) {
             fprintf(stderr, "atpd: %s: No such file or directory\n", opts->config_file);
@@ -507,15 +626,15 @@ static int do_reload(atp_options_t *opts) {
         config_set_defaults(&g_config);
         config_load(conf_path, &g_config);
     }
-    
+
     snprintf(pid_path, sizeof(pid_path), "%s/%s", g_config.data_dir, ATP_PID_FILE);
-    
+
     FILE *fp = fopen(pid_path, "r");
     if (!fp) {
         fprintf(stderr, "atpd: Daemon is not running\n");
         return 1;
     }
-    
+
     int pid;
     if (fscanf(fp, "%d", &pid) != 1) {
         fprintf(stderr, "atpd: Invalid PID file\n");
@@ -523,15 +642,16 @@ static int do_reload(atp_options_t *opts) {
         return 1;
     }
     fclose(fp);
-    
+
     if (kill(pid, SIGHUP) < 0) {
         fprintf(stderr, "atpd: Failed to reload daemon: %s\n", strerror(errno));
         return 1;
     }
-    
+
     printf("Reload signal sent to daemon (PID: %d)\n", pid);
     return 0;
 }
+
 static int do_check(atp_options_t *opts) {
     char conf_path[PATH_MAX];
 
@@ -629,4 +749,5 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return 0;
     }
-}	
+}
+
