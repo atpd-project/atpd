@@ -1,4 +1,4 @@
-# ATP — Advanced Transparent Proxy
+# ATP -- Advanced Transparent Proxy
 
 High-performance transparent proxy daemon for Android with TPROXY/REDIRECT support, VPN mode switching, and automatic self-healing.
 
@@ -222,8 +222,8 @@ GPL v3
 
 ATP is built upon the shoulders of giants. Special thanks to:
 
-- [**AndroidTProxyShell**] by [CHIZI-0618](https://github.com/CHIZI-0618) — The original shell script that inspired this project's architecture, TPROXY implementation, and comprehensive feature set.
-- ***sing-box**] by [SagerNet](https://github.com/SagerNet) — The powerful universal proxy core that powers ATP's underlying traffic handling and Clash API integration.
-- ***DeepSeek**](https://www.deepseek.com/) — AI-driven development assistance that accelerated the creation of this project's C language implementation.
+- [**AndroidTProxyShell**] by [CHIZI-0618](https://github.com/CHIZI-0618) -- The original shell script that inspired this project's architecture, TPROXY implementation, and comprehensive feature set.
+- ***sing-box**] by [SagerNet](https://github.com/SagerNet) -- The powerful universal proxy core that powers ATP's underlying traffic handling and Clash API integration.
+- ***DeepSeek**](https://www.deepseek.com/) -- AI-driven development assistance that accelerated the creation of this project's C language implementation.
 
 Their excellent work made ATP possible.
