@@ -25,7 +25,7 @@ static void api_request_cleanup(api_request_t *req);
 static int api_socket_connect(api_request_t *req);
 static int api_parse_headers(api_request_t *req);
 static const char *api_extract_body(api_request_t *req);
-static int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
+int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
                               const char *body, api_callback_t callback, void *userdata);
 
 static void api_parse_url(const char *base_url, char *host, int *port) {
@@ -293,7 +293,7 @@ static int api_parse_headers(api_request_t *req) {
     return 1;
 }
 
-static int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
+int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
                               const char *body, api_callback_t callback, void *userdata) {
     api_request_t *req = calloc(1, sizeof(api_request_t));
     if (!req) return -1;

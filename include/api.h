@@ -52,6 +52,7 @@ typedef struct api_request {
     int http_code;
     int content_length;
     int chunked;
+    size_t bytes_to_read;
     size_t body_received;
     int headers_complete;
     
