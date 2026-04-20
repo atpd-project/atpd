@@ -32,15 +32,6 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Generate version header
-      shell: bash
-      run: |
-        rm -f include/version.h
-        chmod +x scripts/gen_version.sh
-        ./scripts/gen_version.sh
-        echo "Generated version.h:"
-        cat include/version.h
-
     - name: Cache build objects
       uses: actions/cache@v4
       with:
@@ -67,11 +58,8 @@ runs:
         echo "CURL_LIB: $CURL_LIB"
         echo "=========================="
         
-        ./scripts/gen_version.sh
-        touch include/version.h
-        
         make clean
-        make -j$(nproc) \
+        make -j$(nproc) -B include/version.h \
           EXTRA_CFLAGS="-I$CURL_INCLUDE" \
           EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
         
