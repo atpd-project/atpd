@@ -50,6 +50,9 @@ typedef struct api_request {
     size_t recv_offset;
     
     int http_code;
+    int content_length;
+    int chunked;
+    size_t body_received;
     int headers_complete;
     
     api_callback_t callback;
@@ -92,9 +95,10 @@ int api_process(api_ctx_t *ctx);
 int api_handle_event(api_ctx_t *ctx, int fd, int events);
 
 int api_get_mode_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
-int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata);
 int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
+
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
 
 const char *api_mode_to_string(api_mode_t mode);
 api_mode_t api_string_to_mode(const char *str);
