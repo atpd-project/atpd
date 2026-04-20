@@ -1,3 +1,4 @@
+extern const char* atp_get_version(void);
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
