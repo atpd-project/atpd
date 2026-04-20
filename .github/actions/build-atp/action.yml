@@ -32,14 +32,6 @@ outputs:
 runs:
   using: composite
   steps:
-   # - name: Cache build objects
-   #   uses: actions/cache@v4
-   #   with:
-   #       path: build/obj
-   #     key: obj-${{ runner.os }}-${{ hashFiles('src/**/*.c', 'include/**/*.h') }}
-   #     restore-keys: |
-   #       obj-${{ runner.os }}-
-
     - name: Build ATP
       id: build
       shell: bash
@@ -59,7 +51,10 @@ runs:
         echo "=========================="
         
         make clean
-        make -j$(nproc) \
+        rm -rf build/
+        rm -f src/*.o src/cjson/*.o
+        
+        make -B -j$(nproc) \
           EXTRA_CFLAGS="-I$CURL_INCLUDE" \
           EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
         
