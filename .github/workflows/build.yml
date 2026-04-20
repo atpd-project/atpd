@@ -43,10 +43,6 @@ jobs:
       id: setup
       uses: ./.github/actions/setup-musl-env
     
-    - name: Setup build environment
-  id: setup
-  uses: ./.github/actions/setup-musl-env
-
     - name: Build ATP
       id: build-atp
       uses: ./.github/actions/build-atp
