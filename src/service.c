@@ -565,3 +565,14 @@ int service_monitor(service_ctx_t *ctx) {
     service_rotate_log(ctx);
     return 0;
 }
+
+int service_get_fd(service_ctx_t *ctx) {
+    (void)ctx;
+    return -1;
+}
+
+void service_handle(service_ctx_t *ctx) {
+    if (ctx) {
+        service_monitor(ctx);
+    }
+}

@@ -332,3 +332,11 @@ void fcm_monitor_poll(void) {
 void fcm_monitor_cleanup(void) {
     fcm_monitor_stop();
 }
+
+int fcm_monitor_get_fd(void) {
+    return -1;
+}
+
+void fcm_monitor_handle(void) {
+    fcm_monitor_poll();
+}

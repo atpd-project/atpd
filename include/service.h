@@ -53,3 +53,6 @@ void service_show_status(atp_config_t *cfg);
 
 int service_monitor(service_ctx_t *ctx);
 #endif
+
+int service_get_fd(service_ctx_t *ctx);
+void service_handle(service_ctx_t *ctx);
