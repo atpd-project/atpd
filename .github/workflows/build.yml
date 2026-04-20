@@ -42,17 +42,17 @@ jobs:
     - name: Setup build environment
       id: setup
       uses: ./.github/actions/setup-musl-env
-    
+
     - name: Build ATP
       id: build-atp
       uses: ./.github/actions/build-atp
       with:
-       cc-path: ${{ steps.setup.outputs.cc-path }}
-       ar-path: ${{ steps.setup.outputs.ar-path }}
-       ranlib-path: ${{ steps.setup.outputs.ranlib-path }}
-       strip-path: ${{ steps.setup.outputs.strip-path }}
-       libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
-       libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}  
+        cc-path: ${{ steps.setup.outputs.cc-path }}
+        ar-path: ${{ steps.setup.outputs.ar-path }}
+        ranlib-path: ${{ steps.setup.outputs.ranlib-path }}
+        strip-path: ${{ steps.setup.outputs.strip-path }}
+        libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
+        libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
 
     - name: Get build date
       id: build_date
@@ -116,27 +116,17 @@ jobs:
   update-known-good:
     runs-on: ubuntu-latest
     needs: build
-    if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/feat-epoll' && success()
+    if: github.ref == 'refs/heads/dev' && success()
     permissions:
-      contents: read
       issues: write
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - uses: dorny/paths-filter@v3
-      id: filter
       with:
-        filters: |
-          source:
-            - 'src/**'
-            - 'include/**'
-            - 'Makefile'
-            - 'scripts/**'
+        fetch-depth: 0
 
     - name: Update Known Good Commits Issue
-      if: steps.filter.outputs.source == 'true'
       run: |
         ISSUE_NUMBER=1
         COMMIT=$(git rev-parse --short HEAD)
@@ -182,3 +172,5 @@ jobs:
              -H "Content-Type: application/json" \
              "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" \
              -d @-
+        
+        echo "✅ Issue #$ISSUE_NUMBER updated with commit $COMMIT"
