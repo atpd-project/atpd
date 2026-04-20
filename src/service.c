@@ -347,7 +347,6 @@ int service_stop(service_ctx_t *ctx) {
 int service_restart(service_ctx_t *ctx) {
     LOG_INFO("Restarting service");
     
-    api_reset_rate_limit(&g_api_ctx);
     
     service_stop_graceful(ctx, 3);
     
