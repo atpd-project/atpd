@@ -24,7 +24,7 @@ inputs:
 outputs:
   version:
     description: 'ATP version'
-    value: ${{ steps.build.outputs.version }}
+    value: ${{ steps.version.outputs.version }}
   binary-path:
     description: 'Path to compiled binary'
     value: ${{ steps.build.outputs.binary }}
