@@ -262,8 +262,8 @@ int geoip_download(atp_config_t *cfg) {
 static int geoip_create_default_ipset(atp_config_t *cfg) {
     LOG_INFO("Creating default ipset (fallback mode)");
     
-    geoip_ipset_destroy("cnip");
-    geoip_ipset_create("cnip", 4, 8192, 65536);
+    ipset_destroy("cnip");
+    ipset_create("cnip", 4, 8192, 65536);
     
     for (int i = 0; default_cn_cidrs[i] != NULL; i++) {
         ipset_add_entry("cnip", default_cn_cidrs[i]);
@@ -288,12 +288,12 @@ static void* geoip_async_update_thread(void *arg) {
     snprintf(v4_parsed, sizeof(v4_parsed), "%s/%s.parsed", rules_dir, cfg->cn_ip_file);
     
     if (geoip_download(cfg) == 0 && file_exists(v4_path)) {
-        geoip_parse_cidr_file(v4_path, v4_parsed, 4);
+        ipset_parse_cidr_file(v4_path, v4_parsed, 4);
         
-        geoip_ipset_create("cnip_temp", 4, 8192, 65536);
-        geoip_ipset_restore_file("cnip_temp", v4_parsed);
-        geoip_ipset_swap("cnip_temp", "cnip");
-        geoip_ipset_destroy("cnip_temp");
+        ipset_create("cnip_temp", 4, 8192, 65536);
+        ipset_restore_file("cnip_temp", v4_parsed);
+        ipset_swap("cnip_temp", "cnip");
+        ipset_destroy("cnip_temp");
         LOG_INFO("IPv4 ipset upgraded to full list");
     } else {
         LOG_WARN("Full GeoIP download failed, keeping default list");
@@ -339,8 +339,8 @@ int geoip_setup_ipset(atp_config_t *cfg) {
 int geoip_cleanup_ipset(atp_config_t *cfg) {
     if (!cfg->bypass_cn_ip) return 0;
     
-    geoip_ipset_destroy("cnip");
-    geoip_ipset_destroy("cnip6");
+    ipset_destroy("cnip");
+    ipset_destroy("cnip6");
     
     LOG_INFO("GeoIP ipsets destroyed");
     return 0;
@@ -368,11 +368,11 @@ int geoip_atomic_update(atp_config_t *cfg) {
         return -1;
     }
     
-    geoip_parse_cidr_file(v4_tmp, v4_parsed_tmp, 4);
-    geoip_ipset_create("cnip_temp", 4, 8192, 65536);
-    geoip_ipset_restore_file("cnip_temp", v4_parsed_tmp);
-    geoip_ipset_swap("cnip_temp", "cnip");
-    geoip_ipset_destroy("cnip_temp");
+    ipset_parse_cidr_file(v4_tmp, v4_parsed_tmp, 4);
+    ipset_create("cnip_temp", 4, 8192, 65536);
+    ipset_restore_file("cnip_temp", v4_parsed_tmp);
+    ipset_swap("cnip_temp", "cnip");
+    ipset_destroy("cnip_temp");
     rename(v4_tmp, v4_path);
     rename(v4_parsed_tmp, v4_parsed);
     
@@ -388,11 +388,11 @@ int geoip_atomic_update(atp_config_t *cfg) {
         snprintf(v6_parsed_tmp, sizeof(v6_parsed_tmp), "%s/%s.parsed.tmp", rules_dir, cfg->cn_ipv6_file);
         
         if (geoip_download_url(cfg->cn_ipv6_url, v6_tmp, GEOIP_TIMEOUT_SEC) == 0) {
-            geoip_parse_cidr_file(v6_tmp, v6_parsed_tmp, 6);
-            geoip_ipset_create("cnip6_temp", 6, 8192, 65536);
-            geoip_ipset_restore_file("cnip6_temp", v6_parsed_tmp);
-            geoip_ipset_swap("cnip6_temp", "cnip6");
-            geoip_ipset_destroy("cnip6_temp");
+            ipset_parse_cidr_file(v6_tmp, v6_parsed_tmp, 6);
+            ipset_create("cnip6_temp", 6, 8192, 65536);
+            ipset_restore_file("cnip6_temp", v6_parsed_tmp);
+            ipset_swap("cnip6_temp", "cnip6");
+            ipset_destroy("cnip6_temp");
             rename(v6_tmp, v6_path);
             rename(v6_parsed_tmp, v6_parsed);
         }
