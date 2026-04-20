@@ -92,6 +92,7 @@ int api_process(api_ctx_t *ctx);
 int api_handle_event(api_ctx_t *ctx, int fd, int events);
 
 int api_get_mode_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata);
 int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
 
