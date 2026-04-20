@@ -4,6 +4,7 @@
  *
  * Clash API client - Pure async epoll-driven state machine
  * Zero blocking, zero libcurl, zero legacy
+ * HTTP/1.1 Keep-Alive support
  */
 
 #ifndef ATP_API_H
@@ -15,6 +16,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <time.h>
+#include <poll.h>
 
 typedef enum {
     API_STATE_IDLE = 0,
@@ -55,6 +57,7 @@ typedef struct api_request {
     int headers_complete;
     size_t bytes_to_read;
     size_t body_received;
+    int keepalive_disabled;  // 此连接不可复用
     
     api_callback_t callback;
     void *userdata;
@@ -69,6 +72,8 @@ typedef struct api_ctx {
     int last_http_code;
     char last_error[256];
     api_request_t *pending_requests;
+    int keepalive_fd;        // 缓存的 Keep-Alive 连接
+    time_t keepalive_time;   // 连接建立时间
 } api_ctx_t;
 
 typedef enum {
