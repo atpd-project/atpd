@@ -59,7 +59,8 @@ runs:
         echo "=========================="
         
         make clean
-        make -j$(nproc) -B include/version.h \
+        make -B include/version.h
+        make -j$(nproc) \
           EXTRA_CFLAGS="-I$CURL_INCLUDE" \
           EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
         
