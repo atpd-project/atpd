@@ -16,6 +16,7 @@
 #include <fcntl.h>
 #include <time.h>
 #include <cjson/cJSON.h>
+#include <sys/epoll.h>
 
 static void api_parse_url(const char *base_url, char *host, int *port);
 static int api_build_http_request(api_request_t *req);
