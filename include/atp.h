@@ -174,3 +174,5 @@ int atp_check_root(void);
 void atp_show_status(void);
 
 #endif
+
+#include "version.h"
