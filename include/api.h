@@ -105,3 +105,4 @@ const char *api_mode_to_string(api_mode_t mode);
 api_mode_t api_string_to_mode(const char *str);
 
 #endif /* ATP_API_H */
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);

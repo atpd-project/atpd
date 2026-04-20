@@ -519,3 +519,31 @@ api_mode_t api_string_to_mode(const char *str) {
     if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
     return API_MODE_RULE;
 }
+
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
+    if (!ctx || !mode || size == 0) return -1;
+
+    api_request_t *req = ctx->pending_requests;
+    while (req) {
+        if (req->state == API_STATE_DONE && req->http_code == 200) {
+            const char *body = api_extract_body(req);
+            if (body) {
+                cJSON *json = cJSON_Parse(body);
+                if (json) {
+                    cJSON *mode_item = cJSON_GetObjectItem(json, "mode");
+                    if (mode_item && cJSON_IsString(mode_item)) {
+                        strncpy(mode, mode_item->valuestring, size - 1);
+                        mode[size - 1] = '\0';
+                        cJSON_Delete(json);
+                        return 0;
+                    }
+                    cJSON_Delete(json);
+                }
+            }
+            return -1;
+        }
+        req = req->next;
+    }
+
+    return -1;
+}
