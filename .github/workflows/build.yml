@@ -42,17 +42,21 @@ jobs:
     - name: Setup build environment
       id: setup
       uses: ./.github/actions/setup-musl-env
+    
+    - name: Setup build environment
+  id: setup
+  uses: ./.github/actions/setup-musl-env
 
     - name: Build ATP
       id: build-atp
       uses: ./.github/actions/build-atp
       with:
-        cc-path: ${{ steps.setup.outputs.cc-path }}
-        ar-path: ${{ steps.setup.outputs.ar-path }}
-        ranlib-path: ${{ steps.setup.outputs.ranlib-path }}
-        strip-path: ${{ steps.setup.outputs.strip-path }}
-        curl-include-path: ${{ steps.setup.outputs.curl-include-path }}
-        curl-lib-path: ${{ steps.setup.outputs.curl-lib-path }}
+       cc-path: ${{ steps.setup.outputs.cc-path }}
+       ar-path: ${{ steps.setup.outputs.ar-path }}
+       ranlib-path: ${{ steps.setup.outputs.ranlib-path }}
+       strip-path: ${{ steps.setup.outputs.strip-path }}
+       libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
+       libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}  
 
     - name: Get build date
       id: build_date

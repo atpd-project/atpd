@@ -14,17 +14,17 @@ inputs:
   strip-path:
     description: 'Path to musl-strip'
     required: true
-  curl-include-path:
-    description: 'Path to libcurl include dir'
+  libev-include-path:
+    description: 'Path to libev include dir'
     required: true
-  curl-lib-path:
-    description: 'Path to libcurl lib dir'
+  libev-lib-path:
+    description: 'Path to libev lib dir'
     required: true
 
 outputs:
   version:
     description: 'ATP version'
-    value: ${{ steps.version.outputs.version }}
+    value: ${{ steps.build.outputs.version }}
   binary-path:
     description: 'Path to compiled binary'
     value: ${{ steps.build.outputs.binary }}
@@ -41,13 +41,13 @@ runs:
         export RANLIB="${{ inputs.ranlib-path }}"
         export STRIP="${{ inputs.strip-path }}"
         
-        CURL_INCLUDE="${{ inputs.curl-include-path }}"
-        CURL_LIB="${{ inputs.curl-lib-path }}"
+        LIBEV_INCLUDE="${{ inputs.libev-include-path }}"
+        LIBEV_LIB="${{ inputs.libev-lib-path }}"
         
         echo "=== Build Environment ==="
         echo "CC: $CC"
-        echo "CURL_INCLUDE: $CURL_INCLUDE"
-        echo "CURL_LIB: $CURL_LIB"
+        echo "LIBEV_INCLUDE: $LIBEV_INCLUDE"
+        echo "LIBEV_LIB: $LIBEV_LIB"
         echo "=========================="
         
         chmod +x scripts/gen_version.sh
@@ -56,8 +56,8 @@ runs:
         
         make clean
         make -j$(nproc) \
-          EXTRA_CFLAGS="-I$CURL_INCLUDE" \
-          EXTRA_LDFLAGS="-L$CURL_LIB -lcurl -pthread -static"
+          EXTRA_CFLAGS="-I$LIBEV_INCLUDE" \
+          EXTRA_LDFLAGS="-L$LIBEV_LIB -lev -pthread -static"
         
         file build/bin/atpd
         ls -la build/bin/atpd
@@ -68,9 +68,9 @@ runs:
       id: version
       shell: bash
       run: |
-        VERSION=$(grep 'ATP_VERSION_STRING' include/version.h | head -1 | sed 's/.*"\(.*\)".*/\1/')
-        echo "Extracted version: $VERSION"
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        VERSION=$(grep ATP_VERSION_STRING include/version.h | cut -d'"' -f2)
+        echo "version=${VERSION}" >> $GITHUB_OUTPUT
+        echo "ATP version: ${VERSION}"
 
     - name: Strip binary
       shell: bash
