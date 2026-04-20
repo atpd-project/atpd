@@ -1,21 +1,36 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2025 ATP Project
+ *
+ * GeoIP download - Native socket implementation
+ */
+
 #include "geoip.h"
 #include "logger.h"
 #include "utils.h"
 #include "atp.h"
 #include "ipset.h"
-#include <curl/curl.h>
-#include <sys/stat.h>
-#include <time.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <time.h>
+#include <pthread.h>
+#include <cjson/cJSON.h>
 
-struct curl_memory {
-    char *data;
-    size_t size;
-};
+#define GEOIP_TIMEOUT_SEC 30
+#define GEOIP_BUFFER_SIZE 4096
 
-/* Built-in default China IPv4 CIDRs (fallback when download fails) */
+static pthread_t geoip_thread;
+static int geoip_async_running = 0;
+static int geoip_async_complete = 0;
+
 static const char *default_cn_cidrs[] = {
     "1.0.0.0/8", "14.0.0.0/8", "27.0.0.0/8", "36.0.0.0/8",
     "39.0.0.0/8", "42.0.0.0/8", "49.0.0.0/8", "58.0.0.0/8",
@@ -28,23 +43,186 @@ static const char *default_cn_cidrs[] = {
     "192.168.0.0/16", "223.0.0.0/8", NULL
 };
 
-static pthread_t geoip_thread;
-static int geoip_async_running = 0;
-static int geoip_async_complete = 0;
+struct geoip_response {
+    char *data;
+    size_t size;
+};
 
-static size_t curl_mem_write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
+static size_t geoip_write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
-    struct curl_memory *mem = (struct curl_memory*)userp;
+    struct geoip_response *resp = (struct geoip_response*)userp;
     
-    char *ptr = realloc(mem->data, mem->size + realsize + 1);
+    char *ptr = realloc(resp->data, resp->size + realsize + 1);
     if (!ptr) return 0;
     
-    mem->data = ptr;
-    memcpy(&(mem->data[mem->size]), contents, realsize);
-    mem->size += realsize;
-    mem->data[mem->size] = 0;
+    resp->data = ptr;
+    memcpy(&(resp->data[resp->size]), contents, realsize);
+    resp->size += realsize;
+    resp->data[resp->size] = 0;
     
     return realsize;
+}
+
+static int geoip_parse_url(const char *url, char *host, int *port, char *path, size_t path_size) {
+    const char *start;
+    
+    if (strncmp(url, "https://", 8) == 0) {
+        LOG_ERROR("HTTPS not supported for GeoIP download");
+        return -1;
+    } else if (strncmp(url, "http://", 7) == 0) {
+        start = url + 7;
+        *port = 80;
+    } else {
+        start = url;
+        *port = 80;
+    }
+    
+    const char *slash = strchr(start, '/');
+    const char *colon = strchr(start, ':');
+    
+    if (colon && (!slash || colon < slash)) {
+        size_t len = colon - start;
+        strncpy(host, start, len);
+        host[len] = '\0';
+        *port = atoi(colon + 1);
+        if (slash) {
+            strncpy(path, slash, path_size - 1);
+        } else {
+            strcpy(path, "/");
+        }
+    } else if (slash) {
+        size_t len = slash - start;
+        strncpy(host, start, len);
+        host[len] = '\0';
+        strncpy(path, slash, path_size - 1);
+    } else {
+        strcpy(host, start);
+        strcpy(path, "/");
+    }
+    
+    return 0;
+}
+
+static int geoip_http_download(const char *url, struct geoip_response *resp, int timeout_sec) {
+    char host[256];
+    char path[1024];
+    int port;
+    int sock_fd = -1;
+    int result = -1;
+    
+    if (geoip_parse_url(url, host, &port, path, sizeof(path)) != 0) {
+        return -1;
+    }
+    
+    LOG_DEBUG("GeoIP: connecting to %s:%d%s", host, port, path);
+    
+    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        LOG_ERROR("GeoIP: socket failed: %s", strerror(errno));
+        return -1;
+    }
+    
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        struct hostent *he = gethostbyname(host);
+        if (!he) {
+            LOG_ERROR("GeoIP: DNS failed for %s", host);
+            goto cleanup;
+        }
+        memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
+    }
+    
+    struct timeval tv = { .tv_sec = timeout_sec, .tv_usec = 0 };
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    
+    if (connect(sock_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        LOG_ERROR("GeoIP: connect failed: %s", strerror(errno));
+        goto cleanup;
+    }
+    
+    char request[2048];
+    snprintf(request, sizeof(request),
+             "GET %s HTTP/1.1\r\n"
+             "Host: %s\r\n"
+             "User-Agent: ATPd/1.0\r\n"
+             "Accept: text/plain\r\n"
+             "Connection: close\r\n"
+             "\r\n",
+             path, host);
+    
+    if (send(sock_fd, request, strlen(request), 0) != (ssize_t)strlen(request)) {
+        LOG_ERROR("GeoIP: send failed: %s", strerror(errno));
+        goto cleanup;
+    }
+    
+    resp->data = malloc(GEOIP_BUFFER_SIZE);
+    resp->size = 0;
+    size_t capacity = GEOIP_BUFFER_SIZE;
+    
+    while (1) {
+        if (resp->size >= capacity - 1) {
+            capacity *= 2;
+            char *new_data = realloc(resp->data, capacity);
+            if (!new_data) goto cleanup;
+            resp->data = new_data;
+        }
+        
+        ssize_t recvd = recv(sock_fd, resp->data + resp->size, capacity - resp->size - 1, 0);
+        if (recvd > 0) {
+            resp->size += recvd;
+            resp->data[resp->size] = '\0';
+        } else if (recvd == 0) {
+            break;
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            LOG_ERROR("GeoIP: recv failed: %s", strerror(errno));
+            goto cleanup;
+        }
+    }
+    
+    char *body = strstr(resp->data, "\r\n\r\n");
+    if (body) {
+        body += 4;
+        size_t body_len = strlen(body);
+        memmove(resp->data, body, body_len + 1);
+        resp->size = body_len;
+    }
+    
+    result = 0;
+    
+cleanup:
+    if (sock_fd >= 0) close(sock_fd);
+    if (result != 0) {
+        free(resp->data);
+        resp->data = NULL;
+        resp->size = 0;
+    }
+    return result;
+}
+
+int geoip_download_url(const char *url, const char *output_path, int timeout_sec) {
+    struct geoip_response resp = {0};
+    
+    if (geoip_http_download(url, &resp, timeout_sec) != 0) {
+        return -1;
+    }
+    
+    FILE *fp = fopen(output_path, "w");
+    if (!fp) {
+        free(resp.data);
+        return -1;
+    }
+    
+    fwrite(resp.data, 1, resp.size, fp);
+    fclose(fp);
+    free(resp.data);
+    
+    return 0;
 }
 
 int geoip_init(atp_config_t *cfg) {
@@ -52,46 +230,8 @@ int geoip_init(atp_config_t *cfg) {
     snprintf(rules_dir, sizeof(rules_dir), "%s/rules", cfg->data_dir);
     mkdir_recursive(rules_dir, 0755);
     
-    LOG_DEBUG("GeoIP initialized");
+    LOG_DEBUG("GeoIP initialized (native socket)");
     return 0;
-}
-
-int geoip_download_url(const char *url, const char *output_path, int timeout_sec) {
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        LOG_ERROR("Failed to initialize curl");
-        return -1;
-    }
-    
-    struct curl_memory chunk = {0};
-    
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_mem_write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_sec);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "ATPd/" ATP_VERSION_STRING);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    
-    CURLcode res = curl_easy_perform(curl);
-    
-    if (res == CURLE_OK && chunk.data && chunk.size > 0) {
-        FILE *fp = fopen(output_path, "w");
-        if (fp) {
-            fwrite(chunk.data, 1, chunk.size, fp);
-            fclose(fp);
-            LOG_DEBUG("Downloaded %zu bytes from %s", chunk.size, url);
-            free(chunk.data);
-            curl_easy_cleanup(curl);
-            return 0;
-        }
-    }
-    
-    LOG_ERROR("Failed to download %s: %s", url, curl_easy_strerror(res));
-    free(chunk.data);
-    curl_easy_cleanup(curl);
-    return -1;
 }
 
 int geoip_download(atp_config_t *cfg) {
@@ -109,7 +249,7 @@ int geoip_download(atp_config_t *cfg) {
     snprintf(v4_tmp, sizeof(v4_tmp), "%s/%s.tmp", rules_dir, cfg->cn_ip_file);
     
     LOG_INFO("Downloading China IPv4 list");
-    if (geoip_download_url(cfg->cn_ip_url, v4_tmp, 30) == 0) {
+    if (geoip_download_url(cfg->cn_ip_url, v4_tmp, GEOIP_TIMEOUT_SEC) == 0) {
         rename(v4_tmp, v4_path);
         LOG_INFO("IPv4 list downloaded successfully");
         return 0;
@@ -117,35 +257,6 @@ int geoip_download(atp_config_t *cfg) {
         LOG_WARN("Failed to download IPv4 list, using cached if available");
         return -1;
     }
-}
-
-/* Wrapper functions that call ipset.c implementation */
-int geoip_ipset_create(const char *name, int family, int hashsize, int maxelem) {
-    return ipset_create(name, family, hashsize, maxelem);
-}
-
-int geoip_ipset_destroy(const char *name) {
-    return ipset_destroy(name);
-}
-
-int geoip_ipset_swap(const char *from, const char *to) {
-    return ipset_swap(from, to);
-}
-
-int geoip_ipset_exists(const char *name) {
-    return ipset_exists(name);
-}
-
-int geoip_ipset_flush(const char *name) {
-    return ipset_flush(name);
-}
-
-int geoip_ipset_restore_file(const char *name, const char *filename) {
-    return ipset_restore_file(name, filename);
-}
-
-int geoip_parse_cidr_file(const char *input_path, const char *output_path, int family) {
-    return ipset_parse_cidr_file(input_path, output_path, family);
 }
 
 static int geoip_create_default_ipset(atp_config_t *cfg) {
@@ -179,23 +290,11 @@ static void* geoip_async_update_thread(void *arg) {
     if (geoip_download(cfg) == 0 && file_exists(v4_path)) {
         geoip_parse_cidr_file(v4_path, v4_parsed, 4);
         
-        struct stat st;
-        int entry_count = 0;
-        if (stat(v4_parsed, &st) == 0) {
-            entry_count = st.st_size / 20;
-        }
-        
-        if (entry_count > 1000) {
-            LOG_INFO("Large GeoIP file (%d entries), using batch restore", entry_count);
-        }
-        
         geoip_ipset_create("cnip_temp", 4, 8192, 65536);
         geoip_ipset_restore_file("cnip_temp", v4_parsed);
-        
         geoip_ipset_swap("cnip_temp", "cnip");
-        LOG_INFO("IPv4 ipset upgraded to full list (%d entries)", entry_count);
-        
         geoip_ipset_destroy("cnip_temp");
+        LOG_INFO("IPv4 ipset upgraded to full list");
     } else {
         LOG_WARN("Full GeoIP download failed, keeping default list");
     }
@@ -264,21 +363,16 @@ int geoip_atomic_update(atp_config_t *cfg) {
     snprintf(v4_parsed, sizeof(v4_parsed), "%s/%s.parsed", rules_dir, cfg->cn_ip_file);
     snprintf(v4_parsed_tmp, sizeof(v4_parsed_tmp), "%s/%s.parsed.tmp", rules_dir, cfg->cn_ip_file);
     
-    if (geoip_download_url(cfg->cn_ip_url, v4_tmp, 30) != 0) {
+    if (geoip_download_url(cfg->cn_ip_url, v4_tmp, GEOIP_TIMEOUT_SEC) != 0) {
         LOG_ERROR("Failed to download fresh IPv4 list");
         return -1;
     }
     
     geoip_parse_cidr_file(v4_tmp, v4_parsed_tmp, 4);
-    
     geoip_ipset_create("cnip_temp", 4, 8192, 65536);
     geoip_ipset_restore_file("cnip_temp", v4_parsed_tmp);
-    
     geoip_ipset_swap("cnip_temp", "cnip");
-    LOG_INFO("IPv4 ipset swapped atomically");
-    
     geoip_ipset_destroy("cnip_temp");
-    
     rename(v4_tmp, v4_path);
     rename(v4_parsed_tmp, v4_parsed);
     
@@ -293,12 +387,11 @@ int geoip_atomic_update(atp_config_t *cfg) {
         snprintf(v6_parsed, sizeof(v6_parsed), "%s/%s.parsed", rules_dir, cfg->cn_ipv6_file);
         snprintf(v6_parsed_tmp, sizeof(v6_parsed_tmp), "%s/%s.parsed.tmp", rules_dir, cfg->cn_ipv6_file);
         
-        if (geoip_download_url(cfg->cn_ipv6_url, v6_tmp, 30) == 0) {
+        if (geoip_download_url(cfg->cn_ipv6_url, v6_tmp, GEOIP_TIMEOUT_SEC) == 0) {
             geoip_parse_cidr_file(v6_tmp, v6_parsed_tmp, 6);
             geoip_ipset_create("cnip6_temp", 6, 8192, 65536);
             geoip_ipset_restore_file("cnip6_temp", v6_parsed_tmp);
             geoip_ipset_swap("cnip6_temp", "cnip6");
-            LOG_INFO("IPv6 ipset swapped atomically");
             geoip_ipset_destroy("cnip6_temp");
             rename(v6_tmp, v6_path);
             rename(v6_parsed_tmp, v6_parsed);
@@ -322,9 +415,7 @@ int geoip_check_update_needed(atp_config_t *cfg, int max_age_days) {
     }
     
     struct stat st;
-    if (stat(v4_path, &st) != 0) {
-        return 1;
-    }
+    if (stat(v4_path, &st) != 0) return 1;
     
     time_t now = time(NULL);
     int age_days = (now - st.st_mtime) / 86400;
@@ -353,13 +444,9 @@ int geoip_validate_cidr(const char *cidr, int family) {
     struct in6_addr ipv6;
     
     if (family == 4) {
-        if (inet_pton(AF_INET, ip, &ipv4) == 1 && prefix >= 0 && prefix <= 32) {
-            return 0;
-        }
+        if (inet_pton(AF_INET, ip, &ipv4) == 1 && prefix >= 0 && prefix <= 32) return 0;
     } else {
-        if (inet_pton(AF_INET6, ip, &ipv6) == 1 && prefix >= 0 && prefix <= 128) {
-            return 0;
-        }
+        if (inet_pton(AF_INET6, ip, &ipv6) == 1 && prefix >= 0 && prefix <= 128) return 0;
     }
     
     return -1;
