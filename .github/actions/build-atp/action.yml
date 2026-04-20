@@ -68,9 +68,9 @@ runs:
       id: version
       shell: bash
       run: |
-        VERSION=$(grep ATP_VERSION_STRING include/version.h | cut -d'"' -f2)
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "ATP version: ${VERSION}"
+        VERSION=$(grep 'ATP_VERSION_STRING' include/version.h | head -1 | sed 's/.*"\(.*\)".*/\1/')
+        echo "Extracted version: $VERSION"
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
 
     - name: Strip binary
       shell: bash
