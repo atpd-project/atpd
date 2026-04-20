@@ -322,7 +322,6 @@ static int do_start(atp_options_t *opts) {
         LOG_ERROR("Failed to start sing-box");
     }
     
-    if (firewall_apply(&g_config) < 0) {
         LOG_ERROR("Failed to apply firewall rules");
     }
     
@@ -344,7 +343,6 @@ static int do_start(atp_options_t *opts) {
     
     LOG_INFO("Shutting down...");
     
-    firewall_cleanup(&g_config);
     
     if (g_config.app_proxy_enable) {
         app_filter_cleanup(&g_config);
