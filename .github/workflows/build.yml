@@ -140,13 +140,14 @@ jobs:
   # Job 3: Update Known Good Commits Issue (only on dev push)
   # ============================================
   update-known-good:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/dev' && success()
-    permissions:
-      issues: write
+   runs-on: ubuntu-latest
+   needs: build
+   if: github.ref == 'refs/heads/dev' && success()
+   permissions:
+    contents: read
+    issues: write
     
-    steps:
+   steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
