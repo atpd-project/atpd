@@ -8,48 +8,37 @@
 
 set -e
 
-# Default values
 DEFAULT_VERSION="0.0.1-dev"
 MAJOR=0
 MINOR=0
 PATCH=1
 
-# Read base version from existing version.h if available
 if [ -f include/version.h ]; then
     BASE_VERSION=$(grep ATP_VERSION_STRING include/version.h | head -1 | cut -d'"' -f2)
     MAJOR=$(grep ATP_VERSION_MAJOR include/version.h | awk '{print $3}')
     MINOR=$(grep ATP_VERSION_MINOR include/version.h | awk '{print $3}')
     PATCH=$(grep ATP_VERSION_PATCH include/version.h | awk '{print $3}')
-    
-    # Remove -dev suffix for base version
     BASE_VERSION="${BASE_VERSION%-dev}"
 else
     BASE_VERSION="$DEFAULT_VERSION"
     BASE_VERSION="${BASE_VERSION%-dev}"
 fi
 
-# Determine final version
 if git rev-parse --git-dir >/dev/null 2>&1; then
     if git describe --tags --exact-match 2>/dev/null; then
-        # Tag build: use tag name
         TAG=$(git describe --tags --exact-match)
         VERSION="${TAG#v}"
     else
-        # Dev build: base version + commit
         COMMIT=$(git rev-parse --short HEAD)
         VERSION="${BASE_VERSION}-${COMMIT}"
-        
-        # Check if workspace is dirty
         if ! git diff --quiet 2>/dev/null; then
             VERSION="${VERSION}-dirty"
         fi
     fi
 else
-    # Not in git repo
     VERSION="${BASE_VERSION}-unknown"
 fi
 
-# Generate version.h
 cat > include/version.h << EOF
 #ifndef ATP_VERSION_H
 #define ATP_VERSION_H

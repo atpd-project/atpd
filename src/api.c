@@ -108,7 +108,7 @@ static int api_do_request_with_timeout(api_ctx_t *ctx, const char *method,
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_sec);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 1L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "ATPd/" ATP_VERSION);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "ATPd/" ATP_VERSION_STRING);
     
     if (body) {
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);

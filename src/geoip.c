@@ -70,7 +70,7 @@ int geoip_download_url(const char *url, const char *output_path, int timeout_sec
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_sec);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "ATPd/" ATP_VERSION);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "ATPd/" ATP_VERSION_STRING);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     
