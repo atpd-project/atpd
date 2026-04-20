@@ -793,3 +793,73 @@ api_mode_t api_string_to_mode(const char *str) {
     if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
     return API_MODE_RULE;
 }
+
+// 解析完整 URL
+static void api_parse_full_url(const char *url, char *host, int *port, char *path, size_t path_size) {
+    const char *start;
+
+    if (strncmp(url, "https://", 8) == 0) {
+        LOG_ERROR("API: HTTPS not supported for raw requests");
+        start = url + 8;
+        *port = 443;
+    } else if (strncmp(url, "http://", 7) == 0) {
+        start = url + 7;
+        *port = 80;
+    } else {
+        start = url;
+        *port = 80;
+    }
+
+    const char *slash = strchr(start, '/');
+    const char *colon = strchr(start, ':');
+
+    if (colon && (!slash || colon < slash)) {
+        size_t len = colon - start;
+        strncpy(host, start, len);
+        host[len] = '\0';
+        *port = atoi(colon + 1);
+        if (slash) {
+            strncpy(path, slash, path_size - 1);
+        } else {
+            strcpy(path, "/");
+        }
+    } else if (slash) {
+        size_t len = slash - start;
+        strncpy(host, start, len);
+        host[len] = '\0';
+        strncpy(path, slash, path_size - 1);
+    } else {
+        strcpy(host, start);
+        strcpy(path, "/");
+    }
+}
+
+int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
+                          const char *body, api_callback_t callback, void *userdata) {
+    api_request_t *req = calloc(1, sizeof(api_request_t));
+    if (!req) return -1;
+
+    req->ctx = ctx;
+    req->state = API_STATE_IDLE;
+    req->sock_fd = -1;
+    req->content_length = -1;
+    req->keepalive_disabled = 1;  // raw 请求不复用 keep-alive
+    strncpy(req->method, method, sizeof(req->method) - 1);
+    req->body = body ? strdup(body) : NULL;
+    req->callback = callback;
+    req->userdata = userdata;
+    req->start_time = time(NULL);
+
+    api_parse_full_url(url, req->host, &req->port, req->path, sizeof(req->path));
+
+    req->next = ctx->pending_requests;
+    ctx->pending_requests = req;
+
+    LOG_DEBUG("API: raw async request queued: %s %s", method, url);
+
+    if (api_socket_connect(req) != 0) {
+        req->state = API_STATE_ERROR;
+    }
+
+    return 0;
+}
