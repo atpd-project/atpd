@@ -1,0 +1,45 @@
+name: Test Docker Static Build
+on: 
+  workflow_dispatch:
+  push:
+    branches: [ test-ci-refine ]
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Export
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.test
+          platforms: linux/arm64
+          outputs: type=local,dest=./out
+
+      - name: Verify Metadata
+        run: |
+          echo "=== Runtime Version ==="
+          cat ./out/runtime_version.txt
+          echo "=== Static Link Check ==="
+          cat ./out/static_check.txt
+
+      - name: Upload Test Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atpd-test-build
+          path: |
+            ./out/atpd
+            ./out/runtime_version.txt
+            ./out/static_check.txt
+
