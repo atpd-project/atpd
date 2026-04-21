@@ -76,21 +76,26 @@ jobs:
           script: |
             const { FULL_VER, SIZE } = process.env;
             const now = new Date();
+            // 格式化日期为 MM/DD
             const date = (now.getMonth() + 1).toString().padStart(2, '0') + 
                          '/' + now.getDate().toString().padStart(2, '0');
             
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
+            // 获取并格式化分支名
+            const branch = context.ref.replace('refs/heads/', '').toUpperCase();
 
+            // 构造折叠卡片：Summary 包含 ID, 日期, 分支, 体积和状态圆点
             const newEntry = [
               `<details>`,
-              `<summary><b>[✅ #${context.runNumber}]</b> ${date} · <code>${SIZE}</code></summary>`,
+              `<summary><b>#${context.runNumber}</b> &nbsp; <code>${date}</code> &nbsp; [ <code>${branch}</code> ] &nbsp; 📦 <b>Size: <code>${SIZE}</code></b> &nbsp; 🟢</summary>`,
               `<p>`,
               ``,
-              `- **Artifact:** <a href="${runUrl}">Download atpd (<b>${SIZE}</b>)</a>`,
-              `- **Source:** <a href="${commitUrl}">Commit <code>${shortSha}</code></a>`,
-              `- **Version:** <code>${FULL_VER}</code>`,
+              `> **Build Delivery**`,
+              `- 📥 **[Download Build Artifact (atpd)](${runUrl})**`,
+              `- 🔗 **Source:** <a href="${commitUrl}">Commit <code>${shortSha}</code></a>`,
+              `- 📝 **Full Version:** <code>${FULL_VER}</code>`,
               ``,
               `</p>`,
               `</details>`
@@ -102,6 +107,7 @@ jobs:
               issue_number: 6
             });
             
+            // 将最新构建记录插入到 Issue 顶部
             const newBody = newEntry + "\n\n" + (issue.body || "");
             
             await github.rest.issues.update({
