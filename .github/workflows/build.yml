@@ -42,15 +42,15 @@ jobs:
         id: real-version
         shell: bash
         run: |
-          # 注册 QEMU 用于跨架构运行 Docker 容器
-          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          # 使用更现代、稳定的方式注册 aarch64 模拟器
+          docker run --privileged --rm tonistiigi/binfmt --install arm64
           
-          # 使用 aarch64 的 alpine 镜像挂载并运行二进制文件
-          # musl 静态编译的文件在 alpine 下兼容性最好
-          RAW_V=$(docker run --rm -v ${{ github.workspace }}/build/bin:/app arm64v8/alpine /app/atpd -v 2>&1 | head -n 1)
+          # 挂载当前构建目录到容器内运行
+          # 使用 --platform 明确指定架构，并捕获 atpd -v 的真实输出
+          RAW_V=$(docker run --rm --platform linux/arm64 -v ${{ github.workspace }}/build/bin:/app arm64v8/alpine /app/atpd -v 2>&1 | head -n 1)
           
           echo "v_output=${RAW_V}" >> $GITHUB_OUTPUT
-          echo "Docker Runtime Version: ${RAW_V}"
+          echo "Real Version from Docker: ${RAW_V}"
 
       - name: Calculate Size
         id: size
