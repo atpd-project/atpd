@@ -1,42 +1,39 @@
 # 使用官方 alpine
 FROM alpine:latest AS builder
 
-# 补齐 jansson-static 和其他静态库依赖
+# 1. 环境准备：包含 jansson 的静态开发包
 RUN apk add --no-cache \
     build-base \
     libev-dev \
-    curl-dev \
-    curl-static \
     jansson-dev \
     jansson-static \
-    pcre2-dev \
     git \
     file \
     bash \
     dos2unix \
-    zlib-static \
-    openssl-libs-static \
-    nghttp2-static \
     linux-headers
 
 WORKDIR /app
 COPY . .
 
-# 处理换行符并生成版本
+# 2. 生成版本信息
 RUN find scripts/ -type f -exec dos2unix {} + && \
     chmod +x scripts/gen_version.sh && \
     ./scripts/gen_version.sh
 
-# 严格执行你的编译命令
+# 3. 编译逻辑：
+# 注意：我在 EXTRA_LDFLAGS 里加回了 -ljansson，
+# 因为你现在的 Makefile LIBS 里还没有它。
 RUN make clean && make -j$(nproc) \
-    EXTRA_CFLAGS="-I/usr/include" \
-    EXTRA_LDFLAGS="-L/usr/lib -lev -lcurl -ljansson -lpthread -static"
+    EXTRA_CFLAGS="-Os" \
+    EXTRA_LDFLAGS="-ljansson -static" && \
+    strip -s build/bin/atpd
 
-# 运行并捕获版本
+# 4. 验证运行
 RUN ./build/bin/atpd -v > /app/runtime_version.txt
 RUN file build/bin/atpd > /app/static_check.txt
 
-# 导出产物
+# 5. 导出
 FROM scratch
 COPY --from=builder /app/build/bin/atpd /atpd
 COPY --from=builder /app/runtime_version.txt /runtime_version.txt
