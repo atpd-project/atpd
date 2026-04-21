@@ -37,7 +37,6 @@ jobs:
         uses: ./.github/actions/setup-musl-env
 
       - name: Build
-        id: build-atp
         uses: ./.github/actions/build-atp
         with:
           version: ${{ steps.vars.outputs.full_ver }}
@@ -46,14 +45,11 @@ jobs:
           libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
           libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
 
-      - name: Get Binary Version Info
+      - name: Extract Binary Version
         id: version-check
         shell: bash
         run: |
-          # 如果是交叉编译，可能需要加上 qemu 才能运行，或者直接从二进制中提取字符串
-          # 假设此时在环境中可以执行 atpd (例如通过 qemu-static)
-          # 如果无法直接运行，则该步骤需根据你的 toolchain 调整
-          V_STR=$(chmod +x build/bin/atpd && ./build/bin/atpd -v 2>&1 || echo "Unknown Version")
+          V_STR=$(strings build/bin/atpd | grep "atp" | head -n 1 || echo "${{ steps.vars.outputs.full_ver }}")
           echo "v_output=$V_STR" >> $GITHUB_OUTPUT
 
       - name: Calculate Size
@@ -88,30 +84,22 @@ jobs:
           script: |
             const { FULL_VER, SIZE, V_OUTPUT } = process.env;
             const now = new Date();
-            const offset = 8;
-            const localTime = new Date(now.getTime() + offset * 3600 * 1000);
-            
-            const fmt = (val) => val.toString().padStart(2, '0');
-            const yy = localTime.getFullYear().toString().slice(-2);
-            const mm = fmt(localTime.getMonth() + 1);
-            const dd = fmt(localTime.getDate());
-            const hh = fmt(localTime.getHours());
-            const min = fmt(localTime.getMinutes());
-            
-            const timestamp = `${yy}${mm}${dd} ${hh}:${min}`;
+            const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
+            const fmt = (v) => v.toString().padStart(2, '0');
+            const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
 
             const newEntry = [
               `<details>`,
-              `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${timestamp}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
+              `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${ts}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
               `<p>`,
               ``,
               `> **Build Delivery**`,
               `- 📥 **[Download Build Artifact (atpd)](${runUrl})**`,
               `- 🔗 **Source:** <a href="${commitUrl}">Commit <code>${shortSha}</code></a>`,
-              `- 📝 **Binary Version (-v):** \`${V_OUTPUT}\``,
+              `- 📝 **Binary Version:** \`${V_OUTPUT}\``,
               `- 🏷️ **Metadata:** <code>${FULL_VER}</code>`,
               ``,
               `</p>`,
@@ -124,12 +112,10 @@ jobs:
               issue_number: 6
             });
             
-            const newBody = newEntry + "\n\n" + (issue.body || "");
-            
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: 6,
-              body: newBody
+              body: newEntry + "\n\n" + (issue.body || "")
             });
 

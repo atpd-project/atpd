@@ -37,7 +37,6 @@ jobs:
         uses: ./.github/actions/setup-musl-env
 
       - name: Build
-        id: build-atp
         uses: ./.github/actions/build-atp
         with:
           version: ${{ steps.vars.outputs.full_ver }}
@@ -50,8 +49,6 @@ jobs:
         id: version-check
         shell: bash
         run: |
-          # 针对 musl 静态编译，使用 strings 提取版本宏注入的字符串
-          # 假设你的版本号包含类似 "atpd v" 的特征
           V_STR=$(strings build/bin/atpd | grep "atp" | head -n 1 || echo "${{ steps.vars.outputs.full_ver }}")
           echo "v_output=$V_STR" >> $GITHUB_OUTPUT
 
@@ -86,14 +83,10 @@ jobs:
         with:
           script: |
             const { FULL_VER, SIZE, V_OUTPUT } = process.env;
-            
-            // 时区处理：北京时间 (UTC+8)
             const now = new Date();
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
-            
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
-            
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
