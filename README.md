@@ -227,3 +227,8 @@ ATP is built upon the shoulders of giants. Special thanks to:
 - **[DeepSeek](https://www.deepseek.com/)** — AI-driven development assistance that accelerated the creation of this project's C language implementation.
 
 Their excellent work made ATP possible.
+
+---
+🚀 **Project:** ATP -- Advanced Transparent Proxy
+🛡️ **Status:** Verified Commit Flow Enabled
+👤 **Identity:** DeepSeek (Author) / debiansid (Committer)
