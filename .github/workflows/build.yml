@@ -1,4 +1,4 @@
-name: Build ATP for Android (musl)
+name: Build ATPd for Android (musl)
 run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
@@ -90,12 +90,13 @@ jobs:
               issue_number: 6
             });
             
-            const newHeader = "| Build ID | Artifact | Commit |";
+            const pad = '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
+            const newHeader = `| Build ID ${pad} | Artifact ${pad} | Commit ${pad} |`;
             const divider = "| :--- | :--- | :--- |";
             const newRow = `| ${buildCol} | ${artifactCol} | ${commitCol} |`;
             
             let newBody = issue.body;
-            newBody = newBody.replace(/\| Build ID \|.*\|/g, newHeader);
+            newBody = newBody.replace(/\| Build ID.*\|/g, newHeader);
             newBody = newBody.replace(/\| :--- \|.*\|/g, divider);
             newBody = newBody.replace(/(\| :--- \| :--- \| :--- \|)/, `$1\n${newRow}`);
             
