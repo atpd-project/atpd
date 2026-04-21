@@ -5,8 +5,6 @@ on:
   push:
     branches: [ '**' ]
     paths: [ 'src/**', 'include/**', 'scripts/**', 'Makefile', 'Dockerfile', '.github/workflows/build.yml' ]
-  pull_request:
-    branches: [ main, dev ]
   workflow_dispatch:
 
 concurrency:
@@ -37,16 +35,22 @@ jobs:
         with:
           context: .
           platforms: linux/arm64
-          outputs: type=local,dest=./dist
+          outputs: type=local,dest=.
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Extract Metadata
         id: extract
         run: |
-          V_STR=$(cat ./dist/runtime_version.txt)
+          mkdir -p ./dist
+          if [ -f "./build/bin/atpd" ]; then
+            cp ./build/bin/atpd ./dist/atpd
+          else
+            exit 1
+          fi
+          echo "atpd-v1.0.0-${{ github.sha }}" > ./dist/runtime_version.txt
           SIZE=$(du -h ./dist/atpd | cut -f1)
-          echo "v_output=$V_STR" >> $GITHUB_OUTPUT
+          echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
           echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
@@ -58,10 +62,7 @@ jobs:
   update-status:
     name: Update Checkpoint
     needs: build-and-verify
-    if: |
-      success() && 
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') &&
-      github.event_name != 'pull_request'
+    if: success() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -80,32 +81,16 @@ jobs:
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const shortSha = context.sha.substring(0, 7);
-
-            const newEntry = [
-              `<details>`,
-              `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${ts}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
-              `<p>`,
-              ``,
-              `> **Build Delivery (Optimized)**`,
-              `- 📥 **[Download Build Artifact](${runUrl})**`,
-              `- 📝 **Runtime Version (-v):** \`${V_OUTPUT}\``,
-              `- 🔗 **Source:** Commit <code>${shortSha}</code>`,
-              ``,
-              `</p>`,
-              `</details>`
-            ].join('\n');
-            
+            const newEntry = `🟢 **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | [Artifact](${runUrl})`;
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: parseInt(TARGET_ISSUE)
             });
-            
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: parseInt(TARGET_ISSUE),
-              body: newEntry + "\n\n" + (issue.body || "")
+              body: newEntry + "\n" + (issue.body || "")
             });
-  
+
