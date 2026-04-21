@@ -9,88 +9,67 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Compile-${{ github.ref_name }}
+  build-and-verify:
+    name: 🏗️ Compile & Verify
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     outputs:
-      v_output: ${{ steps.real-version.outputs.v_output }}
-      binary_size: ${{ steps.size.outputs.atp_size }}
+      v_output: ${{ steps.extract.outputs.v_output }}
+      binary_size: ${{ steps.extract.outputs.binary_size }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup environment
-        id: setup
-        uses: ./.github/actions/setup-musl-env
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Build ATP
-        id: build-atp
-        uses: ./.github/actions/build-atp
+      - name: Docker Build
+        uses: docker/build-push-action@v5
         with:
-          cc-path: ${{ steps.setup.outputs.cc-path }}
-          ar-path: ${{ steps.setup.outputs.ar-path }}
-          ranlib-path: ${{ steps.setup.outputs.ranlib-path }}
-          strip-path: ${{ steps.setup.outputs.strip-path }}
-          libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
-          libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
+          context: .
+          platforms: linux/arm64
+          outputs: type=local,dest=./dist
 
-      - name: Get Runtime Version via Docker
-        id: real-version
-        shell: bash
+      - name: Extract Metadata
+        id: extract
         run: |
-          # 注册 arm64 解释器，忽略可能发生的 141 管道错误 (SIGPIPE)
-          docker run --privileged --rm tonistiigi/binfmt --install arm64 || true
-          
-          # 确保 bin 目录权限正确
-          chmod +x ${{ github.workspace }}/build/bin/atpd
-          
-          # 运行 atpd -v 获取真实运行版本信息
-          # 使用 --platform 强制使用 arm64 解释器
-          RAW_V=$(docker run --rm --platform linux/arm64 -v ${{ github.workspace }}/build/bin:/app arm64v8/alpine /app/atpd -v 2>&1 | head -n 1)
-          
-          echo "v_output=${RAW_V}" >> $GITHUB_OUTPUT
-          echo "Real Version from Docker: ${RAW_V}"
+          V_STR=$(cat ./dist/runtime_version.txt)
+          SIZE=$(du -h ./dist/atpd | cut -f1)
+          echo "v_output=$V_STR" >> $GITHUB_OUTPUT
+          echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
 
-      - name: Calculate Size
-        id: size
-        shell: bash
-        run: |
-          SIZE=$(du -h build/bin/atpd | cut -f1)
-          echo "atp_size=${SIZE}" >> $GITHUB_OUTPUT
-
-      - name: Upload
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: atpd-build-${{ github.run_number }}
-          path: build/bin/atpd
-          retention-days: 7
+          path: ./dist/atpd
 
-  update-checkpoint:
-    name: Update Checkpoint
-    needs: build
-    if: success()
+  update-status:
+    name: 📝 Update Checkpoint
+    needs: build-and-verify
+    if: success() && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       issues: write
     steps:
-      - name: Update Issue
+      - name: Update Project Issue
         uses: actions/github-script@v7
         env:
-          V_OUTPUT: ${{ needs.build.outputs.v_output }}
-          SIZE: ${{ needs.build.outputs.binary_size }}
+          V_OUTPUT: ${{ needs.build-and-verify.outputs.v_output }}
+          SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
+          TARGET_ISSUE: 6
         with:
           script: |
-            const { V_OUTPUT, SIZE } = process.env;
+            const { V_OUTPUT, SIZE, TARGET_ISSUE } = process.env;
             const now = new Date();
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
 
             const newEntry = [
@@ -98,11 +77,10 @@ jobs:
               `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${ts}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
               `<p>`,
               ``,
-              `> **Build Delivery**`,
-              `- 📥 **[Download Build Artifact (atpd)](${runUrl})**`,
-              `- 🔗 **Source:** <a href="${commitUrl}">Commit <code>${shortSha}</code></a>`,
+              `> **Build Delivery (Decoupled)**`,
+              `- 📥 **[Download Build Artifact](${runUrl})**`,
               `- 📝 **Runtime Version (-v):** \`${V_OUTPUT}\``,
-              `- 🏷️ **Commit SHA:** <code>${shortSha}</code>`,
+              `- 🔗 **Source:** Commit <code>${shortSha}</code>`,
               ``,
               `</p>`,
               `</details>`
@@ -111,13 +89,13 @@ jobs:
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: 6
+              issue_number: parseInt(TARGET_ISSUE)
             });
             
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: 6,
+              issue_number: parseInt(TARGET_ISSUE),
               body: newEntry + "\n\n" + (issue.body || "")
             });
 
