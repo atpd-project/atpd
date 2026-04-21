@@ -119,6 +119,7 @@ jobs:
     if: github.ref == 'refs/heads/dev' && success()
     permissions:
       issues: write
+      contents: read
     
     steps:
     - name: Checkout code
