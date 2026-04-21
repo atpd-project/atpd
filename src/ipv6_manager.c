@@ -145,6 +145,7 @@ int ipv6_manager_is_disabled(void) {
 }
 
 int ipv6_manager_set_mode(atp_config_t *cfg, int mode) {
+	(void)cfg;
     if (mode == IPV6_MODE_DISABLED) {
         LOG_INFO("IPv6 mode: COMPLETELY DISABLED");
         return ipv6_manager_disable_all();

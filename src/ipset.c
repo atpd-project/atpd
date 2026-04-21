@@ -7,8 +7,11 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <arpa/inet.h>
+#include <stdio.h>
 
 #define IPSET_CMD "/system/bin/ipset"
+#define SAFE_PATH_MAX (PATH_MAX + 256)
+#define SAFE_CMD_LEN (MAX_CMD_LEN + 256)
 
 static int exec_ipset(atp_config_t *cfg, const char *cmd, const char *arg) {
     if (cfg && cfg->dry_run) {
@@ -16,20 +19,22 @@ static int exec_ipset(atp_config_t *cfg, const char *cmd, const char *arg) {
         return 0;
     }
     
-    char command[MAX_CMD_LEN];
+    char command[SAFE_CMD_LEN];
     if (arg) {
-        snprintf(command, sizeof(command), "%s %s %s 2>/dev/null", IPSET_CMD, cmd, arg);
+        /* Use precision specifiers to guarantee buffer safety for GCC 15 */
+        snprintf(command, sizeof(command), "%s %.511s %.511s 2>/dev/null", IPSET_CMD, cmd, arg);
     } else {
-        snprintf(command, sizeof(command), "%s %s 2>/dev/null", IPSET_CMD, cmd);
+        snprintf(command, sizeof(command), "%s %.511s 2>/dev/null", IPSET_CMD, cmd);
     }
     
     return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
 }
 
 int ipset_init(atp_config_t *cfg) {
-    char rules_dir[PATH_MAX];
-    snprintf(rules_dir, sizeof(rules_dir), "%s/rules", cfg->data_dir);
-    mkdir_recursive(rules_dir, 0755);
+    char rules_dir[SAFE_PATH_MAX];
+    if (snprintf(rules_dir, sizeof(rules_dir), "%s/rules", cfg->data_dir) < (int)sizeof(rules_dir)) {
+        mkdir_recursive(rules_dir, 0755);
+    }
     
     LOG_DEBUG("IPSet initialized");
     return 0;
@@ -37,37 +42,37 @@ int ipset_init(atp_config_t *cfg) {
 
 int ipset_create(const char *name, int family, int hashsize, int maxelem) {
     const char *family_str = (family == 4) ? "inet" : "inet6";
-    char cmd[MAX_CMD_LEN];
+    char cmd[512];
     
-    snprintf(cmd, sizeof(cmd), "create %s hash:net family %s hashsize %d maxelem %d",
+    snprintf(cmd, sizeof(cmd), "create %.63s hash:net family %s hashsize %d maxelem %d",
              name, family_str, hashsize, maxelem);
     
     return exec_ipset(NULL, cmd, NULL);
 }
 
 int ipset_destroy(const char *name) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "destroy %s", name);
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "destroy %.63s", name);
     return exec_ipset(NULL, cmd, NULL);
 }
 
 int ipset_flush(const char *name) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "flush %s", name);
+    char cmd[128];
+    snprintf(cmd, sizeof(cmd), "flush %.63s", name);
     return exec_ipset(NULL, cmd, NULL);
 }
 
 int ipset_swap(const char *from, const char *to) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "swap %s %s", from, to);
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "swap %.63s %.63s", from, to);
     return exec_ipset(NULL, cmd, NULL);
 }
 
 int ipset_exists(const char *name) {
-    char cmd[MAX_CMD_LEN];
+    char cmd[256];
     char output[256];
     
-    snprintf(cmd, sizeof(cmd), "list %s 2>/dev/null | head -1", name);
+    snprintf(cmd, sizeof(cmd), "list %.63s 2>/dev/null | head -1", name);
     
     if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0] != '\0') {
         return 1;
@@ -76,47 +81,49 @@ int ipset_exists(const char *name) {
 }
 
 int ipset_add_entry(const char *name, const char *entry) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "add %s %s -exist", name, entry);
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "add %.63s %.255s -exist", name, entry);
     return exec_ipset(NULL, cmd, NULL);
 }
 
 int ipset_del_entry(const char *name, const char *entry) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "del %s %s", name, entry);
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "del %.63s %.255s", name, entry);
     return exec_ipset(NULL, cmd, NULL);
 }
 
 int ipset_list_entries(const char *name, char *output, size_t size) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "list %s 2>/dev/null | grep -v '^Name:\\|^Type:\\|^Revision:\\|^Header:\\|^Size in memory:\\|^References:\\|^Number of entries:' | grep -v '^$'", name);
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), 
+             "list %.63s 2>/dev/null | grep -v '^Name:\\|^Type:\\|^Revision:\\|^Header:\\|^Size in memory:\\|^References:\\|^Number of entries:' | grep -v '^$'", 
+             name);
     
     return exec_cmd(cmd, output, size, 10);
 }
 
 int ipset_save(const char *name, const char *filename) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "save %s > %s 2>/dev/null", name, filename);
+    char cmd[SAFE_CMD_LEN];
+    snprintf(cmd, sizeof(cmd), "save %.63s > %.1023s 2>/dev/null", name, filename);
     return exec_cmd_simple(cmd, 10);
 }
 
 int ipset_restore(const char *filename) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "restore < %s 2>/dev/null", filename);
+    char cmd[SAFE_CMD_LEN];
+    snprintf(cmd, sizeof(cmd), "restore < %.1023s 2>/dev/null", filename);
     return exec_cmd_simple(cmd, 30);
 }
 
 int ipset_restore_file(const char *name, const char *filename) {
-    char cmd[MAX_CMD_LEN];
+    char cmd[SAFE_CMD_LEN];
     snprintf(cmd, sizeof(cmd), 
-             "awk '!/^[[:space:]]*#/ && NF > 0 {printf \"add %s %s\\n\", $0}' %s | ipset restore -exist 2>/dev/null",
-             name, name, filename);
+             "awk '!/^[[:space:]]*#/ && NF > 0 {printf \"add %.63s %%s\\n\", $0}' %.1023s | ipset restore -exist 2>/dev/null",
+             name, filename);
     return exec_cmd_simple(cmd, 30);
 }
 
 int ipset_atomic_update(const char *name, const char *filename, int family, int hashsize, int maxelem) {
     char temp_name[128];
-    snprintf(temp_name, sizeof(temp_name), "%s_temp", name);
+    snprintf(temp_name, sizeof(temp_name), "%.63s_temp", name);
     
     if (ipset_create(temp_name, family, hashsize, maxelem) != 0) {
         LOG_ERROR("Failed to create temporary ipset: %s", temp_name);
@@ -137,6 +144,7 @@ int ipset_atomic_update(const char *name, const char *filename, int family, int 
         }
         LOG_INFO("IPSet %s swapped atomically", name);
     } else {
+        /* If base set doesn't exist, we use rename/swap logic consistently */
         if (ipset_swap(temp_name, name) != 0) {
             LOG_ERROR("Failed to rename temporary ipset");
             ipset_destroy(temp_name);
@@ -150,10 +158,10 @@ int ipset_atomic_update(const char *name, const char *filename, int family, int 
 }
 
 int ipset_add_cidr_list(const char *name, const char *cidr_file) {
-    char cmd[MAX_CMD_LEN];
+    char cmd[SAFE_CMD_LEN];
     snprintf(cmd, sizeof(cmd), 
-             "awk '!/^[[:space:]]*#/ && NF > 0 {printf \"add %s %s\\n\", $0}' %s | ipset restore -exist 2>/dev/null",
-             name, name, cidr_file);
+             "awk '!/^[[:space:]]*#/ && NF > 0 {printf \"add %.63s %%s\\n\", $0}' %.1023s | ipset restore -exist 2>/dev/null",
+             name, cidr_file);
     return exec_cmd_simple(cmd, 30);
 }
 
@@ -202,10 +210,10 @@ int ipset_parse_cidr_file(const char *input_path, const char *output_path, int f
 }
 
 int ipset_get_entry_count(const char *name, int *count) {
-    char cmd[MAX_CMD_LEN];
+    char cmd[256];
     char output[256];
     
-    snprintf(cmd, sizeof(cmd), "list %s 2>/dev/null | grep -c '^add'", name);
+    snprintf(cmd, sizeof(cmd), "list %.63s 2>/dev/null | grep -c '^add'", name);
     
     if (exec_cmd(cmd, output, sizeof(output), 5) == 0) {
         *count = atoi(output);
@@ -220,7 +228,6 @@ const char *ipset_family_to_string(int family) {
 }
 
 int ipset_string_to_family(const char *str) {
-    if (strcmp(str, "inet") == 0) return 4;
-    if (strcmp(str, "inet6") == 0) return 6;
+    if (str && strcmp(str, "inet6") == 0) return 6;
     return 4;
 }

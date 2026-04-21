@@ -602,7 +602,7 @@ int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
     return api_get_mode_sync(ctx, mode, size);
 }
 
-int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
+__attribute__((unused)) int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
     if (!ctx || !mode || size == 0) return -1;
     
     int sock_fd = -1;
