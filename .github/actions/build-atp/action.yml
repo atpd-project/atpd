@@ -1,80 +1,135 @@
-name: Build ATP binary
-description: Compiles ATP daemon with musl
+name: Build ATP for Android (musl)
+run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
-inputs:
-  cc-path:
-    description: 'Path to musl-gcc'
-    required: true
-  ar-path:
-    description: 'Path to musl-ar'
-    required: true
-  ranlib-path:
-    description: 'Path to musl-ranlib'
-    required: true
-  strip-path:
-    description: 'Path to musl-strip'
-    required: true
-  libev-include-path:
-    description: 'Path to libev include dir'
-    required: true
-  libev-lib-path:
-    description: 'Path to libev lib dir'
-    required: true
+on:
+  push:
+    branches: [dev, main, test-ci-refine]
+    tags: [ 'v*' ]
+    paths: [ 'src/**', 'include/**', 'scripts/**', 'Makefile', '.github/**' ]
+  workflow_dispatch:
 
-outputs:
-  version:
-    description: 'ATP version'
-    value: ${{ steps.build.outputs.version }}
-  binary-path:
-    description: 'Path to compiled binary'
-    value: ${{ steps.build.outputs.binary }}
+jobs:
+  build:
+    name: Compile-${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      full_ver: ${{ steps.vars.outputs.full_ver }}
+      binary_size: ${{ steps.size.outputs.atp_size }}
+      v_output: ${{ steps.version-check.outputs.v_output }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-runs:
-  using: composite
-  steps:
-    - name: Build ATP
-      id: build
-      shell: bash
-      run: |
-        export CC="${{ inputs.cc-path }}"
-        export AR="${{ inputs.ar-path }}"
-        export RANLIB="${{ inputs.ranlib-path }}"
-        export STRIP="${{ inputs.strip-path }}"
-        
-        LIBEV_INCLUDE="${{ inputs.libev-include-path }}"
-        LIBEV_LIB="${{ inputs.libev-lib-path }}"
-        
-        echo "=== Build Environment ==="
-        echo "CC: $CC"
-        echo "LIBEV_INCLUDE: $LIBEV_INCLUDE"
-        echo "LIBEV_LIB: $LIBEV_LIB"
-        echo "=========================="
-        
-        chmod +x scripts/gen_version.sh
-        ./scripts/gen_version.sh
-        cat include/version.h
-        
-        make clean
-        make -j$(nproc) \
-          EXTRA_CFLAGS="-I$LIBEV_INCLUDE" \
-          EXTRA_LDFLAGS="-L$LIBEV_LIB -lev -pthread -static"
-        
-        file build/bin/atpd
-        ls -la build/bin/atpd
-        
-        echo "binary=build/bin/atpd" >> $GITHUB_OUTPUT
+      - name: Resolve Metadata
+        id: vars
+        shell: bash
+        run: |
+          SHA=$(git rev-parse --short HEAD)
+          BRANCH=$(echo "${{ github.ref_name }}" | sed 's/feat-//' | tr '[:lower:]' '[:upper:]')
+          echo "full_ver=${BRANCH}+${SHA}" >> $GITHUB_OUTPUT
 
-    - name: Extract version
-      id: version
-      shell: bash
-      run: |
-        VERSION=$(grep ATP_VERSION_STRING include/version.h | cut -d'"' -f2)
-        echo "version=${VERSION}" >> $GITHUB_OUTPUT
-        echo "ATP version: ${VERSION}"
+      - name: Setup environment
+        id: setup
+        uses: ./.github/actions/setup-musl-env
 
-    - name: Strip binary
-      shell: bash
-      run: |
-        ${{ inputs.strip-path }} build/bin/atpd
-        echo "Stripped binary size:"
-        ls -la build/bin/atpd
+      - name: Build
+        id: build-atp
+        uses: ./.github/actions/build-atp
+        with:
+          version: ${{ steps.vars.outputs.full_ver }}
+          cc-path: ${{ steps.setup.outputs.cc-path }}
+          strip-path: ${{ steps.setup.outputs.strip-path }}
+          libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
+          libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
+
+      - name: Get Binary Version Info
+        id: version-check
+        shell: bash
+        run: |
+          # 如果是交叉编译，可能需要加上 qemu 才能运行，或者直接从二进制中提取字符串
+          # 假设此时在环境中可以执行 atpd (例如通过 qemu-static)
+          # 如果无法直接运行，则该步骤需根据你的 toolchain 调整
+          V_STR=$(chmod +x build/bin/atpd && ./build/bin/atpd -v 2>&1 || echo "Unknown Version")
+          echo "v_output=$V_STR" >> $GITHUB_OUTPUT
+
+      - name: Calculate Size
+        id: size
+        shell: bash
+        run: |
+          SIZE=$(du -h build/bin/atpd | cut -f1)
+          echo "atp_size=${SIZE}" >> $GITHUB_OUTPUT
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: atpd-${{ steps.vars.outputs.full_ver }}
+          path: build/bin/atpd
+          retention-days: 7
+
+  update-checkpoint:
+    name: Update Checkpoint
+    needs: build
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Update Issue
+        uses: actions/github-script@v7
+        env:
+          FULL_VER: ${{ needs.build.outputs.full_ver }}
+          SIZE: ${{ needs.build.outputs.binary_size }}
+          V_OUTPUT: ${{ needs.build.outputs.v_output }}
+        with:
+          script: |
+            const { FULL_VER, SIZE, V_OUTPUT } = process.env;
+            const now = new Date();
+            const offset = 8;
+            const localTime = new Date(now.getTime() + offset * 3600 * 1000);
+            
+            const fmt = (val) => val.toString().padStart(2, '0');
+            const yy = localTime.getFullYear().toString().slice(-2);
+            const mm = fmt(localTime.getMonth() + 1);
+            const dd = fmt(localTime.getDate());
+            const hh = fmt(localTime.getHours());
+            const min = fmt(localTime.getMinutes());
+            
+            const timestamp = `${yy}${mm}${dd} ${hh}:${min}`;
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
+            const shortSha = context.sha.substring(0, 7);
+
+            const newEntry = [
+              `<details>`,
+              `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${timestamp}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
+              `<p>`,
+              ``,
+              `> **Build Delivery**`,
+              `- 📥 **[Download Build Artifact (atpd)](${runUrl})**`,
+              `- 🔗 **Source:** <a href="${commitUrl}">Commit <code>${shortSha}</code></a>`,
+              `- 📝 **Binary Version (-v):** \`${V_OUTPUT}\``,
+              `- 🏷️ **Metadata:** <code>${FULL_VER}</code>`,
+              ``,
+              `</p>`,
+              `</details>`
+            ].join('\n');
+            
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 6
+            });
+            
+            const newBody = newEntry + "\n\n" + (issue.body || "");
+            
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 6,
+              body: newBody
+            });
+

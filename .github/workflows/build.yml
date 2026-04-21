@@ -17,6 +17,7 @@ jobs:
     outputs:
       full_ver: ${{ steps.vars.outputs.full_ver }}
       binary_size: ${{ steps.size.outputs.atp_size }}
+      v_output: ${{ steps.version-check.outputs.v_output }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -45,6 +46,15 @@ jobs:
           libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
           libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
 
+      - name: Extract Binary Version
+        id: version-check
+        shell: bash
+        run: |
+          # 针对 musl 静态编译，使用 strings 提取版本宏注入的字符串
+          # 假设你的版本号包含类似 "atpd v" 的特征
+          V_STR=$(strings build/bin/atpd | grep "atp" | head -n 1 || echo "${{ steps.vars.outputs.full_ver }}")
+          echo "v_output=$V_STR" >> $GITHUB_OUTPUT
+
       - name: Calculate Size
         id: size
         shell: bash
@@ -72,38 +82,32 @@ jobs:
         env:
           FULL_VER: ${{ needs.build.outputs.full_ver }}
           SIZE: ${{ needs.build.outputs.binary_size }}
+          V_OUTPUT: ${{ needs.build.outputs.v_output }}
         with:
           script: |
-            const { FULL_VER, SIZE } = process.env;
+            const { FULL_VER, SIZE, V_OUTPUT } = process.env;
             
-            // 获取当前时间并处理时区（GitHub Actions 默认是 UTC）
+            // 时区处理：北京时间 (UTC+8)
             const now = new Date();
-            const offset = 8; // 如果需要中国标准时间 (CST)，设置为 8
-            const localTime = new Date(now.getTime() + offset * 3600 * 1000);
+            const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             
-            const fmt = (val) => val.toString().padStart(2, '0');
-            const yy = localTime.getFullYear().toString().slice(-2);
-            const mm = fmt(localTime.getMonth() + 1);
-            const dd = fmt(localTime.getDate());
-            const hh = fmt(localTime.getHours());
-            const min = fmt(localTime.getMinutes());
-            
-            const timestamp = `${yy}${mm}${dd} ${hh}:${min}`;
+            const fmt = (v) => v.toString().padStart(2, '0');
+            const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
             
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
 
-            // 构造折叠项：使用精确到分钟的时间戳
             const newEntry = [
               `<details>`,
-              `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${timestamp}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
+              `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${ts}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
               `<p>`,
               ``,
               `> **Build Delivery**`,
               `- 📥 **[Download Build Artifact (atpd)](${runUrl})**`,
               `- 🔗 **Source:** <a href="${commitUrl}">Commit <code>${shortSha}</code></a>`,
-              `- 📝 **Full Version:** <code>${FULL_VER}</code>`,
+              `- 📝 **Binary Version:** \`${V_OUTPUT}\``,
+              `- 🏷️ **Metadata:** <code>${FULL_VER}</code>`,
               ``,
               `</p>`,
               `</details>`
@@ -115,12 +119,10 @@ jobs:
               issue_number: 6
             });
             
-            const newBody = newEntry + "\n\n" + (issue.body || "");
-            
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: 6,
-              body: newBody
+              body: newEntry + "\n\n" + (issue.body || "")
             });
 
