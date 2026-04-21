@@ -2,7 +2,6 @@
 #include "logger.h"
 #include "utils.h"
 #include "netlink.h"
-#include "netlink_monitor.h"
 #include "service.h"
 #include "api.h"
 #include "fcm_monitor.h"
@@ -163,7 +162,7 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
         return;
     }
 
-    if (api_get_mode(api, current_mode, sizeof(current_mode)) == 0) {
+    if (api_get_mode_sync(api, current_mode, sizeof(current_mode)) == 0) {
         const char *color = COLOR_GREEN;
         if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
@@ -187,7 +186,7 @@ static void status_show_monitors(void) {
     ui_table_header("MONITORS");
 
     /* Netlink Monitor */
-    if (netlink_monitor_is_running()) {
+    if (0) {
         ui_table_subrow_color("├─", "Netlink Monitor", "ACTIVE", COLOR_GREEN);
     } else {
         ui_table_subrow_color("├─", "Netlink Monitor", "INACTIVE", COLOR_RED);

@@ -21,7 +21,7 @@ CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
 CFLAGS += -DATP_LOG_FILE=\"run/atp.log\"
 CFLAGS += -DATP_COMMAND_SOCKET=\"run/atpd.sock\"
 
-# Allow external flags to be appended (do not override internal flags)
+# Allow external flags to be appended
 CFLAGS += $(EXTRA_CFLAGS)
 
 # Debug build
@@ -29,8 +29,8 @@ ifdef DEBUG
 CFLAGS += -g -DATP_DEBUG -O0
 endif
 
-# Libraries
-LIBS = -lpthread -lcurl
+# Libraries (libev replaces libcurl)
+LIBS = -lpthread -lev
 
 # Linker flags
 LDFLAGS ?=
@@ -46,7 +46,6 @@ SRC = \
     src/service.c \
     src/api.c \
     src/netlink.c \
-    src/netlink_monitor.c \
     src/app_filter.c \
     src/fcm_monitor.c \
     src/perf_mode.c \

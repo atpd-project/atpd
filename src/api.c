@@ -4,6 +4,7 @@
  *
  * Clash API client - Pure async epoll-driven state machine
  * Zero blocking, zero libcurl, zero legacy
+ * HTTP/1.1 Keep-Alive support
  */
 
 #include "api.h"
@@ -17,6 +18,8 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <strings.h>
+#include <netdb.h>
+#include <poll.h>
 #include <cjson/cJSON.h>
 
 static void api_parse_url(const char *base_url, char *host, int *port);
@@ -66,8 +69,10 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     
     ctx->timeout_sec = 2;
     ctx->pending_requests = NULL;
+    ctx->keepalive_fd = -1;
+    ctx->keepalive_time = 0;
     
-    LOG_INFO("API initialized (pure async): %s", ctx->base_url);
+    LOG_INFO("API initialized (pure async + keep-alive): %s", ctx->base_url);
     return 0;
 }
 
@@ -79,6 +84,11 @@ void api_cleanup(api_ctx_t *ctx) {
         req = next;
     }
     ctx->pending_requests = NULL;
+    
+    if (ctx->keepalive_fd >= 0) {
+        close(ctx->keepalive_fd);
+        ctx->keepalive_fd = -1;
+    }
 }
 
 static int api_build_http_request(api_request_t *req) {
@@ -90,7 +100,7 @@ static int api_build_http_request(api_request_t *req) {
              "Host: %s\r\n"
              "User-Agent: ATPd/1.0\r\n"
              "Accept: application/json\r\n"
-             "Connection: close\r\n",
+             "Connection: keep-alive\r\n",
              req->method, req->path, req->host);
     
     if (req->ctx->secret[0]) {
@@ -149,6 +159,30 @@ static void api_request_cleanup(api_request_t *req) {
 }
 
 static int api_socket_connect(api_request_t *req) {
+    api_ctx_t *ctx = req->ctx;
+    
+    // 检查缓存的 Keep-Alive 连接是否可用
+    if (ctx->keepalive_fd >= 0) {
+        int error = 0;
+        socklen_t len = sizeof(error);
+        if (getsockopt(ctx->keepalive_fd, SOL_SOCKET, SO_ERROR, &error, &len) == 0 && error == 0) {
+            struct pollfd pfd = { .fd = ctx->keepalive_fd, .events = POLLOUT };
+            if (poll(&pfd, 1, 0) == 1) {
+                req->sock_fd = ctx->keepalive_fd;
+                ctx->keepalive_fd = -1;
+                req->state = API_STATE_SENDING;
+                api_build_http_request(req);
+                LOG_DEBUG("API: reused keep-alive connection (fd=%d)", req->sock_fd);
+                return 0;
+            }
+        }
+        
+        LOG_DEBUG("API: keep-alive connection dead, reconnecting");
+        close(ctx->keepalive_fd);
+        ctx->keepalive_fd = -1;
+    }
+    
+    // 本地连接
     if (strcmp(req->host, "localhost") == 0 || strcmp(req->host, "127.0.0.1") == 0 ||
         strcmp(req->host, "::1") == 0) {
         struct sockaddr_in addr;
@@ -180,6 +214,7 @@ static int api_socket_connect(api_request_t *req) {
         return -1;
     }
     
+    // IP 直连
     struct sockaddr_in addr;
     if (inet_pton(AF_INET, req->host, &addr.sin_addr) == 1) {
         addr.sin_family = AF_INET;
@@ -207,6 +242,7 @@ static int api_socket_connect(api_request_t *req) {
         return -1;
     }
     
+    // DNS 解析
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
@@ -268,11 +304,29 @@ static int api_parse_headers(api_request_t *req) {
     
     char *cl = strcasestr(req->recv_buf, "Content-Length:");
     if (cl) {
-        req->content_length = atoi(cl + 15);
-        req->bytes_to_read = req->content_length;
+        cl = strchr(cl, ':');
+        if (cl) {
+            cl++;
+            while (*cl == ' ') cl++;
+            req->content_length = strtol(cl, NULL, 10);
+            req->bytes_to_read = req->content_length;
+        } else {
+            req->content_length = -1;
+            req->bytes_to_read = 0;
+        }
     } else {
         req->content_length = -1;
         req->bytes_to_read = 0;
+    }
+    
+    // 检查 Connection 头
+    char *conn = strcasestr(req->recv_buf, "Connection:");
+    if (conn) {
+        conn = strchr(conn, ':') + 1;
+        while (*conn == ' ') conn++;
+        if (strncasecmp(conn, "close", 5) == 0) {
+            req->keepalive_disabled = 1;
+        }
     }
     
     if (req->http_code == 204 || req->http_code == 304 ||
@@ -282,6 +336,10 @@ static int api_parse_headers(api_request_t *req) {
     
     char *body_start = header_end + 4;
     req->body_received = req->recv_offset - (body_start - req->recv_buf);
+    
+    LOG_DEBUG("API: headers parsed, HTTP %d, Content-Length: %d, body_received: %zu, bytes_to_read: %zu, keepalive: %s",
+              req->http_code, req->content_length, req->body_received, req->bytes_to_read,
+              req->keepalive_disabled ? "disabled" : "enabled");
     
     return 1;
 }
@@ -295,6 +353,7 @@ static int api_request_async(api_ctx_t *ctx, const char *method, const char *pat
     req->state = API_STATE_IDLE;
     req->sock_fd = -1;
     req->content_length = -1;
+    req->keepalive_disabled = 0;
     strncpy(req->method, method, sizeof(req->method) - 1);
     strncpy(req->path, path, sizeof(req->path) - 1);
     req->body = body ? strdup(body) : NULL;
@@ -306,6 +365,8 @@ static int api_request_async(api_ctx_t *ctx, const char *method, const char *pat
     
     req->next = ctx->pending_requests;
     ctx->pending_requests = req;
+    
+    LOG_DEBUG("API: async request queued: %s %s", method, path);
     
     if (api_socket_connect(req) != 0) {
         req->state = API_STATE_ERROR;
@@ -355,6 +416,7 @@ int api_handle_event(api_ctx_t *ctx, int fd, int events) {
     if (events & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) {
         LOG_ERROR("API: socket error on fd %d", fd);
         req->state = API_STATE_ERROR;
+        req->keepalive_disabled = 1;
         return 0;
     }
     
@@ -367,6 +429,7 @@ int api_handle_event(api_ctx_t *ctx, int fd, int events) {
                 if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) == 0 && error == 0) {
                     req->state = API_STATE_SENDING;
                     api_build_http_request(req);
+                    LOG_DEBUG("API: connected to %s:%d", req->host, req->port);
                 } else {
                     LOG_ERROR("API: connect error: %s", strerror(error));
                     req->state = API_STATE_ERROR;
@@ -384,6 +447,7 @@ int api_handle_event(api_ctx_t *ctx, int fd, int events) {
                         req->state = API_STATE_RECEIVING;
                         free(req->send_buf);
                         req->send_buf = NULL;
+                        LOG_DEBUG("API: request sent, waiting for response");
                     }
                 } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOG_ERROR("API: send failed: %s", strerror(errno));
@@ -417,21 +481,31 @@ int api_handle_event(api_ctx_t *ctx, int fd, int events) {
                     
                     if (!req->headers_complete) {
                         if (api_parse_headers(req)) {
-                            if (req->bytes_to_read == 0) {
+                            char *body_start = strstr(req->recv_buf, "\r\n\r\n") + 4;
+                            req->body_received = req->recv_offset - (body_start - req->recv_buf);
+                            
+                            if (req->body_received >= req->bytes_to_read) {
                                 req->state = API_STATE_DONE;
+                                LOG_DEBUG("API: response complete in header parsing");
                             }
                         }
                     } else {
                         req->body_received += recvd;
+                        
                         if (req->body_received > req->bytes_to_read) {
-                            LOG_ERROR("API: response body exceeds Content-Length");
+                            LOG_ERROR("API: response body exceeds Content-Length (%zu > %zu)",
+                                      req->body_received, req->bytes_to_read);
                             req->state = API_STATE_ERROR;
-                        } else if (req->body_received == req->bytes_to_read) {
+                            req->keepalive_disabled = 1;
+                        } else if (req->body_received >= req->bytes_to_read) {
                             req->state = API_STATE_DONE;
+                            LOG_DEBUG("API: response complete, total %zu bytes", req->body_received);
                         }
                     }
                 } else if (recvd == 0) {
                     req->state = API_STATE_DONE;
+                    req->keepalive_disabled = 1;
+                    LOG_DEBUG("API: peer closed connection");
                 } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
                     LOG_ERROR("API: recv failed: %s", strerror(errno));
                     req->state = API_STATE_ERROR;
@@ -462,16 +536,41 @@ int api_process(api_ctx_t *ctx) {
         
         if (req->state == API_STATE_DONE) {
             ctx->last_http_code = req->http_code;
+            const char *body = api_extract_body(req);
+            
+            LOG_DEBUG("API: request success, HTTP %d, body: %s",
+                      req->http_code, body ? body : "(null)");
+            
             if (req->callback) {
-                const char *body = api_extract_body(req);
                 req->callback(req->http_code, body, req->userdata);
             }
+            
+            // Keep-Alive: 保存连接供下次使用
+            if (req->sock_fd >= 0 && !req->keepalive_disabled && 
+                req->http_code != 404 && req->http_code != 500 && req->http_code != 502) {
+                if (ctx->keepalive_fd >= 0) {
+                    close(ctx->keepalive_fd);
+                }
+                ctx->keepalive_fd = req->sock_fd;
+                ctx->keepalive_time = now;
+                req->sock_fd = -1;
+                LOG_DEBUG("API: saved keep-alive connection (fd=%d)", ctx->keepalive_fd);
+            }
+            
             should_remove = 1;
         } else if (req->state == API_STATE_ERROR) {
             ctx->last_http_code = 0;
+            LOG_DEBUG("API: request failed");
             if (req->callback) {
                 req->callback(0, NULL, req->userdata);
             }
+            
+            if (ctx->keepalive_fd >= 0) {
+                close(ctx->keepalive_fd);
+                ctx->keepalive_fd = -1;
+                LOG_DEBUG("API: closed keep-alive connection due to error");
+            }
+            
             should_remove = 1;
         }
         
@@ -489,41 +588,193 @@ int api_process(api_ctx_t *ctx) {
         req = next;
     }
     
+    // 清理过期的 Keep-Alive 连接（超过 60 秒）
+    if (ctx->keepalive_fd >= 0 && now - ctx->keepalive_time > 60) {
+        LOG_DEBUG("API: keep-alive connection expired");
+        close(ctx->keepalive_fd);
+        ctx->keepalive_fd = -1;
+    }
+    
     return 0;
 }
 
 int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
+    return api_get_mode_sync(ctx, mode, size);
+}
+
+int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
     if (!ctx || !mode || size == 0) return -1;
     
-    api_request_t *req = ctx->pending_requests;
-    while (req) {
-        if (req->state == API_STATE_DONE && req->http_code == 200) {
-            const char *body = api_extract_body(req);
-            if (body) {
-                cJSON *json = cJSON_Parse(body);
-                if (json) {
-                    cJSON *mode_item = cJSON_GetObjectItem(json, "mode");
-                    if (mode_item && cJSON_IsString(mode_item)) {
-                        strncpy(mode, mode_item->valuestring, size - 1);
-                        mode[size - 1] = '\0';
-                        cJSON_Delete(json);
-                        return 0;
-                    }
-                    cJSON_Delete(json);
-                }
-            }
-            return -1;
-        }
-        req = req->next;
+    int sock_fd = -1;
+    int result = -1;
+    char *recv_buf = NULL;
+    size_t recv_size = 4096;
+    size_t recv_offset = 0;
+    
+    char host[64];
+    int port;
+    const char *start;
+    
+    if (strncmp(ctx->base_url, "http://", 7) == 0) {
+        start = ctx->base_url + 7;
+        port = 80;
+    } else {
+        start = ctx->base_url;
+        port = 80;
     }
     
-    return -1;
+    const char *colon = strchr(start, ':');
+    const char *slash = strchr(start, '/');
+    
+    if (colon && (!slash || colon < slash)) {
+        size_t len = colon - start;
+        strncpy(host, start, len);
+        host[len] = '\0';
+        port = atoi(colon + 1);
+    } else if (slash) {
+        size_t len = slash - start;
+        strncpy(host, start, len);
+        host[len] = '\0';
+    } else {
+        strcpy(host, start);
+    }
+    
+    LOG_DEBUG("API sync: connecting to %s:%d", host, port);
+    
+    sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        LOG_ERROR("API sync: socket failed: %s", strerror(errno));
+        return -1;
+    }
+    
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    
+    if (strcmp(host, "localhost") == 0 || strcmp(host, "127.0.0.1") == 0) {
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        struct hostent *he = gethostbyname(host);
+        if (!he) {
+            LOG_ERROR("API sync: DNS failed for %s", host);
+            goto cleanup;
+        }
+        memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
+    }
+    
+    struct timeval tv = { .tv_sec = ctx->timeout_sec, .tv_usec = 0 };
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    
+    if (connect(sock_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        LOG_ERROR("API sync: connect failed: %s", strerror(errno));
+        goto cleanup;
+    }
+    
+    char headers[2048];
+    int header_len;
+    
+    header_len = snprintf(headers, sizeof(headers),
+             "GET /configs HTTP/1.1\r\n"
+             "Host: %s\r\n"
+             "User-Agent: ATPd/1.0\r\n"
+             "Accept: application/json\r\n"
+             "Connection: close\r\n",
+             host);
+    
+    if (ctx->secret[0]) {
+        header_len += snprintf(headers + header_len, sizeof(headers) - header_len,
+                               "Authorization: Bearer %s\r\n", ctx->secret);
+    }
+    
+    header_len += snprintf(headers + header_len, sizeof(headers) - header_len, "\r\n");
+    
+    ssize_t sent = send(sock_fd, headers, header_len, 0);
+    if (sent != header_len) {
+        LOG_ERROR("API sync: send failed: %s", strerror(errno));
+        goto cleanup;
+    }
+    
+    LOG_DEBUG("API sync: request sent, waiting for response");
+    
+    recv_buf = malloc(recv_size);
+    if (!recv_buf) {
+        LOG_ERROR("API sync: malloc failed");
+        goto cleanup;
+    }
+    
+    while (1) {
+        if (recv_offset >= recv_size - 1) {
+            recv_size *= 2;
+            char *new_buf = realloc(recv_buf, recv_size);
+            if (!new_buf) goto cleanup;
+            recv_buf = new_buf;
+        }
+        
+        ssize_t recvd = recv(sock_fd, recv_buf + recv_offset, recv_size - recv_offset - 1, 0);
+        if (recvd > 0) {
+            recv_offset += recvd;
+            recv_buf[recv_offset] = '\0';
+            
+            char *header_end = strstr(recv_buf, "\r\n\r\n");
+            if (header_end) {
+                char *cl = strcasestr(recv_buf, "Content-Length:");
+                if (cl) {
+                    cl = strchr(cl, ':') + 1;
+                    while (*cl == ' ') cl++;
+                    int content_length = atoi(cl);
+                    size_t body_start = header_end + 4 - recv_buf;
+                    size_t body_received = recv_offset - body_start;
+                    if (body_received >= (size_t)content_length) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        } else if (recvd == 0) {
+            break;
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            LOG_ERROR("API sync: recv failed: %s", strerror(errno));
+            goto cleanup;
+        }
+    }
+    
+    LOG_DEBUG("API sync: response received (%zu bytes)", recv_offset);
+    
+    char *body = strstr(recv_buf, "\r\n\r\n");
+    if (body) {
+        body += 4;
+        cJSON *json = cJSON_Parse(body);
+        if (json) {
+            cJSON *mode_item = cJSON_GetObjectItem(json, "mode");
+            if (mode_item && cJSON_IsString(mode_item)) {
+                strncpy(mode, mode_item->valuestring, size - 1);
+                mode[size - 1] = '\0';
+                result = 0;
+                LOG_DEBUG("API sync: mode = %s", mode);
+            }
+            cJSON_Delete(json);
+        }
+    }
+    
+cleanup:
+    if (sock_fd >= 0) close(sock_fd);
+    free(recv_buf);
+    return result;
 }
 
 static const char *api_extract_body(api_request_t *req) {
-    if (!req->recv_buf) return NULL;
+    if (!req->recv_buf || req->recv_offset == 0) return NULL;
     char *body = strstr(req->recv_buf, "\r\n\r\n");
-    return body ? body + 4 : NULL;
+    if (!body) return NULL;
+    body += 4;
+    if ((size_t)(body - req->recv_buf) >= req->recv_offset) return NULL;
+    return body;
 }
 
 const char *api_mode_to_string(api_mode_t mode) {
@@ -541,4 +792,74 @@ api_mode_t api_string_to_mode(const char *str) {
     if (strcmp(str, "Direct") == 0) return API_MODE_DIRECT;
     if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
     return API_MODE_RULE;
+}
+
+// 解析完整 URL
+static void api_parse_full_url(const char *url, char *host, int *port, char *path, size_t path_size) {
+    const char *start;
+
+    if (strncmp(url, "https://", 8) == 0) {
+        LOG_ERROR("API: HTTPS not supported for raw requests");
+        start = url + 8;
+        *port = 443;
+    } else if (strncmp(url, "http://", 7) == 0) {
+        start = url + 7;
+        *port = 80;
+    } else {
+        start = url;
+        *port = 80;
+    }
+
+    const char *slash = strchr(start, '/');
+    const char *colon = strchr(start, ':');
+
+    if (colon && (!slash || colon < slash)) {
+        size_t len = colon - start;
+        strncpy(host, start, len);
+        host[len] = '\0';
+        *port = atoi(colon + 1);
+        if (slash) {
+            strncpy(path, slash, path_size - 1);
+        } else {
+            strcpy(path, "/");
+        }
+    } else if (slash) {
+        size_t len = slash - start;
+        strncpy(host, start, len);
+        host[len] = '\0';
+        strncpy(path, slash, path_size - 1);
+    } else {
+        strcpy(host, start);
+        strcpy(path, "/");
+    }
+}
+
+int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
+                          const char *body, api_callback_t callback, void *userdata) {
+    api_request_t *req = calloc(1, sizeof(api_request_t));
+    if (!req) return -1;
+
+    req->ctx = ctx;
+    req->state = API_STATE_IDLE;
+    req->sock_fd = -1;
+    req->content_length = -1;
+    req->keepalive_disabled = 1;  // raw 请求不复用 keep-alive
+    strncpy(req->method, method, sizeof(req->method) - 1);
+    req->body = body ? strdup(body) : NULL;
+    req->callback = callback;
+    req->userdata = userdata;
+    req->start_time = time(NULL);
+
+    api_parse_full_url(url, req->host, &req->port, req->path, sizeof(req->path));
+
+    req->next = ctx->pending_requests;
+    ctx->pending_requests = req;
+
+    LOG_DEBUG("API: raw async request queued: %s %s", method, url);
+
+    if (api_socket_connect(req) != 0) {
+        req->state = API_STATE_ERROR;
+    }
+
+    return 0;
 }

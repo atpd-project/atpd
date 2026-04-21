@@ -1,5 +1,5 @@
 name: Setup musl build environment
-description: Installs musl toolchain and builds libcurl
+description: Installs musl toolchain and builds libev
 
 outputs:
   cc-path:
@@ -14,12 +14,12 @@ outputs:
   strip-path:
     description: 'Path to musl-strip'
     value: ${{ steps.setup.outputs.strip }}
-  curl-include-path:
-    description: 'Path to libcurl include dir'
-    value: /tmp/curl-musl/include
-  curl-lib-path:
-    description: 'Path to libcurl lib dir'
-    value: /tmp/curl-musl/lib
+  libev-include-path:
+    description: 'Path to libev include dir'
+    value: /tmp/libev-musl/include
+  libev-lib-path:
+    description: 'Path to libev lib dir'
+    value: /tmp/libev-musl/lib
 
 runs:
   using: composite
@@ -30,11 +30,10 @@ runs:
         source .github/env/versions.conf
         echo "MUSL_TOOLCHAIN_URL=$MUSL_TOOLCHAIN_URL" >> $GITHUB_ENV
         echo "MUSL_TOOLCHAIN_TRIPLET=$MUSL_TOOLCHAIN_TRIPLET" >> $GITHUB_ENV
-        echo "CURL_VERSION=$CURL_VERSION" >> $GITHUB_ENV
-        echo "CURL_DOWNLOAD_URL=$CURL_DOWNLOAD_URL" >> $GITHUB_ENV
-        echo "CURL_INSTALL_DIR=/tmp/curl-musl" >> $GITHUB_ENV
-        echo "CURL_BUILD_DIR=/tmp/curl-build" >> $GITHUB_ENV
-        echo "ATP_VERSION=$ATP_VERSION" >> $GITHUB_ENV
+        echo "LIBEV_VERSION=$LIBEV_VERSION" >> $GITHUB_ENV
+        echo "LIBEV_DOWNLOAD_URL=$LIBEV_DOWNLOAD_URL" >> $GITHUB_ENV
+        echo "LIBEV_INSTALL_DIR=/tmp/libev-musl" >> $GITHUB_ENV
+        echo "LIBEV_BUILD_DIR=/tmp/libev-build" >> $GITHUB_ENV
 
     - name: Setup musl toolchain
       id: setup
@@ -42,48 +41,35 @@ runs:
       run: |
         wget -q "$MUSL_TOOLCHAIN_URL" -O toolchain.tar.xz
         tar -xJf toolchain.tar.xz
-        
         TOOLCHAIN_BIN=$(find "$PWD" -maxdepth 3 -name "$MUSL_TOOLCHAIN_TRIPLET-gcc" | head -1 | xargs -I{} dirname {})
         if [ -z "$TOOLCHAIN_BIN" ]; then
           echo "ERROR: could not find $MUSL_TOOLCHAIN_TRIPLET-gcc"
           exit 1
         fi
-        
         echo "$TOOLCHAIN_BIN" >> $GITHUB_PATH
-        
         echo "cc=$TOOLCHAIN_BIN/$MUSL_TOOLCHAIN_TRIPLET-gcc" >> $GITHUB_OUTPUT
         echo "ar=$TOOLCHAIN_BIN/$MUSL_TOOLCHAIN_TRIPLET-ar" >> $GITHUB_OUTPUT
         echo "ranlib=$TOOLCHAIN_BIN/$MUSL_TOOLCHAIN_TRIPLET-ranlib" >> $GITHUB_OUTPUT
         echo "strip=$TOOLCHAIN_BIN/$MUSL_TOOLCHAIN_TRIPLET-strip" >> $GITHUB_OUTPUT
 
-    - name: Cache libcurl
-      id: cache-curl
+    - name: Cache libev
+      id: cache-libev
       uses: actions/cache@v4
       with:
-        path: /tmp/curl-musl
-        key: curl-musl-${{ env.CURL_VERSION }}
+        path: ${{ env.LIBEV_INSTALL_DIR }}
+        key: libev-musl-${{ env.LIBEV_VERSION }}
 
-    - name: Build libcurl
-      if: steps.cache-curl.outputs.cache-hit != 'true'
+    - name: Build libev
+      if: steps.cache-libev.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        mkdir -p "$CURL_BUILD_DIR" && cd "$CURL_BUILD_DIR"
-        curl -L "$CURL_DOWNLOAD_URL" -o curl.tar.gz
-        tar -xzf curl.tar.gz --strip-components=1
-        
+        mkdir -p "$LIBEV_BUILD_DIR" && cd "$LIBEV_BUILD_DIR"
+        curl -L "$LIBEV_DOWNLOAD_URL" -o libev.tar.gz
+        tar -xzf libev.tar.gz --strip-components=1
         ./configure \
           --host="$MUSL_TOOLCHAIN_TRIPLET" \
-          --prefix="$CURL_INSTALL_DIR" \
+          --prefix="$LIBEV_INSTALL_DIR" \
           --disable-shared \
-          --enable-static \
-          --disable-ldap --disable-ldaps --disable-rtsp --disable-dict \
-          --disable-telnet --disable-tftp --disable-pop3 --disable-imap \
-          --disable-smtp --disable-gopher --disable-mqtt --disable-smb \
-          --disable-ntlm --disable-ntlm-wb --disable-tls-srp \
-          --disable-cookies --disable-dateparse --disable-dnsshuffle \
-          --disable-alt-svc --disable-hsts \
-          --without-ssl --without-zlib --without-brotli --without-zstd \
-          --without-libpsl --without-libidn2 --without-libgsasl --without-librtmp
-        
+          --enable-static
         make -j$(nproc) && make install
-        rm -rf "$CURL_BUILD_DIR"
+        rm -rf "$LIBEV_BUILD_DIR"
