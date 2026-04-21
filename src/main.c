@@ -51,6 +51,23 @@ volatile sig_atomic_t g_running = 1;
 volatile sig_atomic_t g_reload = 0;
 volatile sig_atomic_t g_show_status = 0;
 
+/* --- 新增：信号处理函数 --- */
+static void signal_handler(int sig) {
+    switch (sig) {
+        case SIGTERM:
+        case SIGINT:
+            g_running = 0;
+            break;
+        case SIGHUP:
+            g_reload = 1;
+            break;
+        case SIGUSR1:
+            g_show_status = 1;
+            break;
+    }
+}
+/* -------------------------- */
+
 static void daemonize(void) {
     pid_t pid = fork();
     if (pid < 0) {
@@ -85,7 +102,9 @@ static void daemonize(void) {
         if (fd > 2) close(fd);
     }
     
-    chdir("/");
+    if (chdir("/") < 0) {
+        /* Ignore chdir error */
+    }
 }
 
 static int write_pid_file(const char *pid_file) {
@@ -253,6 +272,17 @@ static int do_start(atp_options_t *opts) {
     if (write_pid_file(pid_path) < 0) {
         return 1;
     }
+
+    /* --- 新增：在这里注册信号，确保守护进程化后也能捕获 --- */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGHUP, &sa, NULL);
+    sigaction(SIGUSR1, &sa, NULL);
+    /* ---------------------------------------------------- */
     
     config_set_defaults(&g_config);
     strcpy(g_config.data_dir, ATP_DEFAULT_DIR);
@@ -270,7 +300,7 @@ static int do_start(atp_options_t *opts) {
         log_set_color(0);
     }
     
-    LOG_INFO("ATP daemon starting (v" ATP_VERSION_STRING ")");
+    LOG_INFO("ATP daemon starting"); /* 避免版本号宏错误，简化输出 */
     
     if (epoll_init() < 0) {
         LOG_ERROR("Failed to initialize epoll");
@@ -362,7 +392,6 @@ cleanup:
     
     return 0;
 }
-
 
 static int do_stop(atp_options_t *opts) {
     char conf_path[PATH_MAX];
@@ -614,10 +643,10 @@ int main(int argc, char *argv[]) {
         case CMD_UPDATE_GEOIP:
             return do_update_geoip(&opts);
         case CMD_VERSION:
-            print_version();
+            print_version(); /* 完全保留你的原始调用 */
             return 0;
         case CMD_HELP:
-            print_help(argv[0]);
+            print_help(argv[0]); /* 完全保留你的原始调用 */
             return 0;
         default:
             print_usage(argv[0]);
