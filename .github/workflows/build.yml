@@ -1,5 +1,5 @@
 name: Build ATP for Android (musl)
-run-name: ATPD-Build [${{ github.ref_name }}] ${{ github.event.head_commit.message }}
+run-name: ATPD-${{ github.ref_name }} [${{ github.sha.short }}]
 
 on:
   push:
@@ -18,7 +18,6 @@ jobs:
       contents: read
     outputs:
       full_ver: ${{ steps.vars.outputs.full_ver }}
-      file_name: ${{ steps.vars.outputs.file_name }}
       features: ${{ steps.build-atp.outputs.features }}
       binary_size: ${{ steps.size.outputs.atp_size }}
     steps:
@@ -32,16 +31,8 @@ jobs:
         shell: bash
         run: |
           SHA=$(git rev-parse --short HEAD)
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            ID="pr${{ github.event.number }}+${SHA}"
-          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            ID="${{ github.ref_name }}"
-          else
-            BRANCH=$(echo "${{ github.ref_name }}" | sed 's/feat-//')
-            ID="${BRANCH}+${SHA}"
-          fi
-          echo "full_ver=atp-${ID}" >> $GITHUB_OUTPUT
-          echo "file_name=atpd-${ID}" >> $GITHUB_OUTPUT
+          BRANCH=$(echo "${{ github.ref_name }}" | sed 's/feat-//' | tr '[:lower:]' '[:upper:]')
+          echo "full_ver=${BRANCH}+${SHA}" >> $GITHUB_OUTPUT
 
       - name: Setup environment
         id: setup
@@ -67,7 +58,7 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.vars.outputs.file_name }}
+          name: atpd-${{ steps.vars.outputs.full_ver }}
           path: build/bin/atpd
           retention-days: 7
 
@@ -89,17 +80,17 @@ jobs:
           script: |
             const { FULL_VER, FEATURES, SIZE } = process.env;
             const now = new Date();
-            const date = now.getFullYear().toString().slice(-2) + 
-                         (now.getMonth() + 1).toString().padStart(2, '0') + 
+            const date = (now.getMonth() + 1).toString().padStart(2, '0') + 
                          now.getDate().toString().padStart(2, '0');
             
-            const branch = context.ref.replace('refs/heads/', '').replace('feat-', '').toUpperCase();
-            // Shorten commit message for table clarity
-            const rawMsg = context.payload.head_commit.message.split('\n')[0].substring(0, 40).replace(/\|/g, '\\|');
+            let rawMsg = context.payload.head_commit.message.split('\n')[0].replace(/\|/g, '\\|');
+            if (rawMsg.length > 35) {
+              rawMsg = rawMsg.substring(0, 32) + "...";
+            }
             
-            const shortVer = FULL_VER.replace('atp-', '');
-            const displayMsg = `**[${branch}]** ${rawMsg} \`${FEATURES}\``;
-            const buildId = `✅ \`${shortVer}\``;
+            const buildId = `✅ \`${FULL_VER}\``;
+            const infoCol = `${date} · ${SIZE}`;
+            const notes = `**${rawMsg}**<br><sub>Features: ${FEATURES}</sub>`;
             
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
@@ -107,14 +98,14 @@ jobs:
               issue_number: 5
             });
             
-            // Re-define table headers to be shorter
-            const headerRegex = /\| Build ID \| Date \| Size \| Changes & Features \|/;
-            const newHeader = "| Build ID | Date | Size | Features / Notes |";
+            const newHeader = "| Build ID | Info | Notes |";
+            const divider = "| :--- | :--- | :--- |";
             
-            const newRow = `| ${buildId} | ${date} | ${SIZE} | ${displayMsg} |`;
+            let newBody = issue.body.replace(/\| Build ID \|.*\|/, newHeader);
+            newBody = newBody.replace(/\| :--- \|.*\|/, divider);
             
-            let newBody = issue.body.replace(headerRegex, newHeader);
-            newBody = newBody.replace(/(\| :--- \| :--- \| :--- \| :--- \|)/, `$1\n${newRow}`);
+            const newRow = `| ${buildId} | ${infoCol} | ${notes} |`;
+            newBody = newBody.replace(/(\| :--- \| :--- \| :--- \|)/, `$1\n${newRow}`);
             
             await github.rest.issues.update({
               owner: context.repo.owner,
