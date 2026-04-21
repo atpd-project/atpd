@@ -3,10 +3,17 @@ run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
   push:
-    branches: [dev, main, test-ci-refine]
-    tags: [ 'v*' ]
-    paths: [ 'src/**', 'include/**', 'scripts/**', 'Makefile', '.github/**' ]
+    # 允许所有分支构建，但只有特定路径变动才触发
+    branches: [ '**' ]
+    paths: [ 'src/**', 'include/**', 'scripts/**', 'Makefile', 'Dockerfile', '.github/workflows/build.yml' ]
+  pull_request:
+    branches: [ main, dev ]
   workflow_dispatch:
+
+# 防止资源滥用：新提交自动取消旧的未完成构建
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-and-verify:
@@ -33,6 +40,9 @@ jobs:
           context: .
           platforms: linux/arm64
           outputs: type=local,dest=./dist
+          # 启用 GitHub Actions 高速缓存
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Extract Metadata
         id: extract
@@ -51,7 +61,11 @@ jobs:
   update-status:
     name: 📝 Update Checkpoint
     needs: build-and-verify
-    if: success() && github.event_name != 'pull_request'
+    # 只有构建成功，且是 main 或 dev 分支时才更新 Issue
+    if: |
+      success() && 
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') &&
+      github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -77,7 +91,7 @@ jobs:
               `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${ts}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
               `<p>`,
               ``,
-              `> **Build Delivery (Decoupled)**`,
+              `> **Build Delivery (Optimized)**`,
               `- 📥 **[Download Build Artifact](${runUrl})**`,
               `- 📝 **Runtime Version (-v):** \`${V_OUTPUT}\``,
               `- 🔗 **Source:** Commit <code>${shortSha}</code>`,
