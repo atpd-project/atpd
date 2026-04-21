@@ -1,13 +1,11 @@
 name: Build ATP for Android (musl)
-run-name: ATPD-${{ github.ref_name }} [${{ github.sha.short }}]
+run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
   push:
     branches: [dev, main, test-ci-refine]
     tags: [ 'v*' ]
     paths: [ 'src/**', 'include/**', 'scripts/**', 'Makefile', '.github/**' ]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -18,7 +16,6 @@ jobs:
       contents: read
     outputs:
       full_ver: ${{ steps.vars.outputs.full_ver }}
-      features: ${{ steps.build-atp.outputs.features }}
       binary_size: ${{ steps.size.outputs.atp_size }}
     steps:
       - name: Checkout code
@@ -40,7 +37,6 @@ jobs:
 
       - name: Build
         id: build-atp
-        uses: ./.github/actions/build-atp
         with:
           version: ${{ steps.vars.outputs.full_ver }}
           cc-path: ${{ steps.setup.outputs.cc-path }}
@@ -74,23 +70,21 @@ jobs:
         uses: actions/github-script@v7
         env:
           FULL_VER: ${{ needs.build.outputs.full_ver }}
-          FEATURES: ${{ needs.build.outputs.features }}
           SIZE: ${{ needs.build.outputs.binary_size }}
         with:
           script: |
-            const { FULL_VER, FEATURES, SIZE } = process.env;
+            const { FULL_VER, SIZE } = process.env;
             const now = new Date();
             const date = (now.getMonth() + 1).toString().padStart(2, '0') + 
                          now.getDate().toString().padStart(2, '0');
             
-            let rawMsg = context.payload.head_commit.message.split('\n')[0].replace(/\|/g, '\\|');
-            if (rawMsg.length > 35) {
-              rawMsg = rawMsg.substring(0, 32) + "...";
-            }
+            // 1. 注入 Commit 链接逻辑，解决 Notes 空白
+            const shortSha = context.sha.substring(0, 7);
+            const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             
             const buildId = `✅ \`${FULL_VER}\``;
             const infoCol = `${date} · ${SIZE}`;
-            const notes = `**${rawMsg}**<br><sub>Features: ${FEATURES}</sub>`;
+            const notesCol = `[${shortSha}](${commitUrl})`;
             
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
@@ -98,13 +92,16 @@ jobs:
               issue_number: 5
             });
             
+            // 2. 强制定义三列标题
             const newHeader = "| Build ID | Info | Notes |";
             const divider = "| :--- | :--- | :--- |";
+            const newRow = `| ${buildId} | ${infoCol} | ${notesCol} |`;
             
-            let newBody = issue.body.replace(/\| Build ID \|.*\|/, newHeader);
+            let newBody = issue.body;
+            // 替换表头（如果存在旧的四列标题）
+            newBody = newBody.replace(/\| Build ID \|.*\|/, newHeader);
             newBody = newBody.replace(/\| :--- \|.*\|/, divider);
-            
-            const newRow = `| ${buildId} | ${infoCol} | ${notes} |`;
+            // 注入新行
             newBody = newBody.replace(/(\| :--- \| :--- \| :--- \|)/, `$1\n${newRow}`);
             
             await github.rest.issues.update({
