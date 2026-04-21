@@ -1,0 +1,33 @@
+# 直接使用官方 alpine，配合 --platform 指定架构
+FROM alpine:latest AS builder
+
+# 安装编译所需的静态工具链
+RUN apk add --no-cache \
+    gcc \
+    musl-dev \
+    make \
+    libev-dev \
+    libev-static \
+    pcre2-dev \
+    git \
+    file
+
+WORKDIR /app
+COPY . .
+
+# 生成版本并编译
+RUN chmod +x scripts/gen_version.sh && ./scripts/gen_version.sh
+RUN make clean && make -j$(nproc) \
+    EXTRA_CFLAGS="-I/usr/include" \
+    EXTRA_LDFLAGS="-L/usr/lib -lev -pthread -static"
+
+# 运行并捕获版本，同时做静态检查
+RUN ./build/bin/atpd -v > /app/runtime_version.txt
+RUN file build/bin/atpd > /app/static_check.txt
+
+# 最终导出阶段
+FROM scratch
+COPY --from=builder /app/build/bin/atpd /atpd
+COPY --from=builder /app/runtime_version.txt /runtime_version.txt
+COPY --from=builder /app/static_check.txt /static_check.txt
+
