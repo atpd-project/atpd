@@ -13,7 +13,6 @@
 #include "service.h"
 #include "api.h"
 #include "netlink.h"
-#include "netlink_monitor.h"
 #include "app_filter.h"
 #include "fcm_monitor.h"
 #include "perf_mode.h"
@@ -199,11 +198,11 @@ static int confirm_operation(const char *operation, int force) {
 static void handle_netlink_fd(int fd, void *data) {
     (void)fd;
     (void)data;
-    netlink_monitor_handle();
+    netlink_handle_event();
 }
 
 static void run_event_loop(service_ctx_t *svc, api_ctx_t *api) {
-    int netlink_fd = netlink_monitor_get_fd();
+    int netlink_fd = netlink_get_fd();
 
     if (netlink_fd >= 0) {
         epoll_add_fd(netlink_fd, handle_netlink_fd, NULL);
@@ -322,7 +321,7 @@ static int do_start(atp_options_t *opts) {
         }
     }
     
-    if (netlink_monitor_init(&g_config) < 0) {
+    if (netlink_init(&g_config) < 0) {
         LOG_ERROR("Failed to initialize netlink monitor");
         goto cleanup;
     }
@@ -385,7 +384,7 @@ static int do_start(atp_options_t *opts) {
     free(svc);
     
     fcm_monitor_cleanup();
-    netlink_monitor_cleanup();
+    netlink_cleanup();
     netlink_cleanup();
     
 cleanup:
