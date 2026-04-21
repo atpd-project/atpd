@@ -277,6 +277,9 @@ static int do_start(atp_options_t *opts) {
         goto cleanup;
     }
     
+    if (netlink_init() < 0) {
+        LOG_ERROR("Failed to initialize netlink");
+        goto cleanup;
     }
     
     if (g_config.app_proxy_enable) {
