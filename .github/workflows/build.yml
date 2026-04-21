@@ -75,19 +75,29 @@ jobs:
         with:
           script: |
             const { FULL_VER, SIZE } = process.env;
+            
+            // 获取当前时间并处理时区（GitHub Actions 默认是 UTC）
             const now = new Date();
-            const date = (now.getMonth() + 1).toString().padStart(2, '0') + 
-                         '/' + now.getDate().toString().padStart(2, '0');
+            const offset = 8; // 如果需要中国标准时间 (CST)，设置为 8
+            const localTime = new Date(now.getTime() + offset * 3600 * 1000);
+            
+            const fmt = (val) => val.toString().padStart(2, '0');
+            const yy = localTime.getFullYear().toString().slice(-2);
+            const mm = fmt(localTime.getMonth() + 1);
+            const dd = fmt(localTime.getDate());
+            const hh = fmt(localTime.getHours());
+            const min = fmt(localTime.getMinutes());
+            
+            const timestamp = `${yy}${mm}${dd} ${hh}:${min}`;
             
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
-            const branch = context.ref.replace('refs/heads/', '').toUpperCase();
 
-            // 使用 white-space: nowrap 强制 Summary 不折行
+            // 构造折叠项：使用精确到分钟的时间戳
             const newEntry = [
               `<details>`,
-              `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; [<code>${branch}</code>] &nbsp; <code>${date}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
+              `<summary><span style="white-space: nowrap;">🟢 <b>#${context.runNumber}</b> &nbsp; <code>${timestamp}</code> &nbsp; 📦 <b>Size:</b> <code>${SIZE}</code></span></summary>`,
               `<p>`,
               ``,
               `> **Build Delivery**`,
