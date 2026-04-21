@@ -80,29 +80,29 @@ jobs:
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
 
-            const buildId = `✅ [#${context.runNumber}](${runUrl})`;
-            const infoCol = `**[${SIZE}](${runUrl})**`;
-            const notesCol = `[${shortSha}](${commitUrl})`;
+            const buildCol = `✅ [#${context.runNumber}](${runUrl})`;
+            const artifactCol = `**[${SIZE}](${runUrl})**`;
+            const commitCol = `[${shortSha}](${commitUrl})`;
             
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: 5
+              issue_number: 6
             });
             
-            const newHeader = "| Build ID | Info | Notes |";
+            const newHeader = "| Build ID | Artifact | Commit |";
             const divider = "| :--- | :--- | :--- |";
-            const newRow = `| ${buildId} | ${infoCol} | ${notesCol} |`;
+            const newRow = `| ${buildCol} | ${artifactCol} | ${commitCol} |`;
             
             let newBody = issue.body;
-            newBody = newBody.replace(/\| Build ID \|.*\|/, newHeader);
-            newBody = newBody.replace(/\| :--- \|.*\|/, divider);
+            newBody = newBody.replace(/\| Build ID \|.*\|/g, newHeader);
+            newBody = newBody.replace(/\| :--- \|.*\|/g, divider);
             newBody = newBody.replace(/(\| :--- \| :--- \| :--- \|)/, `$1\n${newRow}`);
             
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: 5,
+              issue_number: 6,
               body: newBody
             });
 
