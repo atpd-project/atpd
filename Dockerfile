@@ -1,22 +1,21 @@
 FROM alpine:3.21
 
 RUN apk add --no-cache \
-    clang \
-    llvm \
+    clang19 \
+    llvm19-static \
+    llvm19-dev \
     make \
     musl-dev \
     libev-dev \
     libev-static \
     linux-headers \
-    dos2unix \
     git \
+    dos2unix \		
     file
 
-ENV CC=clang
-ENV STRIP=llvm-strip
-ENV CFLAGS="-O3 -flto=thin"
+ENV CC=clang-19
+ENV STRIP=llvm-strip-19
 
 WORKDIR /app
-
 CMD ["make", "clean", "all"]
 
