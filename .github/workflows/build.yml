@@ -38,7 +38,7 @@ jobs:
           outputs: type=local,dest=.
           cache-from: type=gha
           cache-to: type=gha,mode=max
-            - name: Extract Metadata
+      - name: Extract Metadata
         id: extract
         run: |
           mkdir -p ./dist
