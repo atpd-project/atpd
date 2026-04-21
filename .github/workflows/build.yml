@@ -81,14 +81,11 @@ jobs:
             
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
-            
-            let cleanMsg = context.payload.head_commit.message.split('\n')[0].replace(/\|/g, '\\|');
-            cleanMsg = cleanMsg.replace(/^(feat|fix|ci|refactor|docs|style|test)(\(.*\))?: /i, '');
-            if (cleanMsg.length > 28) cleanMsg = cleanMsg.substring(0, 25) + "...";
+            const shortSha = context.sha.substring(0, 7);
 
             const buildId = `✅ [#${context.runNumber}](${runUrl})`;
             const infoCol = `${date} · ${SIZE}`;
-            const notesCol = `[${cleanMsg}](${commitUrl})`;
+            const notesCol = `[${shortSha}](${commitUrl})`;
             
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
