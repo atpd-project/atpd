@@ -42,11 +42,14 @@ jobs:
         id: real-version
         shell: bash
         run: |
-          # 使用更现代、稳定的方式注册 aarch64 模拟器
-          docker run --privileged --rm tonistiigi/binfmt --install arm64
+          # 注册 arm64 解释器，忽略可能发生的 141 管道错误 (SIGPIPE)
+          docker run --privileged --rm tonistiigi/binfmt --install arm64 || true
           
-          # 挂载当前构建目录到容器内运行
-          # 使用 --platform 明确指定架构，并捕获 atpd -v 的真实输出
+          # 确保 bin 目录权限正确
+          chmod +x ${{ github.workspace }}/build/bin/atpd
+          
+          # 运行 atpd -v 获取真实运行版本信息
+          # 使用 --platform 强制使用 arm64 解释器
           RAW_V=$(docker run --rm --platform linux/arm64 -v ${{ github.workspace }}/build/bin:/app arm64v8/alpine /app/atpd -v 2>&1 | head -n 1)
           
           echo "v_output=${RAW_V}" >> $GITHUB_OUTPUT
@@ -86,7 +89,6 @@ jobs:
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
-            
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
