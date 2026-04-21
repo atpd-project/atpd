@@ -303,14 +303,14 @@ static int do_start(atp_options_t *opts) {
         log_set_color(0);
     }
     
-    LOG_INFO("ATP daemon starting (v%s)", ATP_VERSION);
+    LOG_INFO("ATP daemon starting (v%s)", ATP_VERSION_STRING);
     
     if (epoll_init() < 0) {
         LOG_ERROR("Failed to initialize epoll");
         goto cleanup;
     }
     
-    if (netlink_init() < 0) {
+    if (netlink_init(NULL, NULL) < 0) {
         LOG_ERROR("Failed to initialize netlink");
         goto cleanup;
     }
@@ -623,7 +623,7 @@ static int do_version(atp_options_t *opts) {
     (void)opts;  /* unused */
 
     printf("atpd - Advanced Task Processor Daemon\n");
-    printf("Version: %s\n", ATP_VERSION);
+    printf("Version: %s\n", ATP_VERSION_STRING);
     printf("Build:   %s %s\n", __DATE__, __TIME__);
     printf("\nFeatures:\n");
 #ifdef WITH_SSL
@@ -642,7 +642,7 @@ static int do_version(atp_options_t *opts) {
     printf("  JSON API: disabled\n");
 #endif
     printf("\n");
-    printf("Report bugs to: %s\n", ATP_BUGREPORT);
+    printf("Report bugs to: %s\n", "https://github.com/atpd-project/atpd/issues");
 
     return 0;
 }
@@ -734,7 +734,7 @@ int main(int argc, char *argv[]) {
     /* Initialize options with defaults */
     memset(&opts, 0, sizeof(opts));
     opts.force = 0;
-    opts.debug = 0;
+    opts.verbose = 0;
     opts.no_color = 0;
     opts.quiet = 0;
     opts.config_file[0] = '\0';
@@ -764,7 +764,7 @@ int main(int argc, char *argv[]) {
                 opts.force = 1;
                 break;
             case 'd':
-                opts.debug = 1;
+                opts.verbose = 1;
                 break;
             case 'n':
                 opts.no_color = 1;
