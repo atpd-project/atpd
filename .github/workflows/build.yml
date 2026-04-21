@@ -1,5 +1,5 @@
 name: Build ATP for Android (musl)
-run-name: ATPD-Build [${{ github.ref_name }}] - ${{ github.sha }}
+run-name: ATPD-Build [${{ github.ref_name }}] ${{ github.event.head_commit.message }}
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
       full_ver: ${{ steps.vars.outputs.full_ver }}
       file_name: ${{ steps.vars.outputs.file_name }}
       features: ${{ steps.build-atp.outputs.features }}
-      binary_size: ${{ steps.build-atp.outputs.binary_size }}
+      binary_size: ${{ steps.size.outputs.atp_size }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -57,6 +57,14 @@ jobs:
           libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
           libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
 
+      - name: Calculate Size
+        id: size
+        shell: bash
+        run: |
+          # Get size in human-readable format
+          SIZE=$(du -h build/bin/atpd | cut -f1)
+          echo "atp_size=${SIZE}" >> $GITHUB_OUTPUT
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
@@ -89,8 +97,10 @@ jobs:
             const branch = context.ref.replace('refs/heads/', '').replace('feat-', '').toUpperCase();
             const rawMsg = context.payload.head_commit.message.split('\n')[0].substring(0, 50).replace(/\|/g, '\\|');
             
+            // Refine display for mobile: use short version for Build ID
+            const shortVer = FULL_VER.replace('atp-', '');
             const displayMsg = `**[CI]** **[${branch}]** ${rawMsg} \`${FEATURES}\``;
-            const buildId = `✅ \`${FULL_VER}\``;
+            const buildId = `✅ \`${shortVer}\``;
             
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
