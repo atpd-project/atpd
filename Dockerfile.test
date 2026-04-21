@@ -7,7 +7,6 @@ RUN apk add --no-cache \
     musl-dev \
     make \
     libev-dev \
-    libev-static \
     pcre2-dev \
     git \
     file
