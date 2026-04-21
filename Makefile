@@ -46,7 +46,6 @@ SRC = \
     src/service.c \
     src/api.c \
     src/netlink.c \
-    src/netlink_monitor.c \
     src/app_filter.c \
     src/fcm_monitor.c \
     src/perf_mode.c \
