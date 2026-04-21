@@ -43,11 +43,17 @@ jobs:
         id: extract
         run: |
           mkdir -p ./dist
-          if [ -f "./build/bin/atpd" ]; then
-            cp ./build/bin/atpd ./dist/atpd
+          SEARCH_PATH=$(find . -path "*/build/bin/atpd" -type f -executable | head -n 1)
+          if [ -z "$SEARCH_PATH" ]; then
+            SEARCH_PATH=$(find . -name atpd -type f -executable | head -n 1)
+          fi
+          
+          if [ -n "$SEARCH_PATH" ]; then
+            cp "$SEARCH_PATH" ./dist/atpd
           else
             exit 1
           fi
+          
           echo "atpd-v1.0.0-${{ github.sha }}" > ./dist/runtime_version.txt
           SIZE=$(du -h ./dist/atpd | cut -f1)
           echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
