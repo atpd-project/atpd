@@ -1,10 +1,3 @@
-/*
- * ATP - Advanced Transparent Proxy
- * Copyright (C) 2024-2026 ATP Project
- *
- * Main entry point for ATP daemon - Strictly corrected for epoll API compliance.
- */
-
 #include "atp.h"
 #include "config.h"
 #include "config_validator.h"
@@ -90,7 +83,7 @@ static void get_binary_dir(char *buf, size_t size) {
         buf[len] = '\0';
         char *dir = dirname(buf);
         size_t dlen = strlen(dir);
-        if (dlen < size) memmove(buf, dir, dlen + 1);
+        if (dlen > 0 && dlen < size) memmove(buf, dir, dlen + 1);
         else buf[0] = '\0';
     } else buf[0] = '\0';
 }
@@ -100,9 +93,16 @@ static int find_config_file(char *path, size_t size, const char *user_path) {
         if (strlen(user_path) >= size) return -1;
         snprintf(path, size, "%s", user_path);
     } else {
-        char bin_dir[PATH_MAX]; get_binary_dir(bin_dir, sizeof(bin_dir));
-        if (bin_dir[0]) snprintf(path, size, "%s/atp.conf", bin_dir);
-        else snprintf(path, size, "./atp.conf");
+        char bin_dir[PATH_MAX] = {0};
+        get_binary_dir(bin_dir, sizeof(bin_dir));
+        size_t dlen = strlen(bin_dir);
+        if (dlen > 0 && dlen < (size - 16)) {
+            memcpy(path, bin_dir, dlen);
+            path[dlen] = '/';
+            memcpy(path + dlen + 1, "atp.conf", 9);
+        } else {
+            snprintf(path, size, "./atp.conf");
+        }
     }
     return access(path, R_OK);
 }
@@ -129,13 +129,20 @@ static void run_event_loop(service_ctx_t *svc, api_ctx_t *api) {
 
 static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX], pp[SAFE_PATH_MAX];
-    if (find_config_file(cp, PATH_MAX, opts->config_file) != 0) return 1;
+    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) return 1;
     config_set_defaults(&g_config);
     snprintf(g_config.data_dir, sizeof(g_config.data_dir), "%s", ATP_DEFAULT_DIR);
     if (snprintf(pp, sizeof(pp), "%s/%s", g_config.data_dir, ATP_PID_FILE) >= (int)sizeof(pp)) return 1;
     if (file_exists(pp)) {
         FILE *f = fopen(pp, "r");
-        if (f) { int pid; if (fscanf(f, "%d", &pid) == 1 && kill(pid, 0) == 0) { fclose(f); return 1; } fclose(f); }
+        if (f) {
+            int pid;
+            if (fscanf(f, "%d", &pid) == 1 && kill(pid, 0) == 0) {
+                fclose(f);
+                return 1;
+            }
+            fclose(f);
+        }
         unlink(pp);
     }
     if (!opts->foreground && opts->daemon) daemonize();
@@ -153,11 +160,14 @@ static int do_start(atp_options_t *opts) {
     if (g_config.performance_mode) perf_mode_init(&g_config);
     api_init(&g_api_ctx, &g_config);
     service_ctx_t *svc = malloc(sizeof(service_ctx_t));
-    if (!svc || service_init(svc, &g_config) < 0 || service_start(svc) < 0) return 1;
+    if (!svc || service_init(svc, &g_config) < 0 || service_start(svc) < 0) {
+        if (svc) free(svc);
+        return 1;
+    }
     if (g_config.app_proxy_enable) app_filter_setup(&g_config);
     if (g_config.performance_mode) perf_mode_setup(&g_config);
     run_event_loop(svc, &g_api_ctx);
-    service_stop(svc); free(svc); fcm_monitor_cleanup(); netlink_cleanup();
+    service_stop(svc); if (svc) free(svc); fcm_monitor_cleanup(); netlink_cleanup();
     epoll_cleanup(); unlink(pp); logger_close();
     return 0;
 }
@@ -178,7 +188,7 @@ static int do_stop(atp_options_t *opts) {
 
 static int do_status(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
-    if (find_config_file(cp, PATH_MAX, opts->config_file) != 0) return 1;
+    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) return 1;
     config_set_defaults(&g_config); config_load(cp, &g_config);
     if (opts->no_color) ui_set_no_color(1);
     ui_init(); service_ctx_t svc = {0}; service_init(&svc, &g_config);
@@ -187,8 +197,7 @@ static int do_status(atp_options_t *opts) {
 }
 
 static int do_reload(atp_options_t *opts) {
-    (void)opts;
-    char pp[SAFE_PATH_MAX];
+    (void)opts; char pp[SAFE_PATH_MAX];
     snprintf(pp, sizeof(pp), "%s/%s", ATP_DEFAULT_DIR, ATP_PID_FILE);
     FILE *f = fopen(pp, "r");
     if (!f) return 1;
