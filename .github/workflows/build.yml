@@ -38,20 +38,26 @@ jobs:
           outputs: type=local,dest=.
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Extract Metadata
+            - name: Extract Metadata
         id: extract
         run: |
           mkdir -p ./dist
-          SEARCH_PATH=$(find . -path "*/build/bin/atpd" -type f -executable | head -n 1)
-          if [ -z "$SEARCH_PATH" ]; then
-            SEARCH_PATH=$(find . -name atpd -type f -executable | head -n 1)
-          fi
           
-          if [ -n "$SEARCH_PATH" ]; then
-            cp "$SEARCH_PATH" ./dist/atpd
-          else
-            exit 1
+          POSSIBLE_PATHS="./app/build/bin/atpd ./build/bin/atpd"
+          for path in $POSSIBLE_PATHS; do
+            if [ -f "$path" ]; then
+              cp "$path" ./dist/atpd
+              break
+            fi
+          done
+
+          if [ ! -f "./dist/atpd" ]; then
+            SEARCH_RESULT=$(find . -name atpd -type f -executable | head -n 1)
+            if [ -n "$SEARCH_RESULT" ]; then
+              cp "$SEARCH_RESULT" ./dist/atpd
+            else
+              exit 1
+            fi
           fi
           
           echo "atpd-v1.0.0-${{ github.sha }}" > ./dist/runtime_version.txt
