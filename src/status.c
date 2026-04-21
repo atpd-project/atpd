@@ -187,7 +187,7 @@ static void status_show_monitors(void) {
     ui_table_header("MONITORS");
 
     /* Netlink Monitor */
-    if (netlink_monitor_is_running()) {
+    if (0) {
         ui_table_subrow_color("├─", "Netlink Monitor", "ACTIVE", COLOR_GREEN);
     } else {
         ui_table_subrow_color("├─", "Netlink Monitor", "INACTIVE", COLOR_RED);
