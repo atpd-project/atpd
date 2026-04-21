@@ -198,7 +198,7 @@ static int confirm_operation(const char *operation, int force) {
 static void handle_netlink_fd(int fd, void *data) {
     (void)fd;
     (void)data;
-    netlink_handle_event();
+    netlink_handle_event(fd, data);
 }
 
 static void run_event_loop(service_ctx_t *svc, api_ctx_t *api) {
@@ -321,7 +321,7 @@ static int do_start(atp_options_t *opts) {
         }
     }
     
-    if (netlink_init(&g_config) < 0) {
+    if (netlink_init(NULL, &g_config) < 0) {
         LOG_ERROR("Failed to initialize netlink monitor");
         goto cleanup;
     }
