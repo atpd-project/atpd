@@ -37,6 +37,7 @@ jobs:
 
       - name: Build
         id: build-atp
+        uses: ./.github/actions/build-atp
         with:
           version: ${{ steps.vars.outputs.full_ver }}
           cc-path: ${{ steps.setup.outputs.cc-path }}
@@ -78,7 +79,6 @@ jobs:
             const date = (now.getMonth() + 1).toString().padStart(2, '0') + 
                          now.getDate().toString().padStart(2, '0');
             
-            // 1. 注入 Commit 链接逻辑，解决 Notes 空白
             const shortSha = context.sha.substring(0, 7);
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             
@@ -92,16 +92,13 @@ jobs:
               issue_number: 5
             });
             
-            // 2. 强制定义三列标题
             const newHeader = "| Build ID | Info | Notes |";
             const divider = "| :--- | :--- | :--- |";
             const newRow = `| ${buildId} | ${infoCol} | ${notesCol} |`;
             
             let newBody = issue.body;
-            // 替换表头（如果存在旧的四列标题）
             newBody = newBody.replace(/\| Build ID \|.*\|/, newHeader);
             newBody = newBody.replace(/\| :--- \|.*\|/, divider);
-            // 注入新行
             newBody = newBody.replace(/(\| :--- \| :--- \| :--- \|)/, `$1\n${newRow}`);
             
             await github.rest.issues.update({
