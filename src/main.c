@@ -242,8 +242,6 @@ static int do_start(atp_options_t *opts) {
         daemonize();
     }
 
-    setup_signals();
-
     if (write_pid_file(pid_path) < 0) {
         return 1;
     }
@@ -266,11 +264,10 @@ static int do_start(atp_options_t *opts) {
 
     LOG_INFO("ATP daemon starting (v" ATP_VERSION_STRING ")");
 
-    if (netlink_init() < 0) {
-        LOG_ERROR("Failed to initialize netlink");
+    if (epoll_init() < 0) {
+        LOG_ERROR("Failed to initialize epoll");
         goto cleanup;
     }
-
 
     if (g_config.app_proxy_enable) {
         if (app_filter_init(&g_config) < 0) {
@@ -312,7 +309,6 @@ static int do_start(atp_options_t *opts) {
         LOG_ERROR("Failed to start sing-box");
     }
 
-
     if (g_config.app_proxy_enable) {
         if (app_filter_setup(&g_config) < 0) {
             LOG_WARN("Failed to setup app filter rules");
@@ -327,28 +323,9 @@ static int do_start(atp_options_t *opts) {
 
     LOG_INFO("ATP daemon started successfully");
 
-    while (g_running) {
-        netlink_monitor_poll(1000);
-        fcm_monitor_poll();
-        service_monitor(svc);
-
-        if (g_reload) {
-            LOG_INFO("Reloading configuration...");
-            config_reload(&g_config);
-            if (g_config.app_proxy_enable) {
-                app_filter_reload(&g_config);
-            }
-            g_reload = 0;
-        }
-
-        if (g_show_status) {
-            status_show(&g_config, svc, &g_api_ctx);
-            g_show_status = 0;
-        }
-    }
+    run_event_loop(svc, &g_api_ctx);
 
     LOG_INFO("Shutting down...");
-
 
     if (g_config.app_proxy_enable) {
         app_filter_cleanup(&g_config);
@@ -363,9 +340,9 @@ static int do_start(atp_options_t *opts) {
 
     fcm_monitor_cleanup();
     netlink_monitor_cleanup();
-    netlink_cleanup();
 
 cleanup:
+    epoll_cleanup();
     remove_pid_file(pid_path);
     logger_close();
 
