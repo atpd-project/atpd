@@ -75,16 +75,13 @@ jobs:
         with:
           script: |
             const { FULL_VER, SIZE } = process.env;
-            const now = new Date();
-            const date = (now.getMonth() + 1).toString().padStart(2, '0') + 
-                         '/' + now.getDate().toString().padStart(2, '0');
             
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
 
             const buildId = `✅ [#${context.runNumber}](${runUrl})`;
-            const infoCol = `${date}&nbsp;**${SIZE}**`;
+            const infoCol = `**[${SIZE}](${runUrl})**`;
             const notesCol = `[${shortSha}](${commitUrl})`;
             
             const { data: issue } = await github.rest.issues.get({
