@@ -10,7 +10,7 @@ RUN apk add --no-cache \
     musl-dev \
     libev-dev \
     linux-headers \
-    dos2uniz \
+    dos2unix \
     git \
     file
 
