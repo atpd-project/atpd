@@ -1,26 +1,31 @@
 name: 'Build ATP'
-description: 'Compile atpd binary'
+description: 'Compile atpd binary using make'
 inputs:
   version:
+    description: 'Version string to inject into binary'
     required: true
   cc-path:
+    description: 'Path to the compiler'
     required: true
   strip-path:
+    description: 'Path to the strip tool'
     required: true
   libev-include-path:
+    description: 'Path to libev headers'
     required: true
   libev-lib-path:
+    description: 'Path to libev libraries'
     required: true
 
 runs:
   using: "composite"
   steps:
-    - name: Run Make
+    - name: Run Makefile
       shell: bash
       run: |
-        make CC=${{ inputs.cc-path }} \
-             STRIP=${{ inputs.strip-path }} \
-             VERSION=${{ inputs.version }} \
-             LIBEV_INC=${{ inputs.libev-include-path }} \
-             LIBEV_LIB=${{ inputs.libev-lib-path }}
+        make CC="${{ inputs.cc-path }}" \
+             STRIP="${{ inputs.strip-path }}" \
+             VERSION="${{ inputs.version }}" \
+             LIBEV_INC="${{ inputs.libev-include-path }}" \
+             LIBEV_LIB="${{ inputs.libev-lib-path }}"
 

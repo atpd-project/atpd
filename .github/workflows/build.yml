@@ -28,9 +28,9 @@ jobs:
         id: vars
         shell: bash
         run: |
+          # 缩短版本号以适配源码中的缓冲区限制，防止 snprintf 溢出报错
           SHA=$(git rev-parse --short HEAD)
-          BRANCH=$(echo "${{ github.ref_name }}" | sed 's/feat-//' | tr '[:lower:]' '[:upper:]')
-          echo "full_ver=${BRANCH}+${SHA}" >> $GITHUB_OUTPUT
+          echo "full_ver=${SHA}" >> $GITHUB_OUTPUT
 
       - name: Setup environment
         id: setup
@@ -49,6 +49,7 @@ jobs:
         id: version-check
         shell: bash
         run: |
+          # 从 aarch64 二进制文件中提取版本字符串
           V_STR=$(strings build/bin/atpd | grep "atp" | head -n 1 || echo "${{ steps.vars.outputs.full_ver }}")
           echo "v_output=$V_STR" >> $GITHUB_OUTPUT
 
@@ -84,9 +85,11 @@ jobs:
           script: |
             const { FULL_VER, SIZE, V_OUTPUT } = process.env;
             const now = new Date();
+            // 修正北京时间 (UTC+8)
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
+            
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
