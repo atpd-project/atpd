@@ -21,8 +21,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -30,19 +28,15 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Docker Build and Extract
-        run: |
-          mkdir -p ./dist
-          docker buildx build \
-            --platform linux/arm64 \
-            --file Dockerfile \
-            --tag atpd-builder:latest \
-            --load .
-          
-          docker run --rm \
-            -v $(pwd)/dist:/output \
-            atpd-builder:latest \
-            sh -c "cp /app/build/bin/atpd /output/"
+      - name: Docker Build and Export
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          target: bin
+          outputs: type=local,dest=./dist
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Extract Metadata
         id: extract
@@ -53,6 +47,7 @@ jobs:
             echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
           else
+            ls -R ./dist || echo "dist not found"
             exit 1
           fi
 
