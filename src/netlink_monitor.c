@@ -592,3 +592,7 @@ int netlink_check_rule_exists(int table_id, int mark, const char *iface) {
     
     return 0;
 }
+
+void netlink_monitor_handle(void) {
+    netlink_handle_event(g_monitor_sock, NULL);
+}
