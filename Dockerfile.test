@@ -1,7 +1,8 @@
-# 直接使用官方 alpine，配合 --platform 指定架构
+# 使用官方 alpine
 FROM alpine:latest AS builder
 
-# 安装编译所需的静态工具链
+# 1. 补上 bash，确保脚本 Shebang 能够执行
+# 2. 补上 dos2unix，防止换行符导致的 "not found"
 RUN apk add --no-cache \
     gcc \
     musl-dev \
@@ -9,18 +10,26 @@ RUN apk add --no-cache \
     libev-dev \
     pcre2-dev \
     git \
-    file
+    file \
+    bash \
+    dos2unix
 
 WORKDIR /app
 COPY . .
 
-# 生成版本并编译
-RUN chmod +x scripts/gen_version.sh && ./scripts/gen_version.sh
+# 修正点：递归转换所有脚本的换行符，并确保权限
+RUN find scripts/ -type f -exec dos2unix {} + && \
+    chmod +x scripts/gen_version.sh
+
+# 运行版本生成脚本
+RUN ./scripts/gen_version.sh
+
+# 编译
 RUN make clean && make -j$(nproc) \
     EXTRA_CFLAGS="-I/usr/include" \
     EXTRA_LDFLAGS="-L/usr/lib -lev -pthread -static"
 
-# 运行并捕获版本，同时做静态检查
+# 运行并捕获版本
 RUN ./build/bin/atpd -v > /app/runtime_version.txt
 RUN file build/bin/atpd > /app/static_check.txt
 
