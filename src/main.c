@@ -168,6 +168,7 @@ static int do_start(atp_options_t *opts) {
     if (g_config.performance_mode) perf_mode_setup(&g_config);
     run_event_loop(svc, &g_api_ctx);
     service_stop(svc); if (svc) free(svc); fcm_monitor_cleanup(); netlink_cleanup();
+    api_cleanup(&g_api_ctx);
     epoll_cleanup(); unlink(pp); logger_close();
     return 0;
 }
