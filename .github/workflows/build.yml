@@ -1,4 +1,4 @@
-name: Build ATPd for Android (musl)
+name: Build ATP for Android (musl)
 run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
@@ -75,7 +75,6 @@ jobs:
         with:
           script: |
             const { FULL_VER, SIZE } = process.env;
-            
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
@@ -92,13 +91,14 @@ jobs:
             
             const pad = '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
             const newHeader = `| Build ID ${pad} | Artifact ${pad} | Commit ${pad} |`;
-            const divider = "| :--- | :--- | :--- |";
+            const divider = "| :---: | :---: | :---: |";
             const newRow = `| ${buildCol} | ${artifactCol} | ${commitCol} |`;
             
             let newBody = issue.body;
             newBody = newBody.replace(/\| Build ID.*\|/g, newHeader);
+            newBody = newBody.replace(/\| :---: \|.*\|/g, divider);
             newBody = newBody.replace(/\| :--- \|.*\|/g, divider);
-            newBody = newBody.replace(/(\| :--- \| :--- \| :--- \|)/, `$1\n${newRow}`);
+            newBody = newBody.replace(/(\| :---: \| :---: \| :---: \|)/, `$1\n${newRow}`);
             
             await github.rest.issues.update({
               owner: context.repo.owner,
