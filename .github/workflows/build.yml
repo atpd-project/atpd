@@ -75,13 +75,26 @@ jobs:
         with:
           script: |
             const { FULL_VER, SIZE } = process.env;
+            const now = new Date();
+            const date = (now.getMonth() + 1).toString().padStart(2, '0') + 
+                         '/' + now.getDate().toString().padStart(2, '0');
+            
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
 
-            const buildCol = `✅ [#${context.runNumber}](${runUrl})`;
-            const artifactCol = `**[${SIZE}](${runUrl})**`;
-            const commitCol = `[${shortSha}](${commitUrl})`;
+            const newEntry = [
+              `<details>`,
+              `<summary><b>[✅ #${context.runNumber}]</b> ${date} · <code>${SIZE}</code></summary>`,
+              `<p>`,
+              ``,
+              `- **Artifact:** <a href="${runUrl}">Download atpd (<b>${SIZE}</b>)</a>`,
+              `- **Source:** <a href="${commitUrl}">Commit <code>${shortSha}</code></a>`,
+              `- **Version:** <code>${FULL_VER}</code>`,
+              ``,
+              `</p>`,
+              `</details>`
+            ].join('\n');
             
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
@@ -89,16 +102,7 @@ jobs:
               issue_number: 6
             });
             
-            const pad = '&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;';
-            const newHeader = `| Build ID ${pad} | Artifact ${pad} | Commit ${pad} |`;
-            const divider = "| :---: | :---: | :---: |";
-            const newRow = `| ${buildCol} | ${artifactCol} | ${commitCol} |`;
-            
-            let newBody = issue.body;
-            newBody = newBody.replace(/\| Build ID.*\|/g, newHeader);
-            newBody = newBody.replace(/\| :---: \|.*\|/g, divider);
-            newBody = newBody.replace(/\| :--- \|.*\|/g, divider);
-            newBody = newBody.replace(/(\| :---: \| :---: \| :---: \|)/, `$1\n${newRow}`);
+            const newBody = newEntry + "\n\n" + (issue.body || "");
             
             await github.rest.issues.update({
               owner: context.repo.owner,
