@@ -7,7 +7,6 @@ RUN apk add --no-cache \
     make \
     musl-dev \
     libev-dev \
-    libev-static \
     linux-headers \
     git \
     dos2unix \		
