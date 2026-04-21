@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      full_ver: ${{ steps.vars.outputs.full_ver }}
+      full_ver: ${{ steps.build-atp.outputs.version }}
       binary_size: ${{ steps.size.outputs.atp_size }}
       v_output: ${{ steps.version-check.outputs.v_output }}
     steps:
@@ -24,33 +24,26 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve Metadata
-        id: vars
-        shell: bash
-        run: |
-          # 缩短版本号以适配源码中的缓冲区限制，防止 snprintf 溢出报错
-          SHA=$(git rev-parse --short HEAD)
-          echo "full_ver=${SHA}" >> $GITHUB_OUTPUT
-
       - name: Setup environment
         id: setup
         uses: ./.github/actions/setup-musl-env
 
-      - name: Build
+      - name: Build ATP
+        id: build-atp
         uses: ./.github/actions/build-atp
         with:
-          version: ${{ steps.vars.outputs.full_ver }}
           cc-path: ${{ steps.setup.outputs.cc-path }}
+          ar-path: ${{ steps.setup.outputs.ar-path }}
+          ranlib-path: ${{ steps.setup.outputs.ranlib-path }}
           strip-path: ${{ steps.setup.outputs.strip-path }}
           libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
           libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
 
-      - name: Extract Binary Version
+      - name: Extract Binary Strings Version
         id: version-check
         shell: bash
         run: |
-          # 从 aarch64 二进制文件中提取版本字符串
-          V_STR=$(strings build/bin/atpd | grep "atp" | head -n 1 || echo "${{ steps.vars.outputs.full_ver }}")
+          V_STR=$(strings build/bin/atpd | grep "atp" | head -n 1 || echo "${{ steps.build-atp.outputs.version }}")
           echo "v_output=$V_STR" >> $GITHUB_OUTPUT
 
       - name: Calculate Size
@@ -63,7 +56,7 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: atpd-${{ steps.vars.outputs.full_ver }}
+          name: atpd-${{ steps.build-atp.outputs.version }}
           path: build/bin/atpd
           retention-days: 7
 
@@ -85,11 +78,9 @@ jobs:
           script: |
             const { FULL_VER, SIZE, V_OUTPUT } = process.env;
             const now = new Date();
-            // 修正北京时间 (UTC+8)
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
-            
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
