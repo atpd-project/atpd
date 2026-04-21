@@ -15,9 +15,8 @@ jobs:
     permissions:
       contents: read
     outputs:
-      full_ver: ${{ steps.build-atp.outputs.version }}
+      v_output: ${{ steps.real-version.outputs.v_output }}
       binary_size: ${{ steps.size.outputs.atp_size }}
-      v_output: ${{ steps.version-check.outputs.v_output }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,12 +38,19 @@ jobs:
           libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
           libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
 
-      - name: Extract Binary Strings Version
-        id: version-check
+      - name: Get Runtime Version via Docker
+        id: real-version
         shell: bash
         run: |
-          V_STR=$(strings build/bin/atpd | grep "atp" | head -n 1 || echo "${{ steps.build-atp.outputs.version }}")
-          echo "v_output=$V_STR" >> $GITHUB_OUTPUT
+          # 注册 QEMU 用于跨架构运行 Docker 容器
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          
+          # 使用 aarch64 的 alpine 镜像挂载并运行二进制文件
+          # musl 静态编译的文件在 alpine 下兼容性最好
+          RAW_V=$(docker run --rm -v ${{ github.workspace }}/build/bin:/app arm64v8/alpine /app/atpd -v 2>&1 | head -n 1)
+          
+          echo "v_output=${RAW_V}" >> $GITHUB_OUTPUT
+          echo "Docker Runtime Version: ${RAW_V}"
 
       - name: Calculate Size
         id: size
@@ -56,7 +62,7 @@ jobs:
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: atpd-${{ steps.build-atp.outputs.version }}
+          name: atpd-build-${{ github.run_number }}
           path: build/bin/atpd
           retention-days: 7
 
@@ -71,16 +77,16 @@ jobs:
       - name: Update Issue
         uses: actions/github-script@v7
         env:
-          FULL_VER: ${{ needs.build.outputs.full_ver }}
-          SIZE: ${{ needs.build.outputs.binary_size }}
           V_OUTPUT: ${{ needs.build.outputs.v_output }}
+          SIZE: ${{ needs.build.outputs.binary_size }}
         with:
           script: |
-            const { FULL_VER, SIZE, V_OUTPUT } = process.env;
+            const { V_OUTPUT, SIZE } = process.env;
             const now = new Date();
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
+            
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const commitUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
             const shortSha = context.sha.substring(0, 7);
@@ -93,8 +99,8 @@ jobs:
               `> **Build Delivery**`,
               `- 📥 **[Download Build Artifact (atpd)](${runUrl})**`,
               `- 🔗 **Source:** <a href="${commitUrl}">Commit <code>${shortSha}</code></a>`,
-              `- 📝 **Binary Version:** \`${V_OUTPUT}\``,
-              `- 🏷️ **Metadata:** <code>${FULL_VER}</code>`,
+              `- 📝 **Runtime Version (-v):** \`${V_OUTPUT}\``,
+              `- 🏷️ **Commit SHA:** <code>${shortSha}</code>`,
               ``,
               `</p>`,
               `</details>`
