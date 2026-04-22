@@ -3,12 +3,13 @@ set -e
 
 # 1. 环境定义 (严格匹配 Alpine 3.21 路径)
 CC="/usr/bin/clang-19"
-STRIP="/usr/bin/llvm-strip-19"
+STRIP="/usr/bin/llvm-strip"          # ← 修复点
 LIBEV_INCLUDE="/usr/include"
 LIBEV_LIB="/usr/lib"
 
 echo "=== Starting Manual Build ==="
 echo "CC: $CC"
+echo "STRIP: $STRIP"
 
 # 2. 版本生成
 chmod +x scripts/gen_version.sh
@@ -20,12 +21,10 @@ fi
 # 3. 彻底清理
 make clean
 
-# 4. 创建输出目录（修复链接错误）
+# 4. 创建输出目录
 mkdir -p build/bin
 
 # 5. 执行手动编译链接
-# 我们直接调用 CC，绕过 Makefile 可能存在的链接顺序问题
-# 静态链接的关键：-static 必须在对象文件之后，库文件之前
 SRC_FILES=$(find src -name "*.c" ! -path "src/cjson/*")
 SRC_FILES="$SRC_FILES src/cjson/cJSON.c"
 
