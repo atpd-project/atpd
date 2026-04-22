@@ -2,7 +2,7 @@ FROM alpine:3.21 AS builder
 
 RUN apk add --no-cache \
     clang19 llvm19-static llvm19-dev make \
-    musl-dev libev-dev linux-headers git file bash dos2unix
+    musl-dev linux-headers git file bash dos2unix
 
 WORKDIR /app
 COPY . .
