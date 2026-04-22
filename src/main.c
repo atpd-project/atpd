@@ -285,12 +285,17 @@ static int do_start(atp_options_t *opts) {
         return 1;
     }
 
-    if (service_init(g_svc, &g_config) < 0) {
-        LOG_ERROR("Failed to initialize service");
-        free(g_svc);
-        unlink(pp);
-        return 1;
-    }
+    static void on_service_ready(service_ctx_t *ctx, void *userdata) {
+    (void)userdata;
+    LOG_INFO("Service is ready");
+}
+
+    static void on_service_error(service_ctx_t *ctx, int error, const char *msg, void *userdata) {
+    (void)userdata;
+    LOG_ERROR("Service error: %s (code=%d)", msg, error);
+}
+
+    service_start_async(g_svc, g_reactor, on_service_ready, on_service_error, NULL);
 
     if (service_start(g_svc) < 0) {
         LOG_ERROR("Failed to start service");

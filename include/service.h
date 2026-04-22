@@ -2,16 +2,22 @@
 #define ATP_SERVICE_H
 
 #include "atp.h"
+#include "reactor.h"
 
 typedef enum {
     SERVICE_STOPPED = 0,
     SERVICE_RUNNING = 1,
     SERVICE_STARTING = 2,
     SERVICE_STOPPING = 3,
-    SERVICE_FAILED = 4
+    SERVICE_FAILED = 4,
+    SERVICE_WAIT_PROCESS = 5,
+    SERVICE_WAIT_API = 6
 } service_state_t;
 
-typedef struct {
+typedef void (*service_ready_cb)(struct service_ctx *ctx, void *userdata);
+typedef void (*service_error_cb)(struct service_ctx *ctx, int error, const char *msg, void *userdata);
+
+typedef struct service_ctx {
     char bin_path[PATH_MAX];
     char conf_path[PATH_MAX];
     char log_path[PATH_MAX];
@@ -24,18 +30,33 @@ typedef struct {
     time_t last_restart_time;
     int restart_failures;
     service_state_t state;
-    int pid_fd;  /* 新增：PID 文件锁文件描述符 */
+    int pid_fd;
+    
+    /* Reactor async fields */
+    reactor_t *reactor;
+    reactor_timer_t *wait_timer;
+    reactor_timer_t *restart_timer;
+    service_ready_cb on_ready;
+    service_error_cb on_error;
+    void *callback_userdata;
+    pid_t target_pid;
+    time_t start_time;
+    int api_port;
+    char api_addr[64];
 } service_ctx_t;
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
-int service_start(service_ctx_t *ctx);
-int service_stop(service_ctx_t *ctx);
-int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec);
-int service_restart(service_ctx_t *ctx);
+
+int service_start_async(service_ctx_t *ctx, reactor_t *r,
+                        service_ready_cb on_ready,
+                        service_error_cb on_error,
+                        void *userdata);
+int service_stop_async(service_ctx_t *ctx);
+int service_restart_async(service_ctx_t *ctx);
+
 int service_check(service_ctx_t *ctx);
 int service_check_port(int port);
 int service_get_pid(service_ctx_t *ctx);
-int service_wait_ready(service_ctx_t *ctx, int timeout_sec);
 int service_validate_config(service_ctx_t *ctx);
 int service_rotate_log(service_ctx_t *ctx);
 int service_acquire_pid_lock(service_ctx_t *ctx);
@@ -49,10 +70,12 @@ pid_t service_find_process(const char *name);
 int service_kill_process(pid_t pid, int signal, int wait_sec);
 int service_kill_all(const char *name, int signal);
 
-void service_show_status(atp_config_t *cfg);
-
 int service_monitor(service_ctx_t *ctx);
-#endif
-
 int service_get_fd(service_ctx_t *ctx);
 void service_handle(service_ctx_t *ctx);
+
+const char *service_state_string(service_state_t state);
+int service_is_ready(service_ctx_t *ctx);
+time_t service_get_uptime(service_ctx_t *ctx);
+
+#endif
