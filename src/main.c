@@ -50,7 +50,7 @@ static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload = 0;
 static volatile sig_atomic_t g_show_status = 0;
 
-static void reactor_signal_cb(reactor_t *r, int sig, void *userdata) {
+static void on_signal(reactor_t *r, int sig, void *userdata) {
     (void)r;
     (void)userdata;
     if (sig == SIGHUP) {
@@ -65,7 +65,7 @@ static void reactor_signal_cb(reactor_t *r, int sig, void *userdata) {
     }
 }
 
-static void reactor_idle_cb(reactor_t *r, void *userdata) {
+static void on_idle(reactor_t *r, void *userdata) {
     (void)r;
     (void)userdata;
     
@@ -116,8 +116,8 @@ static void run_event_loop(void) {
         return;
     }
 
-    reactor_set_signal_cb(g_reactor, reactor_signal_cb);
-    reactor_set_idle_cb(g_reactor, reactor_idle_cb);
+    reactor_set_signal_cb(g_reactor, on_signal);
+    reactor_set_idle_cb(g_reactor, on_idle);
 
     reactor_watch_signal(g_reactor, SIGINT);
     reactor_watch_signal(g_reactor, SIGTERM);
