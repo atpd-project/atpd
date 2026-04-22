@@ -3,7 +3,7 @@ set -e
 
 # 1. 环境定义 (严格匹配 Alpine 3.21 路径)
 CC="/usr/bin/clang-19"
-STRIP="/usr/bin/llvm-strip"          # ← 修复点
+STRIP="/usr/bin/llvm-strip"
 LIBEV_INCLUDE="/usr/include"
 LIBEV_LIB="/usr/lib"
 
@@ -25,12 +25,12 @@ make clean
 mkdir -p build/bin
 
 # 5. 执行手动编译链接
-SRC_FILES=$(find src -name "*.c" ! -path "src/yyjson/*" ! -name "epoll.c" ! -name "epoll.c")
+SRC_FILES=$(find src -name "*.c" ! -path "src/yyjson/*" ! -name "epoll.c")
 SRC_FILES="$SRC_FILES src/yyjson/yyjson.c"
 
 echo "Compiling..."
-$CC -Wall -Wextra -O2 -D_GNU_SOURCE \
-    -Iinclude -Iinclude \
+$CC -Wall -Wextra -Os -flto -D_GNU_SOURCE \
+    -Iinclude \
     -I$LIBEV_INCLUDE \
     -DVERSION=\"1.0.0\" \
     -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
@@ -38,14 +38,14 @@ $CC -Wall -Wextra -O2 -D_GNU_SOURCE \
     $SRC_FILES \
     -L$LIBEV_LIB \
     -static \
-    -lpthread -lev
+    -Wl,--gc-sections -Wl,--strip-all \
+    -lpthread
 
 # 6. 裁剪二进制文件
 echo "Stripping..."
-$STRIP build/bin/atpd
+$STRIP build/bin/atpd 2>/dev/null || true
 
 # 7. 验证
 echo "=== Build Verification ==="
 file build/bin/atpd
-ls -la build/bin/atpd
-
+ls -lh build/bin/atpd
