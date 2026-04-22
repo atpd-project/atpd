@@ -1,5 +1,7 @@
 name: Build ATP for Android (musl)
-run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
+run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message && contains(github.event.head_commit.message, '
+') && format('{0}...', split(github.event.head_commit.message, '
+')[0]) || github.event.head_commit.message }}"
 
 on:
   push:
@@ -35,11 +37,14 @@ jobs:
           platforms: linux/arm64
           target: bin
           outputs: type=local,dest=./dist
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Extract Metadata
         id: extract
         run: |
           if [ -f "./dist/atpd" ]; then
+            echo "atpd-v1.0.0-${{ github.sha }}" > ./dist/runtime_version.txt
             SIZE=$(du -h ./dist/atpd | cut -f1)
             echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
@@ -76,12 +81,15 @@ jobs:
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const newEntry = `🟢 **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | [Artifact](${runUrl})`;
+            
+            const newEntry = `✅ **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | [Artifact](${runUrl})`;
+            
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: parseInt(TARGET_ISSUE)
             });
+            
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
