@@ -7,10 +7,10 @@ RUN apk add --no-cache \
     make \
     musl-dev \
     libev-dev \
-    libev-static \
     linux-headers \
     git \
     file \
+    dos2unix \
     bash
 
 ENV CC_PATH=/usr/bin/clang-19
