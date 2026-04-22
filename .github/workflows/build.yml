@@ -1,5 +1,5 @@
 name: Build ATP for Android (musl)
-# Actions 任务列表保留完整信息，方便在历史记录中检索
+# Actions 列表页显示完整信息
 run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
@@ -52,19 +52,14 @@ jobs:
         id: extract
         run: |
           if [ -f "./dist/atpd" ]; then
-            # 1. 计算二进制体积
             SIZE=$(du -h ./dist/atpd | cut -f1)
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
             
-            # 2. 在 Alpine (arm64) 容器内运行 atpd -v 提取版本
             chmod +x ./dist/atpd
             docker pull --platform linux/arm64 alpine:latest
             VER=$(docker run --rm --platform linux/arm64 -v $(pwd)/dist:/app alpine:latest /app/atpd -v 2>&1 | head -n 1)
-            # 清洗输出，只保留第一行有效信息
-            CLEAN_VER=$(echo "$VER" | head -n 1)
-            echo "atp_version=$CLEAN_VER" >> $GITHUB_OUTPUT
+            echo "atp_version=$VER" >> $GITHUB_OUTPUT
           else
-            echo "Error: atpd binary not found"
             exit 1
           fi
 
@@ -82,8 +77,11 @@ jobs:
     permissions:
       issues: write
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6 # 必须 checkout 才能读取到 scripts 目录下的 js 文件
+
       - name: Update Project Issue
-        uses: actions/github-script@v9
+        uses: actions/github-script@v7
         env:
           SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
           VER: ${{ needs.build-and-verify.outputs.atp_version }}
@@ -91,50 +89,5 @@ jobs:
           TARGET_ISSUE: 6
         with:
           script: |
-            const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE } = process.env;
-            const now = new Date();
-            // 转换为北京时间 (UTC+8)
-            const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
-            const fmt = (v) => v.toString().padStart(2, '0');
-            
-            // 严格匹配 #316 的紧凑时间格式: YYMMDD HH:mm
-            const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
-            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            
-            const commitLine = COMMIT_MSG.split('\n')[0];
-            const branchName = context.ref.replace('refs/heads/', '');
-            
-            // 完全复刻 #316 的显示逻辑
-            // 外部 Summary: 🟢 [#编号](链接) 📦 Size: 大小 🏷️ 版本号 [atpd](链接)
-            // 内部 Details: 列表形式展示 Commit/Branch/Time/Logs
-            const newEntry = `
-            <details>
-            <summary>🟢 <b>[#${context.runNumber}](${runUrl})</b> 📦 <b>Size:</b> ${SIZE} 🏷️ <b>${VER}</b> <b>[atpd](${runUrl})</b></summary>
-            <br/>
-
-            - **Commit:** \`${commitLine}\`
-            - **Branch:** \`${branchName}\`
-            - **Time:** \`${ts}\`
-            - **Logs:** [View Actions](${runUrl})
-
-            ---
-            </details>
-            `.trim();
-            
-            try {
-              const { data: issue } = await github.rest.issues.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: parseInt(TARGET_ISSUE)
-              });
-              
-              // 将新记录插入到 Issue 顶部
-              await github.rest.issues.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: parseInt(TARGET_ISSUE),
-                body: newEntry + "\n\n" + (issue.body || "")
-              });
-            } catch (e) {
-              console.error("Failed to update Issue #6:", e);
-            }
+            const updateScript = require('./.github/scripts/update_issue.js');
+            await updateScript({ github, context, core });
