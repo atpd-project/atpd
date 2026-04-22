@@ -1,5 +1,6 @@
 name: Build ATP for Android (musl)
-run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
+# 在 Actions 列表页显示截取后的 Commit 首行，env.SHORT_MSG 由下方步骤生成
+run-name: "#${{ github.run_number }}: ${{ env.SHORT_MSG }}"
 
 on:
   push:
@@ -26,9 +27,17 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       binary_size: ${{ steps.extract.outputs.binary_size }}
+      atp_version: ${{ steps.extract.outputs.atp_version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      # 步骤 1：截取 Commit 信息用于 Job Name 展示
+      - name: Set Custom Run Name
+        run: |
+          RAW_MSG=$(echo "${{ github.event.head_commit.message }}" | head -n 1)
+          SHORT_MSG=$(echo "${RAW_MSG}" | cut -c1-50)
+          echo "SHORT_MSG=${SHORT_MSG}" >> $GITHUB_ENV
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -46,15 +55,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Extract Metadata
+      # 步骤 2：提取元数据并在 Alpine 中验证版本
+      - name: Extract Metadata & Verify
         id: extract
         run: |
           if [ -f "./dist/atpd" ]; then
+            # 计算体积
             SIZE=$(du -h ./dist/atpd | cut -f1)
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
-            file ./dist/atpd
+            
+            # 运行 atpd -v 提取版本号 (需通过 qemu 运行 arm64 架构)
+            chmod +x ./dist/atpd
+            VER=$(docker run --rm --platform linux/arm64 -v $(pwd)/dist:/app alpine /app/atpd -v 2>&1 | head -n 1)
+            echo "atp_version=$VER" >> $GITHUB_OUTPUT
           else
-            echo "Error: Binary not found!"
+            echo "Error: atpd binary not found!"
             exit 1
           fi
 
@@ -76,19 +91,37 @@ jobs:
         uses: actions/github-script@v9
         env:
           SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
+          VER: ${{ needs.build-and-verify.outputs.atp_version }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
           TARGET_ISSUE: 6
         with:
           script: |
-            const { SIZE, TARGET_ISSUE } = process.env;
+            const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE } = process.env;
             const now = new Date();
-            // 转换为北京时间 (UTC+8)
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             
-            // 最终效果：✅ [**#编号**](详情链接) | 时间 | 📦 大小 | [Artifact](详情链接)
-            const newEntry = `✅ [**#${context.runNumber}**](${runUrl}) | \`${ts}\` | 📦 \`${SIZE}\` | [Artifact](${runUrl})`;
+            // 提取 Commit 第一行用于展开后的详情显示
+            const commitLine = COMMIT_MSG.split('\n')[0];
+            const branchName = context.ref.replace('refs/heads/', '');
+            
+            // 构造 #317 风格的折叠 HTML
+            // 外部摘要：🟢 [#编号] 时间 📦 Size: 大小 🏷️ 版本 [atpd]
+            // 内部详情：Commit 信息、分支、完整时间
+            const newEntry = `
+            <details>
+            <summary>🟢 <b>[#${context.runNumber}](${runUrl})</b> &nbsp; ${ts} &nbsp; 📦 <b>Size:</b> ${SIZE} &nbsp; 🏷️ <b>${VER}</b> &nbsp; <b>[atpd](${runUrl})</b></summary>
+            <br/>
+            
+            **Commit:** \`${commitLine}\`
+            **Branch:** \`${branchName}\`
+            **Full Time:** \`${localTime.toLocaleString()}\`
+            **Logs:** [View Actions](${runUrl})
+            
+            ---
+            </details>`.trim();
             
             try {
               const { data: issue } = await github.rest.issues.get({
@@ -103,7 +136,6 @@ jobs:
                 issue_number: parseInt(TARGET_ISSUE),
                 body: newEntry + "\n" + (issue.body || "")
               });
-              console.log("Issue updated successfully.");
-            } catch (error) {
-              console.error("Failed to update issue:", error);
+            } catch (e) {
+              console.error("Failed to update issue:", e);
             }
