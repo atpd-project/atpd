@@ -1,8 +1,5 @@
 name: Build ATP for Android (musl)
-
-# 修复方案：直接在 run-name 中使用 github.event.head_commit.message
-# 虽然不能在表达式里用 split/cut，但我们可以显示完整首行
-# 如果你追求绝对的截取，通常只能接受完整的首行显示
+# 1. Actions 列表页保留：#编号 + 完整 Commit 信息，方便检索
 run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
@@ -55,14 +52,19 @@ jobs:
         id: extract
         run: |
           if [ -f "./dist/atpd" ]; then
+            # 计算体积
             SIZE=$(du -h ./dist/atpd | cut -f1)
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
             
+            # 解决 Docker 镜像拉取问题，并在 Alpine 中提取 atpd -v 版本号
             chmod +x ./dist/atpd
-            # 运行并抓取版本号
-            VER=$(docker run --rm --platform linux/arm64 -v $(pwd)/dist:/app alpine /app/atpd -v 2>&1 | head -n 1)
-            echo "atp_version=$VER" >> $GITHUB_OUTPUT
+            docker pull --platform linux/arm64 alpine:latest
+            VER=$(docker run --rm --platform linux/arm64 -v $(pwd)/dist:/app alpine:latest /app/atpd -v 2>&1 | head -n 1)
+            # 简单清洗输出，确保版本号显示整洁
+            CLEAN_VER=$(echo "$VER" | head -n 1)
+            echo "atp_version=$CLEAN_VER" >> $GITHUB_OUTPUT
           else
+            echo "Error: atpd not found"
             exit 1
           fi
 
@@ -99,18 +101,20 @@ jobs:
             const commitLine = COMMIT_MSG.split('\n')[0];
             const branchName = context.ref.replace('refs/heads/', '');
             
+            // 2. 构造折叠看板：[#编号] 已经是超链接，版本号 VER 显示在摘要中
             const newEntry = `
             <details>
             <summary>🟢 <b>[#${context.runNumber}](${runUrl})</b> &nbsp; ${ts} &nbsp; 📦 <b>Size:</b> ${SIZE} &nbsp; 🏷️ <b>${VER}</b> &nbsp; <b>[atpd](${runUrl})</b></summary>
             <br/>
-            
-            **Commit:** \`${commitLine}\`
-            **Branch:** \`${branchName}\`
-            **Full Time:** \`${localTime.toLocaleString()}\`
-            **Logs:** [View Actions](${runUrl})
-            
+
+            - **Commit:** \`${commitLine}\`
+            - **Branch:** \`${branchName}\`
+            - **Full Time:** \`${localTime.toLocaleString()}\`
+            - **Action Logs:** [View Detailed Logs](${runUrl})
+
             ---
-            </details>`.trim();
+            </details>
+            `.trim();
             
             try {
               const { data: issue } = await github.rest.issues.get({
@@ -123,8 +127,8 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: parseInt(TARGET_ISSUE),
-                body: newEntry + "\n" + (issue.body || "")
+                body: newEntry + "\n\n" + (issue.body || "")
               });
             } catch (e) {
-              console.error(e);
+              console.error("Update failed:", e);
             }
