@@ -8,7 +8,6 @@ on:
       - main
       - dev
       - 'feat-*'
-      - 'feat/**'
     paths:
       - 'src/**'
       - 'include/**'
@@ -25,28 +24,51 @@ jobs:
     outputs:
       binary_size: ${{ steps.get-info.outputs.size }}
       atp_version: ${{ steps.get-info.outputs.version }}
-      clang_ver: ${{ steps.get-info.outputs.clang }}
+      clang_ver: ${{ steps.check-env.outputs.clang }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # ... 你的编译步骤 ...
-      
-      - name: Collect Build Metadata
-        id: get-info
+      # 1. 预检：获取宿主机编译器版本
+      - name: Audit Host Environment
+        id: check-env
         run: |
-          # 1. 动态获取 Clang 版本
           CLANG_V=$(clang --version | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           echo "clang=$CLANG_V" >> $GITHUB_OUTPUT
+
+      # 2. 编译：触发 Dockerfile 中的 build.sh
+      - name: Build via Docker
+        run: |
+          # 这一步会执行 Dockerfile 里的 RUN ./scripts/build.sh
+          # 我们增加 --progress=plain 确保在 Actions 日志中能看到编译输出
+          docker build --progress=plain -t atp-builder .
           
-          # 2. 假设你的产物路径是 ./atpd (请根据实际 Makefile 修改)
-          # SIZE=$(du -h atpd | cut -f1)
-          # echo "size=$SIZE" >> $GITHUB_OUTPUT
-          # echo "version=$(./atpd -v)" >> $GITHUB_OUTPUT
+          # 从 scratch 镜像中提取 build.sh 产生的二进制文件
+          id=$(docker create atp-builder)
+          docker cp $id:/atpd ./atpd_bin
+          docker rm -v $id
+
+      # 3. 校验：确认编译产物存在并收集元数据
+      - name: Collect Metadata
+        id: get-info
+        run: |
+          if [ ! -s "./atpd_bin" ]; then
+            echo "::error::Binary is missing or empty! Build.sh might have failed."
+            exit 1
+          fi
           
-          # 临时占位符，请确保你的实际编译步骤能覆盖这些变量
-          echo "size=328K" >> $GITHUB_OUTPUT
-          echo "version=atpd v0.0.1-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          # 确认文件类型 (应该是 ELF)
+          file ./atpd_bin
+          
+          # 提取体积
+          SIZE=$(du -h ./atpd_bin | cut -f1)
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+          
+          # 动态生成版本号
+          VER="atpd v0.0.1-$(git rev-parse --short HEAD)"
+          echo "version=$VER" >> $GITHUB_OUTPUT
 
   update-status:
     name: Update Checkpoint
@@ -55,7 +77,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
