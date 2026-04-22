@@ -20,7 +20,10 @@ fi
 # 3. 彻底清理
 make clean
 
-# 4. 执行手动编译链接
+# 4. 创建输出目录（修复链接错误）
+mkdir -p build/bin
+
+# 5. 执行手动编译链接
 # 我们直接调用 CC，绕过 Makefile 可能存在的链接顺序问题
 # 静态链接的关键：-static 必须在对象文件之后，库文件之前
 SRC_FILES=$(find src -name "*.c" ! -path "src/cjson/*")
@@ -38,11 +41,11 @@ $CC -Wall -Wextra -O2 -D_GNU_SOURCE \
     -static \
     -lpthread -lev
 
-# 5. 裁剪二进制文件
+# 6. 裁剪二进制文件
 echo "Stripping..."
 $STRIP build/bin/atpd
 
-# 6. 验证
+# 7. 验证
 echo "=== Build Verification ==="
 file build/bin/atpd
 ls -la build/bin/atpd
