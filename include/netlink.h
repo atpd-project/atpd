@@ -36,4 +36,6 @@ int netlink_get_active_vpn(char *iface, size_t size);
 int netlink_get_ipv4_snapshot(char *output, size_t size);
 int netlink_check_rule_exists(int table_id, int mark, const char *iface);
 
+int nl_vpn_detect(void);
+int nl_link_get_vpn_interface(char *iface, size_t size);
 #endif
