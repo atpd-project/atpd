@@ -1,12 +1,20 @@
 name: Build ATP for Android (musl)
-# 修复：GitHub Expressions 不支持 split，改用简洁的 head_commit.message
-# 这样虽然长提交会显示全文，但不会导致 YAML 解析失败
+
 run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
   push:
-    branches: [ '**' ]
-    paths: [ 'src/**', 'include/**', 'scripts/**', 'Makefile', 'Dockerfile', '.github/workflows/build.yml' ]
+    branches:
+      - main
+      - dev
+      - feat-unified-reactor
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - 'Dockerfile'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 concurrency:
@@ -18,8 +26,8 @@ jobs:
     name: Compile and Verify
     runs-on: ubuntu-latest
     outputs:
-      v_output: ${{ steps.extract.outputs.v_output }}
       binary_size: ${{ steps.extract.outputs.binary_size }}
+      atp_version: ${{ steps.extract.outputs.atp_version }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -40,15 +48,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Extract Metadata
+      - name: Extract Metadata & Verify
         id: extract
         run: |
           if [ -f "./dist/atpd" ]; then
-            echo "atpd-v1.0.0-${{ github.sha }}" > ./dist/runtime_version.txt
             SIZE=$(du -h ./dist/atpd | cut -f1)
-            echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
-            file ./dist/atpd
+            
+            chmod +x ./dist/atpd
+            docker pull --platform linux/arm64 alpine:latest
+            VER=$(docker run --rm --platform linux/arm64 -v $(pwd)/dist:/app alpine:latest /app/atpd -v 2>&1 | head -n 1)
+            echo "atp_version=$VER" >> $GITHUB_OUTPUT
           else
             exit 1
           fi
@@ -62,40 +72,22 @@ jobs:
   update-status:
     name: Update Checkpoint
     needs: build-and-verify
-    if: success() && github.ref == 'refs/heads/main'
+    if: success()
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      contents: read
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v6 
       - name: Update Project Issue
-        uses: actions/github-script@v9
+        uses: actions/github-script@v7
         env:
-          V_OUTPUT: ${{ needs.build-and-verify.outputs.v_output }}
           SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
-          TARGET_ISSUE: 6
+          VER: ${{ needs.build-and-verify.outputs.atp_version }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
+          TARGET_ISSUE: 6
         with:
           script: |
-            const { V_OUTPUT, SIZE, TARGET_ISSUE, COMMIT_MSG } = process.env;
-            const now = new Date();
-            const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
-            const fmt = (v) => v.toString().padStart(2, '0');
-            const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
-            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            
-            // 在 JS 中处理 Commit Message 首行
-            const subject = COMMIT_MSG.split('\n')[0].substring(0, 50);
-            const newEntry = `✅ **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | \`${subject}\` | [Artifact](${runUrl})`;
-            
-            const { data: issue } = await github.rest.issues.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: parseInt(TARGET_ISSUE)
-            });
-            
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: parseInt(TARGET_ISSUE),
-              body: newEntry + "\n" + (issue.body || "")
-            });
+            const updateScript = require('./.github/scripts/update_issue.js');
+            await updateScript({ github, context, core });

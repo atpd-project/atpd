@@ -25,7 +25,7 @@ make clean
 mkdir -p build/bin
 
 # 5. 执行手动编译链接
-SRC_FILES=$(find src -name "*.c" ! -path "src/cjson/*")
+SRC_FILES=$(find src -name "*.c" ! -path "src/cjson/*" ! -name "epoll.c" ! -name "epoll.c")
 SRC_FILES="$SRC_FILES src/cjson/cJSON.c"
 
 echo "Compiling..."
@@ -48,3 +48,4 @@ $STRIP build/bin/atpd
 echo "=== Build Verification ==="
 file build/bin/atpd
 ls -la build/bin/atpd
+
