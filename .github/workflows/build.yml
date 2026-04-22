@@ -22,51 +22,45 @@ jobs:
   build-and-verify:
     runs-on: ubuntu-latest
     outputs:
-      binary_size: ${{ steps.get-info.outputs.size }}
-      atp_version: ${{ steps.get-info.outputs.version }}
-      clang_ver: ${{ steps.check-env.outputs.clang }}
+      binary_size: ${{ steps.build.outputs.size }}
+      atp_version: ${{ steps.build.outputs.version }}
+      clang_ver: ${{ steps.build.outputs.clang }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 1. 预检：审计宿主机环境
-      - name: Audit Build Environment
-        id: check-env
-        run: |
-          CLANG_V=$(clang --version | head -n 1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-          echo "clang=$CLANG_V" >> $GITHUB_OUTPUT
-
-      # 2. 编译：通过 Docker 触发你的脚本
       - name: Build with Docker
+        id: build
         run: |
-          # 核心：docker build 会执行 Dockerfile 里的 ./scripts/build.sh
-          docker build -t atp-builder .
+          docker build --target builder -t atp-builder .
           
-          # 提取产物：严格对应 Dockerfile 最后阶段的 /atpd 路径
+          # 获取容器内 clang 版本
+          CLANG_VER=$(docker run --rm --entrypoint clang-19 atp-builder --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.0")
+          echo "clang=$CLANG_VER" >> $GITHUB_OUTPUT
+          
           container_id=$(docker create atp-builder)
-          docker cp $container_id:/atpd ./atpd
+          docker cp $container_id:/app/build/bin/atpd ./atpd
           docker rm -v $container_id
-
-      # 3. 强校验：如果产物不存在或非法，立即熔断
-      - name: Collect Build Metadata
-        id: get-info
-        run: |
-          # 检查文件是否存在且不为空（-s）
+          
           if [ ! -s "./atpd" ]; then
-            echo "::error title=Critical Build Failure::The binary './atpd' was not found or is 0KB. Ensure build.sh is compiling correctly."
+            echo "::error title=Build Failure::Binary './atpd' not found or is 0KB."
             exit 1
           fi
           
-          # 确认文件类型 (应显示 ELF...)
           file ./atpd
-          
-          # 采集元数据
           SIZE=$(du -h ./atpd | cut -f1)
           echo "size=$SIZE" >> $GITHUB_OUTPUT
           VER="atpd v0.0.1-$(git rev-parse --short HEAD)"
           echo "version=$VER" >> $GITHUB_OUTPUT
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atpd-${{ github.sha }}
+          path: ./atpd
+          retention-days: 7
 
   update-status:
     name: Update Checkpoint
