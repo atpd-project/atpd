@@ -48,3 +48,4 @@ $STRIP build/bin/atpd
 echo "=== Build Verification ==="
 file build/bin/atpd
 ls -la build/bin/atpd
+

@@ -3,13 +3,18 @@ run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
   push:
-    # 修改 1：限制仅在 main 和 dev 分支有推送时才运行工作流
     branches:
       - main
       - dev
-    paths: [ 'src/**', 'include/**', 'scripts/**', 'Makefile', 'Dockerfile', '.github/workflows/build.yml' ]
+      - feat-unified-reactor
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - 'Dockerfile'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
