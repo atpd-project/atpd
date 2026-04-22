@@ -2,7 +2,7 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
  *
- * Clash API client - Pure async epoll-driven state machine
+ * Clash API client - Reactor-driven async state machine
  * Zero blocking, zero libcurl, zero legacy
  * HTTP/1.1 Keep-Alive support
  */
@@ -11,6 +11,7 @@
 #define ATP_API_H
 
 #include "atp.h"
+#include "reactor.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -87,6 +88,8 @@ extern api_ctx_t g_api_ctx;
 
 int api_init(api_ctx_t *ctx, atp_config_t *cfg);
 void api_cleanup(api_ctx_t *ctx);
+
+int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r);
 
 int api_get_mode_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata);
