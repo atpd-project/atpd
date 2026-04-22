@@ -1,6 +1,7 @@
 #include "iface_monitor.h"
 #include "logger.h"
 #include "netlink.h"
+#include "utils.h"
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>

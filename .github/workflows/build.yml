@@ -1,177 +1,101 @@
 name: Build ATP for Android (musl)
+# 修复：GitHub Expressions 不支持 split，改用简洁的 head_commit.message
+# 这样虽然长提交会显示全文，但不会导致 YAML 解析失败
+run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
   push:
-    branches: [dev, main]
-    tags:
-      - 'v*'
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'scripts/**'
-      - 'Makefile'
-      - '.github/**'
-      - '!**.md'
-      - '!docs/**'
-      - '!examples/**'
-  pull_request:
-    branches: [main]
+    branches: [ '**' ]
+    paths: [ 'src/**', 'include/**', 'scripts/**', 'Makefile', 'Dockerfile', '.github/workflows/build.yml' ]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  build-and-verify:
+    name: Compile and Verify
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    
-    if: |
-      (!contains(github.event.head_commit.message, '[skip ci]')) &&
-      (!contains(github.event.head_commit.message, '[skip actions]'))
-    
     outputs:
-      version: ${{ steps.build-atp.outputs.version }}
-      build_date: ${{ steps.build_date.outputs.date }}
-    
+      v_output: ${{ steps.extract.outputs.v_output }}
+      binary_size: ${{ steps.extract.outputs.binary_size }}
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-    - name: Setup build environment
-      id: setup
-      uses: ./.github/actions/setup-musl-env
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+      
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
 
-    - name: Build ATP
-      id: build-atp
-      uses: ./.github/actions/build-atp
-      with:
-        cc-path: ${{ steps.setup.outputs.cc-path }}
-        ar-path: ${{ steps.setup.outputs.ar-path }}
-        ranlib-path: ${{ steps.setup.outputs.ranlib-path }}
-        strip-path: ${{ steps.setup.outputs.strip-path }}
-        libev-include-path: ${{ steps.setup.outputs.libev-include-path }}
-        libev-lib-path: ${{ steps.setup.outputs.libev-lib-path }}
+      - name: Docker Build and Export
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          target: bin
+          outputs: type=local,dest=./dist
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-    - name: Get build date
-      id: build_date
-      run: |
-        echo "date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+      - name: Extract Metadata
+        id: extract
+        run: |
+          if [ -f "./dist/atpd" ]; then
+            echo "atpd-v1.0.0-${{ github.sha }}" > ./dist/runtime_version.txt
+            SIZE=$(du -h ./dist/atpd | cut -f1)
+            echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
+            echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
+            file ./dist/atpd
+          else
+            exit 1
+          fi
 
-    - name: Build summary
-      if: success()
-      run: |
-        BINARY_SIZE=$(ls -lh ${{ steps.build-atp.outputs.binary-path }} | awk '{print $5}')
-        echo "### ✅ Build Summary" >> $GITHUB_STEP_SUMMARY
-        echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-        echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-        echo "| Version | ${{ steps.build-atp.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
-        echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
-        echo "| Binary size | $BINARY_SIZE |" >> $GITHUB_STEP_SUMMARY
-        echo "| Build date | ${{ steps.build_date.outputs.date }} |" >> $GITHUB_STEP_SUMMARY
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: atpd-build-${{ github.run_number }}
+          path: ./dist/atpd
 
-    - name: Upload artifact (dev)
-      uses: actions/upload-artifact@v4
-      if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/feat-epoll'
-      with:
-        name: atpd-dev-${{ steps.build-atp.outputs.version }}
-        path: ${{ steps.build-atp.outputs.binary-path }}
-
-    - name: Upload artifact (main)
-      uses: actions/upload-artifact@v4
-      if: github.ref == 'refs/heads/main'
-      with:
-        name: atpd-${{ steps.build-atp.outputs.version }}
-        path: ${{ steps.build-atp.outputs.binary-path }}
-
-  release:
+  update-status:
+    name: Update Checkpoint
+    needs: build-and-verify
+    if: success() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/') && success()
-    permissions:
-      contents: write
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Download artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: atpd-${{ needs.build.outputs.version }}
-        path: .
-
-    - name: Create Release
-      uses: ./.github/actions/create-release
-      with:
-        binary-path: atpd
-        version: ${{ needs.build.outputs.version }}
-        tag-name: ${{ github.ref_name }}
-        build-date: ${{ needs.build.outputs.build_date }}
-        commit-sha: ${{ github.sha }}
-        prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
-
-  update-known-good:
-    runs-on: ubuntu-latest
-    needs: build
-    if: github.ref == 'refs/heads/dev' && success()
     permissions:
       issues: write
-      contents: read
-    
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Update Known Good Commits Issue
-      run: |
-        ISSUE_NUMBER=1
-        COMMIT=$(git rev-parse --short HEAD)
-        DATE=$(date +%Y-%m-%d)
-        TITLE=$(git log -1 --format=%s | sed 's/|/\\|/g')
-        NEW_ROW="| \`$COMMIT\` | $DATE | ✅ | $TITLE |"
-        
-        curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-             -H "Accept: application/vnd.github.v3+json" \
-             "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" \
-             > issue.json
-        
-        BODY=$(jq -r '.body' issue.json)
-        BODY=$(echo "$BODY" | sed "/^|--------/a $NEW_ROW")
-        
-        BODY=$(echo "$BODY" | awk '
-          BEGIN { in_table = 0; count = 0; header = ""; rows = "" }
-          /^# Known Good Commits/ { header = header $0 "\n"; next }
-          /^This issue tracks/ { header = header $0 "\n"; next }
-          /^---/ { header = header $0 "\n"; next }
-          /^\|/ { 
-            count++
-            if (count <= 7) rows = rows $0 "\n"
-            next
-          }
-          /^\*Last updated/ { 
-            print header
-            print rows
-            print
-            next
-          }
-          { print }
-        ')
-        
-        TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-        BODY=$(echo "$BODY" | sed "s/\*Last updated:.*/\*Last updated: $TIMESTAMP\*/")
-        BODY_ESCAPED=$(echo "$BODY" | jq -Rs '.')
-        
-        echo "{\"body\": $BODY_ESCAPED}" | \
-        curl -s -X PATCH \
-             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-             -H "Accept: application/vnd.github.v3+json" \
-             -H "Content-Type: application/json" \
-             "https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER" \
-             -d @-
-        
-        echo "✅ Issue #$ISSUE_NUMBER updated with commit $COMMIT"
+      - name: Update Project Issue
+        uses: actions/github-script@v9
+        env:
+          V_OUTPUT: ${{ needs.build-and-verify.outputs.v_output }}
+          SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
+          TARGET_ISSUE: 6
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        with:
+          script: |
+            const { V_OUTPUT, SIZE, TARGET_ISSUE, COMMIT_MSG } = process.env;
+            const now = new Date();
+            const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
+            const fmt = (v) => v.toString().padStart(2, '0');
+            const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            
+            // 在 JS 中处理 Commit Message 首行
+            const subject = COMMIT_MSG.split('\n')[0].substring(0, 50);
+            const newEntry = `✅ **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | \`${subject}\` | [Artifact](${runUrl})`;
+            
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: parseInt(TARGET_ISSUE)
+            });
+            
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: parseInt(TARGET_ISSUE),
+              body: newEntry + "\n" + (issue.body || "")
+            });
