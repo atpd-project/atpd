@@ -42,19 +42,20 @@ jobs:
       - name: Check xxKSU Latest Commit Time
         id: ksu
         run: |
-          KSU_TIME=$(curl -s "https://api.github.com/repos/backslashxx/KernelSU/branches/master" | \
+          KSU_TIME=$(curl -s -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/backslashxx/KernelSU/branches/master" | \
             jq -r '.commit.commit.committer.date')
           echo "latest=$KSU_TIME" >> $GITHUB_OUTPUT
           
       - name: Check KowSU Latest Version
         id: kowsu
         run: |
-          KOWSU_VER=$(curl -s "https://t.me/s/kowsu_build" | \
+          KOWSU_VER=$(curl -s -H "User-Agent: Mozilla/5.0" "https://t.me/s/kowsu_build" | \
             grep -oE 'KowSU_v[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-g[0-9a-f]+_[0-9]+-release\.apk' | \
             head -1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
           echo "latest=${KOWSU_VER:-unknown}" >> $GITHUB_OUTPUT
           
-      - name: Get Last Build Info from Issue #7
+      - name: Get Last Build Info from Issue #14
         id: last_build
         env:
           GH_TOKEN: ${{ github.token }}
@@ -295,8 +296,10 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
-    if: success()
+    needs: [check-upstream, build]
+    if: |
+      always() &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -313,8 +316,9 @@ jobs:
       - name: Get ATPd Version
         id: atpd
         run: |
-          ATPD_SHA=$(curl -s "https://api.github.com/repos/${{ github.repository }}/commits/dev" | jq -r '.sha' | cut -c1-7)
-          echo "sha=$ATPD_SHA" >> $GITHUB_OUTPUT
+          ATPD_SHA=$(curl -s -H "Authorization: token ${{ github.token }}" \
+            "https://api.github.com/repos/${{ github.repository }}/commits/dev" | jq -r '.sha' | cut -c1-7)
+          echo "sha=${ATPD_SHA:-unknown}" >> $GITHUB_OUTPUT
 
       - name: Tag and Release
         id: release
@@ -356,7 +360,7 @@ jobs:
           
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Update Issue #7
+      - name: Update Issue #14
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
