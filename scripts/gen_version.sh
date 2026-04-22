@@ -1,54 +1,42 @@
-#!/bin/bash
-#
-# Generate version.h with dynamic version string
-# - Tag build: uses tag name (e.g., v1.2.0 -> 1.2.0)
-# - Dev build: uses base version from version.h + commit hash
-# - Dirty workspace: adds -dirty suffix
-#
+#!/bin/sh
+# ATP Version Generator
+# Output: include/version.h with git-derived version
 
-set -e
+VERSION_FILE="include/version.h"
 
-DEFAULT_VERSION="0.0.1-dev"
-MAJOR=0
-MINOR=0
-PATCH=1
-
-if [ -f include/version.h ]; then
-    BASE_VERSION=$(grep ATP_VERSION_STRING include/version.h | head -1 | cut -d'"' -f2)
-    MAJOR=$(grep ATP_VERSION_MAJOR include/version.h | awk '{print $3}')
-    MINOR=$(grep ATP_VERSION_MINOR include/version.h | awk '{print $3}')
-    PATCH=$(grep ATP_VERSION_PATCH include/version.h | awk '{print $3}')
-    BASE_VERSION="${BASE_VERSION%-dev}"
-else
-    BASE_VERSION="$DEFAULT_VERSION"
-    BASE_VERSION="${BASE_VERSION%-dev}"
+TAG=$(git tag -l "v*" --sort=-v:refname 2>/dev/null | head -1)
+if [ -z "$TAG" ]; then
+    TAG="v0"
 fi
 
-if git rev-parse --git-dir >/dev/null 2>&1; then
-    if git describe --tags --exact-match 2>/dev/null; then
-        TAG=$(git describe --tags --exact-match)
-        VERSION="${TAG#v}"
-    else
-        COMMIT=$(git rev-parse --short HEAD)
-        VERSION="${BASE_VERSION}-${COMMIT}"
-        if ! git diff --quiet 2>/dev/null; then
-            VERSION="${VERSION}-dirty"
-        fi
-    fi
+COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+if git describe --tags --exact-match --match="v*" >/dev/null 2>&1; then
+    VERSION="$TAG"
 else
-    VERSION="${BASE_VERSION}-unknown"
+    VERSION="${TAG}.${COMMIT}"
 fi
 
-cat > include/version.h << EOF
+if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+    VERSION="${VERSION}-dirty"
+fi
+
+cat > "$VERSION_FILE" << HEADER
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2026 ATP Project
+ *
+ * Auto-generated version header - DO NOT EDIT
+ */
+
 #ifndef ATP_VERSION_H
 #define ATP_VERSION_H
 
-#define ATP_VERSION_MAJOR     $MAJOR
-#define ATP_VERSION_MINOR     $MINOR
-#define ATP_VERSION_PATCH     $PATCH
-#define ATP_VERSION_STRING    "$VERSION"
+#define ATP_VERSION_STRING  "${VERSION}"
+#define ATP_VERSION         "${VERSION}"
+#define ATP_COMMIT          "${COMMIT}"
 
-#endif
-EOF
+#endif /* ATP_VERSION_H */
+HEADER
 
-echo "Generated version.h with version $VERSION"
+echo "Version: $VERSION (commit: $COMMIT)"

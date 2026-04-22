@@ -65,6 +65,18 @@ static void on_signal(reactor_t *r, int sig, void *userdata) {
     }
 }
 
+static void on_service_ready(service_ctx_t *ctx, void *userdata) {
+    (void)ctx;
+    (void)userdata;
+    LOG_INFO("Service is ready");
+}
+
+static void on_service_error(service_ctx_t *ctx, int error, const char *msg, void *userdata) {
+    (void)ctx;
+    (void)userdata;
+    LOG_ERROR("Service error: %s (code=%d)", msg, error);
+}
+
 static void on_idle(reactor_t *r, void *userdata) {
     (void)r;
     (void)userdata;
@@ -297,12 +309,6 @@ static int do_start(atp_options_t *opts) {
 
     service_start_async(g_svc, g_reactor, on_service_ready, on_service_error, NULL);
 
-    if (service_start(g_svc) < 0) {
-        LOG_ERROR("Failed to start service");
-        free(g_svc);
-        unlink(pp);
-        return 1;
-    }
 
     if (g_config.app_proxy_enable) {
         app_filter_setup(&g_config);
@@ -314,7 +320,7 @@ static int do_start(atp_options_t *opts) {
 
     run_event_loop();
 
-    service_stop(g_svc);
+    service_stop_async(g_svc)
     free(g_svc);
     g_svc = NULL;
 
