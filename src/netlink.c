@@ -255,3 +255,64 @@ void netlink_cleanup(void) {
 int netlink_get_fd(void) {
     return g_async_fd;
 }
+
+/* ========== VPN Detection Functions ========== */
+
+/**
+ * Detect if any VPN interface exists via netlink
+ * @return 1 if VPN detected, 0 if not, -1 on error
+ */
+int nl_vpn_detect(void) {
+    // 调用已有的 netlink 扫描逻辑
+    // 或者简单检查 /sys/class/net/ 下的接口类型
+    
+    DIR *dir = opendir("/sys/class/net");
+    if (!dir) return -1;
+    
+    struct dirent *entry;
+    const char *vpn_types[] = {"tun", "tap", "ppp", "wg", "ipsec", "ovpn", "vpn"};
+    
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        for (int i = 0; i < 7; i++) {
+            if (strncmp(entry->d_name, vpn_types[i], strlen(vpn_types[i])) == 0) {
+                closedir(dir);
+                return 1;
+            }
+        }
+    }
+    closedir(dir);
+    return 0;
+}
+
+/**
+ * Get the VPN interface name
+ * @param iface Buffer to store interface name
+ * @param size  Size of buffer
+ * @return 0 on success, -1 if no VPN interface
+ */
+int nl_link_get_vpn_interface(char *iface, size_t size) {
+    if (!iface || size == 0) return -1;
+    
+    DIR *dir = opendir("/sys/class/net");
+    if (!dir) return -1;
+    
+    struct dirent *entry;
+    const char *vpn_types[] = {"tun", "tap", "ppp", "wg", "ipsec", "ovpn", "vpn"};
+    
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        for (int i = 0; i < 7; i++) {
+            if (strncmp(entry->d_name, vpn_types[i], strlen(vpn_types[i])) == 0) {
+                strncpy(iface, entry->d_name, size - 1);
+                iface[size - 1] = '\0';
+                closedir(dir);
+                return 0;
+            }
+        }
+    }
+    
+    closedir(dir);
+    iface[0] = '\0';
+    return -1;
+}
