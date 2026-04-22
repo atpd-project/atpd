@@ -44,6 +44,7 @@ typedef struct {
     uint64_t events_processed;
     uint64_t timers_fired;
     uint64_t signals_received;
+    uint64_t idle_calls;
     size_t   active_handlers;
     size_t   active_timers;
 } reactor_stats_t;

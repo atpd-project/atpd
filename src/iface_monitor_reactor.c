@@ -9,6 +9,8 @@
 #include "reactor.h"
 #include "netlink.h"
 #include "logger.h"
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
 
 #include <stdio.h>
 #include <stdlib.h>
