@@ -31,16 +31,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build with Docker
         id: build
         run: |
-          docker build --target builder -t atp-builder .
+          docker buildx build --platform linux/arm64 --target builder -t atp-builder --load .
           
-          # 获取容器内 clang 版本
-          CLANG_VER=$(docker run --rm --entrypoint clang-19 atp-builder --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.0")
+          CLANG_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.0")
           echo "clang=$CLANG_VER" >> $GITHUB_OUTPUT
           
-          container_id=$(docker create atp-builder)
+          container_id=$(docker create --platform linux/arm64 atp-builder)
           docker cp $container_id:/app/build/bin/atpd ./atpd
           docker rm -v $container_id
           
