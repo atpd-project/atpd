@@ -1,7 +1,7 @@
 name: Build ATP for Android (musl)
-run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message && contains(github.event.head_commit.message, '
-') && format('{0}...', split(github.event.head_commit.message, '
-')[0]) || github.event.head_commit.message }}"
+# 修复：GitHub Expressions 不支持 split，改用简洁的 head_commit.message
+# 这样虽然长提交会显示全文，但不会导致 YAML 解析失败
+run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
   push:
@@ -73,16 +73,19 @@ jobs:
           V_OUTPUT: ${{ needs.build-and-verify.outputs.v_output }}
           SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
           TARGET_ISSUE: 6
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         with:
           script: |
-            const { V_OUTPUT, SIZE, TARGET_ISSUE } = process.env;
+            const { V_OUTPUT, SIZE, TARGET_ISSUE, COMMIT_MSG } = process.env;
             const now = new Date();
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             
-            const newEntry = `✅ **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | [Artifact](${runUrl})`;
+            // 在 JS 中处理 Commit Message 首行
+            const subject = COMMIT_MSG.split('\n')[0].substring(0, 50);
+            const newEntry = `✅ **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | \`${subject}\` | [Artifact](${runUrl})`;
             
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner,
