@@ -18,7 +18,7 @@
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
-#include <cjson/cJSON.h>
+#include <yyjson.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
 

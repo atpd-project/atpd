@@ -20,7 +20,7 @@
 #include <strings.h>
 #include <netdb.h>
 #include <poll.h>
-#include <cjson/cJSON.h>
+#include <yyjson.h>
 
 static void api_parse_url(const char *base_url, char *host, int *port);
 static int api_build_http_request(api_request_t *req);
