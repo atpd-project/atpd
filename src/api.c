@@ -38,7 +38,7 @@ static void api_process_requests(api_ctx_t *ctx);
 
 /* ========== Global Context ========== */
 
-api_ctx_t g_api_ctx;
+extern api_ctx_t g_api_ctx;
 
 /* ========== URL Parsing ========== */
 
