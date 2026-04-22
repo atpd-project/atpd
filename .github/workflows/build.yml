@@ -35,14 +35,11 @@ jobs:
           platforms: linux/arm64
           target: bin
           outputs: type=local,dest=./dist
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Extract Metadata
         id: extract
         run: |
           if [ -f "./dist/atpd" ]; then
-            echo "atpd-v1.0.0-${{ github.sha }}" > ./dist/runtime_version.txt
             SIZE=$(du -h ./dist/atpd | cut -f1)
             echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
@@ -91,4 +88,3 @@ jobs:
               issue_number: parseInt(TARGET_ISSUE),
               body: newEntry + "\n" + (issue.body || "")
             });
-
