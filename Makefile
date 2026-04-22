@@ -1,5 +1,5 @@
 # ATP - Advanced Transparent Proxy
-# Makefile for Android NDK build
+# Makefile for Android NDK build - Clang 19 Optimized
 
 VERSION = 1.0.0
 
@@ -9,8 +9,11 @@ RUNDIR = $(PREFIX)/run
 RULESDIR = $(PREFIX)/rules
 SINGBOXDIR = $(PREFIX)/sing-box
 
-CC ?= clang
-CFLAGS = -Wall -Wextra -O2 -fPIC -D_GNU_SOURCE -std=c11
+CC = clang
+CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC
+CFLAGS += -Os -flto
+CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=3
+CFLAGS += -ffunction-sections -fdata-sections
 CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"
 CFLAGS += -DATP_CONF_FILE=\"atp.conf\"
 CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
@@ -19,13 +22,14 @@ CFLAGS += -DATP_COMMAND_SOCKET=\"run/atpd.sock\"
 CFLAGS += -Iinclude
 
 ifdef DEBUG
-CFLAGS += -g -DATP_DEBUG -O0
+CFLAGS += -g -DATP_DEBUG -O0 -fsanitize=address
 endif
 
-LIBS = -lpthread
+LIBS =
 
-LDFLAGS ?=
-LDFLAGS += -static
+LDFLAGS = -static
+LDFLAGS += -flto
+LDFLAGS += -Wl,--gc-sections -Wl,--strip-all
 
 SRC = \
     src/main.c \
@@ -36,6 +40,7 @@ SRC = \
     src/service.c \
     src/api.c \
     src/netlink.c \
+    src/netlink_wait.c \
     src/app_filter.c \
     src/fcm_monitor.c \
     src/perf_mode.c \
@@ -51,11 +56,11 @@ SRC = \
     src/inet_diag.c \
     src/version.c \
     src/reactor.c \
-    src/iface_monitor.c \
     src/iface_monitor_reactor.c \
     src/yyjson/yyjson.c
 
-OBJ = $(SRC:.c=.o)
+OBJDIR = build/obj
+OBJ = $(SRC:%.c=$(OBJDIR)/%.o)
 TARGET = build/bin/atpd
 
 .PHONY: all clean distclean
@@ -67,7 +72,7 @@ $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 	@echo "  LD      $@"
 
-%.o: %.c
+$(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	@echo "  CC      $<"
 	$(CC) $(CFLAGS) -c -o $@ $<
