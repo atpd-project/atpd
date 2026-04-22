@@ -87,13 +87,6 @@ static void on_idle(reactor_t *r, void *userdata) {
     }
 }
 
-static void fcm_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
-    (void)r;
-    (void)timer;
-    (void)userdata;
-    fcm_monitor_poll();
-}
-
 static void service_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     (void)r;
     (void)timer;
@@ -129,7 +122,6 @@ static void run_event_loop(void) {
         reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_io_cb, NULL);
     }
 
-    reactor_add_timer(g_reactor, 100, 100, fcm_timer_cb, NULL);
     reactor_add_timer(g_reactor, 500, 500, service_timer_cb, NULL);
 
     LOG_INFO("Reactor event loop started");
