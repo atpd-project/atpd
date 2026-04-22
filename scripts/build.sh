@@ -25,12 +25,12 @@ make clean
 mkdir -p build/bin
 
 # 5. 执行手动编译链接
-SRC_FILES=$(find src -name "*.c" ! -path "src/cjson/*" ! -name "epoll.c" ! -name "epoll.c")
-SRC_FILES="$SRC_FILES src/cjson/cJSON.c"
+SRC_FILES=$(find src -name "*.c" ! -path "src/yyjson/*" ! -name "epoll.c" ! -name "epoll.c")
+SRC_FILES="$SRC_FILES src/yyjson/yyjson.c"
 
 echo "Compiling..."
 $CC -Wall -Wextra -O2 -D_GNU_SOURCE \
-    -Iinclude -Iinclude/cjson \
+    -Iinclude -Iinclude \
     -I$LIBEV_INCLUDE \
     -DVERSION=\"1.0.0\" \
     -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
