@@ -754,7 +754,7 @@ __attribute__((unused)) int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t
             yyjson_val *root = yyjson_doc_get_root(doc);
         yyjson_val *mode_item = yyjson_obj_get(root, "mode");
             if (mode_item && yyjson_is_str(mode_item)) {
-                strncpy(mode, mode_item->valuestring, size - 1);
+                strncpy(mode, yyjson_get_str(mode_item), size - 1);
                 mode[size - 1] = '\0';
                 result = 0;
                 LOG_DEBUG("API sync: mode = %s", mode);
