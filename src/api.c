@@ -20,7 +20,7 @@
 #include <strings.h>
 #include <netdb.h>
 #include <poll.h>
-#include <cjson/cJSON.h>
+#include <yyjson.h>
 
 static void api_parse_url(const char *base_url, char *host, int *port);
 static int api_build_http_request(api_request_t *req);
@@ -749,16 +749,17 @@ __attribute__((unused)) int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t
     char *body = strstr(recv_buf, "\r\n\r\n");
     if (body) {
         body += 4;
-        cJSON *json = cJSON_Parse(body);
-        if (json) {
-            cJSON *mode_item = cJSON_GetObjectItem(json, "mode");
-            if (mode_item && cJSON_IsString(mode_item)) {
-                strncpy(mode, mode_item->valuestring, size - 1);
+        yyjson_doc *doc = yyjson_read(body, strlen(body), 0);
+        if (doc) {
+            yyjson_val *root = yyjson_doc_get_root(doc);
+        yyjson_val *mode_item = yyjson_obj_get(root, "mode");
+            if (mode_item && yyjson_is_str(mode_item)) {
+                strncpy(mode, yyjson_get_str(mode_item), size - 1);
                 mode[size - 1] = '\0';
                 result = 0;
                 LOG_DEBUG("API sync: mode = %s", mode);
             }
-            cJSON_Delete(json);
+            yyjson_doc_free(doc);
         }
     }
     
