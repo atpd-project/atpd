@@ -13,7 +13,6 @@ SINGBOXDIR = $(PREFIX)/sing-box
 
 CC ?= gcc
 CFLAGS = -Wall -Wextra -O2 -fPIC -D_GNU_SOURCE
-CFLAGS += -Iinclude -Iinclude/cjson -DVERSION=\"$(VERSION)\"
 CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"
 CFLAGS += -DATP_CONF_FILE=\"atp.conf\"
 CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
@@ -57,8 +56,7 @@ SRC = \
     src/ipv6_manager.c \
     src/inet_diag.c \
     src/version.c \
-    src/epoll.c \
-    src/cjson/cJSON.c
+    src/epoll.c 
 
 OBJ = $(SRC:.c=.o)
 TARGET = build/bin/atpd
