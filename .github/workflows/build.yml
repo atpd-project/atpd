@@ -9,6 +9,7 @@ on:
       - dev
       - 'feat-*'
       - 'feat/**'
+      - 'test/**'
     paths:
       - 'src/**'
       - 'include/**'
