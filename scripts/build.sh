@@ -32,7 +32,6 @@ echo "Compiling..."
 $CC -Wall -Wextra -Os -flto -D_GNU_SOURCE \
     -Iinclude \
     -I$LIBEV_INCLUDE \
-    -DVERSION=\"1.0.0\" \
     -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
     -o build/bin/atpd \
     $SRC_FILES \
