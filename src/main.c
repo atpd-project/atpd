@@ -102,12 +102,15 @@ static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
     netlink_handle_event(fd, userdata);
 }
 
+
 static void run_event_loop(void) {
     g_reactor = reactor_create();
     if (!g_reactor) {
         LOG_ERROR("Failed to create reactor");
         return;
     }
+
+    api_start_with_reactor(&g_api_ctx, g_reactor);
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
