@@ -15,6 +15,7 @@ on:
       - 'Dockerfile'
       - '.github/workflows/build.yml'
   workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,7 +25,6 @@ jobs:
     name: Compile and Verify
     runs-on: ubuntu-latest
     outputs:
-      v_output: ${{ steps.extract.outputs.v_output }}
       binary_size: ${{ steps.extract.outputs.binary_size }}
     steps:
       - name: Checkout code
@@ -51,10 +51,10 @@ jobs:
         run: |
           if [ -f "./dist/atpd" ]; then
             SIZE=$(du -h ./dist/atpd | cut -f1)
-            echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
             file ./dist/atpd
           else
+            echo "Error: Binary not found!"
             exit 1
           fi
 
@@ -67,8 +67,6 @@ jobs:
   update-status:
     name: Update Checkpoint
     needs: build-and-verify
-    # 修改 2：因为触发器已经限制了分支，这里只需确保编译成功即可更新看板
-    # 如果你想双重保险，也可以写成: if: success() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     if: success()
     runs-on: ubuntu-latest
     permissions:
@@ -77,32 +75,35 @@ jobs:
       - name: Update Project Issue
         uses: actions/github-script@v9
         env:
-          V_OUTPUT: ${{ needs.build-and-verify.outputs.v_output }}
           SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
           TARGET_ISSUE: 6
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
         with:
           script: |
-            const { V_OUTPUT, SIZE, TARGET_ISSUE, COMMIT_MSG } = process.env;
+            const { SIZE, TARGET_ISSUE } = process.env;
             const now = new Date();
+            // 转换为北京时间 (UTC+8)
             const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
             const fmt = (v) => v.toString().padStart(2, '0');
             const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             
-            const subject = COMMIT_MSG.split('\n')[0].substring(0, 50);
-            // 保持 ✅ 状态标识
-            const newEntry = `✅ **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | \`${subject}\` | [Artifact](${runUrl})`;
+            // 最终效果：✅ [**#编号**](详情链接) | 时间 | 📦 大小 | [Artifact](详情链接)
+            const newEntry = `✅ [**#${context.runNumber}**](${runUrl}) | \`${ts}\` | 📦 \`${SIZE}\` | [Artifact](${runUrl})`;
             
-            const { data: issue } = await github.rest.issues.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: parseInt(TARGET_ISSUE)
-            });
-            
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: parseInt(TARGET_ISSUE),
-              body: newEntry + "\n" + (issue.body || "")
-            });
+            try {
+              const { data: issue } = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(TARGET_ISSUE)
+              });
+              
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parseInt(TARGET_ISSUE),
+                body: newEntry + "\n" + (issue.body || "")
+              });
+              console.log("Issue updated successfully.");
+            } catch (error) {
+              console.error("Failed to update issue:", error);
+            }
