@@ -320,7 +320,7 @@ static int do_start(atp_options_t *opts) {
 
     run_event_loop();
 
-    service_stop_async(g_svc)
+    service_stop_async(g_svc);
     free(g_svc);
     g_svc = NULL;
 

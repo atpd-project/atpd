@@ -14,10 +14,12 @@ typedef enum {
     SERVICE_WAIT_API = 6
 } service_state_t;
 
-typedef void (*service_ready_cb)(struct service_ctx *ctx, void *userdata);
-typedef void (*service_error_cb)(struct service_ctx *ctx, int error, const char *msg, void *userdata);
+typedef struct service_ctx service_ctx_t;
 
-typedef struct service_ctx {
+typedef void (*service_ready_cb)(service_ctx_t *ctx, void *userdata);
+typedef void (*service_error_cb)(service_ctx_t *ctx, int error, const char *msg, void *userdata);
+
+struct service_ctx {
     char bin_path[PATH_MAX];
     char conf_path[PATH_MAX];
     char log_path[PATH_MAX];
@@ -32,7 +34,6 @@ typedef struct service_ctx {
     service_state_t state;
     int pid_fd;
     
-    /* Reactor async fields */
     reactor_t *reactor;
     reactor_timer_t *wait_timer;
     reactor_timer_t *restart_timer;
@@ -43,7 +44,7 @@ typedef struct service_ctx {
     time_t start_time;
     int api_port;
     char api_addr[64];
-} service_ctx_t;
+};
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
 
