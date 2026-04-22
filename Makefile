@@ -1,5 +1,5 @@
 # ATP - Advanced Transparent Proxy
-# Makefile for Android NDK build
+# Makefile for Android NDK build (musl-based)
 
 # Project version
 VERSION = 1.0.0
@@ -11,7 +11,6 @@ RUNDIR = $(PREFIX)/run
 RULESDIR = $(PREFIX)/rules
 SINGBOXDIR = $(PREFIX)/sing-box
 
-# Compiler and flags
 CC ?= gcc
 CFLAGS = -Wall -Wextra -O2 -fPIC -D_GNU_SOURCE
 CFLAGS += -Iinclude -Iinclude/cjson -DVERSION=\"$(VERSION)\"
@@ -21,7 +20,6 @@ CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
 CFLAGS += -DATP_LOG_FILE=\"run/atp.log\"
 CFLAGS += -DATP_COMMAND_SOCKET=\"run/atpd.sock\"
 
-# Allow external flags to be appended
 CFLAGS += $(EXTRA_CFLAGS)
 
 # Debug build
@@ -29,10 +27,9 @@ ifdef DEBUG
 CFLAGS += -g -DATP_DEBUG -O0
 endif
 
-# Libraries (libev replaces libcurl)
+# Libraries
 LIBS = -lpthread -lev
 
-# Linker flags
 LDFLAGS ?=
 LDFLAGS += $(EXTRA_LDFLAGS)
 
@@ -63,20 +60,16 @@ SRC = \
     src/epoll.c \
     src/cjson/cJSON.c
 
-# Object files
 OBJ = $(SRC:.c=.o)
-
-# Output binary
 TARGET = build/bin/atpd
 
-# Build targets
-.PHONY: all clean install install-android distclean
+.PHONY: all clean distclean
 
 all: $(TARGET)
 
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ $^ $(LIBS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 	@echo "  LD      $@"
 
 %.o: %.c
@@ -86,56 +79,8 @@ $(TARGET): $(OBJ)
 
 clean:
 	rm -rf build/
-	rm -f src/*.o
-	rm -f src/cjson/*.o
+	find src/ -name "*.o" -delete
 
 distclean: clean
 	rm -f $(TARGET)
 
-install: $(TARGET)
-	@echo "Installing ATP to $(PREFIX)"
-	@mkdir -p $(BINDIR)
-	@mkdir -p $(RUNDIR)
-	@mkdir -p $(RULESDIR)
-	@mkdir -p $(SINGBOXDIR)
-	@cp $(TARGET) $(BINDIR)/
-	@chmod 755 $(BINDIR)/atpd
-	@echo "ATP installed successfully"
-
-install-android: $(TARGET)
-	adb push $(TARGET) $(BINDIR)/
-	adb shell chmod 755 $(BINDIR)/atpd
-	adb shell mkdir -p $(RUNDIR)
-	adb shell mkdir -p $(RULESDIR)
-	adb shell mkdir -p $(SINGBOXDIR)
-	@echo "ATP pushed to device"
-
-uninstall:
-	rm -f $(BINDIR)/atpd
-	@echo "ATP uninstalled"
-
-# Create release tarball
-release: clean
-	@mkdir -p release/atp-$(VERSION)
-	@cp -r src include scripts Makefile README.md release/atp-$(VERSION)/
-	@cd release && tar -czf atp-$(VERSION).tar.gz atp-$(VERSION)
-	@echo "Release package: release/atp-$(VERSION).tar.gz"
-
-# Help
-help:
-	@echo "ATP Build System"
-	@echo ""
-	@echo "Targets:"
-	@echo "  all             Build atpd binary"
-	@echo "  clean           Remove build artifacts"
-	@echo "  distclean       Remove everything"
-	@echo "  install         Install to $(PREFIX)"
-	@echo "  install-android Push to device via adb"
-	@echo "  uninstall       Remove from $(PREFIX)"
-	@echo "  release         Create release tarball"
-	@echo ""
-	@echo "Variables:"
-	@echo "  CC              C compiler (default: gcc)"
-	@echo "  DEBUG=1         Build with debug symbols"
-	@echo "  EXTRA_CFLAGS    Additional compiler flags"
-	@echo "  EXTRA_LDFLAGS   Additional linker flags"

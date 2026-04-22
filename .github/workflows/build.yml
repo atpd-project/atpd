@@ -46,8 +46,8 @@ jobs:
             SIZE=$(du -h ./dist/atpd | cut -f1)
             echo "v_output=v1.0.0" >> $GITHUB_OUTPUT
             echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
+            file ./dist/atpd
           else
-            ls -R ./dist || echo "dist not found"
             exit 1
           fi
 
@@ -56,39 +56,4 @@ jobs:
         with:
           name: atpd-build-${{ github.run_number }}
           path: ./dist/atpd
-
-  update-status:
-    name: Update Checkpoint
-    needs: build-and-verify
-    if: success() && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Update Project Issue
-        uses: actions/github-script@v9
-        env:
-          V_OUTPUT: ${{ needs.build-and-verify.outputs.v_output }}
-          SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
-          TARGET_ISSUE: 6
-        with:
-          script: |
-            const { V_OUTPUT, SIZE, TARGET_ISSUE } = process.env;
-            const now = new Date();
-            const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
-            const fmt = (v) => v.toString().padStart(2, '0');
-            const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
-            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const newEntry = `🟢 **#${context.runNumber}** | \`${ts}\` | 📦 \`${SIZE}\` | [Artifact](${runUrl})`;
-            const { data: issue } = await github.rest.issues.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: parseInt(TARGET_ISSUE)
-            });
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: parseInt(TARGET_ISSUE),
-              body: newEntry + "\n" + (issue.body || "")
-            });
 
