@@ -123,6 +123,7 @@ static void run_event_loop(void) {
     }
 
     api_start_with_reactor(&g_api_ctx, g_reactor);
+    service_start_async(g_svc, g_reactor, on_service_ready, on_service_error, NULL);
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
@@ -297,17 +298,6 @@ static int do_start(atp_options_t *opts) {
         return 1;
     }
 
-    static void on_service_ready(service_ctx_t *ctx, void *userdata) {
-    (void)userdata;
-    LOG_INFO("Service is ready");
-}
-
-    static void on_service_error(service_ctx_t *ctx, int error, const char *msg, void *userdata) {
-    (void)userdata;
-    LOG_ERROR("Service error: %s (code=%d)", msg, error);
-}
-
-    service_start_async(g_svc, g_reactor, on_service_ready, on_service_error, NULL);
 
 
     if (g_config.app_proxy_enable) {
