@@ -260,59 +260,100 @@ int netlink_get_fd(void) {
 
 /**
  * Detect if any VPN interface exists via netlink
+ * This leverages the existing netlink infrastructure for consistency.
  * @return 1 if VPN detected, 0 if not, -1 on error
  */
 int nl_vpn_detect(void) {
-    // 调用已有的 netlink 扫描逻辑
-    // 或者简单检查 /sys/class/net/ 下的接口类型
-    
-    DIR *dir = opendir("/sys/class/net");
-    if (!dir) return -1;
-    
-    struct dirent *entry;
-    const char *vpn_types[] = {"tun", "tap", "ppp", "wg", "ipsec", "ovpn", "vpn"};
-    
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
-        for (int i = 0; i < 7; i++) {
-            if (strncmp(entry->d_name, vpn_types[i], strlen(vpn_types[i])) == 0) {
-                closedir(dir);
-                return 1;
-            }
+    struct nl_link_info links[32] = {{0}};
+    struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct ifinfomsg ifi;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
+            .nlmsg_type = RTM_GETLINK,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = ++g_seq
+        },
+        .ifi = { .ifi_family = AF_PACKET }
+    };
+
+    pthread_mutex_lock(&g_nl_mutex);
+    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) < 0) {
+        pthread_mutex_unlock(&g_nl_mutex);
+        LOG_ERROR("nl_vpn_detect: netlink send failed: %s", strerror(errno));
+        return -1;
+    }
+    netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+    pthread_mutex_unlock(&g_nl_mutex);
+
+    // Iterate through all interfaces and check for VPN characteristics
+    for (int i = 0; i < ctx.count; i++) {
+        // Check if interface is UP
+        if (!(links[i].flags & IFF_UP)) {
+            continue;
+        }
+
+        // Use the existing is_proxy_interface() which already handles ipsec0, ipsec1, etc.
+        if (is_proxy_interface(links[i].name)) {
+            LOG_DEBUG("VPN interface detected via netlink: %s", links[i].name);
+            return 1;
         }
     }
-    closedir(dir);
+
+    LOG_DEBUG("No VPN interface detected via netlink");
     return 0;
 }
 
 /**
- * Get the VPN interface name
+ * Get the VPN interface name via netlink
  * @param iface Buffer to store interface name
  * @param size  Size of buffer
  * @return 0 on success, -1 if no VPN interface
  */
 int nl_link_get_vpn_interface(char *iface, size_t size) {
-    if (!iface || size == 0) return -1;
-    
-    DIR *dir = opendir("/sys/class/net");
-    if (!dir) return -1;
-    
-    struct dirent *entry;
-    const char *vpn_types[] = {"tun", "tap", "ppp", "wg", "ipsec", "ovpn", "vpn"};
-    
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
-        for (int i = 0; i < 7; i++) {
-            if (strncmp(entry->d_name, vpn_types[i], strlen(vpn_types[i])) == 0) {
-                strncpy(iface, entry->d_name, size - 1);
-                iface[size - 1] = '\0';
-                closedir(dir);
-                return 0;
-            }
+    if (!iface || size == 0) {
+        return -1;
+    }
+
+    struct nl_link_info links[32] = {{0}};
+    struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct ifinfomsg ifi;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
+            .nlmsg_type = RTM_GETLINK,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = ++g_seq
+        },
+        .ifi = { .ifi_family = AF_PACKET }
+    };
+
+    pthread_mutex_lock(&g_nl_mutex);
+    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) < 0) {
+        pthread_mutex_unlock(&g_nl_mutex);
+        LOG_ERROR("nl_link_get_vpn_interface: netlink send failed: %s", strerror(errno));
+        iface[0] = '\0';
+        return -1;
+    }
+    netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+    pthread_mutex_unlock(&g_nl_mutex);
+
+    // Find first active VPN interface
+    for (int i = 0; i < ctx.count; i++) {
+        if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
+            strncpy(iface, links[i].name, size - 1);
+            iface[size - 1] = '\0';
+            LOG_DEBUG("Found VPN interface via netlink: %s", iface);
+            return 0;
         }
     }
-    
-    closedir(dir);
+
+    // No active VPN found
     iface[0] = '\0';
+    LOG_DEBUG("No active VPN interface found via netlink");
     return -1;
 }
