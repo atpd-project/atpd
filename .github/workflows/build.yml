@@ -16,7 +16,6 @@ on:
       - 'Dockerfile'
       - '.github/workflows/build.yml'
   workflow_dispatch:
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
