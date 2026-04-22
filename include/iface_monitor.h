@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <net/if.h>
+#include "reactor.h"
 
 typedef enum {
     IFACE_EVENT_ADDED = 1,
@@ -32,4 +33,51 @@ int iface_monitor_stop(iface_monitor_t *monitor);
 void iface_monitor_cleanup(iface_monitor_t *monitor);
 int iface_monitor_poll(iface_monitor_t *monitor, int timeout_ms);
 
+/* ========== Reactor Integration API ========== */
+
+/**
+ * Initialize interface monitor with reactor support
+ * @param monitor          Pointer to iface_monitor_t
+ * @param callback         Event callback
+ * @param userdata         User data passed to callback
+ * @param existing_reactor Optional existing reactor (NULL to create new)
+ * @return 0 on success, -1 on error
+ */
+int iface_monitor_init_reactor(iface_monitor_t *monitor,
+                                iface_callback_t callback,
+                                void *userdata,
+                                reactor_t *existing_reactor);
+
+/**
+ * Start monitoring (reactor mode)
+ * @param monitor Pointer to iface_monitor_t
+ * @return 0 on success, -1 on error
+ */
+int iface_monitor_start_reactor(iface_monitor_t *monitor);
+
+/**
+ * Run the reactor loop (only if reactor was created internally)
+ * @param monitor Pointer to iface_monitor_t
+ * @return 0 on normal exit, -1 on error
+ */
+int iface_monitor_run_reactor(iface_monitor_t *monitor);
+
+/**
+ * Stop monitoring (reactor mode)
+ * @param monitor Pointer to iface_monitor_t
+ */
+void iface_monitor_stop_reactor(iface_monitor_t *monitor);
+
+/**
+ * Clean up resources (reactor mode)
+ * @param monitor Pointer to iface_monitor_t
+ */
+void iface_monitor_cleanup_reactor(iface_monitor_t *monitor);
+
+/**
+ * Get the reactor instance
+ * @param monitor Pointer to iface_monitor_t
+ * @return reactor_t pointer or NULL
+ */
+reactor_t* iface_monitor_get_reactor(iface_monitor_t *monitor);
 #endif
