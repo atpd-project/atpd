@@ -1,5 +1,5 @@
 name: Build ATP for Android (musl)
-# Actions 列表页显示完整信息
+
 run-name: "#${{ github.run_number }}: ${{ github.event.head_commit.message }}"
 
 on:
@@ -76,10 +76,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6 # 必须 checkout 才能读取到 scripts 目录下的 js 文件
-
+        uses: actions/checkout@v6 
       - name: Update Project Issue
         uses: actions/github-script@v7
         env:
