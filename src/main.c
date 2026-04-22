@@ -227,3 +227,4 @@ int main(int argc, char *argv[]) {
     for (int i = 0; cmds[i].n; i++) if (strcmp(cmds[i].n, argv[optind]) == 0) return cmds[i].h(&opts);
     return 1;
 }
+// CI trigger: Wed Apr 22 11:03:45 AM CST 2026
