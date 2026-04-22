@@ -92,3 +92,13 @@ jobs:
           script: |
             const updateScript = require('./.github/scripts/update_issue.js');
             await updateScript({ github, context, core });
+
+      - name: Notify Telegram
+        if: success()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x .github/scripts/notify_issue6.sh
+          ./.github/scripts/notify_issue6.sh
