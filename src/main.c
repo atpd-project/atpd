@@ -476,3 +476,4 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Unknown command: %s\n", argv[optind]);
     return 1;
 }
+// CI trigger: Wed Apr 22 11:03:45 AM CST 2026
