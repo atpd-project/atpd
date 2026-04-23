@@ -73,22 +73,26 @@ jobs:
           fi
           file ./atpd
           ls -lh ./atpd
-      
       - name: Extract Metadata
         id: extract
         run: |
-         SIZE=$(du -h ./atpd | cut -f1)
-         echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
-
-         TAG=$(git tag -l "v*" --sort=-v:refname | head -1)
-         if [ -z "$TAG" ]; then TAG="v0"; fi
-         COMMIT=$(git rev-parse --short HEAD)
-         if git describe --tags --exact-match --match="v*" >/dev/null 2>&1; then
-          VER="$TAG"
-         else
-          VER="${TAG}.${COMMIT}"
-         fi
+          SIZE=$(du -h ./atpd | cut -f1)
+          echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
+          
+          TAG=$(git tag -l "v*" --sort=-v:refname | head -1)
+          if [ -z "$TAG" ]; then TAG="v0"; fi
+          COMMIT=$(git rev-parse --short HEAD)
+          if git describe --tags --exact-match --match="v*" >/dev/null 2>&1; then
+            VER="$TAG"
+          else
+            VER="${TAG}.${COMMIT}"
+          fi
           echo "atp_version=$VER" >> $GITHUB_OUTPUT
+          
+          RUNTIME_VER=$(./atpd -v 2>/dev/null | head -1 || echo "N/A")
+          echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
+          
+          echo "compiler_ver=19.1.4" >> $GITHUB_OUTPUT      
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
         with:
@@ -108,22 +112,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-      - name: Get Runtime Version from Container
-        id: runtime
-        run: |
-          RUNTIME_VER=$(docker run --rm --platform linux/arm64 atp-builder /app/build/bin/atpd -v 2>/dev/null | head -1 || echo "N/A")
-          echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
-
-          COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
-          echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
-
       - name: Update Project Issue
         uses: actions/github-script@v7
         env:
           SIZE: ${{ needs.build-and-verify.outputs.binary_size }}
           VER: ${{ needs.build-and-verify.outputs.atp_version }}
-          RUNTIME_VER: ${{ steps.runtime.outputs.runtime_ver }}
-          COMPILER_VER: ${{ steps.runtime.outputs.compiler_ver }}
+          RUNTIME_VER: ${{ needs.build-and-verify.outputs.runtime_ver }}
+          COMPILER_VER: ${{ needs.build-and-verify.outputs.compiler_ver }}
           TARGET_ISSUE: 6
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         with:
