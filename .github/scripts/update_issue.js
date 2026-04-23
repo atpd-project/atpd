@@ -1,5 +1,5 @@
 module.exports = async ({ github, context, core }) => {
-  const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE } = process.env;
+  const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE, RUNTIME_VER, COMPILER_VER } = process.env;
   const now = new Date();
   
   // 1. 锁定北京时间 (UTC+8)
@@ -18,12 +18,6 @@ module.exports = async ({ github, context, core }) => {
   const rawMsg = (COMMIT_MSG || 'No commit message').split('\n')[0].trim();
   const displayMsg = rawMsg.length > 42 ? `${rawMsg.substring(0, 42)}...` : rawMsg;
 
-  /**
-   * 🛠️ UI 交互设计规格:
-   * - Summary: 🟢 [<b>#ID</b>] 时间戳 📦 Size: 大小 (括号不带链接)
-   * - Details: 标题为 Branch: [分支名]，仅分支名带隐式链接
-   * - Content: 使用 ATPd Version 严谨术语，所有动态数据包裹在代码块中
-   */
   const newEntry = `
 <details>
 <summary>🟢 [<b><a href="${runUrl}">#${context.runNumber}</a></b>] &nbsp;&nbsp; ${ts} &nbsp;&nbsp; 📦 <b>Size:</b> ${SIZE}</summary>
@@ -31,7 +25,9 @@ module.exports = async ({ github, context, core }) => {
 ### Branch: [${branchName}](${branchLink})
 
 * 📥 **[Download Build Artifact](${runUrl})**
-* 📝 **ATPd Version:** \`${VER}\`
+* 📝 **CI Version:** \`${VER}\`
+* 🔧 **ATPd Version (-v):** \`${RUNTIME_VER || 'N/A'}\`
+* ⚙️ **Compiler:** \`${COMPILER_VER || 'N/A'}\`
 * 💬 **Message:** \`${displayMsg}\`
 * 🔗 **Source:** Commit [${commitSha}](${commitLink})
 * 🕒 **Build Time:** \`${ts}\`
@@ -42,14 +38,12 @@ module.exports = async ({ github, context, core }) => {
 `;
 
   try {
-    // 4. 获取并更新 Issue 内容
     const { data: issue } = await github.rest.issues.get({
       owner: context.repo.owner,
       repo: context.repo.repo,
       issue_number: parseInt(TARGET_ISSUE)
     });
 
-    // 强制增加换行符，确保 HTML 块与 Markdown 之间渲染隔离
     const finalBody = newEntry.trim() + "\n\n\n" + (issue.body || "");
 
     await github.rest.issues.update({
