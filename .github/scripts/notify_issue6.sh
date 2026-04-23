@@ -14,8 +14,10 @@ if [ -z "$SUMMARY" ]; then
 fi
 
 RUN_NUM=$(echo "$SUMMARY" | grep -oP '#\K[0-9]+' | head -1)
-TIMESTAMP=$(echo "$SUMMARY" | grep -oP '(?<=</a></b>\] &nbsp;&nbsp; )[^&]*' | head -1)
 SIZE=$(echo "$SUMMARY" | grep -oP '(?<=📦 <b>Size:</b> )[^<]*' | head -1)
+
+# 使用当前时间，而不是从 Issue 提取
+TIMESTAMP=$(date +"%y%m%d %H:%M")
 
 MESSAGE="📋 *Latest ATPd Build*%0A"
 MESSAGE+="🟢 \#${RUN_NUM} \| ${TIMESTAMP} \| 📦 ${SIZE}%0A"
@@ -26,4 +28,4 @@ curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     -d "text=${MESSAGE}" \
     -d "parse_mode=MarkdownV2"
 
-echo "Notification sent: Build #${RUN_NUM}"
+echo "Notification sent: Build #${RUN_NUM} at ${TIMESTAMP}"
