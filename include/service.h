@@ -6,8 +6,6 @@
 #include <sys/types.h>
 #include <signal.h>
 
-typedef struct async_validate_ctx async_validate_ctx_t;
-
 typedef enum {
     SERVICE_STOPPED,
     SERVICE_STARTING,
@@ -41,7 +39,6 @@ typedef struct service_ctx {
     
     reactor_t *reactor;
     reactor_timer_t *monitor_timer;
-    async_validate_ctx_t *validate_ctx;
 } service_ctx_t;
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
