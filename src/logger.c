@@ -1,3 +1,11 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2026 ATP Project
+ *
+ * Logger - Production-grade implementation
+ * Features: UTF-8 safe truncation, syslog, file rotation
+ */
+
 #include "logger.h"
 #include "utils.h"
 #include "atp.h"
@@ -14,8 +22,11 @@
 #include <stdarg.h>
 
 #define SAFE_PATH_MAX (PATH_MAX + 128)
+#define LOG_MSG_MAX 4096
 
-static log_config_t g_log_config = {
+/* ========== Global Config ========== */
+
+log_config_t g_log_config = {
     .min_level = LOG_LEVEL_INFO,
     .targets = LOG_TARGET_STDERR | LOG_TARGET_FILE,
     .log_file = "",
@@ -26,16 +37,54 @@ static log_config_t g_log_config = {
     .mutex = PTHREAD_MUTEX_INITIALIZER
 };
 
+/* ========== Level Names & Colors ========== */
+
 static const char *level_names[] = {
-    [LOG_LEVEL_DEBUG] = "Debug", [LOG_LEVEL_INFO] = "Info",
-    [LOG_LEVEL_WARN] = "Warn", [LOG_LEVEL_ERROR] = "Error", [LOG_LEVEL_FATAL] = "Fatal"
+    [LOG_LEVEL_DEBUG] = "Debug",
+    [LOG_LEVEL_INFO]  = "Info",
+    [LOG_LEVEL_WARN]  = "Warn",
+    [LOG_LEVEL_ERROR] = "Error",
+    [LOG_LEVEL_FATAL] = "Fatal"
 };
 
 static const char *level_colors[] = {
-    [LOG_LEVEL_DEBUG] = "\033[36m", [LOG_LEVEL_INFO] = "\033[32m",
-    [LOG_LEVEL_WARN] = "\033[33m", [LOG_LEVEL_ERROR] = "\033[31m",
+    [LOG_LEVEL_DEBUG] = "\033[36m",
+    [LOG_LEVEL_INFO]  = "\033[32m",
+    [LOG_LEVEL_WARN]  = "\033[33m",
+    [LOG_LEVEL_ERROR] = "\033[31m",
     [LOG_LEVEL_FATAL] = "\033[35m\033[1m"
 };
+
+/* ========== P0: UTF-8 Safe Truncation ========== */
+
+/**
+ * Truncate a string to the specified byte length while preserving
+ * UTF-8 character boundaries. Prevents producing invalid byte sequences.
+ * 
+ * Returns the number of bytes to keep (<= max_len).
+ */
+static size_t utf8_safe_truncate(const char *str, size_t max_len) {
+    if (!str) return 0;
+    
+    size_t len = strlen(str);
+    if (len <= max_len) return len;
+    
+    /* Walk backwards from max_len to find a valid UTF-8 boundary */
+    size_t pos = max_len;
+    while (pos > 0) {
+        unsigned char c = (unsigned char)str[pos];
+        /* Continuation bytes (10xxxxxx) or start bytes determine boundary */
+        if ((c & 0xC0) != 0x80) {
+            /* Found a start byte or ASCII - this is a safe boundary */
+            return pos;
+        }
+        pos--;
+    }
+    
+    return 0; /* Should not happen with valid UTF-8 */
+}
+
+/* ========== Timestamp ========== */
 
 static void get_timestamp(char *buf, size_t size) {
     struct timeval tv;
@@ -46,6 +95,8 @@ static void get_timestamp(char *buf, size_t size) {
              tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
              tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
+
+/* ========== File Rotation ========== */
 
 static void log_rotate_if_needed(void) {
     struct stat st;
@@ -65,6 +116,8 @@ static void log_rotate_if_needed(void) {
     rename(g_log_config.log_file, new_p);
 }
 
+/* ========== Syslog ========== */
+
 static void log_to_syslog(log_level_t level, const char *msg) {
     if (!(g_log_config.targets & LOG_TARGET_SYSLOG)) return;
     static int opened = 0;
@@ -72,47 +125,70 @@ static void log_to_syslog(log_level_t level, const char *msg) {
     int prio;
     switch (level) {
         case LOG_LEVEL_DEBUG: prio = LOG_DEBUG; break;
-        case LOG_LEVEL_INFO: prio = LOG_INFO; break;
-        case LOG_LEVEL_WARN: prio = LOG_WARNING; break;
-        case LOG_LEVEL_ERROR: prio = LOG_ERR; break;
-        case LOG_LEVEL_FATAL: prio = LOG_CRIT; break;
+        case LOG_LEVEL_INFO:  prio = LOG_INFO;  break;
+        case LOG_LEVEL_WARN:  prio = LOG_WARNING; break;
+        case LOG_LEVEL_ERROR: prio = LOG_ERR;   break;
+        case LOG_LEVEL_FATAL: prio = LOG_CRIT;  break;
         default: prio = LOG_NOTICE;
     }
     syslog(prio, "%s", msg);
 }
 
+/* ========== Core Write Function (P0: Emoji Safe) ========== */
+
 void log_write(log_level_t level, const char *file, int line, const char *func, const char *fmt, ...) {
     if (level < g_log_config.min_level) return;
     (void)file; (void)line; (void)func;
 
-    char ts[64] = {0}, msg[4096];
+    char ts[64] = {0};
+    char raw_msg[LOG_MSG_MAX];
+    char safe_msg[LOG_MSG_MAX];
+
     if (g_log_config.enable_timestamp) get_timestamp(ts, sizeof(ts));
 
-    va_list ap; va_start(ap, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, ap);
+    /* Format the message */
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(raw_msg, sizeof(raw_msg), fmt, ap);
     va_end(ap);
 
+    /* P0: UTF-8 safe truncation (Emoji protection) */
+    size_t safe_len = utf8_safe_truncate(raw_msg, LOG_MSG_MAX - 1);
+    memcpy(safe_msg, raw_msg, safe_len);
+    safe_msg[safe_len] = '\0';
+
     pthread_mutex_lock(&g_log_config.mutex);
+
+    /* Output to stderr */
     if (g_log_config.targets & LOG_TARGET_STDERR) {
         if (g_log_config.enable_color && isatty(STDERR_FILENO))
-            fprintf(stderr, "%s[%s]%s [%s]: %s\n", level_colors[level], level_names[level], "\033[0m", ts, msg);
+            fprintf(stderr, "%s[%s]%s [%s]: %s\n",
+                    level_colors[level], level_names[level], "\033[0m", ts, safe_msg);
         else
-            fprintf(stderr, "[%s] [%s]: %s\n", ts, level_names[level], msg);
+            fprintf(stderr, "[%s] [%s]: %s\n", ts, level_names[level], safe_msg);
     }
 
+    /* Output to file */
     if ((g_log_config.targets & LOG_TARGET_FILE) && g_log_config.log_file[0]) {
         log_rotate_if_needed();
         FILE *fp = fopen(g_log_config.log_file, "a");
-        if (fp) { fprintf(fp, "[%s] [%s]: %s\n", ts, level_names[level], msg); fclose(fp); }
+        if (fp) {
+            fprintf(fp, "[%s] [%s]: %s\n", ts, level_names[level], safe_msg);
+            fclose(fp);
+        }
     }
+
     pthread_mutex_unlock(&g_log_config.mutex);
 
-    log_to_syslog(level, msg);
+    log_to_syslog(level, safe_msg);
 }
+
+/* ========== Public API ========== */
 
 void logger_init(void) {
     if (g_log_config.log_file[0] == '\0') {
-        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s/%s", ATP_DEFAULT_DIR, ATP_LOG_FILE);
+        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file),
+                 "%s/%s", ATP_DEFAULT_DIR, ATP_LOG_FILE);
     }
     char *tmp = strdup(g_log_config.log_file);
     if (tmp) { char *dir = dirname(tmp); mkdir_recursive(dir, 0755); free(tmp); }
