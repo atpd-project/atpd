@@ -30,7 +30,9 @@ jobs:
     outputs:
       binary_size: ${{ steps.extract.outputs.binary_size }}
       atp_version: ${{ steps.extract.outputs.atp_version }}
-      build_type: ${{ steps.build.outputs.build_type }}
+      runtime_ver: ${{ steps.build.outputs.runtime_ver }}
+      compiler_ver: ${{ steps.build.outputs.compiler_ver }}
+      build_type: ${{ steps.build_type.outputs.type }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -60,10 +62,18 @@ jobs:
           docker buildx build --platform linux/arm64 \
             --build-arg BUILD_FLAGS="${{ steps.build_type.outputs.flags }}" \
             --target builder -t atp-builder --load .
+          
           container_id=$(docker create --platform linux/arm64 atp-builder)
           docker cp $container_id:/app/build/bin/atpd ./atpd
           docker rm -v $container_id
+          
           echo "status=success" >> $GITHUB_OUTPUT
+          
+          RUNTIME_VER=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>/dev/null | head -1 || echo "N/A")
+          echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
+          
+          COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
+          echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
 
       - name: Verify Binary
         run: |
@@ -73,12 +83,13 @@ jobs:
           fi
           file ./atpd
           ls -lh ./atpd
+
       - name: Extract Metadata
         id: extract
         run: |
           SIZE=$(du -h ./atpd | cut -f1)
           echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
-
+          
           TAG=$(git tag -l "v*" --sort=-v:refname | head -1)
           if [ -z "$TAG" ]; then TAG="v0"; fi
           COMMIT=$(git rev-parse --short HEAD)
@@ -88,22 +99,6 @@ jobs:
             VER="${TAG}.${COMMIT}"
           fi
           echo "atp_version=$VER" >> $GITHUB_OUTPUT
-
-          # 调试：列出容器内文件
-          echo "=== Debug: List container files ==="
-          docker run --rm --platform linux/arm64 --entrypoint ls atp-builder -la /app/build/bin/ || echo "Failed to list"
-
-          # 尝试执行 atpd
-          echo "=== Debug: Run atpd -v ==="
-          docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>&1 || echo "Failed to run"
-
-          # 获取编译器版本
-          echo "=== Debug: Run clang --version ==="
-          docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>&1 | head -3 || echo "Failed to get clang version"
-
-          # 设置默认值
-          echo "runtime_ver=N/A" >> $GITHUB_OUTPUT
-          echo "compiler_ver=19.1.4" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
