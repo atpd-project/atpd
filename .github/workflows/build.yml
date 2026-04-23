@@ -73,15 +73,22 @@ jobs:
           fi
           file ./atpd
           ls -lh ./atpd
-
+      
       - name: Extract Metadata
         id: extract
         run: |
-          SIZE=$(du -h ./atpd | cut -f1)
-          echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
-          VER="v0.0.1-$(git rev-parse --short HEAD)"
-          echo "atp_version=$VER" >> $GITHUB_OUTPUT
+         SIZE=$(du -h ./atpd | cut -f1)
+         echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
 
+         TAG=$(git tag -l "v*" --sort=-v:refname | head -1)
+         if [ -z "$TAG" ]; then TAG="v0"; fi
+         COMMIT=$(git rev-parse --short HEAD)
+         if git describe --tags --exact-match --match="v*" >/dev/null 2>&1; then
+          VER="$TAG"
+         else
+          VER="${TAG}.${COMMIT}"
+         fi
+          echo "atp_version=$VER" >> $GITHUB_OUTPUT
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
         with:
