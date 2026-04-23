@@ -87,21 +87,12 @@ static void on_idle(reactor_t *r, void *userdata) {
     }
 }
 
-static void service_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
-    (void)r;
-    (void)timer;
-    (void)userdata;
-    if (g_svc) {
-        service_monitor(g_svc);
-    }
-}
 
 static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
     (void)r;
     (void)events;
     netlink_handle_event(fd, userdata);
 }
-
 
 static void run_event_loop(void) {
     g_reactor = reactor_create();
@@ -111,6 +102,9 @@ static void run_event_loop(void) {
     }
 
     api_start_with_reactor(&g_api_ctx, g_reactor);
+    
+    reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
+    service_start_async(g_svc);
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
@@ -124,8 +118,6 @@ static void run_event_loop(void) {
     if (nl_fd >= 0) {
         reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_io_cb, NULL);
     }
-
-    reactor_add_timer(g_reactor, 500, 500, service_timer_cb, NULL);
 
     LOG_INFO("Reactor event loop started");
     reactor_run(g_reactor);

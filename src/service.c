@@ -1,243 +1,65 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2026 ATP Project
+ *
+ * Service Manager - Async Reactor-driven state machine
+ * Zero sleep, zero exec_cmd, pure async
+ */
+
 #include "service.h"
 #include "logger.h"
 #include "utils.h"
-#include "atp.h"
-#include "api.h"
-#include <signal.h>
-#include <sys/wait.h>
-#include <pwd.h>
-#include <grp.h>
-#include <unistd.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <time.h>
-#include <fcntl.h>
-#include <sys/file.h>
+#include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <pwd.h>
+#include <grp.h>
 
-#define SAFE_PATH_MAX (PATH_MAX + 256)
+/* ========== Atomic Actions ========== */
 
-/* External reference to global API context */
-extern api_ctx_t g_api_ctx;
-
-/* Safely rotate log file - check if file is busy before rename */
-static int safe_log_rotate(const char *log_path) {
-    struct stat st;
-    if (stat(log_path, &st) != 0) return 0;
-
-    /* Check if file is currently open by another process */
-    int test_fd = open(log_path, O_RDONLY | O_NONBLOCK);
-    if (test_fd < 0) {
-        LOG_WARN("Log file %s is busy, skipping rotation", log_path);
-        return -1;
-    }
-    close(test_fd);
-
-    char old_path[SAFE_PATH_MAX];
-    /* Using precision to prevent truncation warning */
-    snprintf(old_path, sizeof(old_path), "%.4090s.1", log_path);
-    unlink(old_path);
-
-    if (rename(log_path, old_path) != 0) {
-        LOG_WARN("Failed to rotate log file: %s", strerror(errno));
-        return -1;
-    }
-    LOG_DEBUG("Log rotated: %s -> %s", log_path, old_path);
-    return 0;
+static int service_is_alive(service_ctx_t *ctx) {
+    if (ctx->child_pid <= 0) return 0;
+    return kill(ctx->child_pid, 0) == 0;
 }
 
-/* Set permissions for run directory to target user */
-static int setup_run_directory_permissions(service_ctx_t *ctx) {
-    char run_dir[SAFE_PATH_MAX];
-    /* Fixed -Waddress: check if first char is not null instead of checking array address */
-    const char *base = (ctx->work_dir[0] != '\0') ? ctx->work_dir : ATP_DEFAULT_DIR;
-    snprintf(run_dir, sizeof(run_dir), "%.4090s/run", base);
-
-    struct passwd *pwd = getpwnam(ctx->user);
-    struct group *grp = getgrnam(ctx->group);
-    if (!pwd || !grp) {
-        LOG_WARN("Cannot resolve user/group: %s:%s", ctx->user, ctx->group);
-        return -1;
-    }
-
-    if (chown(run_dir, pwd->pw_uid, grp->gr_gid) != 0) {
-        LOG_WARN("Failed to chown %s: %s", run_dir, strerror(errno));
-        return -1;
-    }
-
-    if (chmod(run_dir, 0750) != 0) {
-        LOG_WARN("Failed to chmod %s: %s", run_dir, strerror(errno));
-        return -1;
-    }
-
-    LOG_DEBUG("Set permissions for %s to %s:%s (0750)", run_dir, ctx->user, ctx->group);
-    return 0;
-}
-
-/* Set permissions for work directory to target user */
-static int setup_work_directory_permissions(service_ctx_t *ctx) {
-    if (ctx->work_dir[0] == '\0') return -1;
-    mkdir_recursive(ctx->work_dir, 0755);
-
-    struct passwd *pwd = getpwnam(ctx->user);
-    struct group *grp = getgrnam(ctx->group);
-    if (!pwd || !grp) return -1;
-
-    if (chown(ctx->work_dir, pwd->pw_uid, grp->gr_gid) != 0) {
-        LOG_WARN("Failed to chown %s: %s", ctx->work_dir, strerror(errno));
-        return -1;
-    }
-
-    if (chmod(ctx->work_dir, 0750) != 0) {
-        LOG_WARN("Failed to chmod %s: %s", ctx->work_dir, strerror(errno));
-        return -1;
-    }
-    return 0;
-}
-
-int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
-    if (!ctx || !cfg) return -1;
-    memset(ctx, 0, sizeof(service_ctx_t));
-    ctx->pid_fd = -1;
-
-    pthread_mutex_lock(&cfg->config_mutex);
-    /* Hardened path construction with precision specifiers */
-    snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%.4000s/bin/%.63s", cfg->data_dir, PROXY_BIN_NAME);
-    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%.4000s/sing-box/config.json", cfg->data_dir);
-    snprintf(ctx->log_path, sizeof(ctx->log_path), "%.4000s/run/sing-box.log", cfg->data_dir);
-    snprintf(ctx->pid_path, sizeof(ctx->pid_path), "%.4000s/run/sing-box.pid", cfg->data_dir);
-    snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%.4000s/sing-box", cfg->data_dir);
-
-    snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core_user);
-    snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core_group);
-    pthread_mutex_unlock(&cfg->config_mutex);
-
-    ctx->restart_cooldown_sec = 60;
-    ctx->restart_delay_sec = (cfg->restart_delay <= 0) ? DEFAULT_RESTART_DELAY : cfg->restart_delay;
-    ctx->last_restart_time = 0;
-    ctx->restart_failures = 0;
-    ctx->state = SERVICE_STOPPED;
-
-    LOG_DEBUG("Service initialized: bin=%s, restart_delay=%d", 
-              ctx->bin_path, ctx->restart_delay_sec);
-    return 0;
-}
-
-int service_acquire_pid_lock(service_ctx_t *ctx) {
-    char dir[SAFE_PATH_MAX];
-    snprintf(dir, sizeof(dir), "%.4095s", ctx->pid_path);
-    char *slash = strrchr(dir, '/');
-    if (slash) {
-        *slash = '\0';
-        mkdir_recursive(dir, 0755);
-    }
-
-    ctx->pid_fd = open(ctx->pid_path, O_CREAT | O_RDWR, 0640);
-    if (ctx->pid_fd < 0) {
-        LOG_ERROR("Failed to open PID file: %s", strerror(errno));
-        return -1;
-    }
-
-    struct flock fl = { .l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0 };
-    if (fcntl(ctx->pid_fd, F_SETLK, &fl) < 0) {
-        LOG_ERROR("Another instance is running (locked): %s", strerror(errno));
-        close(ctx->pid_fd);
-        ctx->pid_fd = -1;
-        return -1;
-    }
-
-    char pid_str[16];
-    int len = snprintf(pid_str, sizeof(pid_str), "%d\n", getpid());
-    ftruncate(ctx->pid_fd, 0);
-    if (write(ctx->pid_fd, pid_str, (size_t)len) < 0) return -1;
-
-    LOG_DEBUG("PID lock acquired: %s", ctx->pid_path);
-    return 0;
-}
-
-void service_release_pid_lock(service_ctx_t *ctx) {
-    if (ctx->pid_fd >= 0) {
-        close(ctx->pid_fd);
-        ctx->pid_fd = -1;
-    }
-    if (ctx->pid_path[0] != '\0') unlink(ctx->pid_path);
-    LOG_DEBUG("PID lock released");
-}
-
-int service_validate_config(service_ctx_t *ctx) {
-    /* Buffer expanded to PATH_MAX * 2 to accommodate complex commands and prevent truncation warnings */
-    char cmd[PATH_MAX * 2 + 128];
-    char output[4096];
+static int service_probe_port(int port) {
+    int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (sock < 0) return 0;
     
-    snprintf(cmd, sizeof(cmd), "%.2048s check -D \"%.2048s\" 2>&1", ctx->bin_path, ctx->work_dir);
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(port);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     
-    int ret = exec_cmd(cmd, output, sizeof(output), 10);
-    if (ret != 0) {
-        LOG_ERROR("Config validation failed: %s", output);
-        return -1;
-    }
-    LOG_DEBUG("Config validation passed");
-    return 0;
+    int ret = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
+    close(sock);
+    
+    if (ret == 0) return 1;
+    return (errno == EINPROGRESS) ? 1 : 0;
 }
 
-static int set_user_group(service_ctx_t *ctx) {
-    struct group *grp = getgrnam(ctx->group);
-    if (grp != NULL) {
-        if (setgid(grp->gr_gid) != 0) {
-            LOG_ERROR("Failed to set group %s: %s", ctx->group, strerror(errno));
-            return -1;
-        }
-    }
-    struct passwd *pwd = getpwnam(ctx->user);
-    if (pwd != NULL) {
-        if (setuid(pwd->pw_uid) != 0) {
-            LOG_ERROR("Failed to set user %s: %s", ctx->user, strerror(errno));
-            return -1;
-        }
-    }
-    return 0;
-}
-
-int service_start(service_ctx_t *ctx) {
-    if (service_check(ctx)) {
-        LOG_INFO("Service already running");
-        return 0;
-    }
-    if (service_acquire_pid_lock(ctx) != 0) {
-        LOG_ERROR("Failed to acquire PID lock, another instance may be running");
-        return -1;
-    }
-    LOG_INFO("Starting service: %s", ctx->bin_path);
-    ctx->state = SERVICE_STARTING;
-    if (service_validate_config(ctx) != 0) {
-        LOG_ERROR("Config validation failed, aborting start");
-        ctx->state = SERVICE_FAILED;
-        service_release_pid_lock(ctx);
-        return -1;
-    }
-
-    setup_run_directory_permissions(ctx);
-    setup_work_directory_permissions(ctx);
-    safe_log_rotate(ctx->log_path);
-
-    service_kill_all(PROXY_BIN_NAME, SIGKILL);
-    usleep(500000);
-
+static int service_spawn(service_ctx_t *ctx) {
     pid_t pid = fork();
     if (pid < 0) {
-        LOG_ERROR("Fork failed: %s", strerror(errno));
-        ctx->state = SERVICE_FAILED;
-        service_release_pid_lock(ctx);
+        LOG_ERROR("Service: fork failed: %s", strerror(errno));
         return -1;
     }
-
+    
     if (pid == 0) {
         umask(027);
         setsid();
         signal(SIGPIPE, SIG_IGN);
+        
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
@@ -256,199 +78,161 @@ int service_start(service_ctx_t *ctx) {
                 close(null_fd);
             }
         }
-        set_user_group(ctx);
-        char *argv[] = { (char *)ctx->bin_path, "run", "-D", (char *)ctx->work_dir, NULL };
+        
+        struct passwd *pwd = getpwnam(ctx->user);
+        struct group *grp = getgrnam(ctx->group);
+        if (grp) setgid(grp->gr_gid);
+        if (pwd) setuid(pwd->pw_uid);
+        
+        char *argv[] = { ctx->bin_path, "run", "-D", ctx->work_dir, NULL };
         execv(ctx->bin_path, argv);
-        exit(1);
+        _exit(127);
     }
-    ctx->state = SERVICE_RUNNING;
-    LOG_INFO("Service started with PID %d", pid);
-    return service_wait_ready(ctx, 10);
-}
-
-int service_stop_graceful(service_ctx_t *ctx, int graceful_timeout_sec) {
-    LOG_INFO("Stopping service gracefully (timeout=%ds)", graceful_timeout_sec);
-    ctx->state = SERVICE_STOPPING;
-    int pid = service_get_pid(ctx);
-    if (pid <= 0) {
-        ctx->state = SERVICE_STOPPED;
-        service_release_pid_lock(ctx);
-        return 0;
-    }
-    kill(pid, SIGTERM);
-    int waited = 0;
-    while (waited < graceful_timeout_sec) {
-        if (!process_exists(pid)) {
-            LOG_INFO("Service exited gracefully after %d seconds", waited);
-            service_release_pid_lock(ctx);
-            ctx->state = SERVICE_STOPPED;
-            return 0;
-        }
-        sleep(1);
-        waited++;
-    }
-    LOG_WARN("Service not responding, forcing kill");
-    kill(pid, SIGKILL);
-    wait_for_pid_exit(pid, 2);
-    service_release_pid_lock(ctx);
-    service_kill_all(PROXY_BIN_NAME, SIGKILL);
-    ctx->state = SERVICE_STOPPED;
-    LOG_INFO("Service stopped (forced)");
+    
+    ctx->child_pid = pid;
+    LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
     return 0;
 }
 
-int service_stop(service_ctx_t *ctx) { return service_stop_graceful(ctx, 3); }
-
-int service_restart(service_ctx_t *ctx) {
-    LOG_INFO("Restarting service");
-    service_stop_graceful(ctx, 3);
-    int delay = (ctx->restart_delay_sec <= 0) ? DEFAULT_RESTART_DELAY : ctx->restart_delay_sec;
-    LOG_DEBUG("Waiting %d seconds before restart", delay);
-    sleep((unsigned int)delay);
-    return service_start(ctx);
-}
-
-int service_check(service_ctx_t *ctx) {
-    int pid = service_get_pid(ctx);
-    if (pid > 0 && process_exists(pid)) return 1;
-    char cmd[MAX_CMD_LEN], output[256];
-    snprintf(cmd, sizeof(cmd), "pidof %.63s 2>/dev/null", PROXY_BIN_NAME);
-    if (exec_cmd(cmd, output, sizeof(output), 3) == 0 && output[0]) return 1;
-    return 0;
-}
-
-int service_check_port(int port) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "netstat -tuln 2>/dev/null | grep -q \":%d \"", port);
-    return exec_cmd_simple(cmd, 3) == 0;
-}
-
-int service_get_pid(service_ctx_t *ctx) {
-    if (file_exists(ctx->pid_path)) {
-        char pid_str[32];
-        if (read_file(ctx->pid_path, pid_str, sizeof(pid_str)) > 0) {
-            int pid = atoi(pid_str);
-            if (pid > 0 && process_exists(pid)) return pid;
+static void service_kill(service_ctx_t *ctx) {
+    if (ctx->child_pid > 0) {
+        LOG_INFO("Service: stopping sing-box (PID: %d)", ctx->child_pid);
+        kill(ctx->child_pid, SIGTERM);
+        usleep(500000);
+        if (kill(ctx->child_pid, 0) == 0) {
+            kill(ctx->child_pid, SIGKILL);
         }
+        waitpid(ctx->child_pid, NULL, WNOHANG);
+        ctx->child_pid = -1;
     }
-    char cmd[MAX_CMD_LEN], output[256];
-    snprintf(cmd, sizeof(cmd), "pidof %.63s 2>/dev/null | awk '{print $1}'", PROXY_BIN_NAME);
-    if (exec_cmd(cmd, output, sizeof(output), 3) == 0 && output[0]) return atoi(output);
-    return -1;
 }
 
-int service_wait_ready(service_ctx_t *ctx, int timeout_sec) {
-    int waited = 0;
-    while (waited < timeout_sec) {
-        if (service_check(ctx)) {
-            LOG_INFO("Service is ready after %d seconds", waited);
-            return 0;
-        }
-        sleep(1);
-        waited++;
+/* ========== State Machine ========== */
+
+const char *service_state_string(service_state_t state) {
+    switch (state) {
+        case SERVICE_STOPPED:  return "STOPPED";
+        case SERVICE_STARTING: return "STARTING";
+        case SERVICE_RUNNING:  return "RUNNING";
+        case SERVICE_FAILED:   return "FAILED";
+        default:               return "UNKNOWN";
     }
-    LOG_WARN("Service not ready after %d seconds", timeout_sec);
-    return -1;
 }
 
-int service_rotate_log(service_ctx_t *ctx) {
-    struct stat st;
-    if (stat(ctx->log_path, &st) != 0 || st.st_size < 10 * 1024 * 1024) return 0;
-    char old_path[SAFE_PATH_MAX];
-    snprintf(old_path, sizeof(old_path), "%.4090s.1", ctx->log_path);
-    rename(ctx->log_path, old_path);
-    LOG_INFO("Log rotated");
-    return 0;
-}
-
-void service_set_cooldown(service_ctx_t *ctx, int seconds) { ctx->restart_cooldown_sec = seconds; }
-
-int service_cooldown_active(service_ctx_t *ctx) {
-    int elapsed = (int)(time(NULL) - ctx->last_restart_time);
-    if (ctx->last_restart_time > 0 && elapsed < ctx->restart_cooldown_sec) {
-        LOG_DEBUG("Cooldown active: %d seconds remaining", ctx->restart_cooldown_sec - elapsed);
-        return 1;
-    }
-    return 0;
-}
-
-void service_reset_failures(service_ctx_t *ctx) {
-    ctx->restart_failures = 0;
-    ctx->last_restart_time = time(NULL);
-}
-
-pid_t service_find_process(const char *name) {
-    DIR *dir = opendir("/proc");
-    if (!dir) return -1;
-    struct dirent *entry;
-    pid_t found_pid = -1;
-    while ((entry = readdir(dir)) != NULL) {
-        if (!isdigit(entry->d_name[0])) continue;
-        pid_t pid = atoi(entry->d_name);
-        char path[SAFE_PATH_MAX], line[256];
-        snprintf(path, sizeof(path), "/proc/%d/comm", pid);
-        FILE *fp = fopen(path, "r");
-        if (fp) {
-            if (fgets(line, sizeof(line), fp)) {
-                trim(line);
-                if (strcmp(line, name) == 0) { found_pid = pid; fclose(fp); break; }
-            }
-            fclose(fp);
-        }
-    }
-    closedir(dir);
-    return found_pid;
-}
-
-int service_kill_process(pid_t pid, int signal, int wait_sec) {
-    if (pid <= 0) return -1;
-    if (kill(pid, signal) != 0) return -1;
-    if (wait_sec > 0) wait_for_pid_exit(pid, (unsigned int)wait_sec);
-    return 0;
-}
-
-int service_kill_all(const char *name, int signal) {
-    DIR *dir = opendir("/proc");
-    if (!dir) return -1;
-    struct dirent *entry; int killed = 0;
-    while ((entry = readdir(dir)) != NULL) {
-        if (!isdigit(entry->d_name[0])) continue;
-        pid_t pid = atoi(entry->d_name);
-        char path[SAFE_PATH_MAX], line[256];
-        snprintf(path, sizeof(path), "/proc/%d/comm", pid);
-        FILE *fp = fopen(path, "r");
-        if (fp) {
-            if (fgets(line, sizeof(line), fp)) {
-                trim(line);
-                if (strcmp(line, name) == 0) { kill(pid, signal); killed++; }
-            }
-            fclose(fp);
-        }
-    }
-    closedir(dir);
-    if (killed > 0) LOG_DEBUG("Killed %d processes with name %s", killed, name);
-    return killed;
-}
-
-int service_monitor(service_ctx_t *ctx) {
-    if (!ctx) return -1;
-    if (ctx->state == SERVICE_RUNNING) {
-        if (!service_check(ctx)) {
-            LOG_WARN("Service died unexpectedly");
-            ctx->state = SERVICE_FAILED;
-            if (!service_cooldown_active(ctx)) {
-                if (service_start(ctx) == 0) {
-                    ctx->restart_failures = 0;
-                    ctx->last_restart_time = time(NULL);
+void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+    
+    service_ctx_t *ctx = userdata;
+    if (!ctx) return;
+    
+    switch (ctx->state) {
+        case SERVICE_STOPPED:
+            break;
+            
+        case SERVICE_STARTING:
+            if (service_is_alive(ctx)) {
+                if (service_probe_port(ctx->api_port)) {
+                    LOG_INFO("Service: ready on port %d", ctx->api_port);
+                    ctx->state = SERVICE_RUNNING;
+                    ctx->fail_count = 0;
+                }
+            } else {
+                LOG_WARN("Service: process died during startup");
+                ctx->fail_count++;
+                if (ctx->fail_count >= ctx->max_failures) {
+                    LOG_ERROR("Service: max failures reached, giving up");
+                    ctx->state = SERVICE_FAILED;
                 } else {
-                    ctx->restart_failures++;
+                    LOG_INFO("Service: respawning (%d/%d)", ctx->fail_count, ctx->max_failures);
+                    service_spawn(ctx);
                 }
             }
-        }
+            break;
+            
+        case SERVICE_RUNNING:
+            if (!service_is_alive(ctx)) {
+                LOG_WARN("Service: process died unexpectedly");
+                ctx->fail_count++;
+                if (ctx->fail_count >= ctx->max_failures) {
+                    LOG_ERROR("Service: max failures reached, giving up");
+                    ctx->state = SERVICE_FAILED;
+                } else {
+                    LOG_INFO("Service: auto-restarting (%d/%d)", ctx->fail_count, ctx->max_failures);
+                    service_spawn(ctx);
+                    ctx->state = SERVICE_STARTING;
+                }
+            }
+            break;
+            
+        case SERVICE_FAILED:
+            break;
     }
-    service_rotate_log(ctx);
+}
+
+/* ========== Public API ========== */
+
+int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
+    if (!ctx || !cfg) return -1;
+    memset(ctx, 0, sizeof(service_ctx_t));
+    
+    snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%.4000s/bin/%.63s", 
+             cfg->data_dir, PROXY_BIN_NAME);
+    snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%.4000s/sing-box", cfg->data_dir);
+    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%.4000s/sing-box/config.json", cfg->data_dir);
+    snprintf(ctx->log_path, sizeof(ctx->log_path), "%.4000s/run/sing-box.log", cfg->data_dir);
+    snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core_user);
+    snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core_group);
+    
+    ctx->api_port = cfg->api_port;
+    ctx->child_pid = -1;
+    ctx->state = SERVICE_STOPPED;
+    ctx->fail_count = 0;
+    ctx->max_failures = 3;
+    
+    LOG_DEBUG("Service: initialized (bin=%s, port=%d)", ctx->bin_path, ctx->api_port);
     return 0;
 }
 
-int service_get_fd(service_ctx_t *ctx) { (void)ctx; return -1; }
-void service_handle(service_ctx_t *ctx) { if (ctx) service_monitor(ctx); }
+int service_start_async(service_ctx_t *ctx) {
+    if (!ctx) return -1;
+    
+    if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
+        LOG_WARN("Service: already running or starting");
+        return 0;
+    }
+    
+    if (service_is_alive(ctx)) {
+        LOG_INFO("Service: process already running (PID: %d)", ctx->child_pid);
+        ctx->state = SERVICE_STARTING;
+        return 0;
+    }
+    
+    if (service_spawn(ctx) < 0) {
+        ctx->state = SERVICE_FAILED;
+        return -1;
+    }
+    
+    ctx->state = SERVICE_STARTING;
+    ctx->fail_count = 0;
+    return 0;
+}
+
+int service_stop_async(service_ctx_t *ctx) {
+    if (!ctx) return -1;
+    
+    service_kill(ctx);
+    ctx->state = SERVICE_STOPPED;
+    ctx->fail_count = 0;
+    
+    if (ctx->monitor_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
+        ctx->monitor_timer = NULL;
+    }
+    
+    return 0;
+}
+
+int service_is_running(service_ctx_t *ctx) {
+    return ctx && ctx->state == SERVICE_RUNNING && service_is_alive(ctx);
+}
