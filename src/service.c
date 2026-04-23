@@ -23,6 +23,7 @@
 #include <arpa/inet.h>
 #include <pwd.h>
 #include <grp.h>
+#include "async_validate.h"
 
 /* ========== Backoff Algorithm ========== */
 
@@ -308,28 +309,62 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     return 0;
 }
 
+/* ========== Async Config Validation Callback ========== */
+
+static void on_validate_complete(int result, const char *output, void *userdata) {
+    service_ctx_t *ctx = userdata;
+    
+    if (result) {
+        LOG_INFO("Service: config validation passed");
+        if (service_spawn(ctx) == 0) {
+            ctx->state = SERVICE_STARTING;
+            ctx->fail_count = 0;
+            backoff_reset(&ctx->backoff);
+        } else {
+            ctx->state = SERVICE_FAILED;
+        }
+    } else {
+        LOG_ERROR("Service: config validation failed: %s", output ? output : "unknown error");
+        ctx->state = SERVICE_FAILED;
+    }
+    
+    free(ctx->validate_ctx);
+    ctx->validate_ctx = NULL;
+}
+
 int service_start_async(service_ctx_t *ctx) {
     if (!ctx) return -1;
-    
+
     if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
         LOG_WARN("Service: already running or starting");
         return 0;
     }
-    
+
     if (service_is_alive(ctx)) {
         LOG_INFO("Service: process already running (PID: %d)", ctx->child_pid);
         ctx->state = SERVICE_STARTING;
         return 0;
     }
-    
-    if (service_spawn(ctx) < 0) {
+
+    /* Async config validation */
+    ctx->validate_ctx = malloc(sizeof(async_validate_ctx_t));
+    if (!ctx->validate_ctx) {
+        LOG_ERROR("Service: failed to allocate validate_ctx");
         ctx->state = SERVICE_FAILED;
         return -1;
     }
-    
-    ctx->state = SERVICE_STARTING;
-    ctx->fail_count = 0;
-    backoff_reset(&ctx->backoff);
+
+    int ret = async_validate_config(ctx->validate_ctx, ctx->reactor,
+                                    ctx->bin_path, ctx->work_dir,
+                                    on_validate_complete, ctx);
+    if (ret < 0) {
+        LOG_ERROR("Service: failed to start async validation");
+        free(ctx->validate_ctx);
+        ctx->validate_ctx = NULL;
+        ctx->state = SERVICE_FAILED;
+        return -1;
+    }
+
     return 0;
 }
 
