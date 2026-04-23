@@ -6,7 +6,9 @@
  */
 
 #include "version.h"
+#include "atp.h"
 #include <string.h>
+#include <stdlib.h>
 
 const char* atp_get_version(void) {
     return ATP_VERSION_STRING;
@@ -17,13 +19,18 @@ const char* atp_get_full_version(void) {
 }
 
 int atp_get_version_major(void) {
-    return ATP_VERSION_MAJOR;
+    /* Parse from v0.abc1234 format */
+    const char *v = ATP_VERSION_STRING;
+    if (v[0] == 'v') {
+        return atoi(v + 1);
+    }
+    return 0;
 }
 
 int atp_get_version_minor(void) {
-    return ATP_VERSION_MINOR;
+    return 0;  /* Not used in simplified version scheme */
 }
 
 int atp_get_version_patch(void) {
-    return ATP_VERSION_PATCH;
+    return 0;  /* Not used in simplified version scheme */
 }
