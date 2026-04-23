@@ -420,7 +420,7 @@ static int do_reload(atp_options_t *opts) {
 
 static int do_version(atp_options_t *opts) {
     (void)opts;
-    printf("atpd v%s\n", ATP_VERSION_STRING);
+    printf("atpd %s\n", ATP_VERSION_STRING);
     return 0;
 }
 
