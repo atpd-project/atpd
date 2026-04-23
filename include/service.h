@@ -6,6 +6,8 @@
 #include <sys/types.h>
 #include <signal.h>
 
+typedef struct async_validate_ctx async_validate_ctx_t;
+
 typedef enum {
     SERVICE_STOPPED,
     SERVICE_STARTING,

@@ -18,7 +18,7 @@
 #include <sys/timerfd.h>
 
 static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
-static void validate_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
+static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
 static void validate_cleanup(async_validate_ctx_t *ctx, int result, const char *output);
 
 /* ========== Public API ========== */
