@@ -14,7 +14,7 @@ if [ -z "$SUMMARY" ]; then
 fi
 
 RUN_NUM=$(echo "$SUMMARY" | grep -oP '#\K[0-9]+' | head -1)
-TIMESTAMP=$(echo "$SUMMARY" | grep -oP '(?<=</a></b>\] &nbsp;&nbsp; )[^&]*' | head -1)
+TIMESTAMP=$(TZ='Asia/Shanghai' date +"%y%m%d %H:%M")
 SIZE=$(echo "$SUMMARY" | grep -oP '(?<=📦 <b>Size:</b> )[^<]*' | head -1)
 
 MESSAGE="📋 *Latest ATPd Build*%0A"
