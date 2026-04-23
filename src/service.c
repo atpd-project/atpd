@@ -375,3 +375,48 @@ int service_get_pid(service_ctx_t *ctx) {
 int service_is_running(service_ctx_t *ctx) {
     return ctx && ctx->state == SERVICE_RUNNING && service_is_alive(ctx);
 }
+static void on_validate_complete(int result, const char *output, void *userdata) {
+    service_ctx_t *ctx = userdata;
+
+    if (result) {
+        LOG_INFO("Service: config validation passed");
+        // 继续启动流程
+        if (service_spawn(ctx) == 0) {
+            ctx->state = SERVICE_STARTING;
+            ctx->fail_count = 0;
+        } else {
+            ctx->state = SERVICE_FAILED;
+        }
+    } else {
+        LOG_ERROR("Service: config validation failed: %s", output);
+        ctx->state = SERVICE_FAILED;
+        if (ctx->on_error) {
+            ctx->on_error(ctx, -1, output, ctx->callback_userdata);
+        }
+    }
+}
+
+int service_start_async(service_ctx_t *ctx) {
+    if (!ctx) return -1;
+
+    if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
+        LOG_WARN("Service: already running or starting");
+        return 0;
+    }
+
+    if (service_is_alive(ctx)) {
+        LOG_INFO("Service: process already running (PID: %d)", ctx->child_pid);
+        ctx->state = SERVICE_STARTING;
+        return 0;
+    }
+
+    /* Async config validation */
+    async_validate_ctx_t *vctx = malloc(sizeof(async_validate_ctx_t));
+    async_validate_config(vctx, ctx->reactor, ctx->bin_path, ctx->work_dir,
+                          on_validate_complete, ctx);
+
+    ctx->state = SERVICE_STARTING;
+    ctx->fail_count = 0;
+    backoff_reset(&ctx->backoff);
+    return 0;
+}
