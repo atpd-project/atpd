@@ -1,6 +1,7 @@
 module.exports = async ({ github, context, core }) => {
   const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE, RUNTIME_VER, COMPILER_VER } = process.env;
   const now = new Date();
+  const MAX_ENTRIES = 50;
   
   // 1. 锁定北京时间 (UTC+8)
   const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
@@ -14,7 +15,7 @@ module.exports = async ({ github, context, core }) => {
   const branchName = context.ref.replace('refs/heads/', '');
   const branchLink = `https://github.com/${context.repo.owner}/${context.repo.repo}/tree/${branchName}`;
 
-  // 3. 移动端兼容性处理：首行提取 + 42 字符硬截断
+  // 3. 移动端兼容性处理
   const rawMsg = (COMMIT_MSG || 'No commit message').split('\n')[0].trim();
   const displayMsg = rawMsg.length > 42 ? `${rawMsg.substring(0, 42)}...` : rawMsg;
 
@@ -44,7 +45,21 @@ module.exports = async ({ github, context, core }) => {
       issue_number: parseInt(TARGET_ISSUE)
     });
 
-    const finalBody = newEntry.trim() + "\n\n\n" + (issue.body || "");
+    const currentBody = issue.body || '';
+    const marker = '---';
+    
+    const parts = currentBody.split(marker);
+    const headerContent = parts[0];
+    const existingEntries = parts.slice(1).filter(e => e.trim().length > 0);
+    
+    let finalBody;
+    
+    if (existingEntries.length >= MAX_ENTRIES) {
+      const keptEntries = existingEntries.slice(0, MAX_ENTRIES - 1);
+      finalBody = headerContent + marker + keptEntries.join(marker) + marker + newEntry;
+    } else {
+      finalBody = currentBody + marker + newEntry;
+    }
 
     await github.rest.issues.update({
       owner: context.repo.owner,
@@ -53,7 +68,7 @@ module.exports = async ({ github, context, core }) => {
       body: finalBody
     });
     
-    console.log(`Checkpoint updated: Build #${context.runNumber} for ${branchName}`);
+    console.log(`Checkpoint updated: Build #${context.runNumber} for ${branchName} (entries: ${Math.min(existingEntries.length + 1, MAX_ENTRIES)})`);
   } catch (e) {
     core.setFailed(`[UI Update Error]: ${e.message}`);
   }
