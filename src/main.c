@@ -284,12 +284,6 @@ static int do_start(atp_options_t *opts) {
         return 1;
     }
 
-    if (service_start(g_svc) < 0) {
-        LOG_ERROR("Failed to start service");
-        free(g_svc);
-        unlink(pp);
-        return 1;
-    }
 
     if (g_config.app_proxy_enable) {
         app_filter_setup(&g_config);
@@ -301,7 +295,7 @@ static int do_start(atp_options_t *opts) {
 
     run_event_loop();
 
-    service_stop(g_svc);
+    service_stop_async(g_svc);
     free(g_svc);
     g_svc = NULL;
 
