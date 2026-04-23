@@ -89,11 +89,22 @@ jobs:
           fi
           echo "atp_version=$VER" >> $GITHUB_OUTPUT
 
-          RUNTIME_VER=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>/dev/null | head -1 || echo "N/A")
-          echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
+          # 调试：列出容器内文件
+          echo "=== Debug: List container files ==="
+          docker run --rm --platform linux/arm64 --entrypoint ls atp-builder -la /app/build/bin/ || echo "Failed to list"
 
-          COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
-          echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
+          # 尝试执行 atpd
+          echo "=== Debug: Run atpd -v ==="
+          docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>&1 || echo "Failed to run"
+
+          # 获取编译器版本
+          echo "=== Debug: Run clang --version ==="
+          docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>&1 | head -3 || echo "Failed to get clang version"
+
+          # 设置默认值
+          echo "runtime_ver=N/A" >> $GITHUB_OUTPUT
+          echo "compiler_ver=19.1.4" >> $GITHUB_OUTPUT
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
         with:
