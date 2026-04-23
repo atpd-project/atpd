@@ -238,5 +238,25 @@ int service_is_running(service_ctx_t *ctx) {
 }
 
 int service_get_pid(service_ctx_t *ctx) {
-    return ctx ? ctx->child_pid : -1;
+    if (!ctx) return -1;
+
+    if (ctx->child_pid > 0) {
+        return ctx->child_pid;
+    }
+
+    char pid_path[256];
+    snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ATP_DEFAULT_DIR);
+
+    FILE *f = fopen(pid_path, "r");
+    if (f) {
+        int pid;
+        if (fscanf(f, "%d", &pid) == 1 && pid > 0) {
+            fclose(f);
+            ctx->child_pid = pid;
+            return pid;
+        }
+        fclose(f);
+    }
+
+    return -1;
 }
