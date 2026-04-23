@@ -966,3 +966,6 @@ api_mode_t api_string_to_mode(const char *str) {
     if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
     return API_MODE_RULE;
 }
+int api_get_proxies_async(api_ctx_t *ctx, api_callback_t callback, void *userdata) {
+    return api_request_async(ctx, "GET", "/proxies", NULL, callback, userdata);
+}

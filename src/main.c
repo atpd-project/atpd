@@ -39,6 +39,7 @@
 #include <pthread.h>
 #include <libgen.h>
 #include <signal.h>
+#include "singbox_api.h"
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 
@@ -100,6 +101,22 @@ static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
     netlink_handle_event(fd, userdata);
 }
 
+static void process_proxy_list(proxy_list_t *list) {
+    if (!list || list->count == 0) {
+        goto cleanup;
+    }
+
+    for (int i = 0; i < list->count; ++i) {
+        proxy_info_t *info = &list->proxies[i];
+        
+        if (info->type && strcmp(info->type, "URLTest") == 0 && info->delay > 0) {
+            LOG_INFO("URLTest Node Found: %s (delay: %dms)", info->name, info->delay);
+        }
+    }
+
+cleanup:
+    proxy_list_free(list);
+}
 static void run_event_loop(void) {
     g_reactor = reactor_create();
     if (!g_reactor) {
@@ -111,6 +128,8 @@ static void run_event_loop(void) {
     
     reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
     service_start_async(g_svc);
+    
+    schedule_proxies_sync(g_reactor);
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
@@ -119,6 +138,7 @@ static void run_event_loop(void) {
     reactor_watch_signal(g_reactor, SIGTERM);
     reactor_watch_signal(g_reactor, SIGHUP);
     reactor_watch_signal(g_reactor, SIGUSR1);
+    reactor_watch_signal(g_reactor, SIGCHLD);
 
     int nl_fd = netlink_get_fd();
     if (nl_fd >= 0) {
@@ -471,4 +491,39 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Unknown command: %s\n", argv[optind]);
     return 1;
 }
-// CI trigger: Wed Apr 22 11:03:45 AM CST 2026
+static void on_proxies_response(int http_code, const char *body, void *userdata) {
+    (void)userdata;
+
+    if (http_code != 200 || !body) {
+        LOG_WARN("Failed to fetch /proxies (HTTP %d)", http_code);
+        return;
+    }
+
+    char *mutable_body = strdup(body);
+    if (!mutable_body) {
+        LOG_ERROR("Failed to allocate memory for /proxies response");
+        return;
+    }
+
+    proxy_list_t list;
+    int count = singbox_parse_proxies(mutable_body, strlen(mutable_body), &list);
+
+    if (count >= 0) {
+        process_proxy_list(&list);
+    } else {
+        proxy_list_free(&list);
+    }
+
+    free(mutable_body);
+}
+static void proxies_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+    (void)userdata;
+
+    api_get_proxies_async(&g_api_ctx, on_proxies_response, NULL);
+}
+static void schedule_proxies_sync(reactor_t *r) {
+    reactor_add_timer(r, 10000, 10000, proxies_timer_cb, NULL);
+    LOG_INFO("Scheduled /proxies sync every 10 seconds");
+}
