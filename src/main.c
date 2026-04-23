@@ -27,6 +27,7 @@
 #include "ipv6_manager.h"
 #include "inet_diag.h"
 #include "reactor.h"
+#include "singbox_api.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
