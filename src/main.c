@@ -53,6 +53,12 @@ static volatile sig_atomic_t g_show_status = 0;
 static void on_signal(reactor_t *r, int sig, void *userdata) {
     (void)r;
     (void)userdata;
+
+    if (sig == SIGCHLD) {
+        service_sigchld_cb(r, sig, g_svc);
+        return;
+    }
+
     if (sig == SIGHUP) {
         g_reload = 1;
         LOG_INFO("Reload signal received");

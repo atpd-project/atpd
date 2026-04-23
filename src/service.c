@@ -375,23 +375,3 @@ int service_get_pid(service_ctx_t *ctx) {
 int service_is_running(service_ctx_t *ctx) {
     return ctx && ctx->state == SERVICE_RUNNING && service_is_alive(ctx);
 }
-static void on_signal(reactor_t *r, int sig, void *userdata) {
-    (void)r;
-    (void)userdata;
-
-    if (sig == SIGCHLD) {
-        service_sigchld_cb(r, sig, g_svc);
-        return;
-    }
-
-    if (sig == SIGHUP) {
-        g_reload = 1;
-        LOG_INFO("Reload signal received");
-    } else if (sig == SIGUSR1) {
-        g_show_status = 1;
-        LOG_INFO("Status signal received");
-    } else {
-        LOG_INFO("Termination signal received");
-        g_running = 0;
-    }
-}
