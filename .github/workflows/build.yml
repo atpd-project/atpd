@@ -78,7 +78,7 @@ jobs:
         run: |
           SIZE=$(du -h ./atpd | cut -f1)
           echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
-          
+
           TAG=$(git tag -l "v*" --sort=-v:refname | head -1)
           if [ -z "$TAG" ]; then TAG="v0"; fi
           COMMIT=$(git rev-parse --short HEAD)
@@ -88,11 +88,12 @@ jobs:
             VER="${TAG}.${COMMIT}"
           fi
           echo "atp_version=$VER" >> $GITHUB_OUTPUT
-          
-          RUNTIME_VER=$(./atpd -v 2>/dev/null | head -1 || echo "N/A")
+
+          RUNTIME_VER=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>/dev/null | head -1 || echo "N/A")
           echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
-          
-          echo "compiler_ver=19.1.4" >> $GITHUB_OUTPUT      
+
+          COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
+          echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
         with:
