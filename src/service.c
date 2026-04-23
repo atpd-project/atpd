@@ -236,3 +236,7 @@ int service_stop_async(service_ctx_t *ctx) {
 int service_is_running(service_ctx_t *ctx) {
     return ctx && ctx->state == SERVICE_RUNNING && service_is_alive(ctx);
 }
+
+int service_get_pid(service_ctx_t *ctx) {
+    return ctx ? ctx->child_pid : -1;
+}

@@ -38,4 +38,5 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
 int service_is_running(service_ctx_t *ctx);
 const char *service_state_string(service_state_t state);
 
+int service_get_pid(service_ctx_t *ctx);
 #endif
