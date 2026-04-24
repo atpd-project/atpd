@@ -13,7 +13,7 @@ if [ -z "$SUMMARY" ]; then
     exit 0
 fi
 
-RUN_NUM=$(echo "$SUMMARY" | grep -oP '#\K[0-9]+' | head -1)
+RUN_NUM=${GITHUB_RUN_NUMBER:-$(echo "$SUMMARY" | grep -oP '#K[0-9]+' | head -1)}
 TIMESTAMP=$(TZ='Asia/Shanghai' date +"%y%m%d %H:%M")
 SIZE=$(echo "$SUMMARY" | grep -oP '(?<=📦 <b>Size:</b> )[^<]*' | head -1)
 
