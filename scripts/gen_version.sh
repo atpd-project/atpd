@@ -41,7 +41,7 @@ done
 if [ -n "$TAG_ON_HEAD" ]; then
     VERSION="$TAG_ON_HEAD"
 else
-    VERSION="${TAG}.${COMMIT}"
+    VERSION="${TAG}-${COMMIT}"
 fi
 
 cat > "$VERSION_FILE" << HEADER
