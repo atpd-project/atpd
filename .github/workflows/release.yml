@@ -10,8 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       binary_size: ${{ steps.extract.outputs.binary_size }}
+      atp_version: ${{ steps.extract.outputs.atp_version }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate Version
+        run: |
+          chmod +x scripts/gen_version.sh
+          ./scripts/gen_version.sh
+          cat include/version.h
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -33,6 +42,8 @@ jobs:
         run: |
           SIZE=$(du -h ./atpd-clang | cut -f1)
           echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
+          VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' include/version.h || echo "v0")
+          echo "atp_version=$VER" >> $GITHUB_OUTPUT
 
       - name: Upload Clang Artifact
         uses: actions/upload-artifact@v5
@@ -47,6 +58,14 @@ jobs:
       zig_binary_size: ${{ steps.zig-extract.outputs.zig_binary_size }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Generate Version
+        run: |
+          chmod +x scripts/gen_version.sh
+          ./scripts/gen_version.sh
+          cat include/version.h
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -85,6 +104,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Download Clang Artifact
         uses: actions/download-artifact@v5
@@ -101,11 +122,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CLANG_SIZE: ${{ needs.build-clang.outputs.binary_size }}
           ZIG_SIZE: ${{ needs.build-zig.outputs.zig_binary_size }}
+          ATP_VERSION: ${{ needs.build-clang.outputs.atp_version }}
         run: |
           gh release create ${{ github.ref_name }} \
             atpd-clang atpd-zig \
-            --title "ATPd ${{ github.ref_name }}" \
-            --notes "## ATPd ${{ github.ref_name }}
+            --title "ATPd ${ATP_VERSION}" \
+            --notes "## ATPd ${ATP_VERSION}
 
           ### 📦 Builds
           | Toolchain | Size |
@@ -118,5 +140,3 @@ jobs:
           adb push atpd-clang /data/local/tmp/atpd
           adb shell chmod +x /data/local/tmp/atpd
           \`\`\`"
-
-
