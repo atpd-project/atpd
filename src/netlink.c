@@ -45,6 +45,15 @@ static reactor_t *g_debounce_reactor = NULL;
 
 #define NETLINK_DEBOUNCE_MS 500
 
+#ifndef IPTABLES_CMD
+#define IPTABLES_CMD "/system/bin/iptables"
+#endif
+#ifndef IP6TABLES_CMD
+#define IP6TABLES_CMD "/system/bin/ip6tables"
+#endif
+
+static int ip_rule_audit(atp_config_t *cfg);
+static int tproxy_refresh_rules(atp_config_t *cfg);
 static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     (void)r;
     (void)timer;
