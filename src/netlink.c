@@ -27,6 +27,17 @@
 #define NL_BUF_SIZE 16384
 #define NL_DUMP_SIZE 65536
 
+/* ========== Firewall Self-Healing ========== */
+
+#include "tproxy.h"
+extern atp_config_t g_config;
+
+static int g_tproxy_initialized = 0;
+
+void netlink_set_tproxy_ready(void) {
+    g_tproxy_initialized = 1;
+}
+
 /* ========== Network Refresh Debounce ========== */
 
 static reactor_timer_t *g_debounce_timer = NULL;
@@ -38,14 +49,15 @@ static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userda
     (void)r;
     (void)timer;
     (void)userdata;
-    
-    LOG_INFO("[NET] Debounce timer expired, executing network refresh");
-    
-    // TODO: tproxy_refresh_rules();
-    // TODO: ip_rule_audit();
-    
-    g_debounce_timer = NULL;
+
+    pthread_mutex_lock(&g_nl_mutex);
+
+    ip_rule_audit(&g_config);
+    tproxy_refresh_rules(&g_config);
+
+    pthread_mutex_unlock(&g_nl_mutex);
 }
+
 
 static void trigger_network_refresh(reactor_t *r) {
     if (!r) return;
@@ -399,3 +411,96 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
 void netlink_set_reactor(reactor_t *r) {
     g_debounce_reactor = r;
 }
+
+static int ip_rule_audit(atp_config_t *cfg) {
+    if (!g_tproxy_initialized) return 0;
+
+    char cmd[MAX_CMD_LEN];
+    int needs_repair = 0;
+
+    snprintf(cmd, sizeof(cmd),
+             "ip rule show | grep -q 'fwmark %d lookup %d' 2>/dev/null",
+             cfg->mark_value, cfg->table_id);
+
+    if (exec_cmd_simple(cmd, 2) != 0) {
+        LOG_WARN("IPv4 fwmark rule missing, repairing...");
+        snprintf(cmd, sizeof(cmd),
+                 "ip rule add fwmark %d table %d 2>/dev/null",
+                 cfg->mark_value, cfg->table_id);
+        exec_cmd_simple(cmd, 2);
+        needs_repair = 1;
+    }
+
+    if (cfg->proxy_ipv6) {
+        snprintf(cmd, sizeof(cmd),
+                 "ip -6 rule show | grep -q 'fwmark %d lookup %d' 2>/dev/null",
+                 cfg->mark_value6, cfg->table_id);
+
+        if (exec_cmd_simple(cmd, 2) != 0) {
+            LOG_WARN("IPv6 fwmark rule missing, repairing...");
+            snprintf(cmd, sizeof(cmd),
+                     "ip -6 rule add fwmark %d table %d 2>/dev/null",
+                     cfg->mark_value6, cfg->table_id);
+            exec_cmd_simple(cmd, 2);
+            needs_repair = 1;
+        }
+    }
+
+    if (needs_repair) {
+        LOG_INFO("IP rule audit: repaired fwmark rules");
+    }
+    return 0;
+}
+
+static int tproxy_refresh_rules(atp_config_t *cfg) {
+    if (!g_tproxy_initialized) return 0;
+
+    char cmd[MAX_CMD_LEN];
+    int needs_repair_v4 = 0;
+    int needs_repair_v6 = 0;
+
+    /* IPv4 PREROUTING */
+    snprintf(cmd, sizeof(cmd),
+             "%s -t mangle -L PREROUTING 2>/dev/null | head -2 | grep -q ATP_PRE_0",
+             IPTABLES_CMD);
+    if (exec_cmd_simple(cmd, 2) != 0) {
+        needs_repair_v4 = 1;
+    }
+
+    /* IPv4 OUTPUT */
+    snprintf(cmd, sizeof(cmd),
+             "%s -t mangle -L OUTPUT 2>/dev/null | head -2 | grep -q ATP_OUT_0",
+             IPTABLES_CMD);
+    if (exec_cmd_simple(cmd, 2) != 0) {
+        needs_repair_v4 = 1;
+    }
+
+    if (needs_repair_v4) {
+        LOG_INFO("TPROXY audit: repairing IPv4 hooks...");
+        tproxy_hook_main_chains(cfg, 4, "");
+    }
+
+    /* IPv6 */
+    if (cfg->proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
+        snprintf(cmd, sizeof(cmd),
+                 "%s -t mangle -L PREROUTING 2>/dev/null | head -2 | grep -q ATP6_PRE_0",
+                 IP6TABLES_CMD);
+        if (exec_cmd_simple(cmd, 2) != 0) {
+            needs_repair_v6 = 1;
+        }
+
+        snprintf(cmd, sizeof(cmd),
+                 "%s -t mangle -L OUTPUT 2>/dev/null | head -2 | grep -q ATP6_OUT_0",
+                 IP6TABLES_CMD);
+        if (exec_cmd_simple(cmd, 2) != 0) {
+            needs_repair_v6 = 1;
+        }
+
+        if (needs_repair_v6) {
+            tproxy_hook_main_chains(cfg, 6, "6");
+        }
+    }
+
+    return 0;
+}
+
