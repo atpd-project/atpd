@@ -331,7 +331,7 @@ static void tproxy_setup_chain_jumps(atp_config_t *cfg, int family, const char *
     tproxy_rule_add(cfg, family, "mangle", out_chain, "-j ATP_DNS_OUT_0");
 }
 
-static void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *suffix) {
+void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *suffix) {
     char pre_chain[64];
     char out_chain[64];
     char hook_rule[128];
