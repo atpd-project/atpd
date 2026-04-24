@@ -12,6 +12,8 @@ jobs:
       binary_size: ${{ steps.extract.outputs.binary_size }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -47,6 +49,8 @@ jobs:
       zig_binary_size: ${{ steps.zig-extract.outputs.zig_binary_size }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
@@ -85,6 +89,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Download Clang Artifact
         uses: actions/download-artifact@v5
