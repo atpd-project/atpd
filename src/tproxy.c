@@ -7,7 +7,8 @@
 #include <string.h>
 #include <dirent.h>
 #include <unistd.h>
-
+/* P2: Cached TPROXY support check result */
+static int g_tproxy_supported = -1;
 #define IPTABLES_CMD "/system/bin/iptables"
 #define IP6TABLES_CMD "/system/bin/ip6tables"
 
@@ -16,7 +17,7 @@ static int exec_iptables(atp_config_t *cfg, const char *table, const char *cmd, 
         LOG_DEBUG("[DRY_RUN] iptables -t %s %s %s %s", table, cmd, chain, rule ? rule : "");
         return 0;
     }
-    
+
     char command[MAX_CMD_LEN];
     if (rule) {
         snprintf(command, sizeof(command), "%s -t %s %s %s %s 2>/dev/null",
@@ -25,8 +26,12 @@ static int exec_iptables(atp_config_t *cfg, const char *table, const char *cmd, 
         snprintf(command, sizeof(command), "%s -t %s %s %s 2>/dev/null",
                  IPTABLES_CMD, table, cmd, chain);
     }
-    
-    return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+
+    int ret = exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+    if (ret != 0) {
+        LOG_ERROR("iptables failed: -t %s %s %s %s (ret=%d)", table, cmd, chain, rule ? rule : "", ret);
+    }
+    return ret;
 }
 
 static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd, const char *chain, const char *rule) {
@@ -34,12 +39,12 @@ static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd,
         LOG_DEBUG("[DRY_RUN] ip6tables -t %s %s %s %s", table, cmd, chain, rule ? rule : "");
         return 0;
     }
-    
+
     if (access(IP6TABLES_CMD, X_OK) != 0) {
         LOG_DEBUG("ip6tables not found, skipping command");
         return -1;
     }
-    
+
     char command[MAX_CMD_LEN];
     if (rule) {
         snprintf(command, sizeof(command), "%s -t %s %s %s %s 2>/dev/null",
@@ -48,8 +53,12 @@ static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd,
         snprintf(command, sizeof(command), "%s -t %s %s %s 2>/dev/null",
                  IP6TABLES_CMD, table, cmd, chain);
     }
-    
-    return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+
+    int ret = exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+    if (ret != 0) {
+        LOG_ERROR("ip6tables failed: -t %s %s %s %s (ret=%d)", table, cmd, chain, rule ? rule : "", ret);
+    }
+    return ret;
 }
 
 static int chain_exists(atp_config_t *cfg, int family, const char *table, const char *chain) {
@@ -162,20 +171,30 @@ int tproxy_atomic_switch(atp_config_t *cfg, int family, const char *table,
 }
 
 int tproxy_support_check(atp_config_t *cfg) {
-    if (cfg->dry_run) return 1;
-    
+    /* Return cached result if already checked */
+    if (g_tproxy_supported >= 0) return g_tproxy_supported;
+
+    if (cfg->dry_run) {
+        g_tproxy_supported = 1;
+        return 1;
+    }
+
+    LOG_INFO("Running TPROXY support check (cached for lifetime)...");
+
     char cmd[MAX_CMD_LEN];
     snprintf(cmd, sizeof(cmd), "%s -t mangle -N ATP_TEST 2>/dev/null", IPTABLES_CMD);
     exec_cmd_simple(cmd, 5);
-    
+
     snprintf(cmd, sizeof(cmd), "%s -t mangle -A ATP_TEST -p tcp -j TPROXY --on-port 1536 --tproxy-mark 20 2>/dev/null",
              IPTABLES_CMD);
     int ret = exec_cmd_simple(cmd, 5);
-    
+
     exec_cmd_simple(IPTABLES_CMD " -t mangle -F ATP_TEST 2>/dev/null", 5);
     exec_cmd_simple(IPTABLES_CMD " -t mangle -X ATP_TEST 2>/dev/null", 5);
-    
-    return ret == 0;
+
+    g_tproxy_supported = (ret == 0) ? 1 : 0;
+    LOG_INFO("TPROXY support: %s", g_tproxy_supported ? "YES" : "NO");
+    return g_tproxy_supported;
 }
 static int tproxy_configure_rp_filter(atp_config_t *cfg) {
     DIR *dir;
@@ -315,8 +334,8 @@ static void tproxy_setup_chain_jumps(atp_config_t *cfg, int family, const char *
 static void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *suffix) {
     char pre_chain[64];
     char out_chain[64];
-    char hook_rule[64];
-    
+    char hook_rule[128];
+
     if (suffix && suffix[0]) {
         snprintf(pre_chain, sizeof(pre_chain), "ATP_PRE_0%s", suffix);
         snprintf(out_chain, sizeof(out_chain), "ATP_OUT_0%s", suffix);
@@ -324,10 +343,16 @@ static void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *s
         snprintf(pre_chain, sizeof(pre_chain), "ATP_PRE_0");
         snprintf(out_chain, sizeof(out_chain), "ATP_OUT_0");
     }
-    
+
+
+    snprintf(hook_rule, sizeof(hook_rule),
+             "-m owner --uid-owner %s --gid-owner %s -j RETURN",
+             cfg->core_user, cfg->core_group);
+    tproxy_rule_insert(cfg, family, "mangle", "OUTPUT", 1, hook_rule);
+
     snprintf(hook_rule, sizeof(hook_rule), "-j %s", pre_chain);
     tproxy_rule_insert(cfg, family, "mangle", "PREROUTING", 1, hook_rule);
-    
+
     snprintf(hook_rule, sizeof(hook_rule), "-j %s", out_chain);
     tproxy_rule_insert(cfg, family, "mangle", "OUTPUT", 1, hook_rule);
 }
