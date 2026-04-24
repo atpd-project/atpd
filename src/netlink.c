@@ -178,9 +178,6 @@ int netlink_init(nl_callback_t callback, void *userdata) {
 
 void netlink_handle_event(int fd, void *data) {
 
-void netlink_set_reactor(reactor_t *r) { 
-    g_debounce_reactor = r; 
-}
     (void)data;
     uint8_t buf[NL_BUF_SIZE];
     struct sockaddr_nl sa;
@@ -398,4 +395,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     iface[0] = '\0';
     LOG_DEBUG("No active VPN interface found via netlink");
     return -1;
+}
+void netlink_set_reactor(reactor_t *r) {
+    g_debounce_reactor = r;
 }
