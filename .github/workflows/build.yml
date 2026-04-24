@@ -123,15 +123,14 @@ jobs:
 
       - name: Build with Zig CC
         run: |
-          zig cc -target aarch64-linux-musl \
-            -Os -static \
+          zig cc -target aarch64-linux \
+            -s -Oz -static \
             -Iinclude \
-            -D_GNU_SOURCE \
             -DATP_DEFAULT_DIR="/data/adb/atp" \
             -o atpd-zig \
             $(find src -name "*.c" ! -path "src/cjson/*" ! -path "src/yyjson/*" ! -name "epoll.c") \
             src/yyjson/yyjson.c \
-            -lpthread
+            -Wl,--gc-sections
 
       - name: Verify Binary
         run: |
