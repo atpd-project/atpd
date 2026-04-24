@@ -1100,12 +1100,12 @@ int ip_rule_audit(atp_config_t *cfg) {
     if (!cfg) return -1;
 
     char cmd[256];
-    snprintf(cmd, sizeof(cmd), "ip rule show | grep -q 'fwmark %d'", cfg->tproxy_mark);
+    snprintf(cmd, sizeof(cmd), "ip rule show | grep -q 'fwmark %d'", cfg->mark_value);
 
     if (exec_cmd_simple(cmd, 2) != 0) {
-        LOG_WARN("[TPROXY] IP rule for fwmark %d missing, restoring", cfg->tproxy_mark);
+        LOG_WARN("[TPROXY] IP rule for fwmark %d missing, restoring", cfg->mark_value);
         snprintf(cmd, sizeof(cmd), "ip rule add fwmark %d table %d pref %d",
-                 cfg->tproxy_mark, cfg->tproxy_table, cfg->tproxy_pref);
+                 cfg->mark_value, cfg->table_id, 100);
         exec_cmd_simple(cmd, 2);
     }
 
