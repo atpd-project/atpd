@@ -195,6 +195,7 @@ static void run_event_loop(void) {
     reactor_run(g_reactor);
     LOG_INFO("Reactor event loop stopped");
 
+    tproxy_cleanup_all(&g_config);
     reactor_destroy(g_reactor);
     g_reactor = NULL;
 }
