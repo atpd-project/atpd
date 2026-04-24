@@ -162,7 +162,7 @@ jobs:
   update-status:
     name: Update Checkpoint
     needs: [build-clang, build-zig]
-    if: success()
+    if: always() && (needs.build-clang.result == 'success' || needs.build-clang.result == 'skipped') && needs.build-zig.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -188,7 +188,7 @@ jobs:
             await updateScript({ github, context, core });
 
       - name: Notify Telegram
-        if: success()
+        if: always() && (needs.build-clang.result == 'success' || needs.build-clang.result == 'skipped') && needs.build-zig.result == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
