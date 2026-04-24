@@ -20,14 +20,6 @@ on:
       - '.github/workflows/build.yml'
   pull_request:
     branches: [main, dev]
-    paths:
-      - 'src/**'
-      - 'include/**'
-      - 'scripts/**'
-      - 'Makefile'
-      - 'Dockerfile'
-      - '.github/workflows/build.yml'
-
   workflow_dispatch:
 
 concurrency:
@@ -36,7 +28,13 @@ concurrency:
 
 jobs:
   build-clang:
-    if: github.ref_name == 'main' || github.ref_name == 'dev'
+    if: |
+      github.ref_name == 'main' ||
+      github.ref_name == 'dev' ||
+      github.ref_name == 'staging' ||
+      startsWith(github.ref_name, 'feat') ||
+      startsWith(github.ref_name, 'test') ||
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
       binary_size: ${{ steps.extract.outputs.binary_size }}
@@ -127,7 +125,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
-
       - name: Setup Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -138,7 +135,7 @@ jobs:
           zig cc -target aarch64-linux \
             -s -Oz -flto -ffunction-sections -fdata-sections -static \
             -Iinclude \
-          -D_GNU_SOURCE \
+            -D_GNU_SOURCE \
             -DATP_DEFAULT_DIR="/data/adb/atp" \
             -o atpd-zig \
             $(find src -name "*.c" ! -path "src/cjson/*" ! -path "src/yyjson/*" ! -name "epoll.c") \
@@ -172,7 +169,10 @@ jobs:
   update-status:
     name: Update Checkpoint
     needs: [build-clang, build-zig]
-    if: always() && (needs.build-clang.result == 'success' || needs.build-clang.result == 'skipped') && needs.build-zig.result == 'success'
+    if: |
+      always() &&
+      (needs.build-clang.result == 'success' || needs.build-clang.result == 'skipped') &&
+      needs.build-zig.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -198,7 +198,10 @@ jobs:
             await updateScript({ github, context, core });
 
       - name: Notify Telegram
-        if: always() && (needs.build-clang.result == 'success' || needs.build-clang.result == 'skipped') && needs.build-zig.result == 'success'
+        if: |
+          always() &&
+          (needs.build-clang.result == 'success' || needs.build-clang.result == 'skipped') &&
+          needs.build-zig.result == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
