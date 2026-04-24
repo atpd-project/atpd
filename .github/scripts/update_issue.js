@@ -1,34 +1,36 @@
 module.exports = async ({ github, context, core }) => {
-  const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE, RUNTIME_VER, COMPILER_VER } = process.env;
+  const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE, RUNTIME_VER, COMPILER_VER, ZIG_SIZE, ZIG_COMPILER_VER } = process.env;
   const now = new Date();
-  const MAX_ENTRIES = 50;
   
-  // 1. 锁定北京时间 (UTC+8)
   const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
   const fmt = (v) => v.toString().padStart(2, '0');
   const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
   
-  // 2. 构造基础链接
   const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
   const commitSha = context.sha.substring(0, 7);
   const commitLink = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
   const branchName = context.ref.replace('refs/heads/', '');
   const branchLink = `https://github.com/${context.repo.owner}/${context.repo.repo}/tree/${branchName}`;
 
-  // 3. 移动端兼容性处理
   const rawMsg = (COMMIT_MSG || 'No commit message').split('\n')[0].trim();
   const displayMsg = rawMsg.length > 42 ? `${rawMsg.substring(0, 42)}...` : rawMsg;
 
+  const isMainBranch = (branchName === 'main' || branchName === 'dev');
+  const clangLabel = isMainBranch ? `\`${COMPILER_VER || 'N/A'}\` | 📦 \`${SIZE || 'N/A'}\`` : `⏭️ skipped (feat branch)`;
+  const zigLabel = `\`${ZIG_COMPILER_VER || 'N/A'}\` | 📦 \`${ZIG_SIZE || 'N/A'}\``;
+  const summarySize = isMainBranch ? `${SIZE || 'N/A'} (Clang) / ${ZIG_SIZE || 'N/A'} (Zig)` : `${ZIG_SIZE || 'N/A'} (Zig)`;
+
   const newEntry = `
 <details>
-<summary>🟢 [<b><a href="${runUrl}">#${context.runNumber}</a></b>] &nbsp;&nbsp; ${ts} &nbsp;&nbsp; 📦 <b>Size:</b> ${SIZE}</summary>
+<summary>🟢 [<b><a href="${runUrl}">#${context.runNumber}</a></b>] &nbsp;&nbsp; ${ts} &nbsp;&nbsp; 📦 <b>Size:</b> ${summarySize}</summary>
 
 ### Branch: [${branchName}](${branchLink})
 
 * 📥 **[Download Build Artifact](${runUrl})**
 * 📝 **CI Version:** \`${VER}\`
 * 🔧 **ATPd Version (-v):** \`${RUNTIME_VER || 'N/A'}\`
-* ⚙️ **Compiler:** \`${COMPILER_VER || 'N/A'}\`
+* ⚙️ **Clang:** ${clangLabel}
+* ⚙️ **Zig CC:** ${zigLabel}
 * 💬 **Message:** \`${displayMsg}\`
 * 🔗 **Source:** Commit [${commitSha}](${commitLink})
 * 🕒 **Build Time:** \`${ts}\`
@@ -45,21 +47,7 @@ module.exports = async ({ github, context, core }) => {
       issue_number: parseInt(TARGET_ISSUE)
     });
 
-    const currentBody = issue.body || '';
-    const marker = '---';
-    
-    const parts = currentBody.split(marker);
-    const headerContent = parts[0];
-    const existingEntries = parts.slice(1).filter(e => e.trim().length > 0);
-    
-    let finalBody;
-    
-    if (existingEntries.length >= MAX_ENTRIES) {
-      const keptEntries = existingEntries.slice(0, MAX_ENTRIES - 1);
-      finalBody = headerContent + marker + keptEntries.join(marker) + marker + newEntry;
-    } else {
-      finalBody = currentBody + marker + newEntry;
-    }
+    const finalBody = newEntry.trim() + "\n\n\n" + (issue.body || "");
 
     await github.rest.issues.update({
       owner: context.repo.owner,
@@ -68,7 +56,7 @@ module.exports = async ({ github, context, core }) => {
       body: finalBody
     });
     
-    console.log(`Checkpoint updated: Build #${context.runNumber} for ${branchName} (entries: ${Math.min(existingEntries.length + 1, MAX_ENTRIES)})`);
+    console.log(`Checkpoint updated: Build #${context.runNumber} for ${branchName}`);
   } catch (e) {
     core.setFailed(`[UI Update Error]: ${e.message}`);
   }
