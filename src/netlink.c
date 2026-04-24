@@ -45,6 +45,7 @@ static reactor_t *g_debounce_reactor = NULL;
 
 #define NETLINK_DEBOUNCE_MS 500
 
+static pthread_mutex_t g_nl_mutex = PTHREAD_MUTEX_INITIALIZER;
 #ifndef IPTABLES_CMD
 #define IPTABLES_CMD "/system/bin/iptables"
 #endif
@@ -87,7 +88,6 @@ static int g_async_fd = -1;
 static nl_callback_t g_callback = NULL;
 static void *g_userdata = NULL;
 static uint32_t g_seq = 1;
-static pthread_mutex_t g_nl_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct nl_link_info {
     int index;
