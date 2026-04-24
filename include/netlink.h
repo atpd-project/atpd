@@ -9,6 +9,7 @@
 #define ATP_NETLINK_H
 
 #include "atp.h"
+#include "reactor.h"
 #include <stdint.h>
 #include <net/if.h>
 
@@ -38,4 +39,7 @@ int netlink_check_rule_exists(int table_id, int mark, const char *iface);
 
 int nl_vpn_detect(void);
 int nl_link_get_vpn_interface(char *iface, size_t size);
+
+void netlink_set_reactor(reactor_t *r);
+
 #endif

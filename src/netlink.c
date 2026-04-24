@@ -27,6 +27,40 @@
 #define NL_BUF_SIZE 16384
 #define NL_DUMP_SIZE 65536
 
+/* ========== Network Refresh Debounce ========== */
+
+static reactor_timer_t *g_debounce_timer = NULL;
+static reactor_t *g_debounce_reactor = NULL;
+
+#define NETLINK_DEBOUNCE_MS 500
+
+static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+    (void)userdata;
+    
+    LOG_INFO("[NET] Debounce timer expired, executing network refresh");
+    
+    // TODO: tproxy_refresh_rules();
+    // TODO: ip_rule_audit();
+    
+    g_debounce_timer = NULL;
+}
+
+static void trigger_network_refresh(reactor_t *r) {
+    if (!r) return;
+    g_debounce_reactor = r;
+    
+    if (g_debounce_timer) {
+        reactor_cancel_timer(r, g_debounce_timer);
+        g_debounce_timer = NULL;
+    }
+    
+    g_debounce_timer = reactor_add_timer(r, NETLINK_DEBOUNCE_MS, 0, 
+                                         debounce_flush_cb, NULL);
+    LOG_DEBUG("[NET] Debounce timer (re)started: %dms", NETLINK_DEBOUNCE_MS);
+}
+
 static int g_sync_fd = -1;
 static int g_async_fd = -1;
 static nl_callback_t g_callback = NULL;
@@ -143,6 +177,7 @@ int netlink_init(nl_callback_t callback, void *userdata) {
 }
 
 void netlink_handle_event(int fd, void *data) {
+
     (void)data;
     uint8_t buf[NL_BUF_SIZE];
     struct sockaddr_nl sa;
@@ -152,29 +187,33 @@ void netlink_handle_event(int fd, void *data) {
     ssize_t len = recvmsg(fd, &msg, MSG_DONTWAIT);
     if (len <= 0) return;
 
-    for (struct nlmsghdr *h = (struct nlmsghdr *)buf; NLMSG_OK(h, (uint32_t)len); h = NLMSG_NEXT(h, len)) {
-        char ifname[IFNAMSIZ] = {0};
-        int event = -1;
+    int should_refresh = 0;
 
-        if (h->nlmsg_type == RTM_NEWLINK) {
-            struct ifinfomsg *ifi = (struct ifinfomsg *)NLMSG_DATA(h);
-            if_indextoname(ifi->ifi_index, ifname);
-            int up = (ifi->ifi_flags & IFF_UP) && (ifi->ifi_flags & IFF_RUNNING);
-            event = up ? NL_EVENT_LINK_UP : NL_EVENT_LINK_DOWN;
-            if (is_proxy_interface(ifname) && g_callback) {
-                g_callback(up ? NL_EVENT_VPN_CONNECTED : NL_EVENT_VPN_DISCONNECTED, ifname, g_userdata);
+    for (struct nlmsghdr *h = (struct nlmsghdr *)buf; 
+         NLMSG_OK(h, (uint32_t)len); 
+         h = NLMSG_NEXT(h, len)) {
+        
+        if (h->nlmsg_type == NLMSG_DONE) break;
+        if (h->nlmsg_type == NLMSG_ERROR) continue;
+
+        if (h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_NEWROUTE) {
+            char ifname[IFNAMSIZ] = {0};
+            
+            if (h->nlmsg_type == RTM_NEWADDR) {
+                struct ifaddrmsg *ifa = NLMSG_DATA(h);
+                if_indextoname(ifa->ifa_index, ifname);
+                LOG_DEBUG("[NET] Address change on %s", ifname[0] ? ifname : "unknown");
+            } else {
+                LOG_DEBUG("[NET] Route table change detected");
+                ifname[0] = '\0';
             }
-        } else if (h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_DELADDR) {
-            struct ifaddrmsg *ifa = (struct ifaddrmsg *)NLMSG_DATA(h);
-            if_indextoname(ifa->ifa_index, ifname);
-            event = (h->nlmsg_type == RTM_NEWADDR) ? NL_EVENT_ADDR_ADD : NL_EVENT_ADDR_DEL;
-        } else if (h->nlmsg_type == RTM_NEWROUTE || h->nlmsg_type == RTM_DELROUTE) {
-            event = (h->nlmsg_type == RTM_NEWROUTE) ? NL_EVENT_ROUTE_ADD : NL_EVENT_ROUTE_DEL;
+            
+            should_refresh = 1;
         }
+    }
 
-        if (event != -1 && g_callback) {
-            g_callback(event, ifname[0] ? ifname : NULL, g_userdata);
-        }
+    if (should_refresh) {
+        trigger_network_refresh(g_debounce_reactor);
     }
 }
 
@@ -356,4 +395,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     iface[0] = '\0';
     LOG_DEBUG("No active VPN interface found via netlink");
     return -1;
+}
+void netlink_set_reactor(reactor_t *r) {
+    g_debounce_reactor = r;
 }

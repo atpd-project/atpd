@@ -170,19 +170,22 @@ static void run_event_loop(void) {
         return;
     }
 
+    netlink_set_reactor(g_reactor);
+
     api_start_with_reactor(&g_api_ctx, g_reactor);
     
     reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
     service_start_async(g_svc);
-
+    
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
-
+    
     reactor_watch_signal(g_reactor, SIGINT);
     reactor_watch_signal(g_reactor, SIGTERM);
     reactor_watch_signal(g_reactor, SIGHUP);
     reactor_watch_signal(g_reactor, SIGUSR1);
-
+    reactor_watch_signal(g_reactor, SIGCHLD);
+    
     int nl_fd = netlink_get_fd();
     if (nl_fd >= 0) {
         reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_io_cb, NULL);
