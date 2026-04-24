@@ -210,18 +210,6 @@ jobs:
           chmod +x .github/scripts/notify_issue6.sh
           ./.github/scripts/notify_issue6.sh
 
-  create-release:
-    name: Create Release
-    needs: [build-clang, build-zig, update-status]
-    if: |
-      success() &&
-      startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-
       - name: Download Clang Artifact
         uses: actions/download-artifact@v5
         with:
