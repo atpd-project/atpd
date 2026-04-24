@@ -3,7 +3,7 @@
  * Copyright (C) 2024-2026 ATP Project
  *
  * Logger - Production-grade implementation
- * Features: UTF-8 safe truncation, syslog, file rotation
+ * Features: UTF-8 safe truncation, persistent file handle, module tags, syslog
  */
 
 #include "logger.h"
@@ -37,6 +37,24 @@ log_config_t g_log_config = {
     .mutex = PTHREAD_MUTEX_INITIALIZER
 };
 
+/* ========== Persistent File Handle ========== */
+
+static FILE *g_log_fp = NULL;
+
+static FILE* log_file_open(void) {
+    if (g_log_fp) return g_log_fp;
+    if (g_log_config.log_file[0] == '\0') return NULL;
+    g_log_fp = fopen(g_log_config.log_file, "a");
+    return g_log_fp;
+}
+
+static void log_file_reopen(void) {
+    if (g_log_fp) {
+        fclose(g_log_fp);
+        g_log_fp = NULL;
+    }
+}
+
 /* ========== Level Names & Colors ========== */
 
 static const char *level_names[] = {
@@ -55,33 +73,24 @@ static const char *level_colors[] = {
     [LOG_LEVEL_FATAL] = "\033[35m\033[1m"
 };
 
-/* ========== P0: UTF-8 Safe Truncation ========== */
+/* ========== UTF-8 Safe Truncation ========== */
 
-/**
- * Truncate a string to the specified byte length while preserving
- * UTF-8 character boundaries. Prevents producing invalid byte sequences.
- * 
- * Returns the number of bytes to keep (<= max_len).
- */
 static size_t utf8_safe_truncate(const char *str, size_t max_len) {
     if (!str) return 0;
     
     size_t len = strlen(str);
     if (len <= max_len) return len;
     
-    /* Walk backwards from max_len to find a valid UTF-8 boundary */
     size_t pos = max_len;
     while (pos > 0) {
         unsigned char c = (unsigned char)str[pos];
-        /* Continuation bytes (10xxxxxx) or start bytes determine boundary */
         if ((c & 0xC0) != 0x80) {
-            /* Found a start byte or ASCII - this is a safe boundary */
             return pos;
         }
         pos--;
     }
     
-    return 0; /* Should not happen with valid UTF-8 */
+    return 0;
 }
 
 /* ========== Timestamp ========== */
@@ -103,6 +112,8 @@ static void log_rotate_if_needed(void) {
     if (g_log_config.max_file_size == 0 || g_log_config.log_file[0] == '\0') return;
     if (stat(g_log_config.log_file, &st) != 0 || (size_t)st.st_size < g_log_config.max_file_size) return;
 
+    log_file_reopen();
+
     char old_p[SAFE_PATH_MAX], new_p[SAFE_PATH_MAX];
     size_t base_len = strlen(g_log_config.log_file);
     if (base_len >= PATH_MAX) return;
@@ -114,6 +125,8 @@ static void log_rotate_if_needed(void) {
     }
     snprintf(new_p, sizeof(new_p), "%s.1", g_log_config.log_file);
     rename(g_log_config.log_file, new_p);
+
+    log_file_open();
 }
 
 /* ========== Syslog ========== */
@@ -134,11 +147,10 @@ static void log_to_syslog(log_level_t level, const char *msg) {
     syslog(prio, "%s", msg);
 }
 
-/* ========== Core Write Function (P0: Emoji Safe) ========== */
+/* ========== Core Write Function ========== */
 
 void log_write(log_level_t level, const char *file, int line, const char *func, const char *fmt, ...) {
     if (level < g_log_config.min_level) return;
-    (void)file; (void)line; (void)func;
 
     char ts[64] = {0};
     char raw_msg[LOG_MSG_MAX];
@@ -146,35 +158,33 @@ void log_write(log_level_t level, const char *file, int line, const char *func, 
 
     if (g_log_config.enable_timestamp) get_timestamp(ts, sizeof(ts));
 
-    /* Format the message */
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(raw_msg, sizeof(raw_msg), fmt, ap);
     va_end(ap);
 
-    /* P0: UTF-8 safe truncation (Emoji protection) */
     size_t safe_len = utf8_safe_truncate(raw_msg, LOG_MSG_MAX - 1);
     memcpy(safe_msg, raw_msg, safe_len);
     safe_msg[safe_len] = '\0';
 
     pthread_mutex_lock(&g_log_config.mutex);
 
-    /* Output to stderr */
+    /* Stderr output */
     if (g_log_config.targets & LOG_TARGET_STDERR) {
         if (g_log_config.enable_color && isatty(STDERR_FILENO))
-            fprintf(stderr, "%s[%s]%s [%s]: %s\n",
-                    level_colors[level], level_names[level], "\033[0m", ts, safe_msg);
+            fprintf(stderr, "%s[%s]%s %s [%s]: %s\n",
+                    level_colors[level], level_names[level], "\033[0m", func, ts, safe_msg);
         else
-            fprintf(stderr, "[%s] [%s]: %s\n", ts, level_names[level], safe_msg);
+            fprintf(stderr, "[%s] %s [%s]: %s\n", ts, level_names[level], func, safe_msg);
     }
 
-    /* Output to file */
+    /* File output with persistent handle */
     if ((g_log_config.targets & LOG_TARGET_FILE) && g_log_config.log_file[0]) {
         log_rotate_if_needed();
-        FILE *fp = fopen(g_log_config.log_file, "a");
+        FILE *fp = log_file_open();
         if (fp) {
-            fprintf(fp, "[%s] [%s]: %s\n", ts, level_names[level], safe_msg);
-            fclose(fp);
+            fprintf(fp, "[%s] %s [%s]: %s\n", ts, level_names[level], func, safe_msg);
+            fflush(fp);
         }
     }
 
@@ -194,9 +204,22 @@ void logger_init(void) {
     if (tmp) { char *dir = dirname(tmp); mkdir_recursive(dir, 0755); free(tmp); }
 }
 
+void logger_close(void) {
+    log_file_reopen();
+}
+
 void log_set_level(log_level_t l) { g_log_config.min_level = l; }
 void log_set_target(int t) { g_log_config.targets = t; }
 void log_set_color(int e) { g_log_config.enable_color = e; }
-void log_rotate(void) { pthread_mutex_lock(&g_log_config.mutex); log_rotate_if_needed(); pthread_mutex_unlock(&g_log_config.mutex); }
-void logger_close(void) { /* syslog is closed by OS on exit */ }
-void log_set_file(const char *p) { if (p && p[0]) snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s", p); }
+
+void log_rotate(void) {
+    pthread_mutex_lock(&g_log_config.mutex);
+    log_rotate_if_needed();
+    pthread_mutex_unlock(&g_log_config.mutex);
+}
+
+void log_set_file(const char *p) {
+    if (p && p[0]) {
+        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s", p);
+    }
+}
