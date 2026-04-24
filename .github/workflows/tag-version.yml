@@ -1,0 +1,106 @@
+name: Create Version Tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'Version type (major/minor/patch/alpha/beta/rc)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+          - alpha
+          - beta
+          - rc
+      pre_release:
+        description: 'Pre-release suffix (e.g., alpha1, beta2)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  create-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Get current version
+      id: current_version
+      run: |
+        # Get latest tag
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+        echo "Current version: ${LATEST_TAG}"
+
+    - name: Calculate new version
+      id: new_version
+      run: |
+        LATEST_TAG="${{ steps.current_version.outputs.latest_tag }}"
+        VERSION_TYPE="${{ github.event.inputs.version_type }}"
+        PRE_RELEASE="${{ github.event.inputs.pre_release }}"
+        
+        # Remove 'v' prefix
+        VERSION=${LATEST_TAG#v}
+        
+        # Parse version components
+        MAJOR=$(echo $VERSION | cut -d. -f1)
+        MINOR=$(echo $VERSION | cut -d. -f2)
+        PATCH=$(echo $VERSION | cut -d. -f3 | cut -d- -f1)
+        SUFFIX=$(echo $VERSION | cut -d- -f2)
+        
+        case $VERSION_TYPE in
+          major)
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+            SUFFIX=""
+            ;;
+          minor)
+            MINOR=$((MINOR + 1))
+            PATCH=0
+            SUFFIX=""
+            ;;
+          patch)
+            PATCH=$((PATCH + 1))
+            SUFFIX=""
+            ;;
+          alpha|beta|rc)
+            if [ -z "$PRE_RELEASE" ]; then
+              # Increment number if exists
+              if [[ "$SUFFIX" =~ ^${VERSION_TYPE}([0-9]+)$ ]]; then
+                NUM=${BASH_REMATCH[1]}
+                NUM=$((NUM + 1))
+                SUFFIX="${VERSION_TYPE}${NUM}"
+              else
+                SUFFIX="${VERSION_TYPE}1"
+              fi
+            else
+              SUFFIX="$PRE_RELEASE"
+            fi
+            ;;
+        esac
+        
+        if [ -n "$SUFFIX" ]; then
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}-${SUFFIX}"
+        else
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+        fi
+        
+        echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "New version: ${NEW_VERSION}"
+
+    - name: Create and push tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag -a "${{ steps.new_version.outputs.new_version }}" -m "Release ${{ steps.new_version.outputs.new_version }}"
+        git push origin "${{ steps.new_version.outputs.new_version }}"
+        echo "Created tag: ${{ steps.new_version.outputs.new_version }}"

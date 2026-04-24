@@ -1,5 +1,5 @@
 # ATP (Advanced Transparent Proxy) Configuration File
-# Copy to /data/adb/atp/atp.conf or /etc/atp/atp.conf
+# Copy to /data/adb/atp/atp.conf
 
 # -----------------------------------------------------------------------------
 # Proxy Core Configuration
@@ -49,6 +49,17 @@ CORE_USER_GROUP="root:net_admin"
 # Force bypass for marked traffic
 ROUTING_MARK=
 FORCE_MARK_BYPASS=0
+
+# -----------------------------------------------------------------------------
+# API Configuration (Clash/sing-box external control)
+# -----------------------------------------------------------------------------
+
+# API host and port (sing-box default: 127.0.0.1:9090)
+API_HOST="127.0.0.1"
+API_PORT=9090
+
+# API secret (leave empty if not configured in sing-box)
+# CLASH_SECRET="your-secret-here"
 
 # -----------------------------------------------------------------------------
 # Interface Configuration
@@ -147,9 +158,6 @@ USER_CLASH_MODE="Rule"
 
 # Restart delay in seconds
 RESTART_DELAY=2
-
-# Clash API secret (leave empty for no authentication)
-CLASH_SECRET=""
 
 # -----------------------------------------------------------------------------
 # Paths (Override defaults)

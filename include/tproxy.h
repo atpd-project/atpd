@@ -8,9 +8,12 @@ int tproxy_setup_ipv4(atp_config_t *cfg);
 int tproxy_setup_ipv6(atp_config_t *cfg);
 int tproxy_setup_redirect_ipv4(atp_config_t *cfg);
 int tproxy_setup_redirect_ipv6(atp_config_t *cfg);
+int tproxy_setup_enhance_ipv4(atp_config_t *cfg);
+int tproxy_setup_enhance_ipv6(atp_config_t *cfg);
 int tproxy_cleanup_ipv4(atp_config_t *cfg);
 int tproxy_cleanup_ipv6(atp_config_t *cfg);
 int tproxy_cleanup_all(atp_config_t *cfg);
+int tproxy_cleanup_xfrm_bypass(atp_config_t *cfg);
 
 int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode);
 int tproxy_dns_hijack_cleanup(atp_config_t *cfg, int family);
@@ -34,5 +37,8 @@ int tproxy_rule_insert(atp_config_t *cfg, int family, const char *table,
 
 int tproxy_atomic_switch(atp_config_t *cfg, int family, const char *table,
                          const char *hook, const char *chain0, const char *chain1);
+
+int tproxy_setup_ipv4_batch(atp_config_t *cfg);
+int tproxy_setup_ipv6_batch(atp_config_t *cfg);
 
 #endif

@@ -1,61 +1,85 @@
-# Makefile for ATP (Advanced Transparent Proxy)
+# ATP - Advanced Transparent Proxy
+# Makefile for Android NDK build - Clang 19 Optimized
 
-PROJECT_NAME = atp
 VERSION = 1.0.0
-TARGET = atpd
 
-# Default compiler (will be overridden by environment)
-CC ?= gcc
-CFLAGS ?= -Wall -Wextra -O2 -pthread -DATP_VERSION=\"$(VERSION)\"
-LDFLAGS ?= -pthread
+PREFIX = /data/adb/atp
+BINDIR = $(PREFIX)/bin
+RUNDIR = $(PREFIX)/run
+RULESDIR = $(PREFIX)/rules
+SINGBOXDIR = $(PREFIX)/sing-box
 
-# Directories
-SRC_DIR = src
-INC_DIR = include
-OBJ_DIR = build/obj
-BIN_DIR = build/bin
-DIST_DIR = dist
+CC = clang
+CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC
+CFLAGS += -Os -flto
+CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=3
+CFLAGS += -ffunction-sections -fdata-sections
+CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"
+CFLAGS += -DATP_CONF_FILE=\"atp.conf\"
+CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
+CFLAGS += -DATP_LOG_FILE=\"run/atp.log\"
+CFLAGS += -DATP_COMMAND_SOCKET=\"run/atpd.sock\"
+CFLAGS += -Iinclude
 
-# Source files
-SRCS = $(wildcard $(SRC_DIR)/*.c)
-OBJS = $(OBJ_DIR)/api.o $(OBJ_DIR)/cli.o $(OBJ_DIR)/config.o \
-       $(OBJ_DIR)/geoip.o $(OBJ_DIR)/ipset.o $(OBJ_DIR)/logger.o \
-       $(OBJ_DIR)/main.o $(OBJ_DIR)/netlink.o $(OBJ_DIR)/routing.o \
-       $(OBJ_DIR)/service.o $(OBJ_DIR)/status.o $(OBJ_DIR)/tproxy.o \
-       $(OBJ_DIR)/utils.o
+ifdef DEBUG
+CFLAGS += -g -DATP_DEBUG -O0 -fsanitize=address
+endif
 
-# Headers
-HEADERS = $(wildcard $(INC_DIR)/*.h)
+LIBS =
 
-.PHONY: all clean distclean help
+LDFLAGS = -static
+LDFLAGS += -flto
+LDFLAGS += -Wl,--gc-sections -Wl,--strip-all
 
-all: $(BIN_DIR)/$(TARGET)
-	@echo "Build complete: $(BIN_DIR)/$(TARGET)"
+SRC = \
+    src/main.c \
+    src/config.c \
+    src/config_validator.c \
+    src/logger.c \
+    src/utils.c \
+    src/service.c \
+    src/api.c \
+    src/netlink.c \
+    src/netlink_wait.c \
+    src/app_filter.c \
+    src/fcm_monitor.c \
+    src/perf_mode.c \
+    src/status.c \
+    src/ui.c \
+    src/cli.c \
+    src/tproxy.c \
+    src/routing.c \
+    src/geoip.c \
+    src/ipset.c \
+    src/mac_filter.c \
+    src/ipv6_manager.c \
+    src/inet_diag.c \
+    src/version.c \
+    src/reactor.c \
+    src/iface_monitor_reactor.c \
+    src/yyjson/yyjson.c
 
-$(OBJ_DIR):
-	mkdir -p $(OBJ_DIR)
+OBJDIR = build/obj
+OBJ = $(SRC:%.c=$(OBJDIR)/%.o)
+TARGET = build/bin/atpd
 
-$(BIN_DIR):
-	mkdir -p $(BIN_DIR)
+.PHONY: all clean distclean
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS) | $(OBJ_DIR)
-	$(CC) $(CFLAGS) -I$(INC_DIR) -c $< -o $@
+all: $(TARGET)
 
-$(BIN_DIR)/$(TARGET): $(OBJS) | $(BIN_DIR)
-	$(CC) $(OBJS) -o $@ $(LDFLAGS)
+$(TARGET): $(OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+	@echo "  LD      $@"
+
+$(OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	@echo "  CC      $<"
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -rf $(OBJ_DIR)
+	rm -rf build/
+	find src/ -name "*.o" -delete
 
 distclean: clean
-	rm -rf $(BIN_DIR)
-	rm -rf $(DIST_DIR)
-
-help:
-	@echo "ATP Build System"
-	@echo ""
-	@echo "Targets:"
-	@echo "  all              - Build the main target (default)"
-	@echo "  clean            - Remove build artifacts"
-	@echo "  distclean        - Remove build artifacts and distribution"
-	@echo "  help             - Show this help"
+	rm -f $(TARGET)

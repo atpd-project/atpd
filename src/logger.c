@@ -1,3 +1,11 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2026 ATP Project
+ *
+ * Logger - Production-grade implementation
+ * Features: UTF-8 safe truncation, persistent file handle, module tags, syslog
+ */
+
 #include "logger.h"
 #include "utils.h"
 #include "atp.h"
@@ -13,7 +21,12 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-static log_config_t g_log_config = {
+#define SAFE_PATH_MAX (PATH_MAX + 128)
+#define LOG_MSG_MAX 4096
+
+/* ========== Global Config ========== */
+
+log_config_t g_log_config = {
     .min_level = LOG_LEVEL_INFO,
     .targets = LOG_TARGET_STDERR | LOG_TARGET_FILE,
     .log_file = "",
@@ -23,6 +36,26 @@ static log_config_t g_log_config = {
     .rotate_count = 3,
     .mutex = PTHREAD_MUTEX_INITIALIZER
 };
+
+/* ========== Persistent File Handle ========== */
+
+static FILE *g_log_fp = NULL;
+
+static FILE* log_file_open(void) {
+    if (g_log_fp) return g_log_fp;
+    if (g_log_config.log_file[0] == '\0') return NULL;
+    g_log_fp = fopen(g_log_config.log_file, "a");
+    return g_log_fp;
+}
+
+static void log_file_reopen(void) {
+    if (g_log_fp) {
+        fclose(g_log_fp);
+        g_log_fp = NULL;
+    }
+}
+
+/* ========== Level Names & Colors ========== */
 
 static const char *level_names[] = {
     [LOG_LEVEL_DEBUG] = "Debug",
@@ -40,170 +73,153 @@ static const char *level_colors[] = {
     [LOG_LEVEL_FATAL] = "\033[35m\033[1m"
 };
 
-static void get_timestamp(char *buf, size_t size, int with_ms) {
+/* ========== UTF-8 Safe Truncation ========== */
+
+static size_t utf8_safe_truncate(const char *str, size_t max_len) {
+    if (!str) return 0;
+    
+    size_t len = strlen(str);
+    if (len <= max_len) return len;
+    
+    size_t pos = max_len;
+    while (pos > 0) {
+        unsigned char c = (unsigned char)str[pos];
+        if ((c & 0xC0) != 0x80) {
+            return pos;
+        }
+        pos--;
+    }
+    
+    return 0;
+}
+
+/* ========== Timestamp ========== */
+
+static void get_timestamp(char *buf, size_t size) {
     struct timeval tv;
     struct tm tm;
-    (void)with_ms;  // Suppress unused parameter warning
-    
     gettimeofday(&tv, NULL);
     localtime_r(&tv.tv_sec, &tm);
-    
-    // Format: YYYY-MM-DD HH:MM:SS (same as atp.sh)
     snprintf(buf, size, "%04d-%02d-%02d %02d:%02d:%02d",
-        tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-        tm.tm_hour, tm.tm_min, tm.tm_sec);
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
+
+/* ========== File Rotation ========== */
 
 static void log_rotate_if_needed(void) {
-    if (g_log_config.max_file_size == 0) return;
-    if (!(g_log_config.targets & LOG_TARGET_FILE)) return;
-    if (g_log_config.log_file[0] == '\0') return;
-    
     struct stat st;
-    if (stat(g_log_config.log_file, &st) != 0) return;
-    if ((size_t)st.st_size < g_log_config.max_file_size) return;
-    
-    char old_path[PATH_MAX];
-    char new_path[PATH_MAX];
-    
+    if (g_log_config.max_file_size == 0 || g_log_config.log_file[0] == '\0') return;
+    if (stat(g_log_config.log_file, &st) != 0 || (size_t)st.st_size < g_log_config.max_file_size) return;
+
+    log_file_reopen();
+
+    char old_p[SAFE_PATH_MAX], new_p[SAFE_PATH_MAX];
+    size_t base_len = strlen(g_log_config.log_file);
+    if (base_len >= PATH_MAX) return;
+
     for (int i = g_log_config.rotate_count - 1; i > 0; i--) {
-        snprintf(old_path, sizeof(old_path), "%s.%d", g_log_config.log_file, i);
-        snprintf(new_path, sizeof(new_path), "%s.%d", g_log_config.log_file, i + 1);
-        rename(old_path, new_path);
+        snprintf(old_p, sizeof(old_p), "%s.%d", g_log_config.log_file, i);
+        snprintf(new_p, sizeof(new_p), "%s.%d", g_log_config.log_file, i + 1);
+        rename(old_p, new_p);
     }
-    
-    snprintf(new_path, sizeof(new_path), "%s.1", g_log_config.log_file);
-    rename(g_log_config.log_file, new_path);
+    snprintf(new_p, sizeof(new_p), "%s.1", g_log_config.log_file);
+    rename(g_log_config.log_file, new_p);
+
+    log_file_open();
 }
 
-static void log_to_file(log_level_t level, const char *timestamp,
-                         const char *file, int line, const char *func,
-                         const char *msg) {
-    if (!(g_log_config.targets & LOG_TARGET_FILE)) return;
-    if (g_log_config.log_file[0] == '\0') return;
-    (void)file;
-    (void)line;
-    (void)func;
-    
-    pthread_mutex_lock(&g_log_config.mutex);
-    
-    char *dir = dirname(strdup(g_log_config.log_file));
-    mkdir_recursive(dir, 0755);
-    free(dir);
-    
-    FILE *fp = fopen(g_log_config.log_file, "a");
-    if (fp) {
-        fprintf(fp, "[%s] [%s]: %s\n",
-                timestamp, level_names[level], msg);
-        fclose(fp);
-    }
-    
-    log_rotate_if_needed();
-    
-    pthread_mutex_unlock(&g_log_config.mutex);
-}
-
-static void log_to_stderr(log_level_t level, const char *timestamp,
-                           const char *file, int line, const char *func,
-                           const char *msg) {
-    if (!(g_log_config.targets & LOG_TARGET_STDERR)) return;
-    (void)file;
-    (void)line;
-    (void)func;
-    
-    pthread_mutex_lock(&g_log_config.mutex);
-    
-    int use_color = g_log_config.enable_color && isatty(STDERR_FILENO);
-    
-    if (use_color) {
-        fprintf(stderr, "%s[%s]%s [%s]: %s\n",
-                level_colors[level], level_names[level], COLOR_RESET,
-                timestamp, msg);
-    } else {
-        fprintf(stderr, "[%s] [%s]: %s\n",
-                timestamp, level_names[level], msg);
-    }
-    
-    pthread_mutex_unlock(&g_log_config.mutex);
-}
+/* ========== Syslog ========== */
 
 static void log_to_syslog(log_level_t level, const char *msg) {
     if (!(g_log_config.targets & LOG_TARGET_SYSLOG)) return;
-    
-    static int syslog_opened = 0;
-    if (!syslog_opened) {
-        openlog("atp", LOG_PID | LOG_NDELAY, LOG_DAEMON);
-        syslog_opened = 1;
-    }
-    
-    int syslog_level;
+    static int opened = 0;
+    if (!opened) { openlog("atp", LOG_PID | LOG_NDELAY, LOG_DAEMON); opened = 1; }
+    int prio;
     switch (level) {
-        case LOG_LEVEL_DEBUG: syslog_level = LOG_DEBUG; break;
-        case LOG_LEVEL_INFO:  syslog_level = LOG_INFO; break;
-        case LOG_LEVEL_WARN:  syslog_level = LOG_WARNING; break;
-        case LOG_LEVEL_ERROR: syslog_level = LOG_ERR; break;
-        case LOG_LEVEL_FATAL: syslog_level = LOG_CRIT; break;
-        default: syslog_level = LOG_NOTICE;
+        case LOG_LEVEL_DEBUG: prio = LOG_DEBUG; break;
+        case LOG_LEVEL_INFO:  prio = LOG_INFO;  break;
+        case LOG_LEVEL_WARN:  prio = LOG_WARNING; break;
+        case LOG_LEVEL_ERROR: prio = LOG_ERR;   break;
+        case LOG_LEVEL_FATAL: prio = LOG_CRIT;  break;
+        default: prio = LOG_NOTICE;
     }
-    
-    syslog(syslog_level, "%s", msg);
+    syslog(prio, "%s", msg);
 }
 
-void log_write(log_level_t level, const char *file, int line, const char *func,
-                const char *fmt, ...) {
+/* ========== Core Write Function ========== */
+
+void log_write(log_level_t level, const char *file, int line, const char *func, const char *fmt, ...) {
     if (level < g_log_config.min_level) return;
-    
-    char timestamp[64] = {0};
-    if (g_log_config.enable_timestamp) {
-        get_timestamp(timestamp, sizeof(timestamp), 0);
+
+    char ts[64] = {0};
+    char raw_msg[LOG_MSG_MAX];
+    char safe_msg[LOG_MSG_MAX];
+
+    if (g_log_config.enable_timestamp) get_timestamp(ts, sizeof(ts));
+
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(raw_msg, sizeof(raw_msg), fmt, ap);
+    va_end(ap);
+
+    size_t safe_len = utf8_safe_truncate(raw_msg, LOG_MSG_MAX - 1);
+    memcpy(safe_msg, raw_msg, safe_len);
+    safe_msg[safe_len] = '\0';
+
+    pthread_mutex_lock(&g_log_config.mutex);
+
+    /* Stderr output */
+    if (g_log_config.targets & LOG_TARGET_STDERR) {
+        if (g_log_config.enable_color && isatty(STDERR_FILENO))
+            fprintf(stderr, "%s[%s]%s %s [%s]: %s\n",
+                    level_colors[level], level_names[level], "\033[0m", func, ts, safe_msg);
+        else
+            fprintf(stderr, "[%s] %s [%s]: %s\n", ts, level_names[level], func, safe_msg);
     }
-    
-    char msg_buffer[4096];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(msg_buffer, sizeof(msg_buffer), fmt, args);
-    va_end(args);
-    
-    log_to_stderr(level, timestamp, file, line, func, msg_buffer);
-    log_to_file(level, timestamp, file, line, func, msg_buffer);
-    log_to_syslog(level, msg_buffer);
+
+    /* File output with persistent handle */
+    if ((g_log_config.targets & LOG_TARGET_FILE) && g_log_config.log_file[0]) {
+        log_rotate_if_needed();
+        FILE *fp = log_file_open();
+        if (fp) {
+            fprintf(fp, "[%s] %s [%s]: %s\n", ts, level_names[level], func, safe_msg);
+            fflush(fp);
+        }
+    }
+
+    pthread_mutex_unlock(&g_log_config.mutex);
+
+    log_to_syslog(level, safe_msg);
 }
 
-void log_init(void) {
-    char default_log_path[PATH_MAX];
-    snprintf(default_log_path, sizeof(default_log_path), "%s/%s", 
-             ATP_DEFAULT_DIR, ATP_LOG_FILE);
-    
+/* ========== Public API ========== */
+
+void logger_init(void) {
     if (g_log_config.log_file[0] == '\0') {
-        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s", default_log_path);
+        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file),
+                 "%s/%s", ATP_DEFAULT_DIR, ATP_LOG_FILE);
     }
-    
-    char *dir = dirname(strdup(g_log_config.log_file));
-    mkdir_recursive(dir, 0755);
-    free(dir);
-    
-    fprintf(stderr, "Logging initialized (level=%s, file=%s)\n", 
-            level_names[g_log_config.min_level], g_log_config.log_file);
+    char *tmp = strdup(g_log_config.log_file);
+    if (tmp) { char *dir = dirname(tmp); mkdir_recursive(dir, 0755); free(tmp); }
 }
 
-void log_set_level(log_level_t level) {
-    g_log_config.min_level = level;
+void logger_close(void) {
+    log_file_reopen();
 }
 
-void log_set_target(int targets) {
-    g_log_config.targets = targets;
-}
-
-void log_set_file(const char *path) {
-    if (path && path[0]) {
-        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s", path);
-    }
-}
-
-void log_set_color(int enable) {
-    g_log_config.enable_color = enable;
-}
+void log_set_level(log_level_t l) { g_log_config.min_level = l; }
+void log_set_target(int t) { g_log_config.targets = t; }
+void log_set_color(int e) { g_log_config.enable_color = e; }
 
 void log_rotate(void) {
+    pthread_mutex_lock(&g_log_config.mutex);
     log_rotate_if_needed();
+    pthread_mutex_unlock(&g_log_config.mutex);
+}
+
+void log_set_file(const char *p) {
+    if (p && p[0]) {
+        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s", p);
+    }
 }

@@ -1,356 +1,412 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2026 ATP Project
+ *
+ * Service Manager - Industrial-grade async state machine
+ * Features: PID validation, SIGCHLD integration, exponential backoff
+ */
+
 #include "service.h"
 #include "logger.h"
 #include "utils.h"
-#include "atp.h"
-#include <signal.h>
-#include <sys/wait.h>
-#include <pwd.h>
-#include <grp.h>
-#include <unistd.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
-#include <dirent.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
-#include <time.h>
+#include <sys/wait.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <pwd.h>
+#include <grp.h>
+#include "async_validate.h"
 
-int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
-    memset(ctx, 0, sizeof(service_ctx_t));
-    
-    snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s/bin/%s", cfg->data_dir, PROXY_BIN_NAME);
-    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s/sing-box/config.json", cfg->data_dir);
-    snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/run/sing-box.log", cfg->data_dir);
-    snprintf(ctx->pid_path, sizeof(ctx->pid_path), "%s/run/sing-box.pid", cfg->data_dir);
-    snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%s/sing-box", cfg->data_dir);
-    
-    strncpy(ctx->user, cfg->core_user, sizeof(ctx->user) - 1);
-    strncpy(ctx->group, cfg->core_group, sizeof(ctx->group) - 1);
-    ctx->restart_cooldown_sec = 60;
-    ctx->last_restart_time = 0;
-    ctx->restart_failures = 0;
-    ctx->state = SERVICE_STOPPED;
-    
-    LOG_DEBUG("Service initialized: bin=%s", ctx->bin_path);
-    return 0;
+/* ========== Backoff Algorithm ========== */
+
+static void backoff_init(backoff_t *b) {
+    b->base_delay_ms = 1000;
+    b->max_delay_ms = 60000;
+    b->current_delay_ms = 1000;
+    b->multiplier = 2;
 }
 
-int service_validate_config(service_ctx_t *ctx) {
-    char cmd[MAX_CMD_LEN];
-    char output[4096];
-    
-    snprintf(cmd, sizeof(cmd), "%s check -D \"%s\" 2>&1", ctx->bin_path, ctx->work_dir);
-    
-    int ret = exec_cmd(cmd, output, sizeof(output), 10);
-    
-    if (ret != 0) {
-        LOG_ERROR("Config validation failed: %s", output);
-        return -1;
-    }
-    
-    LOG_DEBUG("Config validation passed");
-    return 0;
+static void backoff_reset(backoff_t *b) {
+    b->current_delay_ms = b->base_delay_ms;
 }
 
-static int set_user_group(service_ctx_t *ctx) {
-    struct group *grp = getgrnam(ctx->group);
-    if (grp != NULL) {
-        if (setgid(grp->gr_gid) != 0) {
-            LOG_ERROR("Failed to set group %s: %s", ctx->group, strerror(errno));
-            return -1;
-        }
+static int backoff_next(backoff_t *b) {
+    int delay = b->current_delay_ms;
+    b->current_delay_ms *= b->multiplier;
+    if (b->current_delay_ms > b->max_delay_ms) {
+        b->current_delay_ms = b->max_delay_ms;
     }
-    
-    struct passwd *pwd = getpwnam(ctx->user);
-    if (pwd != NULL) {
-        if (setuid(pwd->pw_uid) != 0) {
-            LOG_ERROR("Failed to set user %s: %s", ctx->user, strerror(errno));
-            return -1;
-        }
-    }
-    
-    return 0;
+    return delay;
 }
 
-int service_start(service_ctx_t *ctx) {
-    if (service_check(ctx)) {
-        LOG_INFO("Service already running");
+/* ========== Process Validation ========== */
+
+static int validate_process(service_ctx_t *ctx, pid_t pid) {
+    char path[256];
+    char exe_buf[256];
+    char cmdline_buf[512];
+    ssize_t len;
+    
+    /* 1. Check /proc/[pid]/exe matches ctx->bin_path */
+    snprintf(path, sizeof(path), "/proc/%d/exe", pid);
+    len = readlink(path, exe_buf, sizeof(exe_buf) - 1);
+    if (len < 0) {
+        LOG_DEBUG("Service: readlink failed for PID %d: %s", pid, strerror(errno));
+        return 0;
+    }
+    exe_buf[len] = '\0';
+    
+    if (strcmp(exe_buf, ctx->bin_path) != 0) {
+        LOG_WARN("Service: PID %d exe mismatch: expected %s, got %s", 
+                 pid, ctx->bin_path, exe_buf);
         return 0;
     }
     
-    LOG_INFO("Starting service: %s", ctx->bin_path);
-    ctx->state = SERVICE_STARTING;
+    /* 2. Check cmdline contains work_dir */
+    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
     
-    if (service_validate_config(ctx) != 0) {
-        LOG_ERROR("Config validation failed, aborting start");
-        ctx->state = SERVICE_FAILED;
-        return -1;
+    len = read(fd, cmdline_buf, sizeof(cmdline_buf) - 1);
+    close(fd);
+    
+    if (len > 0) {
+        cmdline_buf[len] = '\0';
+        if (!strstr(cmdline_buf, ctx->work_dir)) {
+            LOG_WARN("Service: PID %d cmdline missing work_dir", pid);
+            return 0;
+        }
     }
     
-    service_kill_all(PROXY_BIN_NAME, SIGKILL);
-    usleep(500000);
+    LOG_INFO("Service: PID %d validated successfully", pid);
+    return 1;
+}
+
+static int service_is_alive(service_ctx_t *ctx) {
+    if (ctx->child_pid <= 0) return 0;
+    return kill(ctx->child_pid, 0) == 0;
+}
+
+static int service_probe_port(int port) {
+    int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (sock < 0) return 0;
     
-    char log_old[PATH_MAX];
-    snprintf(log_old, sizeof(log_old), "%s.1", ctx->log_path);
-    rename(ctx->log_path, log_old);
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(port);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     
+    int ret = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
+    close(sock);
+    
+    if (ret == 0) return 1;
+    return (errno == EINPROGRESS) ? 1 : 0;
+}
+static int service_spawn(service_ctx_t *ctx) {
     pid_t pid = fork();
     if (pid < 0) {
-        LOG_ERROR("Fork failed: %s", strerror(errno));
-        ctx->state = SERVICE_FAILED;
+        LOG_ERROR("Service: fork failed: %s", strerror(errno));
         return -1;
     }
-    
+
     if (pid == 0) {
+        umask(027);
         setsid();
-        
         signal(SIGPIPE, SIG_IGN);
-        
+
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
-        
-        FILE *fp = fopen(ctx->log_path, "a");
-        if (fp) {
-            dup2(fileno(fp), STDOUT_FILENO);
-            dup2(fileno(fp), STDERR_FILENO);
-            fclose(fp);
+
+        int log_fd = open(ctx->log_path, O_WRONLY | O_CREAT | O_APPEND, 0640);
+        if (log_fd >= 0) {
+            dup2(log_fd, STDOUT_FILENO);
+            dup2(log_fd, STDERR_FILENO);
+            close(log_fd);
         } else {
-            open("/dev/null", O_RDONLY);
-            open("/dev/null", O_WRONLY);
-            open("/dev/null", O_WRONLY);
+            int null_fd = open("/dev/null", O_RDWR);
+            if (null_fd >= 0) {
+                dup2(null_fd, STDIN_FILENO);
+                dup2(null_fd, STDOUT_FILENO);
+                dup2(null_fd, STDERR_FILENO);
+                close(null_fd);
+            }
         }
-        
-        set_user_group(ctx);
-        
-        char *argv[] = {
-            (char *)ctx->bin_path,
-            "run",
-            "-D",
-            (char *)ctx->work_dir,
-            NULL
-        };
-        
+
+        struct passwd *pwd = getpwnam(ctx->user);
+        struct group *grp = getgrnam(ctx->group);
+        if (grp) setgid(grp->gr_gid);
+        if (pwd) setuid(pwd->pw_uid);
+
+        char *argv[] = { ctx->bin_path, "run", "-D", ctx->work_dir, NULL };
         execv(ctx->bin_path, argv);
-        exit(1);
+        _exit(127);
     }
-    
-    FILE *fp = fopen(ctx->pid_path, "w");
-    if (fp) {
-        fprintf(fp, "%d\n", pid);
-        fclose(fp);
-    }
-    
-    ctx->state = SERVICE_RUNNING;
-    LOG_INFO("Service started with PID %d", pid);
-    
-    return service_wait_ready(ctx, 10);
+
+    ctx->child_pid = pid;
+    ctx->validated_pid = 0;
+    LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
+    return 0;
 }
 
-int service_stop(service_ctx_t *ctx) {
-    LOG_INFO("Stopping service");
-    ctx->state = SERVICE_STOPPING;
-    
-    int pid = service_get_pid(ctx);
-    if (pid > 0) {
-        kill(pid, SIGTERM);
-        wait_for_pid_exit(pid, 5);
-        kill(pid, SIGKILL);
+static void service_kill(service_ctx_t *ctx) {
+    if (ctx->child_pid > 0) {
+        LOG_INFO("Service: stopping sing-box (PID: %d)", ctx->child_pid);
+        kill(ctx->child_pid, SIGTERM);
+        usleep(500000);
+        if (kill(ctx->child_pid, 0) == 0) {
+            kill(ctx->child_pid, SIGKILL);
+        }
+        waitpid(ctx->child_pid, NULL, WNOHANG);
+        ctx->child_pid = -1;
+        ctx->validated_pid = 0;
     }
+}
+
+/* ========== SIGCHLD Handler ========== */
+
+void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
+    (void)r;
+    (void)signo;
+
+    service_ctx_t *ctx = userdata;
+    if (!ctx) return;
+
+    int status;
+    pid_t pid;
+
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        if (pid == ctx->child_pid) {
+            if (WIFEXITED(status)) {
+                LOG_WARN("Service: sing-box exited with code %d", WEXITSTATUS(status));
+            } else if (WIFSIGNALED(status)) {
+                LOG_WARN("Service: sing-box killed by signal %d", WTERMSIG(status));
+            }
+
+            ctx->child_pid = -1;
+            ctx->validated_pid = 0;
+
+            if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
+                ctx->state = SERVICE_FAILED;
+                LOG_INFO("Service: state -> FAILED, will restart on next monitor tick");
+            }
+        }
+    }
+}
+/* ========== State Machine ========== */
+
+const char *service_state_string(service_state_t state) {
+    switch (state) {
+        case SERVICE_STOPPED:  return "STOPPED";
+        case SERVICE_STARTING: return "STARTING";
+        case SERVICE_RUNNING:  return "RUNNING";
+        case SERVICE_FAILED:   return "FAILED";
+        default:               return "UNKNOWN";
+    }
+}
+
+void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
     
-    service_kill_all(PROXY_BIN_NAME, SIGTERM);
-    usleep(200000);
-    service_kill_all(PROXY_BIN_NAME, SIGKILL);
+    service_ctx_t *ctx = userdata;
+    if (!ctx) return;
     
-    unlink(ctx->pid_path);
+    switch (ctx->state) {
+        case SERVICE_STOPPED:
+            break;
+            
+        case SERVICE_STARTING:
+            if (service_is_alive(ctx)) {
+                if (!ctx->validated_pid) {
+                    if (validate_process(ctx, ctx->child_pid)) {
+                        ctx->validated_pid = 1;
+                    } else {
+                        LOG_WARN("Service: PID %d validation failed, killing", ctx->child_pid);
+                        kill(ctx->child_pid, SIGKILL);
+                        ctx->child_pid = -1;
+                    }
+                }
+                
+                if (ctx->validated_pid && service_probe_port(ctx->api_port)) {
+                    LOG_INFO("Service: ready on port %d", ctx->api_port);
+                    ctx->state = SERVICE_RUNNING;
+                    ctx->fail_count = 0;
+                    backoff_reset(&ctx->backoff);
+                }
+            } else {
+                LOG_WARN("Service: process died during startup");
+                ctx->fail_count++;
+                if (ctx->fail_count >= ctx->max_failures) {
+                    LOG_ERROR("Service: max failures reached, giving up");
+                    ctx->state = SERVICE_FAILED;
+                } else {
+                    int delay = backoff_next(&ctx->backoff);
+                    LOG_INFO("Service: respawning in %dms (%d/%d)", 
+                             delay, ctx->fail_count, ctx->max_failures);
+                    usleep(delay * 1000);
+                    service_spawn(ctx);
+                }
+            }
+            break;
+            
+        case SERVICE_RUNNING:
+            if (!service_is_alive(ctx)) {
+                LOG_WARN("Service: process died unexpectedly");
+                ctx->fail_count++;
+                if (ctx->fail_count >= ctx->max_failures) {
+                    LOG_ERROR("Service: max failures reached, giving up");
+                    ctx->state = SERVICE_FAILED;
+                } else {
+                    int delay = backoff_next(&ctx->backoff);
+                    LOG_INFO("Service: auto-restart in %dms (%d/%d)", 
+                             delay, ctx->fail_count, ctx->max_failures);
+                    usleep(delay * 1000);
+                    service_spawn(ctx);
+                    ctx->state = SERVICE_STARTING;
+                }
+            }
+            break;
+            
+        case SERVICE_FAILED:
+            break;
+    }
+}
+
+/* ========== Public API ========== */
+
+int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
+    if (!ctx || !cfg) return -1;
+    memset(ctx, 0, sizeof(service_ctx_t));
     
+    snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%.4000s/bin/%.63s", 
+             cfg->data_dir, PROXY_BIN_NAME);
+    snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%.4000s/sing-box", cfg->data_dir);
+    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%.4000s/sing-box/config.json", cfg->data_dir);
+    snprintf(ctx->log_path, sizeof(ctx->log_path), "%.4000s/run/sing-box.log", cfg->data_dir);
+    snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core_user);
+    snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core_group);
+    
+    ctx->api_port = cfg->api_port;
+    ctx->child_pid = -1;
+    ctx->validated_pid = 0;
     ctx->state = SERVICE_STOPPED;
-    LOG_INFO("Service stopped");
+    ctx->fail_count = 0;
+    ctx->max_failures = 5;
+    
+    backoff_init(&ctx->backoff);
+    
+    LOG_DEBUG("Service: initialized (bin=%s, port=%d)", ctx->bin_path, ctx->api_port);
     return 0;
 }
 
-int service_restart(service_ctx_t *ctx) {
-    LOG_INFO("Restarting service");
-    service_stop(ctx);
-    sleep(2);
-    return service_start(ctx);
+/* ========== Async Config Validation Callback ========== */
+
+static void on_validate_complete(int result, const char *output, void *userdata) {
+    service_ctx_t *ctx = userdata;
+    
+    if (result) {
+        LOG_INFO("Service: config validation passed");
+        if (service_spawn(ctx) == 0) {
+            ctx->state = SERVICE_STARTING;
+            ctx->fail_count = 0;
+            backoff_reset(&ctx->backoff);
+        } else {
+            ctx->state = SERVICE_FAILED;
+        }
+    } else {
+        LOG_ERROR("Service: config validation failed: %s", output ? output : "unknown error");
+        ctx->state = SERVICE_FAILED;
+    }
+    
+    free(ctx->validate_ctx);
+    ctx->validate_ctx = NULL;
 }
 
-int service_check(service_ctx_t *ctx) {
-    int pid = service_get_pid(ctx);
-    if (pid > 0 && process_exists(pid)) {
-        return 1;
+int service_start_async(service_ctx_t *ctx) {
+    if (!ctx) return -1;
+
+    if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
+        LOG_WARN("Service: already running or starting");
+        return 0;
     }
-    
-    char cmd[MAX_CMD_LEN];
-    char output[256];
-    
-    snprintf(cmd, sizeof(cmd), "pidof %s 2>/dev/null", PROXY_BIN_NAME);
-    if (exec_cmd(cmd, output, sizeof(output), 3) == 0 && output[0]) {
-        return 1;
+
+    if (service_is_alive(ctx)) {
+        LOG_INFO("Service: process already running (PID: %d)", ctx->child_pid);
+        ctx->state = SERVICE_STARTING;
+        return 0;
     }
-    
+
+    /* Async config validation */
+    ctx->validate_ctx = malloc(sizeof(async_validate_ctx_t));
+    if (!ctx->validate_ctx) {
+        LOG_ERROR("Service: failed to allocate validate_ctx");
+        ctx->state = SERVICE_FAILED;
+        return -1;
+    }
+
+    int ret = async_validate_config(ctx->validate_ctx, ctx->reactor,
+                                    ctx->bin_path, ctx->work_dir,
+                                    on_validate_complete, ctx);
+    if (ret < 0) {
+        LOG_ERROR("Service: failed to start async validation");
+        free(ctx->validate_ctx);
+        ctx->validate_ctx = NULL;
+        ctx->state = SERVICE_FAILED;
+        return -1;
+    }
+
     return 0;
 }
 
-int service_check_port(int port) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "netstat -tuln 2>/dev/null | grep -q \":%d \"", port);
-    return exec_cmd_simple(cmd, 3) == 0;
+int service_stop_async(service_ctx_t *ctx) {
+    if (!ctx) return -1;
+    
+    service_kill(ctx);
+    ctx->state = SERVICE_STOPPED;
+    ctx->fail_count = 0;
+    
+    if (ctx->monitor_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
+        ctx->monitor_timer = NULL;
+    }
+    
+    return 0;
 }
 
 int service_get_pid(service_ctx_t *ctx) {
-    if (file_exists(ctx->pid_path)) {
-        char pid_str[32];
-        if (read_file(ctx->pid_path, pid_str, sizeof(pid_str)) > 0) {
-            int pid = atoi(pid_str);
-            if (pid > 0 && process_exists(pid)) {
-                return pid;
-            }
-        }
+    if (!ctx) return -1;
+    
+    if (ctx->child_pid > 0) {
+        return ctx->child_pid;
     }
     
-    char cmd[MAX_CMD_LEN];
-    char output[256];
-    snprintf(cmd, sizeof(cmd), "pidof %s 2>/dev/null | awk '{print $1}'", PROXY_BIN_NAME);
+    char pid_path[256];
+    snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ATP_DEFAULT_DIR);
     
-    if (exec_cmd(cmd, output, sizeof(output), 3) == 0 && output[0]) {
-        return atoi(output);
+    FILE *f = fopen(pid_path, "r");
+    if (f) {
+        int pid;
+        if (fscanf(f, "%d", &pid) == 1 && pid > 0) {
+            fclose(f);
+            ctx->child_pid = pid;
+            return pid;
+        }
+        fclose(f);
     }
     
     return -1;
 }
 
-int service_wait_ready(service_ctx_t *ctx, int timeout_sec) {
-    int waited = 0;
-    
-    while (waited < timeout_sec) {
-        if (service_check(ctx)) {
-            LOG_INFO("Service is ready after %d seconds", waited);
-            return 0;
-        }
-        sleep(1);
-        waited++;
-    }
-    
-    LOG_WARN("Service not ready after %d seconds", timeout_sec);
-    return -1;
-}
-
-int service_rotate_log(service_ctx_t *ctx) {
-    struct stat st;
-    if (stat(ctx->log_path, &st) != 0) return 0;
-    
-    if (st.st_size < 10 * 1024 * 1024) return 0;
-    
-    char old_path[PATH_MAX];
-    snprintf(old_path, sizeof(old_path), "%s.1", ctx->log_path);
-    rename(ctx->log_path, old_path);
-    
-    LOG_INFO("Log rotated");
-    return 0;
-}
-
-void service_set_cooldown(service_ctx_t *ctx, int seconds) {
-    ctx->restart_cooldown_sec = seconds;
-}
-
-int service_cooldown_active(service_ctx_t *ctx) {
-    time_t now = time(NULL);
-    int elapsed = (int)(now - ctx->last_restart_time);
-    
-    if (elapsed < ctx->restart_cooldown_sec && ctx->last_restart_time > 0) {
-        LOG_DEBUG("Cooldown active: %d seconds remaining", 
-                  ctx->restart_cooldown_sec - elapsed);
-        return 1;
-    }
-    
-    return 0;
-}
-
-void service_reset_failures(service_ctx_t *ctx) {
-    ctx->restart_failures = 0;
-    ctx->last_restart_time = time(NULL);
-}
-
-pid_t service_find_process(const char *name) {
-    DIR *dir = opendir("/proc");
-    if (!dir) return -1;
-    
-    struct dirent *entry;
-    pid_t found_pid = -1;
-    
-    while ((entry = readdir(dir)) != NULL) {
-        if (!isdigit(entry->d_name[0])) continue;
-        
-        pid_t pid = atoi(entry->d_name);
-        char path[PATH_MAX];
-        char line[256];
-        
-        snprintf(path, sizeof(path), "/proc/%d/comm", pid);
-        FILE *fp = fopen(path, "r");
-        if (fp) {
-            if (fgets(line, sizeof(line), fp)) {
-                trim(line);
-                if (strcmp(line, name) == 0) {
-                    found_pid = pid;
-                    fclose(fp);
-                    break;
-                }
-            }
-            fclose(fp);
-        }
-    }
-    
-    closedir(dir);
-    return found_pid;
-}
-
-int service_kill_process(pid_t pid, int signal, int wait_sec) {
-    if (pid <= 0) return -1;
-    
-    if (kill(pid, signal) != 0) {
-        LOG_WARN("Failed to send signal %d to PID %d: %s", signal, pid, strerror(errno));
-        return -1;
-    }
-    
-    if (wait_sec > 0) {
-        wait_for_pid_exit(pid, wait_sec);
-    }
-    
-    return 0;
-}
-
-int service_kill_all(const char *name, int signal) {
-    int killed = 0;
-    DIR *dir = opendir("/proc");
-    if (!dir) return -1;
-    
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (!isdigit(entry->d_name[0])) continue;
-        
-        pid_t pid = atoi(entry->d_name);
-        char path[PATH_MAX];
-        char line[256];
-        
-        snprintf(path, sizeof(path), "/proc/%d/comm", pid);
-        FILE *fp = fopen(path, "r");
-        if (fp) {
-            if (fgets(line, sizeof(line), fp)) {
-                trim(line);
-                if (strcmp(line, name) == 0) {
-                    kill(pid, signal);
-                    killed++;
-                }
-            }
-            fclose(fp);
-        }
-    }
-    
-    closedir(dir);
-    if (killed > 0) {
-        LOG_DEBUG("Killed %d processes with name %s", killed, name);
-    }
-    
-    return killed;
+int service_is_running(service_ctx_t *ctx) {
+    return ctx && ctx->state == SERVICE_RUNNING && service_is_alive(ctx);
 }

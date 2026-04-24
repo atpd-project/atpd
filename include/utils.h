@@ -10,7 +10,6 @@
 #define UPTIME_BUF_SIZE 64
 #define MAX_CMD_LEN     512
 #define MAX_OUTPUT_LEN  4096
-
 int file_exists(const char *path);
 int mkdir_recursive(const char *path, mode_t mode);
 int exec_cmd(const char *cmd, char *output, size_t output_size, int timeout_sec);
@@ -39,5 +38,5 @@ void format_uptime(int seconds, char *buf, size_t size);
 int kill_process(pid_t pid, int signal);
 int kill_all_by_name(const char *name, int signal);
 int wait_for_pid_exit(pid_t pid, int timeout_sec);
-
+int check_ip6tables_available(void);
 #endif

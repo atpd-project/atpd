@@ -1,0 +1,63 @@
+name: Update Known Good Commits
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-update]
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Get commit info
+      id: commit
+      run: |
+        COMMIT=$(git rev-parse --short HEAD)
+        DATE=$(date +%Y-%m-%d)
+        TITLE=$(git log -1 --format=%s | sed 's/|/\\|/g')
+        
+        echo "commit=$COMMIT" >> $GITHUB_OUTPUT
+        echo "date=$DATE" >> $GITHUB_OUTPUT
+        echo "title=$TITLE" >> $GITHUB_OUTPUT
+
+    - name: Update README
+      run: |
+        NEW_ROW="| \`${{ steps.commit.outputs.commit }}\` | ${{ steps.commit.outputs.date }} | ✅ | ${{ steps.commit.outputs.title }} |"
+        
+        # Check if table exists
+        if ! grep -q "^## Known Good Commits" README.md; then
+          echo "Error: '## Known Good Commits' table not found in README.md"
+          exit 1
+        fi
+        
+        # Insert new row after the header separator line
+        sed -i "/^|--------/a $NEW_ROW" README.md
+        
+        echo "Added row: $NEW_ROW"
+
+    - name: Verify changes
+      run: |
+        echo "=== Updated Known Good Commits table ==="
+        sed -n '/^## Known Good Commits/,/^## /p' README.md | head -10
+
+    - name: Commit and push
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add README.md
+        if git diff --cached --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "docs: update known good commits [skip ci]"
+          git push
+          echo "Changes committed and pushed"
+        fi

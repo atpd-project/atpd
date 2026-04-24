@@ -1,374 +1,401 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2026 ATP Project
+ *
+ * Netlink Implementation - Strictly optimized for musl-libc static linkage.
+ * Zero-warning version for industrial deployment.
+ */
 
 #include "netlink.h"
 #include "logger.h"
 #include "utils.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#include <time.h>
+#include <stdint.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
+#include <net/if.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#include <arpa/inet.h>
-#include <sys/epoll.h>
+#include <pthread.h>
 
-#define NL_BUF_SIZE 8192
-#define EPOLL_TIMEOUT_MS 1000
-#define IP_CMD "/system/bin/ip"
+#define NL_BUF_SIZE 16384
+#define NL_DUMP_SIZE 65536
 
-//static int nl_socket_fd = -1;
-//static int epoll_fd = -1;
-static volatile int monitoring = 0;
+/* ========== Network Refresh Debounce ========== */
 
-static int netlink_send_request(int sock, int type, int flags) {
-    struct {
-        struct nlmsghdr nlh;
-        struct rtgenmsg g;
-    } req;
+static reactor_timer_t *g_debounce_timer = NULL;
+static reactor_t *g_debounce_reactor = NULL;
+
+#define NETLINK_DEBOUNCE_MS 500
+
+static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+    (void)userdata;
     
-    memset(&req, 0, sizeof(req));
-    req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtgenmsg));
-    req.nlh.nlmsg_type = type;
-    req.nlh.nlmsg_flags = NLM_F_REQUEST | flags;
-    req.nlh.nlmsg_seq = 1;
-    req.nlh.nlmsg_pid = getpid();
-    req.g.rtgen_family = AF_UNSPEC;
+    LOG_INFO("[NET] Debounce timer expired, executing network refresh");
     
-    struct sockaddr_nl addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.nl_family = AF_NETLINK;
+    // TODO: tproxy_refresh_rules();
+    // TODO: ip_rule_audit();
     
-    struct iovec iov = { &req, req.nlh.nlmsg_len };
-    struct msghdr msg = {
-        .msg_name = &addr,
-        .msg_namelen = sizeof(addr),
-        .msg_iov = &iov,
-        .msg_iovlen = 1
-    };
-    
-    return sendmsg(sock, &msg, 0);
+    g_debounce_timer = NULL;
 }
 
-int netlink_init(netlink_ctx_t *ctx) {
-    memset(ctx, 0, sizeof(netlink_ctx_t));
+static void trigger_network_refresh(reactor_t *r) {
+    if (!r) return;
+    g_debounce_reactor = r;
     
-    ctx->sock_fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
-    if (ctx->sock_fd < 0) {
-        LOG_ERROR("Failed to create netlink socket: %s", strerror(errno));
-        return -1;
+    if (g_debounce_timer) {
+        reactor_cancel_timer(r, g_debounce_timer);
+        g_debounce_timer = NULL;
     }
     
-    struct sockaddr_nl addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.nl_family = AF_NETLINK;
-    addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR;
-    
-    if (bind(ctx->sock_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        LOG_ERROR("Failed to bind netlink socket: %s", strerror(errno));
-        close(ctx->sock_fd);
-        return -1;
+    g_debounce_timer = reactor_add_timer(r, NETLINK_DEBOUNCE_MS, 0, 
+                                         debounce_flush_cb, NULL);
+    LOG_DEBUG("[NET] Debounce timer (re)started: %dms", NETLINK_DEBOUNCE_MS);
+}
+
+static int g_sync_fd = -1;
+static int g_async_fd = -1;
+static nl_callback_t g_callback = NULL;
+static void *g_userdata = NULL;
+static uint32_t g_seq = 1;
+static pthread_mutex_t g_nl_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+struct nl_link_info {
+    int index;
+    char name[IFNAMSIZ];
+    unsigned int flags;
+    uint64_t rx_bytes;
+    uint64_t tx_bytes;
+};
+
+struct nl_parse_ctx {
+    struct nl_link_info *links;
+    int max_count;
+    int count;
+};
+
+static int is_proxy_interface(const char *ifname) {
+    if (!ifname) return 0;
+    static const char *prefixes[] = {"tun", "wg", "ipsec", "vpn", "ppp", "dummy"};
+    for (size_t i = 0; i < (sizeof(prefixes) / sizeof(prefixes[0])); ++i) {
+        if (strncmp(ifname, prefixes[i], strlen(prefixes[i])) == 0) return 1;
     }
-    
-    ctx->epoll_fd = epoll_create1(0);
-    if (ctx->epoll_fd < 0) {
-        LOG_ERROR("Failed to create epoll fd: %s", strerror(errno));
-        close(ctx->sock_fd);
-        return -1;
-    }
-    
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = ctx->sock_fd;
-    if (epoll_ctl(ctx->epoll_fd, EPOLL_CTL_ADD, ctx->sock_fd, &ev) < 0) {
-        LOG_ERROR("Failed to add netlink socket to epoll: %s", strerror(errno));
-        close(ctx->epoll_fd);
-        close(ctx->sock_fd);
-        return -1;
-    }
-    
-    ctx->running = 1;
-    LOG_DEBUG("Netlink initialized");
     return 0;
 }
 
-void netlink_cleanup(netlink_ctx_t *ctx) {
-    if (ctx) {
-        ctx->running = 0;
-        if (ctx->epoll_fd >= 0) close(ctx->epoll_fd);
-        if (ctx->sock_fd >= 0) close(ctx->sock_fd);
-        ctx->epoll_fd = -1;
-        ctx->sock_fd = -1;
+static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
+    struct nl_parse_ctx *pctx = (struct nl_parse_ctx *)ctx;
+    struct ifinfomsg *ifi = (struct ifinfomsg *)NLMSG_DATA(h);
+    struct rtattr *rta = IFLA_RTA(ifi);
+    int len = (int)IFLA_PAYLOAD(h);
+
+    if (pctx->count >= pctx->max_count) return -1;
+    struct nl_link_info *info = &pctx->links[pctx->count];
+    info->index = ifi->ifi_index;
+    info->flags = ifi->ifi_flags;
+
+    for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
+        if (rta->rta_type == IFLA_IFNAME) {
+            snprintf(info->name, IFNAMSIZ, "%s", (char *)RTA_DATA(rta));
+        } else if (rta->rta_type == IFLA_STATS64) {
+            struct rtnl_link_stats64 *s = (struct rtnl_link_stats64 *)RTA_DATA(rta);
+            info->rx_bytes = s->rx_bytes;
+            info->tx_bytes = s->tx_bytes;
+        }
     }
-    LOG_DEBUG("Netlink cleaned up");
+    if (info->name[0]) pctx->count++;
+    return 0;
 }
 
-static void parse_link_message(struct nlmsghdr *nlh, netlink_callback_t callback, void *userdata) {
-    struct ifinfomsg *ifi = NLMSG_DATA(nlh);
-    struct rtattr *rta;
-    int rta_len = NLMSG_PAYLOAD(nlh, sizeof(*ifi));
-    char ifname[IFNAMSIZ] = {0};
-    
-    for (rta = IFLA_RTA(ifi); RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len)) {
-        if (rta->rta_type == IFLA_IFNAME) {
-            strncpy(ifname, RTA_DATA(rta), IFNAMSIZ - 1);
+static int netlink_recv_all(int fd, uint32_t seq, int (*parser)(struct nlmsghdr *, void *), void *ctx) {
+    char *buf = malloc(NL_DUMP_SIZE);
+    if (!buf) return -ENOMEM;
+    struct sockaddr_nl nladdr;
+    struct iovec iov = { buf, NL_DUMP_SIZE };
+    struct msghdr msg = { .msg_name = &nladdr, .msg_namelen = sizeof(nladdr), .msg_iov = &iov, .msg_iovlen = 1 };
+    int status = 0;
+
+    while (1) {
+        ssize_t ret = recvmsg(fd, &msg, 0);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            status = -errno;
             break;
         }
-    }
-    
-    if (ifname[0] == '\0') return;
-    
-    int added = (nlh->nlmsg_type == RTM_NEWLINK);
-    if (callback) {
-        callback(ifname, added, ifi->ifi_index, userdata);
-    }
-}
-
-static void parse_addr_message(struct nlmsghdr *nlh, netlink_callback_t callback, void *userdata) {
-    struct ifaddrmsg *ifa = NLMSG_DATA(nlh);
-    struct rtattr *rta;
-    int rta_len = NLMSG_PAYLOAD(nlh, sizeof(*ifa));
-    
-    if (nlh->nlmsg_type != RTM_NEWADDR && nlh->nlmsg_type != RTM_DELADDR) return;
-    
-    char ifname[IFNAMSIZ] = {0};
-    char addr_str[INET6_ADDRSTRLEN] = {0};
-    
-    for (rta = IFA_RTA(ifa); RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len)) {
-        if (rta->rta_type == IFA_ADDRESS) {
-            if (ifa->ifa_family == AF_INET) {
-                inet_ntop(AF_INET, RTA_DATA(rta), addr_str, sizeof(addr_str));
-            } else if (ifa->ifa_family == AF_INET6) {
-                inet_ntop(AF_INET6, RTA_DATA(rta), addr_str, sizeof(addr_str));
+        struct nlmsghdr *h = (struct nlmsghdr *)buf;
+        for (; NLMSG_OK(h, (uint32_t)ret); h = NLMSG_NEXT(h, ret)) {
+            if (h->nlmsg_seq != seq) continue;
+            if (h->nlmsg_type == NLMSG_DONE) goto done;
+            if (h->nlmsg_type == NLMSG_ERROR) {
+                status = ((struct nlmsgerr *)NLMSG_DATA(h))->error;
+                goto done;
             }
+            if (parser && parser(h, ctx) < 0) goto done;
         }
+        if (!(h->nlmsg_flags & NLM_F_MULTI)) break;
     }
-    
-    if (ifname[0] == '\0') {
-        snprintf(ifname, sizeof(ifname), "if%d", ifa->ifa_index);
-    }
-    
-    int added = (nlh->nlmsg_type == RTM_NEWADDR);
-    if (callback && addr_str[0]) {
-        LOG_DEBUG("Addr %s on %s", added ? "added" : "removed", ifname);
-        callback(ifname, added, ifa->ifa_index, userdata);
-    }
+done:
+    free(buf);
+    return status;
 }
 
-int netlink_monitor_start(netlink_ctx_t *ctx, netlink_callback_t callback, void *userdata) {
-    if (!ctx || ctx->sock_fd < 0) {
-        LOG_ERROR("Netlink not initialized");
+int netlink_init(nl_callback_t callback, void *userdata) {
+    g_sync_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    g_async_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (g_sync_fd < 0 || g_async_fd < 0) {
+        if (g_sync_fd >= 0) close(g_sync_fd);
+        if (g_async_fd >= 0) close(g_async_fd);
         return -1;
     }
-    
-    ctx->callback = callback;
-    ctx->callback_data = userdata;
-    ctx->running = 1;
-    monitoring = 1;
-    
-    netlink_send_request(ctx->sock_fd, RTM_GETLINK, NLM_F_DUMP);
-    netlink_send_request(ctx->sock_fd, RTM_GETADDR, NLM_F_DUMP);
-    
-    LOG_DEBUG("Netlink monitoring started");
-    return 0;
-}
 
-int netlink_monitor_stop(netlink_ctx_t *ctx) {
-    if (ctx) {
-        ctx->running = 0;
-        monitoring = 0;
-    }
-    LOG_DEBUG("Netlink monitoring stopped");
-    return 0;
-}
+    struct sockaddr_nl sa = {
+        .nl_family = AF_NETLINK,
+        .nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR | 
+                     RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE
+    };
 
-int netlink_monitor_poll(netlink_ctx_t *ctx, int timeout_ms) {
-    if (!ctx || !ctx->running || ctx->sock_fd < 0) return -1;
-    
-    struct epoll_event events[10];
-    int nfds = epoll_wait(ctx->epoll_fd, events, 10, timeout_ms);
-    
-    if (nfds < 0) {
-        if (errno == EINTR) return 0;
-        LOG_ERROR("epoll_wait failed: %s", strerror(errno));
+    if (bind(g_async_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        close(g_sync_fd);
+        close(g_async_fd);
         return -1;
     }
-    
-    for (int i = 0; i < nfds; i++) {
-        if (events[i].data.fd == ctx->sock_fd) {
-            char buf[NL_BUF_SIZE];
-            struct sockaddr_nl addr;
-            struct iovec iov = { buf, sizeof(buf) };
-            struct msghdr msg = {
-                .msg_name = &addr,
-                .msg_namelen = sizeof(addr),
-                .msg_iov = &iov,
-                .msg_iovlen = 1
-            };
-            
-            ssize_t len = recvmsg(ctx->sock_fd, &msg, 0);
-            if (len < 0) {
-                LOG_ERROR("recvmsg failed: %s", strerror(errno));
-                continue;
-            }
-            
-            struct nlmsghdr *nlh;
-            for (nlh = (struct nlmsghdr *)buf; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
-                if (nlh->nlmsg_type == NLMSG_DONE) break;
-                if (nlh->nlmsg_type == NLMSG_ERROR) {
-                    LOG_WARN("Netlink error received");
-                    continue;
-                }
-                
-                if (nlh->nlmsg_type == RTM_NEWLINK || nlh->nlmsg_type == RTM_DELLINK) {
-                    parse_link_message(nlh, ctx->callback, ctx->callback_data);
-                } else if (nlh->nlmsg_type == RTM_NEWADDR || nlh->nlmsg_type == RTM_DELADDR) {
-                    parse_addr_message(nlh, ctx->callback, ctx->callback_data);
-                }
-            }
-        }
-    }
-    
+
+    g_callback = callback;
+    g_userdata = userdata;
+    g_seq = (uint32_t)time(NULL);
+
+    LOG_INFO("Netlink: Engine started");
     return 0;
 }
 
-int netlink_get_active_vpn(netlink_ctx_t *ctx, char *iface, size_t size) {
-    (void)ctx;
-    
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "%s -4 addr | grep -oE 'ipsec[0-9]+' | head -1", IP_CMD);
-    
-    char output[IFNAMSIZ];
-    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0]) {
-        strncpy(iface, output, size - 1);
-        return 0;
+void netlink_handle_event(int fd, void *data) {
+
+    (void)data;
+    uint8_t buf[NL_BUF_SIZE];
+    struct sockaddr_nl sa;
+    struct iovec iov = { buf, sizeof(buf) };
+    struct msghdr msg = { .msg_name = &sa, .msg_namelen = sizeof(sa), .msg_iov = &iov, .msg_iovlen = 1 };
+
+    ssize_t len = recvmsg(fd, &msg, MSG_DONTWAIT);
+    if (len <= 0) return;
+
+    int should_refresh = 0;
+
+    for (struct nlmsghdr *h = (struct nlmsghdr *)buf; 
+         NLMSG_OK(h, (uint32_t)len); 
+         h = NLMSG_NEXT(h, len)) {
+        
+        if (h->nlmsg_type == NLMSG_DONE) break;
+        if (h->nlmsg_type == NLMSG_ERROR) continue;
+
+        if (h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_NEWROUTE) {
+            char ifname[IFNAMSIZ] = {0};
+            
+            if (h->nlmsg_type == RTM_NEWADDR) {
+                struct ifaddrmsg *ifa = NLMSG_DATA(h);
+                if_indextoname(ifa->ifa_index, ifname);
+                LOG_DEBUG("[NET] Address change on %s", ifname[0] ? ifname : "unknown");
+            } else {
+                LOG_DEBUG("[NET] Route table change detected");
+                ifname[0] = '\0';
+            }
+            
+            should_refresh = 1;
+        }
     }
-    
-    iface[0] = '\0';
-    return -1;
+
+    if (should_refresh) {
+        trigger_network_refresh(g_debounce_reactor);
+    }
 }
 
-int netlink_wait_for_iface(const char *iface, int timeout_sec) {
-    char cmd[MAX_CMD_LEN];
-    char output[64];
-    (void)output;
-    int waited = 0;
-    
-    while (waited < timeout_sec) {
-        snprintf(cmd, sizeof(cmd), 
-                 "%s -4 addr show dev %s 2>/dev/null | grep -q 'inet '", IP_CMD, iface);
-        if (exec_cmd_simple(cmd, 2) == 0) {
-            LOG_DEBUG("Interface %s is ready after %d seconds", iface, waited);
+int netlink_get_active_vpn(char *output, size_t size) {
+    struct nl_link_info links[32] = {{0}};
+    struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct ifinfomsg ifi;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
+            .nlmsg_type = RTM_GETLINK,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = ++g_seq
+        },
+        .ifi = { .ifi_family = AF_PACKET }
+    };
+
+    pthread_mutex_lock(&g_nl_mutex);
+    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) >= 0) {
+        netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+    }
+    pthread_mutex_unlock(&g_nl_mutex);
+
+    for (int i = 0; i < ctx.count; i++) {
+        if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
+            snprintf(output, size, "%s", links[i].name);
             return 0;
         }
-        sleep(1);
-        waited++;
     }
-    
-    LOG_WARN("Interface %s not ready after %d seconds", iface, timeout_sec);
     return -1;
 }
 
-int netlink_get_iface_info(const char *iface, netlink_iface_info_t *info) {
-    memset(info, 0, sizeof(netlink_iface_info_t));
-    strncpy(info->iface, iface, sizeof(info->iface) - 1);
-    
-    char cmd[MAX_CMD_LEN];
-    char output[256];
-    
-    snprintf(cmd, sizeof(cmd), 
-             "%s -4 addr show dev %s 2>/dev/null | grep 'inet ' | head -1 | awk '{print $2}'",
-             IP_CMD, iface);
-    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0]) {
-        char *slash = strchr(output, '/');
-        if (slash) {
-            *slash = '\0';
-            info->ipv4_prefix = atoi(slash + 1);
+int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
+    struct nl_link_info links[1] = {{0}};
+    struct nl_parse_ctx ctx = { .links = links, .max_count = 1, .count = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct ifinfomsg ifi;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
+            .nlmsg_type = RTM_GETLINK,
+            .nlmsg_flags = NLM_F_REQUEST,
+            .nlmsg_seq = ++g_seq
+        },
+        .ifi = { .ifi_index = if_nametoindex(iface) }
+    };
+
+    if (req.ifi.ifi_index == 0) return -1;
+    pthread_mutex_lock(&g_nl_mutex);
+    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) >= 0) {
+        netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+    }
+    pthread_mutex_unlock(&g_nl_mutex);
+
+    if (ctx.count > 0) {
+        *rx = links[0].rx_bytes;
+        *tx = links[0].tx_bytes;
+        return 0;
+    }
+    return -1;
+}
+
+void netlink_cleanup(void) {
+    if (g_sync_fd >= 0) {
+        close(g_sync_fd);
+        g_sync_fd = -1;
+    }
+    if (g_async_fd >= 0) {
+        close(g_async_fd);
+        g_async_fd = -1;
+    }
+    g_callback = NULL;
+}
+
+int netlink_get_fd(void) {
+    return g_async_fd;
+}
+
+/* ========== VPN Detection Functions ========== */
+
+/**
+ * Detect if any VPN interface exists via netlink
+ * This leverages the existing netlink infrastructure for consistency.
+ * @return 1 if VPN detected, 0 if not, -1 on error
+ */
+int nl_vpn_detect(void) {
+    struct nl_link_info links[32] = {{0}};
+    struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct ifinfomsg ifi;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
+            .nlmsg_type = RTM_GETLINK,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = ++g_seq
+        },
+        .ifi = { .ifi_family = AF_PACKET }
+    };
+
+    pthread_mutex_lock(&g_nl_mutex);
+    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) < 0) {
+        pthread_mutex_unlock(&g_nl_mutex);
+        LOG_ERROR("nl_vpn_detect: netlink send failed: %s", strerror(errno));
+        return -1;
+    }
+    netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+    pthread_mutex_unlock(&g_nl_mutex);
+
+    // Iterate through all interfaces and check for VPN characteristics
+    for (int i = 0; i < ctx.count; i++) {
+        // Check if interface is UP
+        if (!(links[i].flags & IFF_UP)) {
+            continue;
         }
-        strncpy(info->ipv4_addr, output, sizeof(info->ipv4_addr) - 1);
-        info->has_ipv4 = 1;
-    }
-    
-    snprintf(cmd, sizeof(cmd), 
-             "%s -6 addr show dev %s 2>/dev/null | grep 'inet6 ' | grep -v 'fe80' | head -1 | awk '{print $2}'",
-             IP_CMD, iface);
-    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0]) {
-        char *slash = strchr(output, '/');
-        if (slash) {
-            *slash = '\0';
-            info->ipv6_prefix = atoi(slash + 1);
+
+        // Use the existing is_proxy_interface() which already handles ipsec0, ipsec1, etc.
+        if (is_proxy_interface(links[i].name)) {
+            LOG_DEBUG("VPN interface detected via netlink: %s", links[i].name);
+            return 1;
         }
-        strncpy(info->ipv6_addr, output, sizeof(info->ipv6_addr) - 1);
-        info->has_ipv6 = 1;
     }
-    
-    snprintf(cmd, sizeof(cmd), "cat /sys/class/net/%s/flags 2>/dev/null", iface);
-    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0]) {
-        info->flags = strtoul(output, NULL, 16);
-    }
-    
-    snprintf(cmd, sizeof(cmd), "cat /sys/class/net/%s/mtu 2>/dev/null", iface);
-    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0]) {
-        info->mtu = atoi(output);
-    }
-    
-    info->ifindex = if_nametoindex(iface);
-    
+
+    LOG_DEBUG("No VPN interface detected via netlink");
     return 0;
 }
 
-int netlink_get_all_ifaces(netlink_iface_info_t *info_array, int max_count) {
-    char cmd[MAX_CMD_LEN];
-    char output[4096];
-    int count = 0;
-    
-    snprintf(cmd, sizeof(cmd), "%s -brief link show | awk '{print $1}' | grep -v lo", IP_CMD);
-    
-    if (exec_cmd(cmd, output, sizeof(output), 5) != 0) {
-        return 0;
+/**
+ * Get the VPN interface name via netlink
+ * @param iface Buffer to store interface name
+ * @param size  Size of buffer
+ * @return 0 on success, -1 if no VPN interface
+ */
+int nl_link_get_vpn_interface(char *iface, size_t size) {
+    if (!iface || size == 0) {
+        return -1;
     }
-    
-    char *line = strtok(output, " \n");
-    while (line && count < max_count) {
-        netlink_get_iface_info(line, &info_array[count]);
-        count++;
-        line = strtok(NULL, " \n");
-    }
-    
-    return count;
-}
 
-int netlink_check_rule_exists(int table_id, int mark, const char *iface) {
-    char cmd[MAX_CMD_LEN];
-    char output[256];
-    
-    snprintf(cmd, sizeof(cmd), 
-             "%s rule show | grep -q 'fwmark 0x%x.*lookup %d'", IP_CMD, mark, table_id);
-    
-    if (exec_cmd(cmd, output, sizeof(output), 5) != 0) {
-        return 0;
-    }
-    
-    if (iface && iface[0]) {
-        snprintf(cmd, sizeof(cmd), 
-                 "%s rule show | grep -q 'iif ap0.*lookup %s'", IP_CMD, iface);
-        return exec_cmd(cmd, output, sizeof(output), 5) == 0;
-    }
-    
-    return 1;
-}
+    struct nl_link_info links[32] = {{0}};
+    struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct ifinfomsg ifi;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
+            .nlmsg_type = RTM_GETLINK,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = ++g_seq
+        },
+        .ifi = { .ifi_family = AF_PACKET }
+    };
 
-int netlink_get_ipv4_snapshot(char *output, size_t size) {
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), 
-             "%s -4 addr show | grep 'inet ' | awk '{print $NF\":\"$2}' | grep -v lo: | tr '\\n' ' '",
-             IP_CMD);
-    return exec_cmd(cmd, output, size, 5);
-}
-
-int netlink_compare_ipv4_snapshot(const char *before, const char *after, char *diff, size_t size) {
-    if (!before || !after) return -1;
-    
-    if (strcmp(before, after) == 0) {
-        snprintf(diff, size, "Network Stable: [%s]", after);
-        return 0;
+    pthread_mutex_lock(&g_nl_mutex);
+    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) < 0) {
+        pthread_mutex_unlock(&g_nl_mutex);
+        LOG_ERROR("nl_link_get_vpn_interface: netlink send failed: %s", strerror(errno));
+        iface[0] = '\0';
+        return -1;
     }
-    
-    snprintf(diff, size, "Network Shift: [%s] -> [%s]", before, after);
-    return 1;
+    netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+    pthread_mutex_unlock(&g_nl_mutex);
+
+    // Find first active VPN interface
+    for (int i = 0; i < ctx.count; i++) {
+        if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
+            strncpy(iface, links[i].name, size - 1);
+            iface[size - 1] = '\0';
+            LOG_DEBUG("Found VPN interface via netlink: %s", iface);
+            return 0;
+        }
+    }
+
+    // No active VPN found
+    iface[0] = '\0';
+    LOG_DEBUG("No active VPN interface found via netlink");
+    return -1;
+}
+void netlink_set_reactor(reactor_t *r) {
+    g_debounce_reactor = r;
 }

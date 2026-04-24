@@ -1,3 +1,10 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2025 ATP Project
+ *
+ * Command line interface header
+ */
+
 #ifndef ATP_CLI_H
 #define ATP_CLI_H
 
@@ -14,19 +21,21 @@ typedef enum {
     CMD_STATUS,
     CMD_UPDATE_GEOIP,
     CMD_RELOAD,
+    CMD_CHECK,
     CMD_VERSION,
     CMD_HELP
 } atp_command_t;
 
 typedef struct {
     atp_command_t command;
-    char config_dir[PATH_MAX];
-    int dry_run;
+    char config_file[PATH_MAX];
+    int foreground;
+    int daemon;
     int verbose;
     int quiet;
-    int foreground;
-    int use_syslog;
-    char log_file[PATH_MAX];
+    int force;
+    int no_color;
+    int test_config;
     log_level_t log_level;
 } atp_options_t;
 
@@ -36,4 +45,4 @@ void print_help(const char *progname);
 int parse_arguments(int argc, char *argv[], atp_options_t *opts);
 const char* command_to_string(atp_command_t cmd);
 
-#endif
+#endif /* ATP_CLI_H */

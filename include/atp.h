@@ -21,9 +21,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <pthread.h>
 
-#define ATP_VERSION         "1.0.0"
-#define ATP_NAME            "ATP (Advanced Transparent Proxy)"
+#define ATP_NAME            "atpd"
+#define ATP_BUILD_DATE      __DATE__
+#define ATP_BUILD_TIME      __TIME__
 
 #define ATP_DEFAULT_DIR     "/data/adb/atp"
 #define ATP_CONF_FILE       "atp.conf"
@@ -36,11 +38,14 @@
 
 #define DEFAULT_TCP_PORT    1536
 #define DEFAULT_UDP_PORT    1536
+#define DEFAULT_REDIRECT_TCP_PORT  7891
 #define DEFAULT_MARK        20
 #define DEFAULT_MARK6       25
 #define DEFAULT_TABLE_ID    150
 #define DEFAULT_DNS_PORT    1053
 #define DEFAULT_RESTART_DELAY 2
+#define DEFAULT_API_PORT    9090
+#define DEFAULT_API_HOST    "127.0.0.1"
 
 #define CMD_TIMEOUT_SEC     5
 #define API_RETRY_COUNT     3
@@ -82,6 +87,7 @@ typedef struct {
     
     int tcp_port;
     int udp_port;
+    int redirect_tcp_port;      /* REDIRECT port for ENHANCE mode */
     proxy_mode_t proxy_mode;
     int performance_mode;
     int proxy_tcp;
@@ -141,8 +147,18 @@ typedef struct {
     int restart_delay;
     char clash_secret[128];
     
+    /* API configuration */
+    int api_port;
+    char api_host[64];
+    
     int use_tproxy;
     char current_vpn_iface[32];
+    
+    /* UI settings */
+    int ui_emoji_enabled;   /* 1 = use emoji, 0 = use ASCII labels */
+    
+    /* Thread safety */
+    pthread_mutex_t config_mutex;
 } atp_config_t;
 
 extern atp_config_t g_config;
@@ -158,3 +174,7 @@ int atp_check_root(void);
 void atp_show_status(void);
 
 #endif
+
+#include "version.h"
+
+/* Epoll event loop */

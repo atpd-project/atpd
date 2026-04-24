@@ -1,43 +1,45 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2025 ATP Project
+ *
+ * Netlink - Async event-driven interface monitoring
+ */
+
 #ifndef ATP_NETLINK_H
 #define ATP_NETLINK_H
 
 #include "atp.h"
-#include <linux/netlink.h>
-#include <linux/rtnetlink.h>
+#include "reactor.h"
+#include <stdint.h>
+#include <net/if.h>
 
-typedef struct {
-    char iface[IFNAMSIZ];
-    int ifindex;
-    int has_ipv4;
-    char ipv4_addr[INET_ADDRSTRLEN];
-    int ipv4_prefix;
-    int has_ipv6;
-    char ipv6_addr[INET6_ADDRSTRLEN];
-    int ipv6_prefix;
-    unsigned int flags;
-    unsigned int mtu;
-} netlink_iface_info_t;
+typedef enum {
+    NL_EVENT_ADDR_ADD,
+    NL_EVENT_ADDR_DEL,
+    NL_EVENT_ROUTE_ADD,
+    NL_EVENT_ROUTE_DEL,
+    NL_EVENT_LINK_UP,
+    NL_EVENT_LINK_DOWN,
+    NL_EVENT_VPN_CONNECTED,
+    NL_EVENT_VPN_DISCONNECTED
+} nl_event_type_t;
 
-typedef void (*netlink_callback_t)(const char *iface, int added, int ifindex, void *userdata);
+typedef void (*nl_callback_t)(nl_event_type_t event, const char *iface, void *userdata);
 
-typedef struct {
-    int sock_fd;
-    int epoll_fd;
-    volatile int running;
-    netlink_callback_t callback;
-    void *callback_data;
-} netlink_ctx_t;
+int netlink_init(nl_callback_t callback, void *userdata);
+void netlink_cleanup(void);
 
-int netlink_init(netlink_ctx_t *ctx);
-void netlink_cleanup(netlink_ctx_t *ctx);
-int netlink_monitor_start(netlink_ctx_t *ctx, netlink_callback_t callback, void *userdata);
-int netlink_monitor_stop(netlink_ctx_t *ctx);
-int netlink_get_active_vpn(netlink_ctx_t *ctx, char *iface, size_t size);
-int netlink_wait_for_iface(const char *iface, int timeout_sec);
-int netlink_get_iface_info(const char *iface, netlink_iface_info_t *info);
-int netlink_get_all_ifaces(netlink_iface_info_t *info_array, int max_count);
-int netlink_check_rule_exists(int table_id, int mark, const char *iface);
+int netlink_get_fd(void);
+void netlink_handle_event(int fd, void *data);
+
+int netlink_get_iface_stats(const char *iface, uint64_t *rx_bytes, uint64_t *tx_bytes);
+int netlink_get_active_vpn(char *iface, size_t size);
 int netlink_get_ipv4_snapshot(char *output, size_t size);
-int netlink_compare_ipv4_snapshot(const char *before, const char *after, char *diff, size_t size);
+int netlink_check_rule_exists(int table_id, int mark, const char *iface);
+
+int nl_vpn_detect(void);
+int nl_link_get_vpn_interface(char *iface, size_t size);
+
+void netlink_set_reactor(reactor_t *r);
 
 #endif
