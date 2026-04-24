@@ -27,6 +27,7 @@
 #include "ipv6_manager.h"
 #include "inet_diag.h"
 #include "reactor.h"
+#include "singbox_api.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,16 @@ static service_ctx_t *g_svc = NULL;
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload = 0;
 static volatile sig_atomic_t g_show_status = 0;
+
+/* ========== P0: Rate Limiting for API Sync ========== */
+
+typedef struct {
+    char last_name[256];
+    int last_delay;
+    bool first_run;
+} proxy_log_throttle_t;
+
+static proxy_log_throttle_t g_proxy_throttle = { .first_run = true };
 
 static void on_signal(reactor_t *r, int sig, void *userdata) {
     (void)r;
@@ -93,6 +104,58 @@ static void on_idle(reactor_t *r, void *userdata) {
     }
 }
 
+static void process_proxy_list(proxy_list_t *list) {
+    if (!list || list->count == 0) {
+        goto cleanup;
+    }
+
+    for (int i = 0; i < list->count; ++i) {
+        proxy_info_t *info = &list->proxies[i];
+
+        if (info->type && strcmp(info->type, "URLTest") == 0 && info->delay > 0) {
+            bool changed = g_proxy_throttle.first_run ||
+                          strcmp(g_proxy_throttle.last_name, info->name) != 0 ||
+                          g_proxy_throttle.last_delay != info->delay;
+
+            if (changed) {
+                LOG_INFO("URLTest Node: %s (delay: %dms)", info->name, info->delay);
+                strncpy(g_proxy_throttle.last_name, info->name, sizeof(g_proxy_throttle.last_name) - 1);
+                g_proxy_throttle.last_delay = info->delay;
+                g_proxy_throttle.first_run = false;
+            }
+        }
+    }
+
+cleanup:
+    proxy_list_free(list);
+}
+
+static void on_proxies_response(int http_code, const char *body, void *userdata) {
+    (void)userdata;
+
+    if (http_code != 200 || !body) return;
+
+    char *mutable_body = strdup(body);
+    if (!mutable_body) return;
+
+    proxy_list_t list;
+    int count = singbox_parse_proxies(mutable_body, strlen(mutable_body), &list);
+    
+    if (count >= 0) {
+        process_proxy_list(&list);
+    } else {
+        proxy_list_free(&list);
+    }
+
+    free(mutable_body);
+}
+
+static void proxies_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+    (void)userdata;
+    api_get_proxies_async(&g_api_ctx, on_proxies_response, NULL);
+}
 
 static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
     (void)r;
