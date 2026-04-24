@@ -18,6 +18,16 @@ on:
       - 'Makefile'
       - 'Dockerfile'
       - '.github/workflows/build.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'scripts/**'
+      - 'Makefile'
+      - 'Dockerfile'
+      - '.github/workflows/build.yml'
+
   workflow_dispatch:
 
 concurrency:
