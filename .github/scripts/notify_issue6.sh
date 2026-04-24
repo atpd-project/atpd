@@ -16,13 +16,13 @@ TIMESTAMP=$(date +"%y%m%d %H:%M")
 
 MESSAGE="📋 *Latest ATPd Build*%0A"
 MESSAGE+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
-MESSAGE+="📦 Clang: \${SIZE:-N/A}\"
 
 if [ "${ZIG_SIZE}" != "N/A" ] && [ -n "${ZIG_SIZE}" ]; then
-    MESSAGE+=" \| Zig: \${ZIG_SIZE}\"
+    MESSAGE+="📦 Clang: ${SIZE:-N/A} \| Zig: ${ZIG_SIZE}%0A"
+else
+    MESSAGE+="📦 Clang: ${SIZE:-N/A}%0A"
 fi
 
-MESSAGE+="%0A"
 MESSAGE+="🔗 [View Issue \#6](https://github\.com/${REPO}/issues/6)"
 
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
@@ -31,4 +31,3 @@ curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     -d "parse_mode=MarkdownV2"
 
 echo "Notification sent: Build #${RUN_NUM} at ${TIMESTAMP}"
-
