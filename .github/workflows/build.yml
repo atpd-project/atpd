@@ -129,7 +129,7 @@ jobs:
             -D_GNU_SOURCE \
             -DATP_DEFAULT_DIR="/data/adb/atp" \
             -o atpd-zig \
-            $(find src -name "*.c" ! -path "src/cjson/*" ! -name "epoll.c") \
+            $(find src -name "*.c" ! -path "src/cjson/*" ! -path "src/yyjson/*" ! -name "epoll.c") \
             src/yyjson/yyjson.c \
             -lpthread
 
