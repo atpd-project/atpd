@@ -9,6 +9,7 @@
 #include "netlink.h"
 #include "logger.h"
 #include "utils.h"
+extern atp_config_t g_config;
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,10 +42,24 @@ static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userda
     
     LOG_INFO("[NET] Debounce timer expired, executing network refresh");
     
-    // TODO: tproxy_refresh_rules();
-    // TODO: ip_rule_audit();
+    tproxy_refresh_rules(&g_config);
+    ip_rule_audit(&g_config);
     
     g_debounce_timer = NULL;
+}
+
+static void trigger_network_refresh(reactor_t *r) {
+    if (!r) return;
+    g_debounce_reactor = r;
+
+    if (g_debounce_timer) {
+        reactor_cancel_timer(r, g_debounce_timer);
+        g_debounce_timer = NULL;
+    }
+
+    g_debounce_timer = reactor_add_timer(r, NETLINK_DEBOUNCE_MS, 0,
+                                         debounce_flush_cb, NULL);
+    LOG_DEBUG("[NET] Debounce timer (re)started: %dms", NETLINK_DEBOUNCE_MS);
 }
 
 static void trigger_network_refresh(reactor_t *r) {

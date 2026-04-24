@@ -1082,3 +1082,32 @@ int tproxy_prevent_loop(atp_config_t *cfg) {
 
     return 0;
 }
+
+int tproxy_refresh_rules(atp_config_t *cfg) {
+    if (!cfg) return -1;
+
+    LOG_INFO("[TPROXY] Refreshing all TPROXY rules");
+
+    tproxy_cleanup_all(cfg);
+    tproxy_configure_rp_filter(cfg);
+    tproxy_setup_ipv4_batch(cfg);
+    tproxy_setup_ipv6_batch(cfg);
+
+    return 0;
+}
+
+int ip_rule_audit(atp_config_t *cfg) {
+    if (!cfg) return -1;
+
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "ip rule show | grep -q 'fwmark %d'", cfg->tproxy_mark);
+
+    if (exec_cmd_simple(cmd, 2) != 0) {
+        LOG_WARN("[TPROXY] IP rule for fwmark %d missing, restoring", cfg->tproxy_mark);
+        snprintf(cmd, sizeof(cmd), "ip rule add fwmark %d table %d pref %d",
+                 cfg->tproxy_mark, cfg->tproxy_table, cfg->tproxy_pref);
+        exec_cmd_simple(cmd, 2);
+    }
+
+    return 0;
+}
