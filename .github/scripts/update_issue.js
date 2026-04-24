@@ -1,7 +1,6 @@
 module.exports = async ({ github, context, core }) => {
   const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE, RUNTIME_VER, COMPILER_VER, ZIG_SIZE, ZIG_COMPILER_VER } = process.env;
   const now = new Date();
-  const MAX_ENTRIES = 50;
   
   const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
   const fmt = (v) => v.toString().padStart(2, '0');
@@ -16,20 +15,23 @@ module.exports = async ({ github, context, core }) => {
   const rawMsg = (COMMIT_MSG || 'No commit message').split('\n')[0].trim();
   const displayMsg = rawMsg.length > 42 ? `${rawMsg.substring(0, 42)}...` : rawMsg;
 
-  const zigInfo = (ZIG_SIZE && ZIG_SIZE !== 'N/A') ? 
-    `* 📦 **Zig CC Size:** \`${ZIG_SIZE}\`\n* ⚙️ **Zig CC:** \`${ZIG_COMPILER_VER || 'N/A'}\`\n` : '';
+  const isMainBranch = (branchName === 'main' || branchName === 'dev');
+  const clangLabel = isMainBranch ? `\`${COMPILER_VER || 'N/A'}\` | 📦 \`${SIZE || 'N/A'}\`` : `⏭️ skipped (feat branch)`;
+  const zigLabel = `\`${ZIG_COMPILER_VER || 'N/A'}\` | 📦 \`${ZIG_SIZE || 'N/A'}\``;
+  const summarySize = isMainBranch ? `${SIZE || 'N/A'} (Clang) / ${ZIG_SIZE || 'N/A'} (Zig)` : `${ZIG_SIZE || 'N/A'} (Zig)`;
 
   const newEntry = `
 <details>
-<summary>🟢 [<b><a href="${runUrl}">#${context.runNumber}</a></b>] &nbsp;&nbsp; ${ts} &nbsp;&nbsp; 📦 <b>Size:</b> ${SIZE}</summary>
+<summary>🟢 [<b><a href="${runUrl}">#${context.runNumber}</a></b>] &nbsp;&nbsp; ${ts} &nbsp;&nbsp; 📦 <b>Size:</b> ${summarySize}</summary>
 
 ### Branch: [${branchName}](${branchLink})
 
 * 📥 **[Download Build Artifact](${runUrl})**
 * 📝 **CI Version:** \`${VER}\`
 * 🔧 **ATPd Version (-v):** \`${RUNTIME_VER || 'N/A'}\`
-* ⚙️ **Clang:** \`${COMPILER_VER || 'N/A'}\` | 📦 \`${SIZE}\`
-${zigInfo}* 💬 **Message:** \`${displayMsg}\`
+* ⚙️ **Clang:** ${clangLabel}
+* ⚙️ **Zig CC:** ${zigLabel}
+* 💬 **Message:** \`${displayMsg}\`
 * 🔗 **Source:** Commit [${commitSha}](${commitLink})
 * 🕒 **Build Time:** \`${ts}\`
 
@@ -45,19 +47,7 @@ ${zigInfo}* 💬 **Message:** \`${displayMsg}\`
       issue_number: parseInt(TARGET_ISSUE)
     });
 
-    const currentBody = issue.body || '';
-    const marker = '---';
-    const parts = currentBody.split(marker);
-    const headerContent = parts[0];
-    const existingEntries = parts.slice(1).filter(e => e.trim().length > 0);
-    
-    let finalBody;
-    if (existingEntries.length >= MAX_ENTRIES) {
-      const keptEntries = existingEntries.slice(0, MAX_ENTRIES - 1);
-      finalBody = headerContent + marker + keptEntries.join(marker) + marker + newEntry;
-    } else {
-      finalBody = currentBody + marker + newEntry;
-    }
+    const finalBody = newEntry.trim() + "\n\n\n" + (issue.body || "");
 
     await github.rest.issues.update({
       owner: context.repo.owner,
@@ -66,9 +56,8 @@ ${zigInfo}* 💬 **Message:** \`${displayMsg}\`
       body: finalBody
     });
     
-    console.log(`Checkpoint updated: Build #${context.runNumber} for ${branchName} (entries: ${Math.min(existingEntries.length + 1, MAX_ENTRIES)})`);
+    console.log(`Checkpoint updated: Build #${context.runNumber} for ${branchName}`);
   } catch (e) {
     core.setFailed(`[UI Update Error]: ${e.message}`);
   }
 };
-
