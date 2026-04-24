@@ -26,6 +26,7 @@ concurrency:
 
 jobs:
   build-clang:
+    if: github.ref_name == 'main' || github.ref_name == 'dev' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       binary_size: ${{ steps.extract.outputs.binary_size }}
