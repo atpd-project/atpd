@@ -132,4 +132,13 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
 
 #define LOG_EXEC(cmd) LOG_DEBUG("[EXEC] %s", cmd)
 
+#define LOG_MODULE(level, module, fmt, ...) \
+    log_write(level, __FILE__, __LINE__, module, fmt, ##__VA_ARGS__)
+
+#define LOG_SERVICE(level, fmt, ...) LOG_MODULE(level, "[SERVICE]", fmt, ##__VA_ARGS__)
+#define LOG_API(level, fmt, ...)     LOG_MODULE(level, "[API]", fmt, ##__VA_ARGS__)
+#define LOG_ROUTE(level, fmt, ...)   LOG_MODULE(level, "[ROUTE]", fmt, ##__VA_ARGS__)
+#define LOG_NETLINK(level, fmt, ...) LOG_MODULE(level, "[NETLINK]", fmt, ##__VA_ARGS__)
+#define LOG_REACTOR(level, fmt, ...) LOG_MODULE(level, "[REACTOR]", fmt, ##__VA_ARGS__)
+
 #endif /* ATP_LOGGER_H */
