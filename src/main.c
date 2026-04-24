@@ -195,7 +195,6 @@ static void run_event_loop(void) {
     reactor_run(g_reactor);
     LOG_INFO("Reactor event loop stopped");
 
-    tproxy_cleanup_all(&g_config);
     reactor_destroy(g_reactor);
     g_reactor = NULL;
 }
@@ -366,7 +365,6 @@ static int do_start(atp_options_t *opts) {
         perf_mode_setup(&g_config);
     }
 
-    netlink_set_tproxy_ready();
     run_event_loop();
 
     service_stop_async(g_svc);

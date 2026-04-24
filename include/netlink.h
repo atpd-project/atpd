@@ -42,6 +42,4 @@ int nl_link_get_vpn_interface(char *iface, size_t size);
 
 void netlink_set_reactor(reactor_t *r);
 
-void netlink_set_tproxy_ready(void);
-
 #endif
