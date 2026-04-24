@@ -41,8 +41,8 @@ static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userda
     
     LOG_INFO("[NET] Debounce timer expired, executing network refresh");
     
-    tproxy_refresh_rules();
-    ip_rule_audit();
+    // TODO: tproxy_refresh_rules();
+    // TODO: ip_rule_audit();
     
     g_debounce_timer = NULL;
 }

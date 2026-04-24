@@ -9,6 +9,7 @@
 #define ATP_NETLINK_H
 
 #include "atp.h"
+#include "reactor.h"
 #include <stdint.h>
 #include <net/if.h>
 
