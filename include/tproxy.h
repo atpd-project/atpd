@@ -38,4 +38,7 @@ int tproxy_rule_insert(atp_config_t *cfg, int family, const char *table,
 int tproxy_atomic_switch(atp_config_t *cfg, int family, const char *table,
                          const char *hook, const char *chain0, const char *chain1);
 
+int tproxy_setup_ipv4_batch(atp_config_t *cfg);
+int tproxy_setup_ipv6_batch(atp_config_t *cfg);
+
 #endif

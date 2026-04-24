@@ -1,5 +1,8 @@
 FROM alpine:3.21 AS builder
 
+ARG BUILD_FLAGS="-Os -flto"
+ENV EXTRA_CFLAGS="${BUILD_FLAGS}"
+
 RUN apk add --no-cache \
     clang19 llvm19-static llvm19-dev make \
     musl-dev linux-headers git file bash dos2unix
@@ -7,8 +10,9 @@ RUN apk add --no-cache \
 WORKDIR /app
 COPY . .
 
-# 赋予执行权限并运行你的逻辑
-RUN chmod +x scripts/build.sh && ./scripts/build.sh
+RUN chmod +x scripts/build.sh && \
+    mkdir -p build/bin && \
+    ./scripts/build.sh
 
 FROM scratch AS bin
 COPY --from=builder /app/build/bin/atpd /

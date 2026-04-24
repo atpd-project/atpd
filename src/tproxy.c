@@ -7,7 +7,8 @@
 #include <string.h>
 #include <dirent.h>
 #include <unistd.h>
-
+/* P2: Cached TPROXY support check result */
+static int g_tproxy_supported = -1;
 #define IPTABLES_CMD "/system/bin/iptables"
 #define IP6TABLES_CMD "/system/bin/ip6tables"
 
@@ -16,7 +17,7 @@ static int exec_iptables(atp_config_t *cfg, const char *table, const char *cmd, 
         LOG_DEBUG("[DRY_RUN] iptables -t %s %s %s %s", table, cmd, chain, rule ? rule : "");
         return 0;
     }
-    
+
     char command[MAX_CMD_LEN];
     if (rule) {
         snprintf(command, sizeof(command), "%s -t %s %s %s %s 2>/dev/null",
@@ -25,8 +26,12 @@ static int exec_iptables(atp_config_t *cfg, const char *table, const char *cmd, 
         snprintf(command, sizeof(command), "%s -t %s %s %s 2>/dev/null",
                  IPTABLES_CMD, table, cmd, chain);
     }
-    
-    return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+
+    int ret = exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+    if (ret != 0) {
+        LOG_ERROR("iptables failed: -t %s %s %s %s (ret=%d)", table, cmd, chain, rule ? rule : "", ret);
+    }
+    return ret;
 }
 
 static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd, const char *chain, const char *rule) {
@@ -34,12 +39,12 @@ static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd,
         LOG_DEBUG("[DRY_RUN] ip6tables -t %s %s %s %s", table, cmd, chain, rule ? rule : "");
         return 0;
     }
-    
+
     if (access(IP6TABLES_CMD, X_OK) != 0) {
         LOG_DEBUG("ip6tables not found, skipping command");
         return -1;
     }
-    
+
     char command[MAX_CMD_LEN];
     if (rule) {
         snprintf(command, sizeof(command), "%s -t %s %s %s %s 2>/dev/null",
@@ -48,8 +53,12 @@ static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd,
         snprintf(command, sizeof(command), "%s -t %s %s %s 2>/dev/null",
                  IP6TABLES_CMD, table, cmd, chain);
     }
-    
-    return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+
+    int ret = exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+    if (ret != 0) {
+        LOG_ERROR("ip6tables failed: -t %s %s %s %s (ret=%d)", table, cmd, chain, rule ? rule : "", ret);
+    }
+    return ret;
 }
 
 static int chain_exists(atp_config_t *cfg, int family, const char *table, const char *chain) {
@@ -162,20 +171,30 @@ int tproxy_atomic_switch(atp_config_t *cfg, int family, const char *table,
 }
 
 int tproxy_support_check(atp_config_t *cfg) {
-    if (cfg->dry_run) return 1;
-    
+    /* Return cached result if already checked */
+    if (g_tproxy_supported >= 0) return g_tproxy_supported;
+
+    if (cfg->dry_run) {
+        g_tproxy_supported = 1;
+        return 1;
+    }
+
+    LOG_INFO("Running TPROXY support check (cached for lifetime)...");
+
     char cmd[MAX_CMD_LEN];
     snprintf(cmd, sizeof(cmd), "%s -t mangle -N ATP_TEST 2>/dev/null", IPTABLES_CMD);
     exec_cmd_simple(cmd, 5);
-    
+
     snprintf(cmd, sizeof(cmd), "%s -t mangle -A ATP_TEST -p tcp -j TPROXY --on-port 1536 --tproxy-mark 20 2>/dev/null",
              IPTABLES_CMD);
     int ret = exec_cmd_simple(cmd, 5);
-    
+
     exec_cmd_simple(IPTABLES_CMD " -t mangle -F ATP_TEST 2>/dev/null", 5);
     exec_cmd_simple(IPTABLES_CMD " -t mangle -X ATP_TEST 2>/dev/null", 5);
-    
-    return ret == 0;
+
+    g_tproxy_supported = (ret == 0) ? 1 : 0;
+    LOG_INFO("TPROXY support: %s", g_tproxy_supported ? "YES" : "NO");
+    return g_tproxy_supported;
 }
 static int tproxy_configure_rp_filter(atp_config_t *cfg) {
     DIR *dir;
@@ -315,8 +334,8 @@ static void tproxy_setup_chain_jumps(atp_config_t *cfg, int family, const char *
 static void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *suffix) {
     char pre_chain[64];
     char out_chain[64];
-    char hook_rule[64];
-    
+    char hook_rule[128];
+
     if (suffix && suffix[0]) {
         snprintf(pre_chain, sizeof(pre_chain), "ATP_PRE_0%s", suffix);
         snprintf(out_chain, sizeof(out_chain), "ATP_OUT_0%s", suffix);
@@ -324,12 +343,205 @@ static void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *s
         snprintf(pre_chain, sizeof(pre_chain), "ATP_PRE_0");
         snprintf(out_chain, sizeof(out_chain), "ATP_OUT_0");
     }
-    
+
+
+    snprintf(hook_rule, sizeof(hook_rule),
+             "-m owner --uid-owner %s --gid-owner %s -j RETURN",
+             cfg->core_user, cfg->core_group);
+    tproxy_rule_insert(cfg, family, "mangle", "OUTPUT", 1, hook_rule);
+
     snprintf(hook_rule, sizeof(hook_rule), "-j %s", pre_chain);
     tproxy_rule_insert(cfg, family, "mangle", "PREROUTING", 1, hook_rule);
-    
+
     snprintf(hook_rule, sizeof(hook_rule), "-j %s", out_chain);
     tproxy_rule_insert(cfg, family, "mangle", "OUTPUT", 1, hook_rule);
+}
+
+/* ========== P1: Batch Rule Injection ========== */
+
+static int tproxy_restore_batch(const char *rules, int family) {
+    const char *cmd = (family == 4) ? "iptables-restore -n" : "ip6tables-restore -n";
+    FILE *fp = popen(cmd, "w");
+    if (!fp) {
+        LOG_ERROR("Failed to popen %s", cmd);
+        return -1;
+    }
+    fwrite(rules, 1, strlen(rules), fp);
+    int ret = pclose(fp);
+    if (ret != 0) {
+        LOG_ERROR("%s batch restore failed (ret=%d)", cmd, ret);
+    }
+    return ret;
+}
+
+int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
+    LOG_INFO("Setting up IPv4 TPROXY chains (batch mode)");
+
+    tproxy_configure_rp_filter(cfg);
+
+    char rules[8192];
+    int offset = 0;
+
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "*mangle\n"
+        ":PREROUTING ACCEPT [0:0]\n"
+        ":OUTPUT ACCEPT [0:0]\n"
+        ":ATP_PRE_0 - [0:0]\n"
+        ":ATP_PRE_1 - [0:0]\n"
+        ":ATP_OUT_0 - [0:0]\n"
+        ":ATP_OUT_1 - [0:0]\n"
+        ":ATP_DIVERT_0 - [0:0]\n"
+        ":ATP_DIVERT_1 - [0:0]\n"
+        ":ATP_PROXY_IP_0 - [0:0]\n"
+        ":ATP_PROXY_IP_1 - [0:0]\n"
+        ":ATP_BYPASS_IP_0 - [0:0]\n"
+        ":ATP_BYPASS_IP_1 - [0:0]\n"
+        ":ATP_PROXY_IFACE_0 - [0:0]\n"
+        ":ATP_PROXY_IFACE_1 - [0:0]\n"
+        ":ATP_BYPASS_IFACE_0 - [0:0]\n"
+        ":ATP_BYPASS_IFACE_1 - [0:0]\n"
+        ":ATP_DNS_PRE_0 - [0:0]\n"
+        ":ATP_DNS_PRE_1 - [0:0]\n"
+        ":ATP_DNS_OUT_0 - [0:0]\n"
+        ":ATP_DNS_OUT_1 - [0:0]\n"
+        ":ATP_APP_0 - [0:0]\n"
+        ":ATP_APP_1 - [0:0]\n"
+        ":ATP_MAC_0 - [0:0]\n"
+        ":ATP_MAC_1 - [0:0]\n"
+    );
+
+    /* Divert chain rules */
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A ATP_DIVERT_0 -j MARK --set-mark %d\n"
+        "-A ATP_DIVERT_0 -j ACCEPT\n",
+        cfg->mark_value
+    );
+
+    /* Socket match rule */
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A ATP_PRE_0 -p tcp -m socket --transparent -j ATP_DIVERT_0\n"
+    );
+
+    /* Chain jumps - PRE */
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A ATP_PRE_0 -j ATP_PROXY_IP_0\n"
+        "-A ATP_PRE_0 -j ATP_BYPASS_IP_0\n"
+        "-A ATP_PRE_0 -j ATP_PROXY_IFACE_0\n"
+        "-A ATP_PRE_0 -j ATP_MAC_0\n"
+        "-A ATP_PRE_0 -j ATP_DNS_PRE_0\n"
+    );
+
+    /* Chain jumps - OUT */
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A ATP_OUT_0 -j ATP_PROXY_IP_0\n"
+        "-A ATP_OUT_0 -j ATP_BYPASS_IP_0\n"
+        "-A ATP_OUT_0 -j ATP_BYPASS_IFACE_0\n"
+        "-A ATP_OUT_0 -j ATP_APP_0\n"
+        "-A ATP_OUT_0 -j ATP_DNS_OUT_0\n"
+    );
+
+    /* P0: UID bypass */
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A OUTPUT -m owner --uid-owner %s --gid-owner %s -j RETURN\n",
+        cfg->core_user, cfg->core_group
+    );
+
+    /* Hook main chains */
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A PREROUTING -j ATP_PRE_0\n"
+        "-A OUTPUT -j ATP_OUT_0\n"
+        "COMMIT\n"
+    );
+
+    if (offset >= (int)sizeof(rules)) {
+        LOG_ERROR("Batch rules too large (%d bytes), falling back to sequential mode", offset);
+        return tproxy_setup_ipv4(cfg);
+    }
+
+    LOG_DEBUG("Batch rules: %d bytes", offset);
+    return tproxy_restore_batch(rules, 4);
+}
+
+int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
+    if (!cfg->proxy_ipv6) {
+        LOG_DEBUG("IPv6 proxy disabled, skipping");
+        return 0;
+    }
+
+    if (access(IP6TABLES_CMD, X_OK) != 0) {
+        LOG_WARN("ip6tables not found, IPv6 setup skipped");
+        cfg->proxy_ipv6 = 0;
+        return 0;
+    }
+
+    LOG_INFO("Setting up IPv6 TPROXY chains (batch mode)");
+
+    char rules[8192];
+    int offset = 0;
+
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "*mangle\n"
+        ":PREROUTING ACCEPT [0:0]\n"
+        ":OUTPUT ACCEPT [0:0]\n"
+        ":ATP6_PRE_0 - [0:0]\n"
+        ":ATP6_PRE_1 - [0:0]\n"
+        ":ATP6_OUT_0 - [0:0]\n"
+        ":ATP6_OUT_1 - [0:0]\n"
+        ":ATP6_DIVERT_0 - [0:0]\n"
+        ":ATP6_DIVERT_1 - [0:0]\n"
+        ":ATP6_PROXY_IP_0 - [0:0]\n"
+        ":ATP6_PROXY_IP_1 - [0:0]\n"
+        ":ATP6_BYPASS_IP_0 - [0:0]\n"
+        ":ATP6_BYPASS_IP_1 - [0:0]\n"
+        ":ATP6_PROXY_IFACE_0 - [0:0]\n"
+        ":ATP6_PROXY_IFACE_1 - [0:0]\n"
+        ":ATP6_BYPASS_IFACE_0 - [0:0]\n"
+        ":ATP6_BYPASS_IFACE_1 - [0:0]\n"
+        ":ATP6_DNS_PRE_0 - [0:0]\n"
+        ":ATP6_DNS_PRE_1 - [0:0]\n"
+        ":ATP6_DNS_OUT_0 - [0:0]\n"
+        ":ATP6_DNS_OUT_1 - [0:0]\n"
+        ":ATP6_APP_0 - [0:0]\n"
+        ":ATP6_APP_1 - [0:0]\n"
+        ":ATP6_MAC_0 - [0:0]\n"
+        ":ATP6_MAC_1 - [0:0]\n"
+    );
+
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A ATP6_DIVERT_0 -j MARK --set-mark %d\n"
+        "-A ATP6_DIVERT_0 -j ACCEPT\n",
+        cfg->mark_value6
+    );
+
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A ATP6_PRE_0 -p tcp -m socket --transparent -j ATP6_DIVERT_0\n"
+        "-A ATP6_PRE_0 -j ATP6_PROXY_IP_0\n"
+        "-A ATP6_PRE_0 -j ATP6_BYPASS_IP_0\n"
+        "-A ATP6_PRE_0 -j ATP6_PROXY_IFACE_0\n"
+        "-A ATP6_PRE_0 -j ATP6_MAC_0\n"
+        "-A ATP6_PRE_0 -j ATP6_DNS_PRE_0\n"
+        "-A ATP6_OUT_0 -j ATP6_PROXY_IP_0\n"
+        "-A ATP6_OUT_0 -j ATP6_BYPASS_IP_0\n"
+        "-A ATP6_OUT_0 -j ATP6_BYPASS_IFACE_0\n"
+        "-A ATP6_OUT_0 -j ATP6_APP_0\n"
+        "-A ATP6_OUT_0 -j ATP6_DNS_OUT_0\n"
+    );
+
+    offset += snprintf(rules + offset, sizeof(rules) - offset,
+        "-A OUTPUT -m owner --uid-owner %s --gid-owner %s -j RETURN\n"
+        "-A PREROUTING -j ATP6_PRE_0\n"
+        "-A OUTPUT -j ATP6_OUT_0\n"
+        "COMMIT\n",
+        cfg->core_user, cfg->core_group
+    );
+
+    if (offset >= (int)sizeof(rules)) {
+        LOG_ERROR("Batch rules too large (%d bytes), falling back to sequential mode", offset);
+        return tproxy_setup_ipv6(cfg);
+    }
+
+    LOG_DEBUG("Batch rules: %d bytes", offset);
+    return tproxy_restore_batch(rules, 6);
 }
 
 int tproxy_setup_ipv4(atp_config_t *cfg) {

@@ -27,6 +27,7 @@
 #include "ipv6_manager.h"
 #include "inet_diag.h"
 #include "reactor.h"
+#include "singbox_api.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,9 +51,25 @@ static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload = 0;
 static volatile sig_atomic_t g_show_status = 0;
 
+/* ========== P0: Rate Limiting for API Sync ========== */
+
+typedef struct {
+    char last_name[256];
+    int last_delay;
+    bool first_run;
+} proxy_log_throttle_t;
+
+static proxy_log_throttle_t g_proxy_throttle = { .first_run = true };
+
 static void on_signal(reactor_t *r, int sig, void *userdata) {
     (void)r;
     (void)userdata;
+
+    if (sig == SIGCHLD) {
+        service_sigchld_cb(r, sig, g_svc);
+        return;
+    }
+
     if (sig == SIGHUP) {
         g_reload = 1;
         LOG_INFO("Reload signal received");
@@ -87,13 +104,57 @@ static void on_idle(reactor_t *r, void *userdata) {
     }
 }
 
-static void service_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+static void process_proxy_list(proxy_list_t *list) {
+    if (!list || list->count == 0) {
+        goto cleanup;
+    }
+
+    for (int i = 0; i < list->count; ++i) {
+        proxy_info_t *info = &list->proxies[i];
+
+        if (info->type && strcmp(info->type, "URLTest") == 0 && info->delay > 0) {
+            bool changed = g_proxy_throttle.first_run ||
+                          strcmp(g_proxy_throttle.last_name, info->name) != 0 ||
+                          g_proxy_throttle.last_delay != info->delay;
+
+            if (changed) {
+                LOG_INFO("URLTest Node: %s (delay: %dms)", info->name, info->delay);
+                strncpy(g_proxy_throttle.last_name, info->name, sizeof(g_proxy_throttle.last_name) - 1);
+                g_proxy_throttle.last_delay = info->delay;
+                g_proxy_throttle.first_run = false;
+            }
+        }
+    }
+
+cleanup:
+    proxy_list_free(list);
+}
+
+static void on_proxies_response(int http_code, const char *body, void *userdata) {
+    (void)userdata;
+
+    if (http_code != 200 || !body) return;
+
+    char *mutable_body = strdup(body);
+    if (!mutable_body) return;
+
+    proxy_list_t list;
+    int count = singbox_parse_proxies(mutable_body, strlen(mutable_body), &list);
+    
+    if (count >= 0) {
+        process_proxy_list(&list);
+    } else {
+        proxy_list_free(&list);
+    }
+
+    free(mutable_body);
+}
+
+static void proxies_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     (void)r;
     (void)timer;
     (void)userdata;
-    if (g_svc) {
-        service_monitor(g_svc);
-    }
+    api_get_proxies_async(&g_api_ctx, on_proxies_response, NULL);
 }
 
 static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
@@ -109,20 +170,26 @@ static void run_event_loop(void) {
         return;
     }
 
+    netlink_set_reactor(g_reactor);
+
+    api_start_with_reactor(&g_api_ctx, g_reactor);
+    
+    reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
+    service_start_async(g_svc);
+    
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
-
+    
     reactor_watch_signal(g_reactor, SIGINT);
     reactor_watch_signal(g_reactor, SIGTERM);
     reactor_watch_signal(g_reactor, SIGHUP);
     reactor_watch_signal(g_reactor, SIGUSR1);
-
+    reactor_watch_signal(g_reactor, SIGCHLD);
+    
     int nl_fd = netlink_get_fd();
     if (nl_fd >= 0) {
         reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_io_cb, NULL);
     }
-
-    reactor_add_timer(g_reactor, 500, 500, service_timer_cb, NULL);
 
     LOG_INFO("Reactor event loop started");
     reactor_run(g_reactor);
@@ -289,12 +356,6 @@ static int do_start(atp_options_t *opts) {
         return 1;
     }
 
-    if (service_start(g_svc) < 0) {
-        LOG_ERROR("Failed to start service");
-        free(g_svc);
-        unlink(pp);
-        return 1;
-    }
 
     if (g_config.app_proxy_enable) {
         app_filter_setup(&g_config);
@@ -306,7 +367,7 @@ static int do_start(atp_options_t *opts) {
 
     run_event_loop();
 
-    service_stop(g_svc);
+    service_stop_async(g_svc);
     free(g_svc);
     g_svc = NULL;
 
@@ -417,7 +478,7 @@ static int do_reload(atp_options_t *opts) {
 
 static int do_version(atp_options_t *opts) {
     (void)opts;
-    printf("atpd v%s\n", ATP_VERSION_STRING);
+    printf("atpd %s\n", ATP_VERSION_STRING);
     return 0;
 }
 
