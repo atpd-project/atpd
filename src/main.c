@@ -365,6 +365,7 @@ static int do_start(atp_options_t *opts) {
         perf_mode_setup(&g_config);
     }
 
+    netlink_set_tproxy_ready();
     run_event_loop();
 
     service_stop_async(g_svc);
