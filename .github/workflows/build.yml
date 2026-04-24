@@ -126,6 +126,7 @@ jobs:
           zig cc -target aarch64-linux \
             -s -Oz -static \
             -Iinclude \
+          -D_GNU_SOURCE \
             -DATP_DEFAULT_DIR="/data/adb/atp" \
             -o atpd-zig \
             $(find src -name "*.c" ! -path "src/cjson/*" ! -path "src/yyjson/*" ! -name "epoll.c") \
