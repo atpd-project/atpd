@@ -31,7 +31,6 @@ jobs:
     if: |
       github.ref_name == 'main' ||
       github.ref_name == 'dev' ||
-      github.ref_name == 'staging' ||
       startsWith(github.ref_name, 'feat') ||
       startsWith(github.ref_name, 'test') ||
       startsWith(github.ref, 'refs/tags/v')
