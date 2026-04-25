@@ -122,6 +122,7 @@ jobs:
     outputs:
       zig_binary_size: ${{ steps.zig-extract.outputs.zig_binary_size }}
       zig_compiler_ver: ${{ steps.zig-extract.outputs.zig_compiler_ver }}
+      atpd_version_string: ${{ steps.zig-extract.outputs.atpd_version_string }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -167,6 +168,8 @@ jobs:
           echo "zig_binary_size=$ZIG_SIZE" >> $GITHUB_OUTPUT
           ZIG_VER=$(zig version 2>/dev/null || echo "0.11.0")
           echo "zig_compiler_ver=$ZIG_VER" >> $GITHUB_OUTPUT
+          ATPD_VER=$(./atpd-zig -v 2>/dev/null | head -1 || echo "N/A")
+          echo "atpd_version_string=$ATPD_VER" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
@@ -206,6 +209,7 @@ jobs:
           RUNTIME_VER: ${{ needs.build-clang.outputs.runtime_ver || 'N/A' }}
           COMPILER_VER: ${{ needs.build-clang.outputs.compiler_ver || 'N/A' }}
           ZIG_COMPILER_VER: ${{ needs.build-zig.outputs.zig_compiler_ver || 'N/A' }}
+          ATPD_VERSION_STRING: ${{ needs.build-zig.outputs.atpd_version_string || 'N/A' }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |

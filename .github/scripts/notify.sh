@@ -53,21 +53,18 @@ notify_telegram() {
 }
 
 notify_issue() {
-    # Read version from version.h
     if [ -f include/version.h ]; then
         VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' include/version.h || echo "unknown")
     else
         VER="${ATP_VERSION:-unknown}"
     fi
 
-    # Read sizes
     CLANG="${CLANG_SIZE:-N/A}"
     ZIG="${ZIG_SIZE:-N/A}"
     COMPILER="${COMPILER_VER:-N/A}"
-    RUNTIME="${RUNTIME_VER:-N/A}"
+    RUNTIME="${ATPD_VERSION_STRING:-atpd ${VER}}"
     ZIG_COMPILER="${ZIG_COMPILER_VER:-N/A}"
 
-    # Update issue via gh CLI
     ISSUE_BODY=$(gh issue view 6 --json body --jq '.body')
     RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
     BRANCH="${GITHUB_REF_NAME:-unknown}"
@@ -113,7 +110,7 @@ notify_issue() {
 ${ISSUE_BODY}"
 
     echo "$FINAL_BODY" | gh issue edit 6 --body-file -
-    echo "  Issue #6: updated (ver: $VER)"
+    echo "  Issue #6: updated (ver: $VER, runtime: $RUNTIME)"
 }
 
 echo "=== ATP Notification: $CHANNEL ==="
