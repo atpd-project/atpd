@@ -15,6 +15,7 @@ on:
       - 'src/**'
       - 'include/**'
       - 'scripts/**'
+      - '.github/scripts/**'
       - 'Makefile'
       - 'Dockerfile'
       - '.github/workflows/build.yml'
