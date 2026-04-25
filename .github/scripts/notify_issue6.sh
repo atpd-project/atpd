@@ -13,8 +13,9 @@ SIZE=$(echo "$ISSUE_BODY" | grep -oP '(?<=📦 <b>Size:</b> )[^<]*' | head -1)
 export TZ='Asia/Shanghai'
 TIMESTAMP=$(date +"%y%m%d %H:%M")
 
+# MarkdownV2 转义（注意：不转义 ]，避免嵌套链接解析错误）
 escape_md() {
-    echo "$1" | sed 's/\([_*[\]()~`>#+\-=|{}.!]\)/\\\1/g'
+    echo "$1" | sed 's/\([_*[()~`>#+\-=|{}.!]\)/\\\1/g'
 }
 
 SIZE_ESC=$(escape_md "${SIZE:-N/A}")
@@ -35,6 +36,7 @@ MESSAGE+="🔗 [View Issue \#6](https://github\.com/${REPO_ESC}/issues/6)"
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     -d "chat_id=${CHAT_ID}" \
     -d "text=${MESSAGE}" \
-    -d "parse_mode=MarkdownV2"
+    -d "parse_mode=MarkdownV2" \
+    -d "disable_web_page_preview=true"
 
 echo "Notification sent: Build #${RUN_NUM} at ${TIMESTAMP}"
