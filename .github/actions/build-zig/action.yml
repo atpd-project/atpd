@@ -1,0 +1,88 @@
+name: Build ATPd with Zig
+description: Checkout, generate version, build with Zig CC, extract metadata, upload artifact
+
+inputs:
+  zig-version:
+    description: 'Zig version'
+    required: false
+    default: 'master'
+  artifact-suffix:
+    description: 'Suffix for artifact name (e.g. -sha)'
+    required: false
+    default: ''
+  retention-days:
+    description: 'Artifact retention days'
+    required: false
+    default: '7'
+
+outputs:
+  zig_binary_size:
+    description: 'Size of zig binary'
+    value: ${{ steps.zig-extract.outputs.zig_binary_size }}
+  zig_compiler_ver:
+    description: 'Zig compiler version'
+    value: ${{ steps.zig-extract.outputs.zig_compiler_ver }}
+  atpd_version_string:
+    description: 'atpd -v output'
+    value: ${{ steps.zig-extract.outputs.atpd_version_string }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Generate Version
+      shell: bash
+      run: |
+        chmod +x scripts/gen_version.sh
+        ./scripts/gen_version.sh
+        cat include/version.h
+
+    - name: Setup Zig
+      uses: mlugg/setup-zig@v2
+      with:
+        version: ${{ inputs.zig-version }}
+
+    - name: Build with Zig CC
+      shell: bash
+      run: |
+        zig cc -target aarch64-linux \
+          -s -Oz -flto -ffunction-sections -fdata-sections -static \
+          -Iinclude \
+          -D_GNU_SOURCE \
+          -DATP_DEFAULT_DIR="/data/adb/atp" \
+          -o atpd-zig \
+          $(find src -name "*.c" ! -path "src/cjson/*" ! -path "src/yyjson/*" ! -name "epoll.c") \
+          src/yyjson/yyjson.c \
+          -Wl,--gc-sections -Wl,--strip-all
+
+    - name: Verify Binary
+      shell: bash
+      run: |
+        if [ ! -s "./atpd-zig" ]; then
+          echo "::error::Zig binary not found or is empty"
+          exit 1
+        fi
+        file ./atpd-zig
+        ls -lh ./atpd-zig
+
+    - name: Extract Metadata
+      id: zig-extract
+      shell: bash
+      run: |
+        ZIG_SIZE=$(du -h ./atpd-zig | cut -f1)
+        echo "zig_binary_size=$ZIG_SIZE" >> $GITHUB_OUTPUT
+        ZIG_VER=$(zig version 2>/dev/null || echo "0.11.0")
+        echo "zig_compiler_ver=$ZIG_VER" >> $GITHUB_OUTPUT
+        ATPD_VER=$(./atpd-zig -v 2>/dev/null | head -1 || echo "N/A")
+        echo "atpd_version_string=$ATPD_VER" >> $GITHUB_OUTPUT
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: atpd-zig${{ inputs.artifact-suffix }}
+        path: ./atpd-zig
+        retention-days: ${{ inputs.retention-days }}

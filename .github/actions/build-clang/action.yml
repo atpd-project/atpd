@@ -1,0 +1,103 @@
+name: Build ATPd with Clang (Docker)
+description: Checkout, generate version, build with Clang in Docker, extract metadata, upload artifact
+
+inputs:
+  build-type:
+    description: 'debug or release'
+    required: false
+    default: 'release'
+  artifact-suffix:
+    description: 'Suffix for artifact name'
+    required: false
+    default: ''
+  retention-days:
+    description: 'Artifact retention days'
+    required: false
+    default: '7'
+
+outputs:
+  binary_size:
+    description: 'Size of clang binary'
+    value: ${{ steps.extract.outputs.binary_size }}
+  atp_version:
+    description: 'ATP_VERSION_STRING'
+    value: ${{ steps.extract.outputs.atp_version }}
+  runtime_ver:
+    description: 'atpd -v output'
+    value: ${{ steps.build.outputs.runtime_ver }}
+  compiler_ver:
+    description: 'Clang version'
+    value: ${{ steps.build.outputs.compiler_ver }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Generate Version
+      shell: bash
+      run: |
+        chmod +x scripts/gen_version.sh
+        ./scripts/gen_version.sh
+        cat include/version.h
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v4
+
+    - name: Set up Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Determine Build Flags
+      id: build_flags
+      shell: bash
+      run: |
+        if [ "${{ inputs.build-type }}" = "debug" ]; then
+          echo "flags=-O0 -g -fsanitize=address -DATP_DEBUG" >> $GITHUB_OUTPUT
+        else
+          echo "flags=-Os -flto -fstack-protector-strong -D_FORTIFY_SOURCE=3 -ffunction-sections -fdata-sections" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Build Docker Image
+      id: build
+      shell: bash
+      run: |
+        docker buildx build --platform linux/arm64 \
+          --build-arg BUILD_FLAGS="${{ steps.build_flags.outputs.flags }}" \
+          --target builder -t atp-builder --load .
+        container_id=$(docker create --platform linux/arm64 atp-builder)
+        docker cp $container_id:/app/build/bin/atpd ./atpd-clang
+        docker rm -v $container_id
+        echo "status=success" >> $GITHUB_OUTPUT
+        RUNTIME_VER=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>/dev/null | head -1 || echo "N/A")
+        echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
+        COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
+        echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
+
+    - name: Verify Binary
+      shell: bash
+      run: |
+        if [ ! -s "./atpd-clang" ]; then
+          echo "::error::Binary not found or is empty"
+          exit 1
+        fi
+        file ./atpd-clang
+        ls -lh ./atpd-clang
+
+    - name: Extract Metadata
+      id: extract
+      shell: bash
+      run: |
+        SIZE=$(du -h ./atpd-clang | cut -f1)
+        echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
+        VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' include/version.h || echo "v0")
+        echo "atp_version=$VER" >> $GITHUB_OUTPUT
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v5
+      with:
+        name: atpd-clang${{ inputs.artifact-suffix }}
+        path: ./atpd-clang
+        retention-days: ${{ inputs.retention-days }}
