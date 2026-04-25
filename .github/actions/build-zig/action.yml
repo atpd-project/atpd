@@ -41,6 +41,16 @@ runs:
       with:
         version: ${{ inputs.zig-version }}
 
+    - name: Cache Zig
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/zig
+          .zig-cache
+        key: zig-${{ runner.os }}-${{ inputs.zig-version }}-${{ hashFiles('.github/actions/build-zig/action.yml') }}
+        restore-keys: |
+          zig-${{ runner.os }}-${{ inputs.zig-version }}-
+
     - name: Build with Zig CC
       shell: bash
       run: |
