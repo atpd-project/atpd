@@ -16,6 +16,7 @@ on:
       - 'include/**'
       - 'scripts/**'
       - '.github/scripts/**'
+      - '.github/actions/**'
       - 'Makefile'
       - 'Dockerfile'
       - '.github/workflows/build.yml'
@@ -37,146 +38,40 @@ jobs:
       startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
-      binary_size: ${{ steps.extract.outputs.binary_size }}
-      atp_version: ${{ steps.extract.outputs.atp_version }}
-      runtime_ver: ${{ steps.build.outputs.runtime_ver }}
-      compiler_ver: ${{ steps.build.outputs.compiler_ver }}
-      build_type: ${{ steps.build_type.outputs.type }}
+      binary_size: ${{ steps.clang-build.outputs.binary_size }}
+      atp_version: ${{ steps.clang-build.outputs.atp_version }}
+      runtime_ver: ${{ steps.clang-build.outputs.runtime_ver }}
+      compiler_ver: ${{ steps.clang-build.outputs.compiler_ver }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Generate Version
-        run: |
-          chmod +x scripts/gen_version.sh
-          ./scripts/gen_version.sh
-          cat include/version.h
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
-
       - name: Determine Build Type
         id: build_type
         run: |
           BRANCH="${{ github.ref_name }}"
           if [[ "$BRANCH" == "staging" ]] || [[ "$BRANCH" == feat/* ]] || [[ "$BRANCH" == test/* ]]; then
             echo "type=debug" >> $GITHUB_OUTPUT
-            echo "flags=-O0 -g -fsanitize=address -DATP_DEBUG" >> $GITHUB_OUTPUT
           else
             echo "type=release" >> $GITHUB_OUTPUT
-            echo "flags=-Os -flto -fstack-protector-strong -D_FORTIFY_SOURCE=3 -ffunction-sections -fdata-sections" >> $GITHUB_OUTPUT
           fi
-          echo "Build type: ${{ steps.build_type.outputs.type }}"
 
-      - name: Build Docker Image
-        id: build
-        run: |
-          docker buildx build --platform linux/arm64 \
-            --build-arg BUILD_FLAGS="${{ steps.build_type.outputs.flags }}" \
-            --target builder -t atp-builder --load .
-          
-          container_id=$(docker create --platform linux/arm64 atp-builder)
-          docker cp $container_id:/app/build/bin/atpd ./atpd
-          docker rm -v $container_id
-          
-          echo "status=success" >> $GITHUB_OUTPUT
-          
-          RUNTIME_VER=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>/dev/null | head -1 || echo "N/A")
-          echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
-          
-          COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
-          echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
-
-      - name: Verify Binary
-        run: |
-          if [ ! -s "./atpd" ]; then
-            echo "::error::Binary not found or is empty"
-            exit 1
-          fi
-          file ./atpd
-          ls -lh ./atpd
-
-      - name: Extract Metadata
-        id: extract
-        run: |
-          SIZE=$(du -h ./atpd | cut -f1)
-          echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
-          
-          VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' include/version.h || echo "v0")
-          echo "atp_version=$VER" >> $GITHUB_OUTPUT
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v5
+      - name: Build with Clang
+        id: clang-build
+        uses: ./.github/actions/build-clang
         with:
-          name: atpd-clang-${{ github.sha }}
-          path: ./atpd
-          retention-days: 7
+          build-type: ${{ steps.build_type.outputs.type }}
+          artifact-suffix: '-${{ github.sha }}'
 
   build-zig:
     runs-on: ubuntu-latest
     outputs:
-      zig_binary_size: ${{ steps.zig-extract.outputs.zig_binary_size }}
-      zig_compiler_ver: ${{ steps.zig-extract.outputs.zig_compiler_ver }}
-      atpd_version_string: ${{ steps.zig-extract.outputs.atpd_version_string }}
+      zig_binary_size: ${{ steps.zig-build.outputs.zig_binary_size }}
+      zig_compiler_ver: ${{ steps.zig-build.outputs.zig_compiler_ver }}
+      atpd_version_string: ${{ steps.zig-build.outputs.atpd_version_string }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
+      - name: Build with Zig
+        id: zig-build
+        uses: ./.github/actions/build-zig
         with:
-          fetch-depth: 0
-
-      - name: Generate Version
-        run: |
-          chmod +x scripts/gen_version.sh
-          ./scripts/gen_version.sh
-          cat include/version.h
-
-      - name: Setup Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: master
-
-      - name: Build with Zig CC
-        run: |
-          zig cc -target aarch64-linux \
-            -s -Oz -flto -ffunction-sections -fdata-sections -static \
-            -Iinclude \
-            -D_GNU_SOURCE \
-            -DATP_DEFAULT_DIR="/data/adb/atp" \
-            -o atpd-zig \
-            $(find src -name "*.c" ! -path "src/cjson/*" ! -path "src/yyjson/*" ! -name "epoll.c") \
-            src/yyjson/yyjson.c \
-            -Wl,--gc-sections -Wl,--strip-all
-
-      - name: Verify Binary
-        run: |
-          if [ ! -s "./atpd-zig" ]; then
-            echo "::error::Zig binary not found or is empty"
-            exit 1
-          fi
-          file ./atpd-zig
-          ls -lh ./atpd-zig
-
-      - name: Extract Metadata
-        id: zig-extract
-        run: |
-          ZIG_SIZE=$(du -h ./atpd-zig | cut -f1)
-          echo "zig_binary_size=$ZIG_SIZE" >> $GITHUB_OUTPUT
-          ZIG_VER=$(zig version 2>/dev/null || echo "0.11.0")
-          echo "zig_compiler_ver=$ZIG_VER" >> $GITHUB_OUTPUT
-          ATPD_VER=$(./atpd-zig -v 2>/dev/null | head -1 || echo "N/A")
-          echo "atpd_version_string=$ATPD_VER" >> $GITHUB_OUTPUT
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v5
-        with:
-          name: atpd-zig-${{ github.sha }}
-          path: ./atpd-zig
-          retention-days: 7
+          artifact-suffix: '-${{ github.sha }}'
 
   update-status:
     name: Update Checkpoint
@@ -190,13 +85,8 @@ jobs:
       issues: write
       contents: read
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
       - name: Generate Version
-        run: |
-          chmod +x scripts/gen_version.sh
-          ./scripts/gen_version.sh
+        uses: ./.github/actions/gen-version
 
       - name: Notify All
         env:
