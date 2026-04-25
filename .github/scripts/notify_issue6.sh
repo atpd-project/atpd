@@ -14,7 +14,24 @@ export TZ='Asia/Shanghai'
 TIMESTAMP=$(date +"%y%m%d %H:%M")
 
 escape_md() {
-    echo "$1" | sed 's/\([_*()~`>#+\-=|{}.!]\)/\\\1/g'
+    local str="$1"
+    str="${str//_/\\_}"
+    str="${str//\*/\\*}"
+    str="${str//(/\\\(}"
+    str="${str//)/\\\)}"
+    str="${str//~/\\~}"
+    str="${str//\`/\\\`}"
+    str="${str//>/\\>}"
+    str="${str//#/\\#}"
+    str="${str//+/\\+}"
+    str="${str//-/\\-}"
+    str="${str//=/\\=}"
+    str="${str//|/\\|}"
+    str="${str//\{/\\\{}"
+    str="${str//\}/\\\}}"
+    str="${str//./\\.}"
+    str="${str//!/\\!}"
+    echo "$str"
 }
 
 SIZE_ESC=$(escape_md "${SIZE:-N/A}")
