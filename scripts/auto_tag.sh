@@ -21,6 +21,8 @@ else
 fi
 
 echo "Next beta tag: $NEXT_BETA"
+git config user.email "ci@atpd.project"
+git config user.name "ATP CI"
 git tag -a "$NEXT_BETA" -m "$NEXT_BETA"
 git push origin "$NEXT_BETA"
 echo "Tag pushed: $NEXT_BETA"
