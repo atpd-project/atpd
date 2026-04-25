@@ -33,7 +33,6 @@ jobs:
     if: |
       github.ref_name == 'main' ||
       github.ref_name == 'dev' ||
-      startsWith(github.ref_name, 'test') ||
       startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
@@ -44,11 +43,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Get Short SHA
+        id: vars
+        run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
       - name: Determine Build Type
         id: build_type
         run: |
-          BRANCH="${{ github.ref_name }}"
-          if [[ "$BRANCH" == "staging" ]] || [[ "$BRANCH" == feat/* ]] || [[ "$BRANCH" == test/* ]]; then
+          if [[ "${{ github.ref_name }}" == "staging" ]] || [[ "${{ github.ref_name }}" == feat/* ]] || [[ "${{ github.ref_name }}" == test/* ]]; then
             echo "type=debug" >> $GITHUB_OUTPUT
           else
             echo "type=release" >> $GITHUB_OUTPUT
@@ -59,7 +61,7 @@ jobs:
         uses: ./.github/actions/build-clang
         with:
           build-type: ${{ steps.build_type.outputs.type }}
-          artifact-suffix: '-${{ github.sha }}'
+          artifact-suffix: '-${{ github.ref_name }}-${{ steps.vars.outputs.short_sha }}'
 
   build-zig:
     runs-on: ubuntu-latest
@@ -70,11 +72,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Get Short SHA
+        id: vars
+        run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
       - name: Build with Zig
         id: zig-build
         uses: ./.github/actions/build-zig
         with:
-          artifact-suffix: '-${{ github.sha }}'
+          artifact-suffix: '-${{ github.ref_name }}-${{ steps.vars.outputs.short_sha }}'
 
   update-status:
     name: Update Checkpoint
