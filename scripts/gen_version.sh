@@ -5,24 +5,43 @@
 VERSION_FILE="include/version.h"
 BUILD_DATE=$(date +"%Y-%m-%d %H:%M:%S")
 
-# Get latest v* tag (ignore kernel tags like 2026.04.22-r1)
-TAG=$(git tag -l "v*" --sort=-v:refname 2>/dev/null | head -1)
+HEAD_COMMIT=$(git rev-parse HEAD)
+
+# Get latest v* tag that points to HEAD (lightweight or annotated)
+TAG=""
+for t in $(git tag -l "v*" --sort=-v:refname); do
+    TAG_COMMIT=$(git rev-parse "$t^{commit}" 2>/dev/null)
+    if [ "$TAG_COMMIT" = "$HEAD_COMMIT" ]; then
+        TAG="$t"
+        break
+    fi
+done
+
+# Fallback: get latest v* tag (for non-tagged commits)
+if [ -z "$TAG" ]; then
+    TAG=$(git tag -l "v*" --sort=-v:refname | head -1)
+fi
 if [ -z "$TAG" ]; then
     TAG="v0"
 fi
 
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
-# Check if we are exactly on a tag
-if git describe --tags --exact-match --match="v*" >/dev/null 2>&1; then
-    VERSION="$TAG"
-else
-    VERSION="${TAG}.${COMMIT}"
-fi
+# If HEAD is exactly on a tag, use tag name only
+HEAD_COMMIT_FULL=$(git rev-parse HEAD)
+TAG_ON_HEAD=""
+for t in $(git tag -l "v*"); do
+    t_commit=$(git rev-parse "$t^{commit}" 2>/dev/null)
+    if [ "$t_commit" = "$HEAD_COMMIT_FULL" ]; then
+        TAG_ON_HEAD="$t"
+        break
+    fi
+done
 
-# Check for dirty working directory
-if ! git diff-index --quiet HEAD -- 2>/dev/null; then
-    VERSION="${VERSION}-dirty"
+if [ -n "$TAG_ON_HEAD" ]; then
+    VERSION="$TAG_ON_HEAD"
+else
+    VERSION="${TAG}-${COMMIT}"
 fi
 
 cat > "$VERSION_FILE" << HEADER
