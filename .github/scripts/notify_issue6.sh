@@ -19,6 +19,7 @@ escape_md() {
 
 SIZE_ESC=$(escape_md "${SIZE:-N/A}")
 ZIG_SIZE_ESC=$(escape_md "${ZIG_SIZE}")
+REPO_ESC=$(escape_md "${REPO}")
 
 MESSAGE="📋 *Latest ATPd Build*%0A"
 MESSAGE+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
@@ -29,7 +30,7 @@ else
     MESSAGE+="📦 Clang: ${SIZE_ESC}%0A"
 fi
 
-MESSAGE+="🔗 [View Issue \#6](https://github\.com/${REPO}/issues/6)"
+MESSAGE+="🔗 [View Issue \#6](https://github\.com/${REPO_ESC}/issues/6)"
 
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     -d "chat_id=${CHAT_ID}" \
