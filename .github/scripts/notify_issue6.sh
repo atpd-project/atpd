@@ -13,14 +13,12 @@ SIZE=$(echo "$ISSUE_BODY" | grep -oP '(?<=📦 <b>Size:</b> )[^<]*' | head -1)
 export TZ='Asia/Shanghai'
 TIMESTAMP=$(date +"%y%m%d %H:%M")
 
-# MarkdownV2 转义（注意：不转义 ]，避免嵌套链接解析错误）
 escape_md() {
-    echo "$1" | sed 's/\([_*[()~`>#+\-=|{}.!]\)/\\\1/g'
+    echo "$1" | sed 's/\([_*()~`>#+\-=|{}.!]\)/\\\1/g'
 }
 
 SIZE_ESC=$(escape_md "${SIZE:-N/A}")
 ZIG_SIZE_ESC=$(escape_md "${ZIG_SIZE}")
-REPO_ESC=$(escape_md "${REPO}")
 
 MESSAGE="📋 *Latest ATPd Build*%0A"
 MESSAGE+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
@@ -31,7 +29,7 @@ else
     MESSAGE+="📦 Clang: ${SIZE_ESC}%0A"
 fi
 
-MESSAGE+="🔗 [View Issue \#6](https://github\.com/${REPO_ESC}/issues/6)"
+MESSAGE+="🔗 https://github\.com/${REPO//./\\.}/issues/6"
 
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     -d "chat_id=${CHAT_ID}" \
