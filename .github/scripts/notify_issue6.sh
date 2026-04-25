@@ -46,6 +46,7 @@ else
     MESSAGE+="📦 Clang: ${SIZE_ESC}%0A"
 fi
 
+REPO_ESC=$(escape_md "$REPO")
 MESSAGE+="🔗 https://github\.com/${REPO//./\\.}/issues/6"
 
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
