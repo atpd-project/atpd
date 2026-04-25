@@ -1,11 +1,5 @@
 name: Generate Version
-description: Checkout code and generate version.h from git tags
-
-inputs:
-  fetch-depth:
-    description: 'git fetch depth'
-    required: false
-    default: '0'
+description: Generate version.h from git tags (requires prior checkout)
 
 outputs:
   version_string:
@@ -15,11 +9,6 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-      with:
-        fetch-depth: ${{ inputs.fetch-depth }}
-
     - name: Generate Version
       shell: bash
       run: |

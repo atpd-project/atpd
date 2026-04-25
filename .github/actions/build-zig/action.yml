@@ -1,5 +1,5 @@
 name: Build ATPd with Zig
-description: Checkout, generate version, build with Zig CC, extract metadata, upload artifact
+description: Build with Zig CC, extract metadata, upload artifact (requires prior checkout)
 
 inputs:
   zig-version:
@@ -7,7 +7,7 @@ inputs:
     required: false
     default: 'master'
   artifact-suffix:
-    description: 'Suffix for artifact name (e.g. -sha)'
+    description: 'Suffix for artifact name'
     required: false
     default: ''
   retention-days:
@@ -29,11 +29,6 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-      with:
-        fetch-depth: 0
-
     - name: Generate Version
       shell: bash
       run: |

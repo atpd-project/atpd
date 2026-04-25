@@ -43,6 +43,8 @@ jobs:
       runtime_ver: ${{ steps.clang-build.outputs.runtime_ver }}
       compiler_ver: ${{ steps.clang-build.outputs.compiler_ver }}
     steps:
+      - uses: actions/checkout@v6
+
       - name: Determine Build Type
         id: build_type
         run: |
@@ -67,6 +69,8 @@ jobs:
       zig_compiler_ver: ${{ steps.zig-build.outputs.zig_compiler_ver }}
       atpd_version_string: ${{ steps.zig-build.outputs.atpd_version_string }}
     steps:
+      - uses: actions/checkout@v6
+
       - name: Build with Zig
         id: zig-build
         uses: ./.github/actions/build-zig
@@ -85,6 +89,8 @@ jobs:
       issues: write
       contents: read
     steps:
+      - uses: actions/checkout@v6
+
       - name: Generate Version
         uses: ./.github/actions/gen-version
 
