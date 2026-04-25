@@ -107,7 +107,6 @@ jobs:
           SIZE=$(du -h ./atpd | cut -f1)
           echo "binary_size=$SIZE" >> $GITHUB_OUTPUT
           
-          # Read version from generated header
           VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' include/version.h || echo "v0")
           echo "atp_version=$VER" >> $GITHUB_OUTPUT
 
@@ -176,7 +175,6 @@ jobs:
           path: ./atpd-zig
           retention-days: 7
 
-
   update-status:
     name: Update Checkpoint
     needs: [build-clang, build-zig]
@@ -191,6 +189,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Generate Version
+        run: |
+          chmod +x scripts/gen_version.sh
+          ./scripts/gen_version.sh
 
       - name: Notify All
         env:
@@ -224,5 +227,7 @@ jobs:
 
       - name: Auto Increment Beta Tag
         run: |
+          git config user.email "ci@atpd.project"
+          git config user.name "ATP CI"
           chmod +x scripts/auto_tag.sh
           ./scripts/auto_tag.sh
