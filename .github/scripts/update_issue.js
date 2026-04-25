@@ -1,11 +1,32 @@
 module.exports = async ({ github, context, core }) => {
-  const { SIZE, VER, COMMIT_MSG, TARGET_ISSUE, RUNTIME_VER, COMPILER_VER, ZIG_SIZE, ZIG_COMPILER_VER } = process.env;
+  const { SIZE, COMMIT_MSG, TARGET_ISSUE, COMPILER_VER, ZIG_SIZE, ZIG_COMPILER_VER } = process.env;
+  const fs = require('fs');
+  const path = require('path');
+
+  // Read version from generated version.h
+  let VER = process.env.ATP_VERSION || 'N/A';
+  let RUNTIME_VER = process.env.RUNTIME_VER || 'N/A';
+  try {
+    const versionFile = path.join(process.env.GITHUB_WORKSPACE || '.', 'include', 'version.h');
+    if (fs.existsSync(versionFile)) {
+      const content = fs.readFileSync(versionFile, 'utf8');
+      const match = content.match(/ATP_VERSION_STRING\s+"([^"]+)"/);
+      if (match) {
+        VER = match[1];
+        RUNTIME_VER = `atpd ${match[1]}`;
+      }
+    }
+  } catch (e) {
+    console.log('Could not read version.h, using env vars:', e.message);
+  }
+
+  // ... 后面不变（从 const now = new Date() 开始）
   const now = new Date();
-  
+
   const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
   const fmt = (v) => v.toString().padStart(2, '0');
   const ts = `${localTime.getFullYear().toString().slice(-2)}${fmt(localTime.getMonth()+1)}${fmt(localTime.getDate())} ${fmt(localTime.getHours())}:${fmt(localTime.getMinutes())}`;
-  
+
   const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
   const commitSha = context.sha.substring(0, 7);
   const commitLink = `https://github.com/${context.repo.owner}/${context.repo.repo}/commit/${context.sha}`;
@@ -28,7 +49,7 @@ module.exports = async ({ github, context, core }) => {
 
 * 📥 **[Download Build Artifact](${runUrl})**
 * 📝 **CI Version:** \`${VER}\`
-* 🔧 **ATPd Version (-v):** \`${RUNTIME_VER || 'N/A'}\`
+* 🔧 **ATPd Version (-v):** \`${RUNTIME_VER}\`
 * ⚙️ **Clang:** ${clangLabel}
 * ⚙️ **Zig CC:** ${zigLabel}
 * 💬 **Message:** \`${displayMsg}\`
@@ -55,8 +76,8 @@ module.exports = async ({ github, context, core }) => {
       issue_number: parseInt(TARGET_ISSUE),
       body: finalBody
     });
-    
-    console.log(`Checkpoint updated: Build #${context.runNumber} for ${branchName}`);
+
+    console.log(`Checkpoint updated: Build #${context.runNumber} for ${branchName} | Version: ${VER}`);
   } catch (e) {
     core.setFailed(`[UI Update Error]: ${e.message}`);
   }
