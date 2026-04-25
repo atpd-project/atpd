@@ -205,6 +205,9 @@ jobs:
           ATP_VERSION: ${{ needs.build-clang.outputs.atp_version || 'N/A' }}
           RUNTIME_VER: ${{ needs.build-clang.outputs.runtime_ver || 'N/A' }}
           COMPILER_VER: ${{ needs.build-clang.outputs.compiler_ver || 'N/A' }}
+          ZIG_COMPILER_VER: ${{ needs.build-zig.outputs.zig_compiler_ver || 'N/A' }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           chmod +x .github/scripts/notify.sh
           .github/scripts/notify.sh all
