@@ -20,19 +20,22 @@ static const char *copyright =
     "License: GPL v3\n";
 
 static const struct option long_options[] = {
-    {"config",     required_argument, 0, 'c'},
-    {"foreground", no_argument,       0, 'f'},
-    {"daemon",     no_argument,       0, 'd'},
-    {"verbose",    no_argument,       0, 'v'},
-    {"quiet",      no_argument,       0, 'q'},
-    {"force",      no_argument,       0, 'F'},
-    {"no-color",   no_argument,       0, 'n'},
-    {"help",       no_argument,       0, 'h'},
-    {"version",    no_argument,       0, 'V'},
+    {"config",    required_argument, 0, 'c'},
+    {"pid",       required_argument, 0, 'p'},
+    {"foreground",no_argument,       0, 'F'},
+    {"daemon",    no_argument,       0, 'd'},
+    {"verbose",   no_argument,       0, 'v'},
+    {"quiet",     no_argument,       0, 'q'},
+    {"force",     no_argument,       0, 'f'},
+    {"test",      no_argument,       0, 't'},
+    {"no-color",  no_argument,       0, 'n'},
+    {"help",      no_argument,       0, 'h'},
+    {"version",   no_argument,       0, 'V'},
     {0, 0, 0, 0}
 };
 
-static const char *short_options = "c:fdvqFtnhV";
+static const char *short_options = "c:p:fdvqFtnhV";
+
 
 void print_usage(const char *progname) {
     const char *base = strrchr(progname, '/');
@@ -100,6 +103,10 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
             case 'd':
                 opts->daemon = 1;
                 opts->foreground = 0;
+                break;
+	    case 'p':
+                strncpy(opts->pid_file, optarg, sizeof(opts->pid_file) - 1);
+                opts->pid_file[sizeof(opts->pid_file) - 1] = '\0';
                 break;
             case 'v':
                 opts->verbose = 1;
