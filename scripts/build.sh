@@ -38,7 +38,7 @@ $CC -Wall -Wextra -Os -flto -D_GNU_SOURCE \
     -L$LIBEV_LIB \
     -static \
     -Wl,--gc-sections -Wl,--strip-all \
-    -lpthread
+    -lpthread 
 
 # 6. 裁剪二进制文件
 echo "Stripping..."
