@@ -191,6 +191,7 @@ void log_write(log_level_t level, const char *file, int line, const char *func, 
     pthread_mutex_unlock(&g_log_config.mutex);
 
     log_to_syslog(level, safe_msg);
+#endif
 }
 
 /* ========== Public API ========== */
