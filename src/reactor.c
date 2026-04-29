@@ -258,7 +258,7 @@ int reactor_run(reactor_t *r) {
         
         process_expired_timers(r, priv);
         
-        int timeout_ms = 1000;
+        int timeout_ms = -1;
         int nfds = epoll_wait(r->epoll_fd, events, REACTOR_MAX_EVENTS, timeout_ms);
         
         if (nfds < 0) {
