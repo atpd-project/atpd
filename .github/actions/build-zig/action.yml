@@ -51,6 +51,8 @@ runs:
         restore-keys: |
           zig-${{ runner.os }}-${{ inputs.zig-version }}-
 
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v4
     - name: Build with Zig CC
       shell: bash
       run: |
@@ -64,6 +66,10 @@ runs:
           src/yyjson/yyjson.c \
           -Wl,--gc-sections -Wl,--strip-all
 
+    - name: Install QEMU
+      shell: bash
+      run: |
+        sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
     - name: Verify Binary
       shell: bash
       run: |
@@ -82,7 +88,7 @@ runs:
         echo "zig_binary_size=$ZIG_SIZE" >> $GITHUB_OUTPUT
         ZIG_VER=$(zig version 2>/dev/null || echo "0.11.0")
         echo "zig_compiler_ver=$ZIG_VER" >> $GITHUB_OUTPUT
-        ATPD_VER=$(./atpd-zig -v 2>/dev/null | head -1 || echo "N/A")
+        ATPD_VER=$(qemu-aarch64-static ./atpd-zig -v 2>/dev/null | head -1 || echo "N/A")
         echo "atpd_version_string=$ATPD_VER" >> $GITHUB_OUTPUT
 
     - name: Upload Artifact
