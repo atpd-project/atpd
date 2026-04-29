@@ -33,6 +33,7 @@ typedef struct reactor_timer_s reactor_timer_t;
 
 /* ========== Callback Types ========== */
 typedef void (*reactor_io_cb)(reactor_t *r, int fd, uint32_t events, void *userdata);
+typedef void (*reactor_free_cb)(void *userdata);
 typedef void (*reactor_timer_cb)(reactor_t *r, reactor_timer_t *timer, void *userdata);
 typedef void (*reactor_signal_cb)(reactor_t *r, int signo, void *userdata);
 typedef void (*reactor_idle_cb)(reactor_t *r, void *userdata);
@@ -79,6 +80,8 @@ void reactor_stop(reactor_t *r);
 
 /* ========== I/O Handlers ========== */
 int reactor_add_fd(reactor_t *r, int fd, uint32_t events, reactor_io_cb cb, void *userdata);
+int reactor_add_fd_ex(reactor_t *r, int fd, uint32_t events,
+                      reactor_io_cb cb, reactor_free_cb free_cb, void *userdata);
 int reactor_modify_fd(reactor_t *r, int fd, uint32_t events);
 int reactor_remove_fd(reactor_t *r, int fd);
 
