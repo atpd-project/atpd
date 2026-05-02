@@ -295,9 +295,6 @@ int netlink_get_active_vpn(char *output, size_t size) {
     pthread_mutex_unlock(&g_nl_mutex);
 
     for (int i = 0; i < ctx.count; i++) {
-                i, links[i].name, links[i].flags,
-                !!(links[i].flags & IFF_UP),
-                is_proxy_interface(links[i].name));
     }
     for (int i = 0; i < ctx.count; i++) {
         if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
@@ -389,9 +386,6 @@ int nl_vpn_detect(void) {
 
     // Iterate through all interfaces and check for VPN characteristics
     for (int i = 0; i < ctx.count; i++) {
-                i, links[i].name, links[i].flags,
-                !!(links[i].flags & IFF_UP),
-                is_proxy_interface(links[i].name));
     }
     for (int i = 0; i < ctx.count; i++) {
         // Check if interface is UP
@@ -448,9 +442,6 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
 
     // Find first active VPN interface
     for (int i = 0; i < ctx.count; i++) {
-                i, links[i].name, links[i].flags,
-                !!(links[i].flags & IFF_UP),
-                is_proxy_interface(links[i].name));
     }
     for (int i = 0; i < ctx.count; i++) {
         if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
