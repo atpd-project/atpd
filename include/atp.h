@@ -24,23 +24,11 @@
 #include <pthread.h>
 
 #define ATP_NAME            "atpd"
-#define ATP_BUILD_DATE      __DATE__
 #define ATP_BUILD_TIME      __TIME__
 
 #define ATP_VERSION_MAJOR   1
 #define ATP_VERSION_MINOR   0
 #define ATP_VERSION_PATCH   0
-#define ATP_VERSION_STRING  "v1.0.0-STABLE"
-
-/* Security hardening */
-#ifndef _FORTIFY_SOURCE
-#define _FORTIFY_SOURCE 3
-#endif
-
-#define ATP_VERSION_MAJOR   1
-#define ATP_VERSION_MINOR   0
-#define ATP_VERSION_PATCH   0
-#define ATP_VERSION_STRING  "v1.0.0-STABLE"
 
 /* Security hardening */
 #ifndef _FORTIFY_SOURCE
@@ -107,7 +95,7 @@ typedef struct {
     
     int tcp_port;
     int udp_port;
-    int redirect_tcp_port;      /* REDIRECT port for ENHANCE mode */
+    int redirect_tcp_port;
     proxy_mode_t proxy_mode;
     int performance_mode;
     int proxy_tcp;
@@ -167,17 +155,14 @@ typedef struct {
     int restart_delay;
     char clash_secret[128];
     
-    /* API configuration */
     int api_port;
     char api_host[64];
     
     int use_tproxy;
     char current_vpn_iface[32];
     
-    /* UI settings */
-    int ui_emoji_enabled;   /* 1 = use emoji, 0 = use ASCII labels */
+    int ui_emoji_enabled;
     
-    /* Thread safety */
     pthread_mutex_t config_mutex;
 } atp_config_t;
 
@@ -196,5 +181,3 @@ void atp_show_status(void);
 #endif
 
 #include "version.h"
-
-/* Epoll event loop */
