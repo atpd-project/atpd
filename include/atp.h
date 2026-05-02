@@ -24,27 +24,17 @@
 #include <pthread.h>
 
 #define ATP_NAME            "atpd"
-#define ATP_BUILD_DATE      __DATE__
 #define ATP_BUILD_TIME      __TIME__
 
 #define ATP_VERSION_MAJOR   1
 #define ATP_VERSION_MINOR   0
 #define ATP_VERSION_PATCH   0
-#define ATP_VERSION_STRING  "v1.0.0-STABLE"
 
 /* Security hardening */
 #ifndef _FORTIFY_SOURCE
 #define _FORTIFY_SOURCE 3
 #endif
 
-#define ATP_VERSION_MAJOR   1
-#define ATP_VERSION_MINOR   0
-#define ATP_VERSION_PATCH   0
-#define ATP_VERSION_STRING  "v1.0.0-STABLE"
-
-/* Security hardening */
-#ifndef _FORTIFY_SOURCE
-#define _FORTIFY_SOURCE 3
 #endif
 
 #define ATP_DEFAULT_DIR     "/data/adb/atp"
