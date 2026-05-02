@@ -103,6 +103,32 @@ struct nl_parse_ctx {
     int count;
 };
 
+#ifndef IFLA_XFRM_IF_ID
+#define IFLA_XFRM_IF_ID    41
+#endif
+
+static struct rtattr* atpd_find_rta_nested(struct rtattr *rta, int len, unsigned short type) {
+    while (RTA_OK(rta, len)) {
+        if (rta->rta_type == type) return rta;
+        rta = RTA_NEXT(rta, len);
+    }
+    return NULL;
+}
+
+static int detect_xfrm_interface(struct nlmsghdr *h) {
+    struct ifinfomsg *ifi = NLMSG_DATA(h);
+    struct rtattr *rta = IFLA_RTA(ifi);
+    int len = IFLA_PAYLOAD(h);
+
+    struct rtattr *li = atpd_find_rta_nested(rta, len, IFLA_LINKINFO);
+    if (!li) return 0;
+
+    struct rtattr *id = atpd_find_rta_nested(RTA_DATA(li), RTA_PAYLOAD(li), IFLA_INFO_DATA);
+    if (!id) return 0;
+
+    struct rtattr *xfrm_id = atpd_find_rta_nested(RTA_DATA(id), RTA_PAYLOAD(id), IFLA_XFRM_IF_ID);
+    return (xfrm_id != NULL);
+}
 static int is_proxy_interface(const char *ifname) {
     if (!ifname) return 0;
     
@@ -129,6 +155,7 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
     struct nl_link_info *info = &pctx->links[pctx->count];
     info->index = ifi->ifi_index;
     info->flags = ifi->ifi_flags;
+    if (detect_xfrm_interface(h)) { info->flags |= IFF_UP; }
 
     for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
         if (rta->rta_type == IFLA_IFNAME) {
@@ -267,9 +294,7 @@ int netlink_get_active_vpn(char *output, size_t size) {
     }
     pthread_mutex_unlock(&g_nl_mutex);
 
-    fprintf(stderr, "DEBUG netlink_get_active_vpn: ctx.count=%d\n", ctx.count);
     for (int i = 0; i < ctx.count; i++) {
-        fprintf(stderr, "DEBUG: [%d] name=%s flags=0x%x UP=%d proxy=%d\n",
                 i, links[i].name, links[i].flags,
                 !!(links[i].flags & IFF_UP),
                 is_proxy_interface(links[i].name));
@@ -363,9 +388,7 @@ int nl_vpn_detect(void) {
     pthread_mutex_unlock(&g_nl_mutex);
 
     // Iterate through all interfaces and check for VPN characteristics
-    fprintf(stderr, "DEBUG netlink_get_active_vpn: ctx.count=%d\n", ctx.count);
     for (int i = 0; i < ctx.count; i++) {
-        fprintf(stderr, "DEBUG: [%d] name=%s flags=0x%x UP=%d proxy=%d\n",
                 i, links[i].name, links[i].flags,
                 !!(links[i].flags & IFF_UP),
                 is_proxy_interface(links[i].name));
@@ -424,9 +447,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     pthread_mutex_unlock(&g_nl_mutex);
 
     // Find first active VPN interface
-    fprintf(stderr, "DEBUG netlink_get_active_vpn: ctx.count=%d\n", ctx.count);
     for (int i = 0; i < ctx.count; i++) {
-        fprintf(stderr, "DEBUG: [%d] name=%s flags=0x%x UP=%d proxy=%d\n",
                 i, links[i].name, links[i].flags,
                 !!(links[i].flags & IFF_UP),
                 is_proxy_interface(links[i].name));
