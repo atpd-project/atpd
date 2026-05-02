@@ -29,6 +29,7 @@ typedef enum {
 typedef struct {
     atp_command_t command;
     char config_file[PATH_MAX];
+    char pid_file[PATH_MAX];        /* -p/--pid PID file path */
     int foreground;
     int daemon;
     int verbose;

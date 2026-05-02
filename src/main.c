@@ -199,7 +199,6 @@ static void run_event_loop(void) {
     reactor_destroy(g_reactor);
     g_reactor = NULL;
 }
-
 static void daemonize(void) {
     pid_t pid = fork();
     if (pid < 0) exit(EXIT_FAILURE);
@@ -278,22 +277,44 @@ static int confirm_operation(const char *op, int force) {
     return (res[0] == 'y' || res[0] == 'Y');
 }
 
+/* ========== PID File Path Resolution ========== */
+
+static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
+    if (opts->pid_file[0]) {
+        /* -p/--pid from command line takes highest priority */
+        snprintf(pp, size, "%s", opts->pid_file);
+    } else if (g_config.data_dir[0]) {
+        /* config.data_dir second priority */
+        snprintf(pp, size, "%s/%s", g_config.data_dir, ATP_PID_FILE);
+    } else {
+        /* Fallback: current directory */
+        snprintf(pp, size, "./atpd.pid");
+    }
+}
+
 static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
+    /* 1. 确定配置文件路径 */
     if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
         fprintf(stderr, "Config file not found\n");
         return 1;
     }
 
-    config_set_defaults(&g_config);
-    snprintf(g_config.data_dir, sizeof(g_config.data_dir), "%s", ATP_DEFAULT_DIR);
+    /* 2. 先加载配置（config_load 可能影响 PID 路径） */
+    g_config.foreground = opts->foreground;
+    g_config.verbose = opts->verbose;
+    config_load(cp, &g_config);
 
-    if (snprintf(pp, sizeof(pp), "%s/%s", g_config.data_dir, ATP_PID_FILE) >= (int)sizeof(pp)) {
-        return 1;
-    }
+    logger_init();
+    log_set_level(opts->log_level);
+    if (opts->no_color) log_set_color(0);
 
+    /* 3. 确定 PID 文件路径（-p > config.data_dir > ./atpd.pid） */
+    resolve_pid_path(opts, pp, sizeof(pp));
+
+    /* 4. 检查已有 PID */
     if (file_exists(pp)) {
         FILE *f = fopen(pp, "r");
         if (f) {
@@ -308,23 +329,18 @@ static int do_start(atp_options_t *opts) {
         unlink(pp);
     }
 
+    /* 5. 守护进程化 */
     if (!opts->foreground && opts->daemon) {
         daemonize();
     }
 
+    /* 6. 写入 PID 文件 */
     if (write_pid_file(pp) < 0) {
         fprintf(stderr, "Failed to write PID file\n");
         return 1;
     }
 
-    g_config.foreground = opts->foreground;
-    g_config.verbose = opts->verbose;
-    config_load(cp, &g_config);
-
-    logger_init();
-    log_set_level(opts->log_level);
-    if (opts->no_color) log_set_color(0);
-
+    /* 7. 后续初始化 */
     if (netlink_init(NULL, &g_config) < 0) {
         LOG_ERROR("Failed to initialize netlink");
         unlink(pp);
@@ -357,7 +373,6 @@ static int do_start(atp_options_t *opts) {
         return 1;
     }
 
-
     if (g_config.app_proxy_enable) {
         app_filter_setup(&g_config);
     }
@@ -384,7 +399,13 @@ static int do_start(atp_options_t *opts) {
 
 static int do_stop(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
-    snprintf(pp, sizeof(pp), "%s/%s", ATP_DEFAULT_DIR, ATP_PID_FILE);
+
+    /* Use same resolution logic for consistency */
+    if (opts->pid_file[0]) {
+        snprintf(pp, sizeof(pp), "%s", opts->pid_file);
+    } else {
+        snprintf(pp, sizeof(pp), "./atpd.pid");
+    }
 
     FILE *f = fopen(pp, "r");
     if (!f) {
@@ -445,15 +466,20 @@ static int do_status(atp_options_t *opts) {
     service_init(&svc, &g_config);
     api_init(&g_api_ctx, &g_config);
 
+    netlink_init(NULL, &g_config);
     status_show(&g_config, &svc, &g_api_ctx);
 
     return 0;
 }
 
 static int do_reload(atp_options_t *opts) {
-    (void)opts;
     char pp[SAFE_PATH_MAX];
-    snprintf(pp, sizeof(pp), "%s/%s", ATP_DEFAULT_DIR, ATP_PID_FILE);
+
+    if (opts->pid_file[0]) {
+        snprintf(pp, sizeof(pp), "%s", opts->pid_file);
+    } else {
+        snprintf(pp, sizeof(pp), "./atpd.pid");
+    }
 
     FILE *f = fopen(pp, "r");
     if (!f) {
@@ -477,7 +503,6 @@ static int do_reload(atp_options_t *opts) {
         return 1;
     }
 }
-
 static int do_version(atp_options_t *opts) {
     (void)opts;
     printf("atpd %s\n", ATP_VERSION_STRING);
@@ -487,6 +512,11 @@ static int do_version(atp_options_t *opts) {
 static int do_help(atp_options_t *opts) {
     (void)opts;
     printf("Usage: atpd [start|stop|status|reload|version]\n");
+    printf("\nOptions:\n");
+    printf("  -c, --config FILE   Specify configuration file\n");
+    printf("  -p, --pid FILE      Specify PID file path\n");
+    printf("  -f, --force         Skip confirmation prompts\n");
+    printf("  -v, --version       Print version and exit\n");
     return 0;
 }
 
@@ -510,15 +540,18 @@ int main(int argc, char *argv[]) {
 
     static struct option long_options[] = {
         {"config",  required_argument, 0, 'c'},
+        {"pid",     required_argument, 0, 'p'},
         {"force",   no_argument,       0, 'f'},
         {"version", no_argument,       0, 'v'},
         {0, 0, 0, 0}
     };
 
     int c;
-    while ((c = getopt_long(argc, argv, "c:fv", long_options, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "c:p:fv", long_options, NULL)) != -1) {
         if (c == 'c') {
             snprintf(opts.config_file, sizeof(opts.config_file), "%s", optarg);
+        } else if (c == 'p') {
+            snprintf(opts.pid_file, sizeof(opts.pid_file), "%s", optarg);
         } else if (c == 'f') {
             opts.force = 1;
         } else if (c == 'v') {
@@ -539,4 +572,3 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Unknown command: %s\n", argv[optind]);
     return 1;
 }
-// CI trigger: Wed Apr 22 11:03:45 AM CST 2026

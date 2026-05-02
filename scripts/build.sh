@@ -32,13 +32,12 @@ echo "Compiling..."
 $CC -Wall -Wextra -Os -flto -D_GNU_SOURCE \
     -Iinclude \
     -I$LIBEV_INCLUDE \
-    -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
     -o build/bin/atpd \
     $SRC_FILES \
     -L$LIBEV_LIB \
     -static \
     -Wl,--gc-sections -Wl,--strip-all \
-    -lpthread
+    -lpthread 
 
 # 6. 裁剪二进制文件
 echo "Stripping..."

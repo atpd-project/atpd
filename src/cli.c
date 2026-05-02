@@ -1,4 +1,3 @@
-extern const char* atp_get_version(void);
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
@@ -14,25 +13,22 @@ extern const char* atp_get_version(void);
 #include <string.h>
 #include <stdlib.h>
 
-static const char *copyright =
-    ATP_NAME " v" ATP_VERSION_STRING "\n"
-    "Copyright (C) 2024-2025 ATP Project\n"
-    "License: GPL v3\n";
-
 static const struct option long_options[] = {
-    {"config",     required_argument, 0, 'c'},
-    {"foreground", no_argument,       0, 'f'},
-    {"daemon",     no_argument,       0, 'd'},
-    {"verbose",    no_argument,       0, 'v'},
-    {"quiet",      no_argument,       0, 'q'},
-    {"force",      no_argument,       0, 'F'},
-    {"no-color",   no_argument,       0, 'n'},
-    {"help",       no_argument,       0, 'h'},
-    {"version",    no_argument,       0, 'V'},
+    {"config",    required_argument, 0, 'c'},
+    {"pid",       required_argument, 0, 'p'},
+    {"foreground",no_argument,       0, 'f'},
+    {"daemon",    no_argument,       0, 'd'},
+    {"verbose",   no_argument,       0, 'V'},
+    {"quiet",     no_argument,       0, 'q'},
+    {"force",     no_argument,       0, 'F'},
+    {"test",      no_argument,       0, 't'},
+    {"no-color",  no_argument,       0, 'n'},
+    {"help",      no_argument,       0, 'h'},
+    {"version",   no_argument,       0, 'v'},
     {0, 0, 0, 0}
 };
 
-static const char *short_options = "c:fdvqFtnhV";
+static const char *short_options = "c:p:fdqFtnhv";
 
 void print_usage(const char *progname) {
     const char *base = strrchr(progname, '/');
@@ -41,38 +37,55 @@ void print_usage(const char *progname) {
     printf(ATP_NAME " v" ATP_VERSION_STRING "\n\n");
     printf("Usage: %s [options] command\n\n", base);
     printf("Options:\n");
-    printf("  -c, --config FILE   Specify configuration file\n");
-    printf("  -t                  Test configuration and exit (same as 'check')\n");
-    printf("  -d, --daemon        Run as daemon (default for start)\n");
-    printf("  -f, --foreground    Run in foreground (do not daemonize)\n");
-    printf("  -v, --verbose       Verbose output (debug level)\n");
-    printf("  -q, --quiet         Quiet output (errors only)\n");
-    printf("  --force             Skip confirmation for dangerous operations\n");
-    printf("  --no-color          Disable colored output\n");
-    printf("  -h, --help          Show this help\n");
-    printf("  -V, --version       Show version\n");
+    printf("  -c, --config FILE     Specify configuration file\n");
+    printf("  -p, --pid FILE        Specify PID file path\n");
+    printf("  -d, --daemon          Run as daemon (default for start)\n");
+    printf("  -f, --foreground      Run in foreground (do not daemonize)\n");
+    printf("  --verbose             Verbose output (debug level)\n");
+    printf("  -q, --quiet           Quiet output (errors only)\n");
+    printf("  --force               Skip confirmation for dangerous operations\n");
+    printf("  -t                    Test configuration and exit\n");
+    printf("  -n, --no-color        Disable colored output\n");
+    printf("  -h, --help            Show this help\n");
+    printf("  -v, --version         Print version and exit\n");
     printf("\nCommands:\n");
-    printf("  start               Start daemon\n");
-    printf("  stop                Stop daemon\n");
-    printf("  restart             Restart daemon\n");
-    printf("  status              Show status\n");
-    printf("  reload              Reload configuration\n");
-    printf("  check               Check configuration syntax and validity\n");
-    printf("  update-geoip        Update GeoIP database\n");
+    printf("  start                 Start daemon\n");
+    printf("  stop                  Stop daemon\n");
+    printf("  restart               Restart daemon\n");
+    printf("  status                Show daemon status and statistics\n");
+    printf("  reload                Reload configuration without restart\n");
+    printf("  check                 Validate configuration and exit\n");
+    printf("  update-geoip          Update GeoIP database\n");
+    printf("  version               Print version information\n");
+    printf("  help                  Show this help message\n");
     printf("\nExamples:\n");
-    printf("  %s status                       # Show status\n", base);
-    printf("  %s -c atp.conf start            # Start with custom config\n", base);
-    printf("  %s -f -v start                  # Start in foreground with verbose log\n", base);
-    printf("  %s -t                           # Test configuration\n", base);
-    printf("  %s stop --force                 # Stop without confirmation\n", base);
+    printf("  %s status                            # Show daemon status\n", base);
+    printf("  %s -c atp.conf start                 # Start with custom config\n", base);
+    printf("  %s -f --verbose start                # Foreground with debug log\n", base);
+    printf("  %s -c atp.conf -p atpd.pid start     # Custom config and PID file\n", base);
+    printf("  %s -t                                # Test configuration\n", base);
+    printf("  %s stop --force                      # Force stop without prompt\n", base);
 }
 
 void print_version(void) {
-    printf("atpd version %s\n", atp_get_version());
+    printf("atpd %s\n", ATP_VERSION_STRING);
 }
 
 void print_help(const char *progname) {
     print_usage(progname);
+}
+
+/* Find the most similar command for suggestions */
+static const char* suggest_command(const char *cmd) {
+    const char *commands[] = {"start", "stop", "restart", "status",
+                              "reload", "check", "update-geoip",
+                              "version", "help", NULL};
+    for (int i = 0; commands[i]; i++) {
+        if (strncmp(cmd, commands[i], strlen(cmd)) == 0) {
+            return commands[i];
+        }
+    }
+    return NULL;
 }
 
 int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
@@ -93,6 +106,10 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
                 strncpy(opts->config_file, optarg, sizeof(opts->config_file) - 1);
                 opts->config_file[sizeof(opts->config_file) - 1] = '\0';
                 break;
+            case 'p':
+                strncpy(opts->pid_file, optarg, sizeof(opts->pid_file) - 1);
+                opts->pid_file[sizeof(opts->pid_file) - 1] = '\0';
+                break;
             case 'f':
                 opts->foreground = 1;
                 opts->daemon = 0;
@@ -101,7 +118,7 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
                 opts->daemon = 1;
                 opts->foreground = 0;
                 break;
-            case 'v':
+            case 'V':
                 opts->verbose = 1;
                 opts->log_level = LOG_LEVEL_DEBUG;
                 break;
@@ -122,7 +139,7 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
             case 'h':
                 opts->command = CMD_HELP;
                 break;
-            case 'V':
+            case 'v':
                 opts->command = CMD_VERSION;
                 break;
             case '?':
@@ -144,8 +161,13 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
         else if (strcmp(cmd, "help") == 0) opts->command = CMD_HELP;
         else if (strcmp(cmd, "version") == 0) opts->command = CMD_VERSION;
         else {
-            fprintf(stderr, "atpd: unknown command '%s'\n", cmd);
-            fprintf(stderr, "Try 'atpd --help' for a list of available commands.\n");
+            const char *suggestion = suggest_command(cmd);
+            if (suggestion) {
+                fprintf(stderr, "atpd: unknown command '%s'. Did you mean '%s'?\n", cmd, suggestion);
+            } else {
+                fprintf(stderr, "atpd: unknown command '%s'\n", cmd);
+            }
+            fprintf(stderr, "Try 'atpd --help' for all commands.\n");
             return -1;
         }
     }

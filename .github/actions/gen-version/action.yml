@@ -1,0 +1,24 @@
+name: Generate Version
+description: Generate version.h from git tags (requires prior checkout)
+
+outputs:
+  version_string:
+    description: 'ATP_VERSION_STRING value'
+    value: ${{ steps.read-version.outputs.version }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Generate Version
+      shell: bash
+      run: |
+        chmod +x scripts/gen_version.sh
+        ./scripts/gen_version.sh
+        cat include/version.h
+
+    - name: Read Version
+      id: read-version
+      shell: bash
+      run: |
+        VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' include/version.h || echo "v0")
+        echo "version=$VER" >> $GITHUB_OUTPUT

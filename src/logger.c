@@ -150,6 +150,7 @@ static void log_to_syslog(log_level_t level, const char *msg) {
 /* ========== Core Write Function ========== */
 
 void log_write(log_level_t level, const char *file, int line, const char *func, const char *fmt, ...) {
+#ifndef __ANDROID__
     if (level < g_log_config.min_level) return;
 
     char ts[64] = {0};
@@ -191,14 +192,18 @@ void log_write(log_level_t level, const char *file, int line, const char *func, 
     pthread_mutex_unlock(&g_log_config.mutex);
 
     log_to_syslog(level, safe_msg);
+#endif
 }
 
 /* ========== Public API ========== */
 
 void logger_init(void) {
     if (g_log_config.log_file[0] == '\0') {
-        snprintf(g_log_config.log_file, sizeof(g_log_config.log_file),
-                 "%s/%s", ATP_DEFAULT_DIR, ATP_LOG_FILE);
+        if (g_config.data_dir[0]) {
+            snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s/%s", g_config.data_dir, ATP_LOG_FILE);
+        } else {
+            snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "./atpd.log");
+        }
     }
     char *tmp = strdup(g_log_config.log_file);
     if (tmp) { char *dir = dirname(tmp); mkdir_recursive(dir, 0755); free(tmp); }

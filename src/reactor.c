@@ -25,6 +25,7 @@ typedef struct reactor_handler_s {
     uint32_t events;
     reactor_io_cb callback;
     void *userdata;
+    reactor_free_cb free_cb;
     uint8_t active;
     uint8_t pending_delete;
 } reactor_handler_t;
@@ -220,6 +221,9 @@ void reactor_destroy(reactor_t *r) {
         reactor_timer_internal_t *timer = priv->timer_wheel[i];
         while (timer) {
             reactor_timer_internal_t *next = timer->next;
+            if (timer->userdata && priv->handlers[i] && priv->handlers[i]->free_cb) {
+                priv->handlers[i]->free_cb(timer->userdata);
+            }
             free(timer);
             timer = next;
         }
@@ -258,7 +262,7 @@ int reactor_run(reactor_t *r) {
         
         process_expired_timers(r, priv);
         
-        int timeout_ms = 1000;
+        int timeout_ms = -1;
         int nfds = epoll_wait(r->epoll_fd, events, REACTOR_MAX_EVENTS, timeout_ms);
         
         if (nfds < 0) {
@@ -303,6 +307,7 @@ int reactor_run(reactor_t *r) {
             reactor_handler_t *h = priv->handlers[fd];
             if (h && h->pending_delete) {
                 epoll_ctl(r->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+                if (h->free_cb) h->free_cb(h->userdata);
                 free(h);
                 priv->handlers[fd] = NULL;
             }
@@ -332,6 +337,7 @@ int reactor_add_fd(reactor_t *r, int fd, uint32_t events, reactor_io_cb cb, void
     h->events = events;
     h->callback = cb;
     h->userdata = userdata;
+    h->free_cb = NULL;
     h->active = 1;
     h->pending_delete = 0;
     
@@ -354,6 +360,19 @@ int reactor_add_fd(reactor_t *r, int fd, uint32_t events, reactor_io_cb cb, void
     priv->stats.active_handlers++;
     
     return 0;
+}
+
+int reactor_add_fd_ex(reactor_t *r, int fd, uint32_t events,
+                      reactor_io_cb cb, reactor_free_cb free_cb, void *userdata) {
+    int ret = reactor_add_fd(r, fd, events, cb, userdata);
+    if (ret == 0 && free_cb && r) {
+        reactor_private_t *priv = r->private_data;
+        reactor_handler_t *h = priv->handlers[fd];
+        if (h) {
+            h->free_cb = free_cb;
+        }
+    }
+    return ret;
 }
 
 int reactor_modify_fd(reactor_t *r, int fd, uint32_t events) {

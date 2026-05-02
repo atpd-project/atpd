@@ -3,9 +3,9 @@ module.exports = async ({ github, context, core }) => {
   const fs = require('fs');
   const path = require('path');
 
+  // Read version from generated version.h
   let VER = process.env.ATP_VERSION || 'N/A';
   let RUNTIME_VER = process.env.RUNTIME_VER || 'N/A';
-  let ZIG_RUNTIME_VER = process.env.ATPD_VERSION_STRING || 'N/A';
   try {
     const versionFile = path.join(process.env.GITHUB_WORKSPACE || '.', 'include', 'version.h');
     if (fs.existsSync(versionFile)) {
@@ -14,13 +14,13 @@ module.exports = async ({ github, context, core }) => {
       if (match) {
         VER = match[1];
         RUNTIME_VER = `atpd ${match[1]}`;
-        ZIG_RUNTIME_VER = `atpd ${match[1]}`;
       }
     }
   } catch (e) {
     console.log('Could not read version.h, using env vars:', e.message);
   }
 
+  // ... 后面不变（从 const now = new Date() 开始）
   const now = new Date();
 
   const localTime = new Date(now.getTime() + 8 * 3600 * 1000);
@@ -49,8 +49,7 @@ module.exports = async ({ github, context, core }) => {
 
 * 📥 **[Download Build Artifact](${runUrl})**
 * 📝 **CI Version:** \`${VER}\`
-* 🔧 **ATPd Version (Clang -v):** \`${RUNTIME_VER}\`
-* 🔧 **ATPd Version (Zig -v):** \`${ZIG_RUNTIME_VER}\`
+* 🔧 **ATPd Version (-v):** \`${RUNTIME_VER}\`
 * ⚙️ **Clang:** ${clangLabel}
 * ⚙️ **Zig CC:** ${zigLabel}
 * 💬 **Message:** \`${displayMsg}\`
