@@ -466,6 +466,7 @@ static int do_status(atp_options_t *opts) {
     service_init(&svc, &g_config);
     api_init(&g_api_ctx, &g_config);
 
+    netlink_init(NULL, &g_config);
     status_show(&g_config, &svc, &g_api_ctx);
 
     return 0;
