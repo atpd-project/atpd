@@ -105,7 +105,14 @@ struct nl_parse_ctx {
 
 static int is_proxy_interface(const char *ifname) {
     if (!ifname) return 0;
-    static const char *prefixes[] = {"tun", "wg", "ipsec", "vpn", "ppp"};
+    
+    if (strncmp(ifname, "ipsec", 5) == 0) {
+        const char *p = ifname + 5;
+        if (*p >= '0' && *p <= '9') return 1;
+        return 0;
+    }
+    
+    static const char *prefixes[] = {"tun", "wg", "vpn", "ppp"};
     for (size_t i = 0; i < (sizeof(prefixes) / sizeof(prefixes[0])); ++i) {
         if (strncmp(ifname, prefixes[i], strlen(prefixes[i])) == 0) return 1;
     }
