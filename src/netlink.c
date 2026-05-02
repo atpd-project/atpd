@@ -90,6 +90,14 @@ static void trigger_network_refresh(reactor_t *r) {
 
 #ifndef IFLA_XFRM_IF_ID
 #define IFLA_XFRM_IF_ID    41
+
+/* XFRM attribute macros (musl compatibility) */
+#ifndef XFRMA_RTA
+#define XFRMA_RTA(x)  ((struct rtattr *)(((char *)(x)) + NLMSG_ALIGN(sizeof(struct xfrm_usersa_info))))
+#endif
+#ifndef XFRM_PAYLOAD
+#define XFRM_PAYLOAD(n) NLMSG_PAYLOAD(n, sizeof(struct xfrm_usersa_info))
+#endif
 #endif
 
 static int g_xfrm_fd = -1;
