@@ -267,6 +267,13 @@ int netlink_get_active_vpn(char *output, size_t size) {
     }
     pthread_mutex_unlock(&g_nl_mutex);
 
+    fprintf(stderr, "DEBUG netlink_get_active_vpn: ctx.count=%d\n", ctx.count);
+    for (int i = 0; i < ctx.count; i++) {
+        fprintf(stderr, "DEBUG: [%d] name=%s flags=0x%x UP=%d proxy=%d\n",
+                i, links[i].name, links[i].flags,
+                !!(links[i].flags & IFF_UP),
+                is_proxy_interface(links[i].name));
+    }
     for (int i = 0; i < ctx.count; i++) {
         if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
             snprintf(output, size, "%s", links[i].name);
@@ -356,6 +363,13 @@ int nl_vpn_detect(void) {
     pthread_mutex_unlock(&g_nl_mutex);
 
     // Iterate through all interfaces and check for VPN characteristics
+    fprintf(stderr, "DEBUG netlink_get_active_vpn: ctx.count=%d\n", ctx.count);
+    for (int i = 0; i < ctx.count; i++) {
+        fprintf(stderr, "DEBUG: [%d] name=%s flags=0x%x UP=%d proxy=%d\n",
+                i, links[i].name, links[i].flags,
+                !!(links[i].flags & IFF_UP),
+                is_proxy_interface(links[i].name));
+    }
     for (int i = 0; i < ctx.count; i++) {
         // Check if interface is UP
         if (!(links[i].flags & IFF_UP)) {
@@ -410,6 +424,13 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     pthread_mutex_unlock(&g_nl_mutex);
 
     // Find first active VPN interface
+    fprintf(stderr, "DEBUG netlink_get_active_vpn: ctx.count=%d\n", ctx.count);
+    for (int i = 0; i < ctx.count; i++) {
+        fprintf(stderr, "DEBUG: [%d] name=%s flags=0x%x UP=%d proxy=%d\n",
+                i, links[i].name, links[i].flags,
+                !!(links[i].flags & IFF_UP),
+                is_proxy_interface(links[i].name));
+    }
     for (int i = 0; i < ctx.count; i++) {
         if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
             strncpy(iface, links[i].name, size - 1);
