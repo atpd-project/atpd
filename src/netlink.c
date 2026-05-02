@@ -128,6 +128,7 @@ static int detect_xfrm_interface(struct nlmsghdr *h) {
 
 /* ========== getifaddrs Fallback for XFRM Tunnels ========== */
 
+static int is_proxy_interface(const char *ifname);
 static int getifaddrs_find_vpn(char *output, size_t size) {
     struct ifaddrs *ifaddr, *ifa;
     
