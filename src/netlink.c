@@ -2,8 +2,8 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * Netlink Implementation - Strictly optimized for musl-libc static linkage.
- * Zero-warning version for industrial deployment.
+ * Netlink Implementation - XFRM-aware VPN detection
+ * Uses NETLINK_XFRM for Google VPN (ipsec) detection
  */
 
 #include "netlink.h"
@@ -22,7 +22,9 @@
 #include <net/if.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <linux/xfrm.h>
 #include <pthread.h>
+#include <dirent.h>
 
 #define NL_BUF_SIZE 16384
 #define NL_DUMP_SIZE 65536
@@ -46,6 +48,7 @@ static reactor_t *g_debounce_reactor = NULL;
 #define NETLINK_DEBOUNCE_MS 500
 
 static pthread_mutex_t g_nl_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 #ifndef IPTABLES_CMD
 #define IPTABLES_CMD "/system/bin/iptables"
 #endif
@@ -55,6 +58,7 @@ static pthread_mutex_t g_nl_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static int ip_rule_audit(atp_config_t *cfg);
 static int tproxy_refresh_rules(atp_config_t *cfg);
+
 static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     (void)r;
     (void)timer;
@@ -67,7 +71,6 @@ static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userda
 
     pthread_mutex_unlock(&g_nl_mutex);
 }
-
 
 static void trigger_network_refresh(reactor_t *r) {
     if (!r) return;
@@ -83,29 +86,14 @@ static void trigger_network_refresh(reactor_t *r) {
     LOG_DEBUG("[NET] Debounce timer (re)started: %dms", NETLINK_DEBOUNCE_MS);
 }
 
-static int g_sync_fd = -1;
-static int g_async_fd = -1;
-static nl_callback_t g_callback = NULL;
-static void *g_userdata = NULL;
-static uint32_t g_seq = 1;
-
-struct nl_link_info {
-    int index;
-    char name[IFNAMSIZ];
-    unsigned int flags;
-    uint64_t rx_bytes;
-    uint64_t tx_bytes;
-};
-
-struct nl_parse_ctx {
-    struct nl_link_info *links;
-    int max_count;
-    int count;
-};
+/* ========== XFRM Interface Detection ========== */
 
 #ifndef IFLA_XFRM_IF_ID
 #define IFLA_XFRM_IF_ID    41
 #endif
+
+static int g_xfrm_fd = -1;
+static reactor_t *g_xfrm_reactor = NULL;
 
 static struct rtattr* atpd_find_rta_nested(struct rtattr *rta, int len, unsigned short type) {
     while (RTA_OK(rta, len)) {
@@ -129,6 +117,29 @@ static int detect_xfrm_interface(struct nlmsghdr *h) {
     struct rtattr *xfrm_id = atpd_find_rta_nested(RTA_DATA(id), RTA_PAYLOAD(id), IFLA_XFRM_IF_ID);
     return (xfrm_id != NULL);
 }
+
+/* ========== Netlink State ========== */
+
+static int g_sync_fd = -1;
+static int g_async_fd = -1;
+static nl_callback_t g_callback = NULL;
+static void *g_userdata = NULL;
+static uint32_t g_seq = 1;
+
+struct nl_link_info {
+    int index;
+    char name[IFNAMSIZ];
+    unsigned int flags;
+    uint64_t rx_bytes;
+    uint64_t tx_bytes;
+};
+
+struct nl_parse_ctx {
+    struct nl_link_info *links;
+    int max_count;
+    int count;
+};
+
 static int is_proxy_interface(const char *ifname) {
     if (!ifname) return 0;
     
@@ -155,7 +166,10 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
     struct nl_link_info *info = &pctx->links[pctx->count];
     info->index = ifi->ifi_index;
     info->flags = ifi->ifi_flags;
-    if (detect_xfrm_interface(h)) { info->flags |= IFF_UP; }
+
+    if (detect_xfrm_interface(h)) {
+        info->flags |= IFF_UP;
+    }
 
     for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
         if (rta->rta_type == IFLA_IFNAME) {
@@ -202,6 +216,8 @@ done:
     return status;
 }
 
+/* ========== Core Netlink API ========== */
+
 int netlink_init(nl_callback_t callback, void *userdata) {
     g_sync_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     g_async_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
@@ -227,12 +243,14 @@ int netlink_init(nl_callback_t callback, void *userdata) {
     g_userdata = userdata;
     g_seq = (uint32_t)time(NULL);
 
+    /* Initialize XFRM listener for VPN detection */
+    netlink_xfrm_init(NULL);
+
     LOG_INFO("Netlink: Engine started");
     return 0;
 }
 
 void netlink_handle_event(int fd, void *data) {
-
     (void)data;
     uint8_t buf[NL_BUF_SIZE];
     struct sockaddr_nl sa;
@@ -272,6 +290,78 @@ void netlink_handle_event(int fd, void *data) {
     }
 }
 
+/* ========== XFRM Listener ========== */
+
+int netlink_xfrm_init(reactor_t *r) {
+    g_xfrm_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_XFRM);
+    if (g_xfrm_fd < 0) {
+        LOG_ERROR("XFRM: socket(NETLINK_XFRM) failed: %s", strerror(errno));
+        return -1;
+    }
+
+    struct sockaddr_nl sa = {
+        .nl_family = AF_NETLINK,
+        .nl_groups = XFRMGRP_SA | XFRMGRP_POLICY
+    };
+
+    if (bind(g_xfrm_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        LOG_ERROR("XFRM: bind failed: %s", strerror(errno));
+        close(g_xfrm_fd);
+        g_xfrm_fd = -1;
+        return -1;
+    }
+
+    if (r) {
+        reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
+        g_xfrm_reactor = r;
+    }
+
+    LOG_INFO("XFRM: Listener started (fd=%d)", g_xfrm_fd);
+    return 0;
+}
+
+void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
+    (void)r;
+    (void)events;
+    (void)userdata;
+
+    uint8_t buf[NL_BUF_SIZE];
+    struct sockaddr_nl sa;
+    struct iovec iov = { buf, sizeof(buf) };
+    struct msghdr msg = { .msg_name = &sa, .msg_namelen = sizeof(sa), .msg_iov = &iov, .msg_iovlen = 1 };
+
+    ssize_t len = recvmsg(fd, &msg, MSG_DONTWAIT);
+    if (len <= 0) return;
+
+    for (struct nlmsghdr *h = (struct nlmsghdr *)buf; 
+         NLMSG_OK(h, (uint32_t)len); 
+         h = NLMSG_NEXT(h, len)) {
+
+        if (h->nlmsg_type == XFRM_MSG_NEWSA) {
+            struct xfrm_usersa_info *sa = NLMSG_DATA(h);
+            struct rtattr *rta = XFRMA_RTA(sa);
+            int attr_len = XFRM_PAYLOAD(h);
+
+            for (; RTA_OK(rta, attr_len); rta = RTA_NEXT(rta, attr_len)) {
+                if (rta->rta_type == XFRMA_IF_ID) {
+                    uint32_t if_id = *(uint32_t *)RTA_DATA(rta);
+                    char ifname[IFNAMSIZ] = {0};
+                    snprintf(ifname, sizeof(ifname), "ipsec%u", if_id - 1);
+
+                    LOG_INFO("XFRM: VPN tunnel established: %s (IF_ID=%u)", ifname, if_id);
+                    trigger_network_refresh(g_debounce_reactor);
+                    break;
+                }
+            }
+        } else if (h->nlmsg_type == XFRM_MSG_DELSA) {
+            LOG_INFO("XFRM: VPN tunnel removed");
+            trigger_network_refresh(g_debounce_reactor);
+        }
+    }
+}
+
+/* ========== VPN Detection ========== */
+
 int netlink_get_active_vpn(char *output, size_t size) {
     struct nl_link_info links[32] = {{0}};
     struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
@@ -294,8 +384,6 @@ int netlink_get_active_vpn(char *output, size_t size) {
     }
     pthread_mutex_unlock(&g_nl_mutex);
 
-    for (int i = 0; i < ctx.count; i++) {
-    }
     for (int i = 0; i < ctx.count; i++) {
         if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
             snprintf(output, size, "%s", links[i].name);
@@ -345,20 +433,29 @@ void netlink_cleanup(void) {
         close(g_async_fd);
         g_async_fd = -1;
     }
+    if (g_xfrm_fd >= 0) {
+        close(g_xfrm_fd);
+        g_xfrm_fd = -1;
+    }
     g_callback = NULL;
+    g_xfrm_reactor = NULL;
 }
 
 int netlink_get_fd(void) {
     return g_async_fd;
 }
 
+void netlink_set_reactor(reactor_t *r) {
+    g_debounce_reactor = r;
+    
+    if (g_xfrm_fd >= 0 && r) {
+        reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
+        g_xfrm_reactor = r;
+    }
+}
+
 /* ========== VPN Detection Functions ========== */
 
-/**
- * Detect if any VPN interface exists via netlink
- * This leverages the existing netlink infrastructure for consistency.
- * @return 1 if VPN detected, 0 if not, -1 on error
- */
 int nl_vpn_detect(void) {
     struct nl_link_info links[32] = {{0}};
     struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
@@ -384,16 +481,8 @@ int nl_vpn_detect(void) {
     netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
     pthread_mutex_unlock(&g_nl_mutex);
 
-    // Iterate through all interfaces and check for VPN characteristics
     for (int i = 0; i < ctx.count; i++) {
-    }
-    for (int i = 0; i < ctx.count; i++) {
-        // Check if interface is UP
-        if (!(links[i].flags & IFF_UP)) {
-            continue;
-        }
-
-        // Use the existing is_proxy_interface() which already handles ipsec0, ipsec1, etc.
+        if (!(links[i].flags & IFF_UP)) continue;
         if (is_proxy_interface(links[i].name)) {
             LOG_DEBUG("VPN interface detected via netlink: %s", links[i].name);
             return 1;
@@ -404,16 +493,8 @@ int nl_vpn_detect(void) {
     return 0;
 }
 
-/**
- * Get the VPN interface name via netlink
- * @param iface Buffer to store interface name
- * @param size  Size of buffer
- * @return 0 on success, -1 if no VPN interface
- */
 int nl_link_get_vpn_interface(char *iface, size_t size) {
-    if (!iface || size == 0) {
-        return -1;
-    }
+    if (!iface || size == 0) return -1;
 
     struct nl_link_info links[32] = {{0}};
     struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
@@ -440,9 +521,6 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
     pthread_mutex_unlock(&g_nl_mutex);
 
-    // Find first active VPN interface
-    for (int i = 0; i < ctx.count; i++) {
-    }
     for (int i = 0; i < ctx.count; i++) {
         if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
             strncpy(iface, links[i].name, size - 1);
@@ -452,14 +530,12 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
         }
     }
 
-    // No active VPN found
     iface[0] = '\0';
     LOG_DEBUG("No active VPN interface found via netlink");
     return -1;
 }
-void netlink_set_reactor(reactor_t *r) {
-    g_debounce_reactor = r;
-}
+
+/* ========== Firewall Self-Healing ========== */
 
 static int ip_rule_audit(atp_config_t *cfg) {
     if (!g_tproxy_initialized) return 0;
@@ -508,7 +584,6 @@ static int tproxy_refresh_rules(atp_config_t *cfg) {
     int needs_repair_v4 = 0;
     int needs_repair_v6 = 0;
 
-    /* IPv4 PREROUTING */
     snprintf(cmd, sizeof(cmd),
              "%s -t mangle -L PREROUTING 2>/dev/null | head -2 | grep -q ATP_PRE_0",
              IPTABLES_CMD);
@@ -516,7 +591,6 @@ static int tproxy_refresh_rules(atp_config_t *cfg) {
         needs_repair_v4 = 1;
     }
 
-    /* IPv4 OUTPUT */
     snprintf(cmd, sizeof(cmd),
              "%s -t mangle -L OUTPUT 2>/dev/null | head -2 | grep -q ATP_OUT_0",
              IPTABLES_CMD);
@@ -529,7 +603,6 @@ static int tproxy_refresh_rules(atp_config_t *cfg) {
         tproxy_hook_main_chains(cfg, 4, "");
     }
 
-    /* IPv6 */
     if (cfg->proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
         snprintf(cmd, sizeof(cmd),
                  "%s -t mangle -L PREROUTING 2>/dev/null | head -2 | grep -q ATP6_PRE_0",
@@ -552,4 +625,3 @@ static int tproxy_refresh_rules(atp_config_t *cfg) {
 
     return 0;
 }
-
