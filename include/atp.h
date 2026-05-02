@@ -35,8 +35,6 @@
 #define _FORTIFY_SOURCE 3
 #endif
 
-#endif
-
 #define ATP_DEFAULT_DIR     "/data/adb/atp"
 #define ATP_CONF_FILE       "atp.conf"
 #define ATP_PID_FILE        "run/atpd.pid"
@@ -97,7 +95,7 @@ typedef struct {
     
     int tcp_port;
     int udp_port;
-    int redirect_tcp_port;      /* REDIRECT port for ENHANCE mode */
+    int redirect_tcp_port;
     proxy_mode_t proxy_mode;
     int performance_mode;
     int proxy_tcp;
@@ -157,17 +155,14 @@ typedef struct {
     int restart_delay;
     char clash_secret[128];
     
-    /* API configuration */
     int api_port;
     char api_host[64];
     
     int use_tproxy;
     char current_vpn_iface[32];
     
-    /* UI settings */
-    int ui_emoji_enabled;   /* 1 = use emoji, 0 = use ASCII labels */
+    int ui_emoji_enabled;
     
-    /* Thread safety */
     pthread_mutex_t config_mutex;
 } atp_config_t;
 
@@ -186,5 +181,3 @@ void atp_show_status(void);
 #endif
 
 #include "version.h"
-
-/* Epoll event loop */
