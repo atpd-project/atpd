@@ -3,6 +3,7 @@
  * Copyright (C) 2024-2025 ATP Project
  *
  * Netlink - Async event-driven interface monitoring
+ * XFRM-aware VPN detection
  */
 
 #ifndef ATP_NETLINK_H
@@ -41,7 +42,11 @@ int nl_vpn_detect(void);
 int nl_link_get_vpn_interface(char *iface, size_t size);
 
 void netlink_set_reactor(reactor_t *r);
-
 void netlink_set_tproxy_ready(void);
+
+/* ========== XFRM Listener (Google VPN Detection) ========== */
+
+int netlink_xfrm_init(reactor_t *r);
+void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
 
 #endif
