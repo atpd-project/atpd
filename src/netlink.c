@@ -3,7 +3,7 @@
  * Copyright (C) 2024-2026 ATP Project
  *
  * Netlink Implementation - XFRM-aware VPN detection
- * Uses NETLINK_XFRM for Google VPN (ipsec) detection
+ * Uses NETLINK_XFRM + getifaddrs() fallback for Google VPN (ipsec) detection
  */
 
 #include "netlink.h"
@@ -25,6 +25,7 @@
 #include <linux/xfrm.h>
 #include <pthread.h>
 #include <dirent.h>
+#include <ifaddrs.h>
 
 #define NL_BUF_SIZE 16384
 #define NL_DUMP_SIZE 65536
@@ -90,14 +91,13 @@ static void trigger_network_refresh(reactor_t *r) {
 
 #ifndef IFLA_XFRM_IF_ID
 #define IFLA_XFRM_IF_ID    41
+#endif
 
-/* XFRM attribute macros (musl compatibility) */
 #ifndef XFRMA_RTA
 #define XFRMA_RTA(x)  ((struct rtattr *)(((char *)(x)) + NLMSG_ALIGN(sizeof(struct xfrm_usersa_info))))
 #endif
 #ifndef XFRM_PAYLOAD
 #define XFRM_PAYLOAD(n) NLMSG_PAYLOAD(n, sizeof(struct xfrm_usersa_info))
-#endif
 #endif
 
 static int g_xfrm_fd = -1;
@@ -124,6 +124,27 @@ static int detect_xfrm_interface(struct nlmsghdr *h) {
 
     struct rtattr *xfrm_id = atpd_find_rta_nested(RTA_DATA(id), RTA_PAYLOAD(id), IFLA_XFRM_IF_ID);
     return (xfrm_id != NULL);
+}
+
+/* ========== getifaddrs Fallback for XFRM Tunnels ========== */
+
+static int getifaddrs_find_vpn(char *output, size_t size) {
+    struct ifaddrs *ifaddr, *ifa;
+    
+    if (getifaddrs(&ifaddr) < 0) return -1;
+    
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name) continue;
+        if (!(ifa->ifa_flags & IFF_UP)) continue;
+        if (!is_proxy_interface(ifa->ifa_name)) continue;
+        
+        snprintf(output, size, "%s", ifa->ifa_name);
+        freeifaddrs(ifaddr);
+        return 0;
+    }
+    
+    freeifaddrs(ifaddr);
+    return -1;
 }
 
 /* ========== Netlink State ========== */
@@ -251,7 +272,6 @@ int netlink_init(nl_callback_t callback, void *userdata) {
     g_userdata = userdata;
     g_seq = (uint32_t)time(NULL);
 
-    /* Initialize XFRM listener for VPN detection */
     netlink_xfrm_init(NULL);
 
     LOG_INFO("Netlink: Engine started");
@@ -398,7 +418,8 @@ int netlink_get_active_vpn(char *output, size_t size) {
             return 0;
         }
     }
-    return -1;
+
+    return getifaddrs_find_vpn(output, size);
 }
 
 int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
@@ -497,7 +518,14 @@ int nl_vpn_detect(void) {
         }
     }
 
-    LOG_DEBUG("No VPN interface detected via netlink");
+    /* Fallback: getifaddrs for XFRM tunnels */
+    char ifname[IFNAMSIZ];
+    if (getifaddrs_find_vpn(ifname, sizeof(ifname)) == 0) {
+        LOG_DEBUG("VPN interface detected via getifaddrs: %s", ifname);
+        return 1;
+    }
+
+    LOG_DEBUG("No VPN interface detected");
     return 0;
 }
 
@@ -538,9 +566,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
         }
     }
 
-    iface[0] = '\0';
-    LOG_DEBUG("No active VPN interface found via netlink");
-    return -1;
+    return getifaddrs_find_vpn(iface, size);
 }
 
 /* ========== Firewall Self-Healing ========== */
