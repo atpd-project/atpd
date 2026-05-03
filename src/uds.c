@@ -9,6 +9,7 @@
 #include "logger.h"
 #include "atpd_context.h"
 #include "session.h"
+#include "atp.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

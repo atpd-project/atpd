@@ -12,6 +12,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include "atp.h"
+
+#define ATPD_SOCK_PATH ATP_DEFAULT_DIR "/run/atpd.sock"
 
 static const struct option long_options[] = {
     {"config",    required_argument, 0, 'c'},
