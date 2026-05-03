@@ -28,6 +28,8 @@
 #include "inet_diag.h"
 #include "reactor.h"
 #include "singbox_api.h"
+#include "atpd_context.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -340,8 +342,9 @@ static int do_start(atp_options_t *opts) {
         return 1;
     }
 
-    /* 7. 后续初始化 */
-    if (netlink_init(NULL, &g_config) < 0) {
+        atpd_context_init();
+
+	if (netlink_init(NULL, &g_config) < 0) {
         LOG_ERROR("Failed to initialize netlink");
         unlink(pp);
         return 1;
