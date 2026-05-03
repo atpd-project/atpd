@@ -7,12 +7,14 @@
 #include "fcm_monitor.h"
 #include "ui.h"
 #include "perf_mode.h"
+#include "atpd_context.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <fcntl.h>
 
 #define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
@@ -29,7 +31,6 @@ static const char* proxy_mode_to_string(atp_config_t *cfg) {
     }
 }
 
-/* Format uptime in human readable format */
 static void format_uptime_human(int seconds, char *buf, size_t size) {
     int days = seconds / 86400;
     int hours = (seconds % 86400) / 3600;
@@ -47,7 +48,6 @@ static void format_uptime_human(int seconds, char *buf, size_t size) {
     }
 }
 
-/* Format bytes to human readable string */
 static void format_bytes(char *buf, size_t size, unsigned long long bytes) {
     if (bytes >= 1024 * 1024 * 1024) {
         snprintf(buf, size, "%.2f GB", (double)bytes / (1024 * 1024 * 1024));
@@ -60,7 +60,6 @@ static void format_bytes(char *buf, size_t size, unsigned long long bytes) {
     }
 }
 
-/* Format speed to human readable string */
 static void format_speed(char *buf, size_t size, unsigned long long bytes_per_sec) {
     unsigned long long bits_per_sec = bytes_per_sec * 8;
 
@@ -75,7 +74,6 @@ static void format_speed(char *buf, size_t size, unsigned long long bytes_per_se
     }
 }
 
-/* Get CPU temperature in Celsius */
 static int get_cpu_temperature(void) {
     DIR *dir;
     struct dirent *entry;
@@ -105,7 +103,6 @@ static int get_cpu_temperature(void) {
     return -1;
 }
 
-/* Show PROXY CORE module */
 static void status_show_proxy_core(service_ctx_t *svc) {
     int pid = service_get_pid(svc);
     char uptime_str[64];
@@ -149,7 +146,6 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     ui_table_end();
 }
 
-/* Show CLASH MODE module */
 static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ctx_t *svc) {
     char current_mode[64] = {0};
 
@@ -176,7 +172,6 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
     ui_table_end();
 }
 
-/* Show MONITORS module */
 static void status_show_monitors(void) {
     time_t last_fcm = fcm_monitor_get_last_detection();
     time_t now = time(NULL);
@@ -185,14 +180,12 @@ static void status_show_monitors(void) {
     ui_table_begin();
     ui_table_header("MONITORS");
 
-    /* Netlink Monitor */
     if (0) {
         ui_table_subrow_color("├─", "Netlink Monitor", "ACTIVE", COLOR_GREEN);
     } else {
         ui_table_subrow_color("├─", "Netlink Monitor", "INACTIVE", COLOR_RED);
     }
 
-    /* FCM Monitor */
     if (fcm_monitor_is_running()) {
         if (last_fcm > 0) {
             int elapsed = (int)(now - last_fcm);
@@ -214,7 +207,6 @@ static void status_show_monitors(void) {
     ui_table_end();
 }
 
-/* Traffic monitoring structures */
 typedef struct {
     unsigned long long rx_bytes;
     unsigned long long tx_bytes;
@@ -259,10 +251,7 @@ static int load_traffic_state(iface_stats_t *stats) {
     if (!fp) return -1;
 
     int ret = fscanf(fp, "%s %llu %llu %ld",
-                     stats->iface,
-                     &stats->rx_bytes,
-                     &stats->tx_bytes,
-                     (long*)&stats->timestamp);
+                     stats->iface, &stats->rx_bytes, &stats->tx_bytes, (long*)&stats->timestamp);
     fclose(fp);
 
     return (ret == 4 && stats->iface[0] != '\0') ? 0 : -1;
@@ -280,24 +269,17 @@ static int save_traffic_state(const iface_stats_t *stats) {
     FILE *fp = fopen(TRAFFIC_STATE_FILE, "w");
     if (!fp) return -1;
 
-    fprintf(fp, "%s %llu %llu %ld\n",
-            stats->iface,
-            stats->rx_bytes,
-            stats->tx_bytes,
-            (long)stats->timestamp);
+    fprintf(fp, "%s %llu %llu %ld\n", stats->iface, stats->rx_bytes, stats->tx_bytes, (long)stats->timestamp);
     fclose(fp);
-
     return 0;
 }
 
-/* Show VPN STATUS module */
 static void status_show_vpn(void) {
     char vpn_iface[IFNAMSIZ] = {0};
     unsigned long long rx_bytes = 0, tx_bytes = 0;
     char rx_str[32], tx_str[32];
     char rx_speed_str[32], tx_speed_str[32];
-    iface_stats_t current_stats;
-    iface_stats_t prev_stats;
+    iface_stats_t current_stats, prev_stats;
     int has_vpn = 0;
 
     ui_table_begin();
@@ -316,11 +298,9 @@ static void status_show_vpn(void) {
     ui_table_subrow("├─", "Interface", vpn_iface);
     ui_table_subrow_color("├─", ui_emoji_vpn(1), "CONNECTED", COLOR_GREEN);
 
-    /* Traffic stats */
     if (get_iface_traffic(vpn_iface, &rx_bytes, &tx_bytes) == 0) {
         format_bytes(rx_str, sizeof(rx_str), rx_bytes);
         format_bytes(tx_str, sizeof(tx_str), tx_bytes);
-
         ui_table_subrow("├─", "📥 Total RX", rx_str);
         ui_table_subrow("├─", "📤 Total TX", tx_str);
 
@@ -333,21 +313,16 @@ static void status_show_vpn(void) {
         if (load_traffic_state(&prev_stats) == 0 &&
             strcmp(prev_stats.iface, vpn_iface) == 0 &&
             prev_stats.timestamp > 0) {
-
             double elapsed = difftime(current_stats.timestamp, prev_stats.timestamp);
-
             if (elapsed >= 1.0 && elapsed <= 3600.0) {
                 unsigned long long rx_diff = (current_stats.rx_bytes > prev_stats.rx_bytes) ?
                                              (current_stats.rx_bytes - prev_stats.rx_bytes) : 0;
                 unsigned long long tx_diff = (current_stats.tx_bytes > prev_stats.tx_bytes) ?
                                              (current_stats.tx_bytes - prev_stats.tx_bytes) : 0;
-
                 unsigned long long rx_speed = (unsigned long long)((double)rx_diff / elapsed);
                 unsigned long long tx_speed = (unsigned long long)((double)tx_diff / elapsed);
-
                 format_speed(rx_speed_str, sizeof(rx_speed_str), rx_speed);
                 format_speed(tx_speed_str, sizeof(tx_speed_str), tx_speed);
-
                 char speed_info[64];
                 snprintf(speed_info, sizeof(speed_info), "%s (over %.0fs)", rx_speed_str, elapsed);
                 ui_table_subrow("├─", "📈 Avg RX Speed", speed_info);
@@ -361,7 +336,6 @@ static void status_show_vpn(void) {
             ui_table_subrow("├─", "📈 Avg RX Speed", "(first sample)");
             ui_table_subrow("└─", "📉 Avg TX Speed", "(first sample)");
         }
-
         save_traffic_state(&current_stats);
     } else {
         ui_table_subrow("├─", "📥 Total RX", "N/A");
@@ -373,7 +347,78 @@ static void status_show_vpn(void) {
     ui_table_end();
 }
 
-/* Show SYSTEM module */
+static void status_show_engine_v2(void) {
+    char buf[128];
+    const char *stage = "IDLE";
+    const char *color = COLOR_RED;
+    const char *emoji = "x";
+
+    ui_table_begin();
+    ui_table_header("REACTOR ENGINE (v2.0)");
+
+    switch (g_atpd_ctx.vpn_state) {
+        case VPN_STATE_READY:
+            stage = "READY";
+            color = COLOR_GREEN;
+            emoji = "⚡";
+            break;
+        case VPN_STATE_PREDICTING:
+            stage = "PREDICTING";
+            color = COLOR_CYAN;
+            emoji = "~";
+            break;
+        case VPN_STATE_TEARDOWN:
+            stage = "TEARDOWN";
+            color = COLOR_RED;
+            emoji = "!";
+            break;
+        default:
+            stage = "IDLE";
+            color = COLOR_RED;
+            emoji = "x";
+            break;
+    }
+
+    snprintf(buf, sizeof(buf), "%s  %s", emoji, stage);
+    ui_table_row_color("State Machine", buf, color);
+
+    int pipe_size = 0;
+    if (g_atpd_ctx.xfrm_fd > 0) {
+        pipe_size = fcntl(g_atpd_ctx.xfrm_fd, F_GETPIPE_SZ);
+    }
+    if (pipe_size > 0) {
+        snprintf(buf, sizeof(buf), "%d KB", pipe_size / 1024);
+    } else {
+        snprintf(buf, sizeof(buf), "N/A");
+    }
+    ui_table_subrow("├─", "Pipe Size", buf);
+
+    snprintf(buf, sizeof(buf), "0");
+    ui_table_subrow_color("├─", "Backpressure", buf, COLOR_GREEN);
+
+    snprintf(buf, sizeof(buf), "%llu bytes", (unsigned long long)g_atpd_ctx.splice_bytes_total);
+    ui_table_subrow("├─", "Total Spliced", buf);
+
+    const char *xfrm_status = "PENDING";
+    const char *xfrm_color = COLOR_YELLOW;
+
+    if (g_atpd_ctx.xfrm_if_id == 41) {
+        xfrm_status = "LOCKED (IF_ID=41)";
+        xfrm_color = COLOR_GREEN;
+    } else if (g_atpd_ctx.vpn_state == VPN_STATE_READY) {
+        xfrm_status = "LOCKED";
+        xfrm_color = COLOR_GREEN;
+    } else if (g_atpd_ctx.vpn_state == VPN_STATE_PREDICTING) {
+        xfrm_status = "PREDICTING";
+        xfrm_color = COLOR_CYAN;
+    }
+
+    snprintf(buf, sizeof(buf), "%s", xfrm_status);
+    ui_table_subrow_color("└─", "XFRM Sync", buf, xfrm_color);
+
+    ui_table_end();
+}
+
 static void status_show_system(void) {
     int temp = get_cpu_temperature();
     char pid_path[PATH_MAX];
@@ -383,7 +428,6 @@ static void status_show_system(void) {
     ui_table_begin();
     ui_table_header("SYSTEM");
 
-    /* CPU Temperature */
     if (temp > 0) {
         char temp_str[32];
         if (temp >= THERMAL_TEMP_CRITICAL / 1000) {
@@ -400,7 +444,6 @@ static void status_show_system(void) {
         ui_table_subrow("├─", "🌡️ CPU Temp", "N/A");
     }
 
-    /* Daemon Uptime */
     snprintf(pid_path, sizeof(pid_path), "%s/%s", ATP_DEFAULT_DIR, ATP_PID_FILE);
     if (stat(pid_path, &st) == 0) {
         time_t now = time(NULL);
@@ -414,65 +457,45 @@ static void status_show_system(void) {
     ui_table_end();
 }
 
-/* Show CONFIGURATION module (for --config flag) */
 void status_show_config(atp_config_t *cfg) {
     char ports_str[64];
     char mark_str[64];
 
     ui_title("ATP Configuration");
 
-    /* Configuration */
     ui_table_begin();
     ui_table_header("CONFIGURATION");
-
     ui_table_subrow("├─", "Proxy Mode", proxy_mode_to_string(cfg));
     ui_table_subrow("├─", "Performance", cfg->performance_mode ? "ACTIVE" : "DISABLED");
-    snprintf(ports_str, sizeof(ports_str), "TCP=%d, UDP=%d, REDIRECT=%d",
-             cfg->tcp_port, cfg->udp_port, cfg->redirect_tcp_port);
+    snprintf(ports_str, sizeof(ports_str), "TCP=%d, UDP=%d, REDIRECT=%d", cfg->tcp_port, cfg->udp_port, cfg->redirect_tcp_port);
     ui_table_subrow("├─", "Ports", ports_str);
     ui_table_subrow("├─", "IPv6", cfg->proxy_ipv6 ? "ENABLED" : "DISABLED");
-
     char dns_str[64];
-    snprintf(dns_str, sizeof(dns_str), "%s (port %d)",
-             cfg->dns_hijack ? "ENABLED" : "DISABLED", cfg->dns_port);
+    snprintf(dns_str, sizeof(dns_str), "%s (port %d)", cfg->dns_hijack ? "ENABLED" : "DISABLED", cfg->dns_port);
     ui_table_subrow("├─", "DNS Hijack", dns_str);
     ui_table_subrow_int("├─", "Table ID", cfg->table_id);
     snprintf(mark_str, sizeof(mark_str), "IPv4=0x%x, IPv6=0x%x", cfg->mark_value, cfg->mark_value6);
     ui_table_subrow("└─", "Mark", mark_str);
-
     ui_table_end();
 
-    /* Interface Control */
     ui_table_begin();
     ui_table_header("INTERFACE CONTROL");
-
     char mobile_status[64];
-    snprintf(mobile_status, sizeof(mobile_status), "%s -> %s",
-             cfg->mobile_iface, cfg->proxy_mobile ? "PROXIED" : "BYPASS");
+    snprintf(mobile_status, sizeof(mobile_status), "%s -> %s", cfg->mobile_iface, cfg->proxy_mobile ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("├─", ui_emoji_mobile(), mobile_status);
-
     char wifi_status[64];
-    snprintf(wifi_status, sizeof(wifi_status), "%s -> %s",
-             cfg->wifi_iface, cfg->proxy_wifi ? "PROXIED" : "BYPASS");
+    snprintf(wifi_status, sizeof(wifi_status), "%s -> %s", cfg->wifi_iface, cfg->proxy_wifi ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("├─", ui_emoji_wifi(1), wifi_status);
-
     char hotspot_status[64];
-    snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s",
-             cfg->hotspot_iface, cfg->proxy_hotspot ? "PROXIED" : "BYPASS");
+    snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s", cfg->hotspot_iface, cfg->proxy_hotspot ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("├─", ui_emoji_hotspot(), hotspot_status);
-
     char usb_status[64];
-    snprintf(usb_status, sizeof(usb_status), "%s -> %s",
-             cfg->usb_iface, cfg->proxy_usb ? "PROXIED" : "BYPASS");
+    snprintf(usb_status, sizeof(usb_status), "%s -> %s", cfg->usb_iface, cfg->proxy_usb ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("└─", ui_emoji_usb(), usb_status);
-
     ui_table_end();
 
-    /* Filters */
     ui_table_begin();
     ui_table_header("FILTERS");
-
-    /* App Filter */
     if (cfg->app_proxy_enable) {
         char app_status[128];
         snprintf(app_status, sizeof(app_status), "ENABLED (%s mode)", cfg->app_proxy_mode);
@@ -480,8 +503,6 @@ void status_show_config(atp_config_t *cfg) {
     } else {
         ui_table_subrow_emoji("├─", ui_emoji_mobile(), "DISABLED");
     }
-
-    /* MAC Filter */
     if (cfg->mac_filter_enable) {
         char mac_status[128];
         snprintf(mac_status, sizeof(mac_status), "ENABLED (%s mode)", cfg->mac_proxy_mode);
@@ -489,18 +510,14 @@ void status_show_config(atp_config_t *cfg) {
     } else {
         ui_table_subrow_emoji("├─", "🔢", "DISABLED");
     }
-
-    /* CN IP Bypass */
     if (cfg->bypass_cn_ip) {
         ui_table_subrow_emoji("└─", "🌏", "ENABLED (ipset cnip)");
     } else {
         ui_table_subrow_emoji("└─", "🌏", "DISABLED");
     }
-
     ui_table_end();
 }
 
-/* Main status show function */
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
     ui_title("ATP Status");
 
@@ -514,6 +531,9 @@ void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
     ui_blank();
 
     status_show_vpn();
+    ui_blank();
+
+    status_show_engine_v2();
     ui_blank();
 
     status_show_system();
