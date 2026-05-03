@@ -21,6 +21,7 @@ void atpd_context_init(void) {
     g_atpd_ctx.vpn_state = VPN_STATE_IDLE;
     g_atpd_ctx.xfrm_fd = -1;
     clock_gettime(CLOCK_MONOTONIC, &g_atpd_ctx.vpn_state_since);
+    g_atpd_ctx.vpn_teardown_cb = atpd_vpn_killswitch;
     LOG_INFO("ATPd Context: initialized (VPN state = IDLE)");
 }
 
@@ -53,4 +54,56 @@ void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char
         LOG_WARN("VPN_STATE: Kill-switch activated, cleaning up sessions");
         g_atpd_ctx.vpn_teardown_cb();
     }
+}
+/* ========== Session List Management ========== */
+
+void atpd_session_register_to_ctx(struct atpd_session *s) {
+    if (!s) return;
+
+    struct atpd_session_list *node = calloc(1, sizeof(struct atpd_session_list));
+    if (!node) {
+        LOG_ERROR("ATPd Context: failed to allocate session list node");
+        return;
+    }
+    node->session = s;
+    node->next = g_atpd_ctx.sessions;
+    g_atpd_ctx.sessions = node;
+
+    LOG_DEBUG("ATPd Context: session registered (total sessions in list)");
+}
+
+void atpd_session_unregister_from_ctx(struct atpd_session *s) {
+    if (!s || !g_atpd_ctx.sessions) return;
+
+    struct atpd_session_list **pp = &g_atpd_ctx.sessions;
+    while (*pp) {
+        if ((*pp)->session == s) {
+            struct atpd_session_list *to_free = *pp;
+            *pp = (*pp)->next;
+            free(to_free);
+            LOG_DEBUG("ATPd Context: session unregistered");
+            return;
+        }
+        pp = &(*pp)->next;
+    }
+}
+
+void atpd_vpn_killswitch(void) {
+    struct atpd_session_list *node = g_atpd_ctx.sessions;
+    int closed = 0;
+
+    while (node) {
+        struct atpd_session_list *next = node->next;
+        struct atpd_session *s = node->session;
+
+        if (s) {
+            atpd_session_destroy(s);
+            closed++;
+        }
+        free(node);
+        node = next;
+    }
+    g_atpd_ctx.sessions = NULL;
+
+    LOG_WARN("ATPd Context: Kill-switch closed %d sessions", closed);
 }
