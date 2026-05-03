@@ -29,7 +29,7 @@
 #include "reactor.h"
 #include "singbox_api.h"
 #include "atpd_context.h"
-
+#include "uds.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -173,6 +173,7 @@ static void run_event_loop(void) {
     }
 
     netlink_set_reactor(g_reactor);
+    uds_init(g_reactor, ATPD_UDS_PATH);
 
     api_start_with_reactor(&g_api_ctx, g_reactor);
     
@@ -198,6 +199,7 @@ static void run_event_loop(void) {
     LOG_INFO("Reactor event loop stopped");
 
     tproxy_cleanup_all(&g_config);
+    uds_cleanup();
     reactor_destroy(g_reactor);
     g_reactor = NULL;
 }
