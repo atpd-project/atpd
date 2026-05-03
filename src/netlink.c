@@ -9,6 +9,7 @@
 #include "netlink.h"
 #include "logger.h"
 #include "utils.h"
+#include "atpd_context.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -362,8 +363,8 @@ void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata
     ssize_t len = recvmsg(fd, &msg, MSG_DONTWAIT);
     if (len <= 0) return;
 
-    for (struct nlmsghdr *h = (struct nlmsghdr *)buf; 
-         NLMSG_OK(h, (uint32_t)len); 
+    for (struct nlmsghdr *h = (struct nlmsghdr *)buf;
+         NLMSG_OK(h, (uint32_t)len);
          h = NLMSG_NEXT(h, len)) {
 
         if (h->nlmsg_type == XFRM_MSG_NEWSA) {
@@ -377,17 +378,18 @@ void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata
                     char ifname[IFNAMSIZ] = {0};
                     snprintf(ifname, sizeof(ifname), "ipsec%u", if_id - 1);
 
-                    LOG_INFO("XFRM: VPN tunnel established: %s (IF_ID=%u)", ifname, if_id);
+                    atpd_vpn_state_transition(VPN_STATE_PREDICTING, if_id, ifname);
                     trigger_network_refresh(g_debounce_reactor);
                     break;
                 }
             }
         } else if (h->nlmsg_type == XFRM_MSG_DELSA) {
-            LOG_INFO("XFRM: VPN tunnel removed");
+            atpd_vpn_state_transition(VPN_STATE_TEARDOWN, 0, NULL);
             trigger_network_refresh(g_debounce_reactor);
         }
     }
 }
+
 
 /* ========== VPN Detection ========== */
 
