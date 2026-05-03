@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 
 static void session_in_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
 static void session_out_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
@@ -40,7 +41,7 @@ atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out) {
 void atpd_session_destroy(atpd_session_t *s) {
     if (!s) return;
 
-    LOG_DEBUG("session: destroying fd_in=%d fd_out=%d bytes_in=%llu bytes_out=%llu",
+    LOG_DEBUG("session: destroying fd_in=%d fd_out=%d bytes_in=%" PRIu64 " bytes_out=%" PRIu64 "",
               s->fd_in, s->fd_out, s->bytes_in, s->bytes_out);
 
     /* Unregister from global context */

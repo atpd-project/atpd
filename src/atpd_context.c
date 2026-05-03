@@ -1,5 +1,6 @@
 #include "atpd_context.h"
 #include "logger.h"
+#include "session.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
