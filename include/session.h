@@ -44,4 +44,8 @@ int atpd_session_register(reactor_t *r, atpd_session_t *s);
 /* VPN state check for splice gating */
 int atpd_session_is_vpn_ready(void);
 
+/* Pipe health and emergency drain */
+ssize_t splice_pump_logic(atpd_session_t *s, size_t max_len);
+void atpd_session_emergency_drain_all(void);
+
 #endif
