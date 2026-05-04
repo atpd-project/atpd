@@ -472,6 +472,11 @@ static int do_status(atp_options_t *opts) {
     api_init(&g_api_ctx, &g_config);
 
     netlink_init(NULL, &g_config);
+    /* Sync VPN state for status command (daemon is not running) */
+    char vpn_iface[IFNAMSIZ] = {0};
+    if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
+        atpd_vpn_state_transition(VPN_STATE_READY, 0, vpn_iface);
+    }
     status_show(&g_config, &svc, &g_api_ctx);
 
     return 0;
