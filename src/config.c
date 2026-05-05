@@ -55,6 +55,7 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
     else if (strcmp(k, "PROXY_TCP") == 0) cfg->proxy_tcp = atoi(v);
     else if (strcmp(k, "PROXY_UDP") == 0) cfg->proxy_udp = atoi(v);
     else if (strcmp(k, "PROXY_IPV6") == 0) cfg->proxy_ipv6 = atoi(v);
+    else if (strcmp(k, "SKIP_CHECK_FEATURE") == 0) cfg->skip_check_feature = atoi(v);
     else if (strcmp(k, "DNS_HIJACK_ENABLE") == 0) cfg->dns_hijack = atoi(v);
     else if (strcmp(k, "DNS_PORT") == 0) cfg->dns_port = atoi(v);
     else if (strcmp(k, "MARK_VALUE") == 0) cfg->mark_value = atoi(v);
@@ -66,10 +67,38 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
     else if (strcmp(k, "WIFI_INTERFACE") == 0) snprintf(cfg->wifi_iface, sizeof(cfg->wifi_iface), "%s", v);
     else if (strcmp(k, "HOTSPOT_INTERFACE") == 0) snprintf(cfg->hotspot_iface, sizeof(cfg->hotspot_iface), "%s", v);
     else if (strcmp(k, "USB_INTERFACE") == 0) snprintf(cfg->usb_iface, sizeof(cfg->usb_iface), "%s", v);
+    else if (strcmp(k, "OTHER_BYPASS_INTERFACES") == 0) snprintf(cfg->other_bypass, sizeof(cfg->other_bypass), "%s", v);
+    else if (strcmp(k, "OTHER_PROXY_INTERFACES") == 0) snprintf(cfg->other_proxy, sizeof(cfg->other_proxy), "%s", v);
+    else if (strcmp(k, "PROXY_MOBILE") == 0) cfg->proxy_mobile = atoi(v);
+    else if (strcmp(k, "PROXY_WIFI") == 0) cfg->proxy_wifi = atoi(v);
+    else if (strcmp(k, "PROXY_HOTSPOT") == 0) cfg->proxy_hotspot = atoi(v);
+    else if (strcmp(k, "PROXY_USB") == 0) cfg->proxy_usb = atoi(v);
+    else if (strcmp(k, "HOTSPOT_SUBNET_IPV4") == 0) snprintf(cfg->hotspot_subnet_ipv4, sizeof(cfg->hotspot_subnet_ipv4), "%s", v);
+    else if (strcmp(k, "HOTSPOT_SUBNET_IPV6") == 0) snprintf(cfg->hotspot_subnet_ipv6, sizeof(cfg->hotspot_subnet_ipv6), "%s", v);
+    else if (strcmp(k, "PROXY_IPv4_LIST") == 0) snprintf(cfg->proxy_ipv4_list, sizeof(cfg->proxy_ipv4_list), "%s", v);
+    else if (strcmp(k, "PROXY_IPv6_LIST") == 0) snprintf(cfg->proxy_ipv6_list, sizeof(cfg->proxy_ipv6_list), "%s", v);
+    else if (strcmp(k, "BYPASS_IPv4_LIST") == 0) snprintf(cfg->bypass_ipv4_list, sizeof(cfg->bypass_ipv4_list), "%s", v);
+    else if (strcmp(k, "BYPASS_IPv6_LIST") == 0) snprintf(cfg->bypass_ipv6_list, sizeof(cfg->bypass_ipv6_list), "%s", v);
     else if (strcmp(k, "BYPASS_CN_IP") == 0) cfg->bypass_cn_ip = atoi(v);
+    else if (strcmp(k, "CN_IP_FILE") == 0) snprintf(cfg->cn_ip_file, sizeof(cfg->cn_ip_file), "%s", v);
+    else if (strcmp(k, "CN_IPV6_FILE") == 0) snprintf(cfg->cn_ipv6_file, sizeof(cfg->cn_ipv6_file), "%s", v);
+    else if (strcmp(k, "CN_IP_URL") == 0) snprintf(cfg->cn_ip_url, sizeof(cfg->cn_ip_url), "%s", v);
+    else if (strcmp(k, "CN_IPV6_URL") == 0) snprintf(cfg->cn_ipv6_url, sizeof(cfg->cn_ipv6_url), "%s", v);
+    else if (strcmp(k, "APP_PROXY_ENABLE") == 0) cfg->app_proxy_enable = atoi(v);
+    else if (strcmp(k, "PROXY_APPS_LIST") == 0) snprintf(cfg->proxy_apps_list, sizeof(cfg->proxy_apps_list), "%s", v);
+    else if (strcmp(k, "BYPASS_APPS_LIST") == 0) snprintf(cfg->bypass_apps_list, sizeof(cfg->bypass_apps_list), "%s", v);
+    else if (strcmp(k, "APP_PROXY_MODE") == 0) snprintf(cfg->app_proxy_mode, sizeof(cfg->app_proxy_mode), "%s", v);
+    else if (strcmp(k, "MAC_FILTER_ENABLE") == 0) cfg->mac_filter_enable = atoi(v);
+    else if (strcmp(k, "PROXY_MACS_LIST") == 0) snprintf(cfg->proxy_macs_list, sizeof(cfg->proxy_macs_list), "%s", v);
+    else if (strcmp(k, "BYPASS_MACS_LIST") == 0) snprintf(cfg->bypass_macs_list, sizeof(cfg->bypass_macs_list), "%s", v);
+    else if (strcmp(k, "MAC_PROXY_MODE") == 0) snprintf(cfg->mac_proxy_mode, sizeof(cfg->mac_proxy_mode), "%s", v);
+    else if (strcmp(k, "BLOCK_QUIC") == 0) cfg->block_quic = atoi(v);
+    else if (strcmp(k, "LOG_TIMESTAMP") == 0) cfg->log_timestamp = atoi(v);
     else if (strcmp(k, "USER_CLASH_MODE") == 0) snprintf(cfg->user_clash_mode, sizeof(cfg->user_clash_mode), "%s", v);
+    else if (strcmp(k, "RESTART_DELAY") == 0) cfg->restart_delay = atoi(v);
     else if (strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->clash_secret, sizeof(cfg->clash_secret), "%s", v);
     else if (strcmp(k, "API_PORT") == 0) cfg->api_port = atoi(v);
+    else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api_host, sizeof(cfg->api_host), "%s", v);
     else if (strcmp(k, "UI_EMOJI_ENABLED") == 0) cfg->ui_emoji_enabled = atoi(v);
     else if (strcmp(k, "CORE_USER_GROUP") == 0) {
         char val[256]; snprintf(val, sizeof(val), "%s", v); char *colon = strchr(val, ':');
@@ -101,9 +130,12 @@ int config_load(const char *path, atp_config_t *cfg) {
 int config_set_mode(atp_config_t *cfg, const char *mode) {
     pthread_mutex_lock(&cfg->config_mutex);
     snprintf(cfg->user_clash_mode, sizeof(cfg->user_clash_mode), "%s", mode);
+    char data_dir[SAFE_PATH_MAX];
+    snprintf(data_dir, sizeof(data_dir), "%s", cfg->data_dir);
     pthread_mutex_unlock(&cfg->config_mutex);
+
     char cp[SAFE_PATH_MAX], tp[SAFE_PATH_MAX];
-    if (snprintf(cp, sizeof(cp), "%s/%s", cfg->data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) return -1;
+    if (snprintf(cp, sizeof(cp), "%s/%s", data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) return -1;
     if (!file_exists(cp)) return 0;
     if (snprintf(tp, sizeof(tp), "%s.tmp", cp) >= (int)sizeof(tp)) return -1;
     FILE *fin = fopen(cp, "r"), *fout = fopen(tp, "w");
