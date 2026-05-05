@@ -67,6 +67,7 @@ static conn_cache_v6_t g_conn_cache_v6[CONN_CACHE_SIZE];
 static int g_conn_cache_count = 0;
 static int g_conn_cache_v6_count = 0;
 static pthread_mutex_t g_conn_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_conn_cache_mutex_initialized = 0;
 
 /* Forward declarations */
 static int app_filter_load_package_cache(void);
@@ -89,9 +90,13 @@ int app_filter_init(atp_config_t *cfg) {
     }
     
     /* Create ipset for UIDs */
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "ipset create %s bitmap:port range 0-65535 2>/dev/null", APP_IPSET_NAME);
-    exec_cmd_simple(cmd, 5);
+    if (!cfg->dry_run) {
+        char cmd[MAX_CMD_LEN];
+        snprintf(cmd, sizeof(cmd), "ipset create %s bitmap:port range 0-65535 2>/dev/null", APP_IPSET_NAME);
+        exec_cmd_simple(cmd, 5);
+    } else {
+        LOG_DEBUG("[DRY_RUN] ipset create %s bitmap:port range 0-65535", APP_IPSET_NAME);
+    }
     
     /* Initialize INET_DIAG for connection-level control */
     if (inet_diag_init() != 0) {
@@ -102,14 +107,16 @@ int app_filter_init(atp_config_t *cfg) {
         LOG_DEBUG("INET_DIAG unavailable, using /proc/net/tcp fallback");
     }
     
-    /* Initialize connection cache */
-    memset(g_conn_cache, 0, sizeof(g_conn_cache));
-    memset(g_conn_cache_v6, 0, sizeof(g_conn_cache_v6));
-    pthread_mutex_init(&g_conn_cache_mutex, NULL);
+    /* Initialize connection cache mutex (only once) */
+    if (!g_conn_cache_mutex_initialized) {
+        pthread_mutex_init(&g_conn_cache_mutex, NULL);
+        g_conn_cache_mutex_initialized = 1;
+    }
     
     LOG_DEBUG("App filter initialized with ipset %s and connection cache", APP_IPSET_NAME);
     return 0;
 }
+
 /* Robust parsing of packages.list - handles variable field counts across Android versions */
 static int parse_user_id_from_line(const char *line) {
     char *line_copy = strdup(line);
@@ -232,6 +239,7 @@ static int app_filter_load_package_cache(void) {
               cache_count, estimated_lines, cache_count);
     return 0;
 }
+
 static int app_filter_find_package_uid(const char *package_name, int user_id) {
     if (!g_package_cache_loaded) return -1;
 
@@ -243,6 +251,10 @@ static int app_filter_find_package_uid(const char *package_name, int user_id) {
         }
     }
     return -1;
+}
+
+int app_filter_get_uid_by_package(const char *package_name, int user_id) {
+    return app_filter_find_package_uid(package_name, user_id);
 }
 
 static int app_filter_uid_in_list(int uid, int *uid_list, int count) {
@@ -294,9 +306,14 @@ static void app_filter_free_package_list(char **packages, int count) {
     free(packages);
 }
 
-static int app_filter_add_uids_to_ipset(int *uids, int count, const char *mode) {
+static int app_filter_add_uids_to_ipset(atp_config_t *cfg, int *uids, int count, const char *mode) {
     if (count == 0) return 0;
     (void)mode;
+
+    if (cfg->dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would add %d UIDs to ipset %s", count, APP_IPSET_NAME);
+        return 0;
+    }
 
     /* Flush existing ipset */
     char cmd[MAX_CMD_LEN];
@@ -406,6 +423,7 @@ int app_filter_resolve_packages(const char *packages_list, int **uids, int *coun
 void app_filter_free_uids(int *uids) {
     if (uids) free(uids);
 }
+
 /* IPv4 connection-level check with caching */
 static int app_filter_check_connection_cached_v4(uint32_t src_ip, uint16_t src_port,
                                                    uint32_t dst_ip, uint16_t dst_port) {
@@ -616,7 +634,7 @@ int app_filter_setup(atp_config_t *cfg) {
     g_current_uids_count = uid_count;
 
     /* Add UIDs to ipset (for iptables-level filtering) */
-    app_filter_add_uids_to_ipset(uids, uid_count, cfg->app_proxy_mode);
+    app_filter_add_uids_to_ipset(cfg, uids, uid_count, cfg->app_proxy_mode);
 
     /* Configure IPv4 chain */
     app_filter_configure_chain(cfg, 4);
@@ -644,11 +662,15 @@ int app_filter_cleanup(atp_config_t *cfg) {
         return 0;
     }
 
-    /* Flush and destroy ipset */
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "ipset flush %s 2>/dev/null; ipset destroy %s 2>/dev/null",
-             APP_IPSET_NAME, APP_IPSET_NAME);
-    exec_cmd_simple(cmd, 5);
+    if (!cfg->dry_run) {
+        /* Flush and destroy ipset */
+        char cmd[MAX_CMD_LEN];
+        snprintf(cmd, sizeof(cmd), "ipset flush %s 2>/dev/null; ipset destroy %s 2>/dev/null",
+                 APP_IPSET_NAME, APP_IPSET_NAME);
+        exec_cmd_simple(cmd, 5);
+    } else {
+        LOG_DEBUG("[DRY_RUN] ipset flush %s; ipset destroy %s", APP_IPSET_NAME, APP_IPSET_NAME);
+    }
 
     /* Flush IPv4 chain */
     tproxy_chain_flush(cfg, 4, "mangle", "ATP_APP_0");
@@ -665,8 +687,11 @@ int app_filter_cleanup(atp_config_t *cfg) {
         g_current_uids_count = 0;
     }
 
-    /* Clean up connection cache */
-    pthread_mutex_destroy(&g_conn_cache_mutex);
+    /* Clean up connection cache mutex */
+    if (g_conn_cache_mutex_initialized) {
+        pthread_mutex_destroy(&g_conn_cache_mutex);
+        g_conn_cache_mutex_initialized = 0;
+    }
 
     /* Clean up INET_DIAG */
     inet_diag_cleanup();
@@ -701,4 +726,3 @@ int app_filter_get_connection_uid_v6(const uint8_t *src_ip, uint16_t src_port,
                                       const uint8_t *dst_ip, uint16_t dst_port) {
     return app_filter_check_connection_cached_v6(src_ip, src_port, dst_ip, dst_port);
 }
-
