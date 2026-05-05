@@ -17,7 +17,6 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <time.h>
-#include <poll.h>
 
 typedef enum {
     API_STATE_IDLE = 0,
@@ -94,6 +93,7 @@ int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r);
 int api_get_mode_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata);
 int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
+int api_get_proxies_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
 
 int api_get_fds(api_ctx_t *ctx, int *fds, int max_fds);
 int api_handle_event(api_ctx_t *ctx, int fd, int events);
@@ -107,7 +107,5 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
 
 const char *api_mode_to_string(api_mode_t mode);
 api_mode_t api_string_to_mode(const char *str);
-
-int api_get_proxies_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
 
 #endif /* ATP_API_H */
