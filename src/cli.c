@@ -41,10 +41,10 @@ void print_usage(const char *progname) {
     printf("  -p, --pid FILE        Specify PID file path\n");
     printf("  -d, --daemon          Run as daemon (default for start)\n");
     printf("  -f, --foreground      Run in foreground (do not daemonize)\n");
-    printf("  --verbose             Verbose output (debug level)\n");
+    printf("  -V, --verbose         Verbose output (debug level)\n");
     printf("  -q, --quiet           Quiet output (errors only)\n");
-    printf("  --force               Skip confirmation for dangerous operations\n");
-    printf("  -t                    Test configuration and exit\n");
+    printf("  -F, --force           Skip confirmation for dangerous operations\n");
+    printf("  -t, --test            Test configuration and exit\n");
     printf("  -n, --no-color        Disable colored output\n");
     printf("  -h, --help            Show this help\n");
     printf("  -v, --version         Print version and exit\n");
@@ -75,7 +75,6 @@ void print_help(const char *progname) {
     print_usage(progname);
 }
 
-/* Find the most similar command for suggestions */
 static const char* suggest_command(const char *cmd) {
     const char *commands[] = {"start", "stop", "restart", "status",
                               "reload", "check", "update-geoip",
