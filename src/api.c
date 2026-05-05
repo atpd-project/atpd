@@ -387,6 +387,10 @@ static int api_socket_connect(api_request_t *req) {
         req->current_addr = req->current_addr->ai_next;
     }
     
+    freeaddrinfo(req->addr_info);
+    req->addr_info = NULL;
+    req->current_addr = NULL;
+    
     LOG_ERROR("API: all connection attempts failed for %s:%d", req->host, req->port);
     return -1;
 }
@@ -689,8 +693,6 @@ int api_get_fds(api_ctx_t *ctx, int *fds, int max_fds) {
 }
 
 int api_handle_event(api_ctx_t *ctx, int fd, int events) {
-    // Legacy function - now handled by Reactor
-    // Reactor will call api_io_callback directly
     (void)ctx;
     (void)fd;
     (void)events;
@@ -698,7 +700,6 @@ int api_handle_event(api_ctx_t *ctx, int fd, int events) {
 }
 
 int api_process(api_ctx_t *ctx) {
-    // Legacy function - now called automatically by api_io_callback
     api_process_requests(ctx);
     return 0;
 }
@@ -749,6 +750,10 @@ int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback
 
 int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata) {
     return api_request_async(ctx, "GET", "/health", NULL, callback, userdata);
+}
+
+int api_get_proxies_async(api_ctx_t *ctx, api_callback_t callback, void *userdata) {
+    return api_request_async(ctx, "GET", "/proxies", NULL, callback, userdata);
 }
 
 int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
