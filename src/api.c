@@ -787,60 +787,66 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
     return 0;
 }
 
-/* ========== Sync API (kept for status command) ========== */
+/* ========== Sync API ========== */
 
-int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
-    return api_get_mode_sync(ctx, mode, size);
-}
+int api_get_sync(const char *url, char *response, size_t response_size) {
+    if (!url || !response || response_size == 0) return -1;
 
-int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
-    if (!ctx || !mode || size == 0) return -1;
-    
     int sock_fd = -1;
     int result = -1;
     char *recv_buf = NULL;
     size_t recv_size = 4096;
     size_t recv_offset = 0;
-    
+
     char host[64];
+    char path[256];
     int port;
     const char *start;
-    
-    if (strncmp(ctx->base_url, "http://", 7) == 0) {
-        start = ctx->base_url + 7;
+
+    if (strncmp(url, "http://", 7) == 0) {
+        start = url + 7;
         port = 80;
     } else {
-        start = ctx->base_url;
+        start = url;
         port = 80;
     }
-    
-    const char *colon = strchr(start, ':');
+
     const char *slash = strchr(start, '/');
-    
+    const char *colon = strchr(start, ':');
+
     if (colon && (!slash || colon < slash)) {
         size_t len = colon - start;
         strncpy(host, start, len);
         host[len] = '\0';
         port = atoi(colon + 1);
+        if (slash) {
+            strncpy(path, slash, sizeof(path) - 1);
+            path[sizeof(path) - 1] = '\0';
+        } else {
+            strcpy(path, "/");
+        }
     } else if (slash) {
         size_t len = slash - start;
         strncpy(host, start, len);
         host[len] = '\0';
+        strncpy(path, slash, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
     } else {
         strcpy(host, start);
+        strcpy(path, "/");
     }
-    
+
     sock_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_fd < 0) {
         LOG_ERROR("API sync: socket failed: %s", strerror(errno));
         return -1;
     }
-    
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
-    
+
     if (strcmp(host, "localhost") == 0 || strcmp(host, "127.0.0.1") == 0) {
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
@@ -851,46 +857,37 @@ int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
         }
         memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
     }
-    
-    struct timeval tv = { .tv_sec = ctx->timeout_sec, .tv_usec = 0 };
+
+    struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
     setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    
+
     if (connect(sock_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         LOG_ERROR("API sync: connect failed: %s", strerror(errno));
         goto cleanup;
     }
-    
+
     char headers[2048];
-    int header_len;
-    
-    header_len = snprintf(headers, sizeof(headers),
-             "GET /configs HTTP/1.1\r\n"
+    int header_len = snprintf(headers, sizeof(headers),
+             "GET %s HTTP/1.1\r\n"
              "Host: %s\r\n"
              "User-Agent: ATPd/1.0\r\n"
-             "Accept: application/json\r\n"
-             "Connection: close\r\n",
-             host);
-    
-    if (ctx->secret[0]) {
-        header_len += snprintf(headers + header_len, sizeof(headers) - header_len,
-                               "Authorization: Bearer %s\r\n", ctx->secret);
-    }
-    
-    header_len += snprintf(headers + header_len, sizeof(headers) - header_len, "\r\n");
-    
+             "Accept: */*\r\n"
+             "Connection: close\r\n"
+             "\r\n", path, host);
+
     ssize_t sent = send(sock_fd, headers, header_len, 0);
     if (sent != header_len) {
         LOG_ERROR("API sync: send failed: %s", strerror(errno));
         goto cleanup;
     }
-    
+
     recv_buf = malloc(recv_size);
     if (!recv_buf) {
         LOG_ERROR("API sync: malloc failed");
         goto cleanup;
     }
-    
+
     while (1) {
         if (recv_offset >= recv_size - 1) {
             recv_size *= 2;
@@ -898,59 +895,63 @@ int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
             if (!new_buf) goto cleanup;
             recv_buf = new_buf;
         }
-        
+
         ssize_t recvd = recv(sock_fd, recv_buf + recv_offset, recv_size - recv_offset - 1, 0);
         if (recvd > 0) {
             recv_offset += recvd;
             recv_buf[recv_offset] = '\0';
-            
-            char *header_end = strstr(recv_buf, "\r\n\r\n");
-            if (header_end) {
-                char *cl = strcasestr(recv_buf, "Content-Length:");
-                if (cl) {
-                    cl = strchr(cl, ':') + 1;
-                    while (*cl == ' ') cl++;
-                    int content_length = atoi(cl);
-                    size_t body_start = header_end + 4 - recv_buf;
-                    size_t body_received = recv_offset - body_start;
-                    if (body_received >= (size_t)content_length) {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
         } else if (recvd == 0) {
             break;
         } else {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;
-            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
             LOG_ERROR("API sync: recv failed: %s", strerror(errno));
             goto cleanup;
         }
     }
-    
+
     char *body = strstr(recv_buf, "\r\n\r\n");
     if (body) {
         body += 4;
-        yyjson_doc *doc = yyjson_read(body, strlen(body), 0);
-        if (doc) {
-            yyjson_val *root = yyjson_doc_get_root(doc);
-            yyjson_val *mode_item = yyjson_obj_get(root, "mode");
-            if (mode_item && yyjson_is_str(mode_item)) {
-                strncpy(mode, yyjson_get_str(mode_item), size - 1);
-                mode[size - 1] = '\0';
-                result = 0;
-            }
-            yyjson_doc_free(doc);
-        }
+        size_t body_len = recv_offset - (body - recv_buf);
+        if (body_len >= response_size) body_len = response_size - 1;
+        memcpy(response, body, body_len);
+        response[body_len] = '\0';
+        result = 0;
     }
-    
+
 cleanup:
     if (sock_fd >= 0) close(sock_fd);
     free(recv_buf);
     return result;
+}
+
+int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
+    return api_get_mode_sync(ctx, mode, size);
+}
+
+int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
+    if (!ctx || !mode || size == 0) return -1;
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/configs", ctx->base_url);
+
+    char response[8192];
+    if (api_get_sync(url, response, sizeof(response)) != 0) return -1;
+
+    yyjson_doc *doc = yyjson_read(response, strlen(response), 0);
+    if (!doc) return -1;
+
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *mode_item = yyjson_obj_get(root, "mode");
+    if (mode_item && yyjson_is_str(mode_item)) {
+        strncpy(mode, yyjson_get_str(mode_item), size - 1);
+        mode[size - 1] = '\0';
+        yyjson_doc_free(doc);
+        return 0;
+    }
+
+    yyjson_doc_free(doc);
+    return -1;
 }
 
 /* ========== Mode Conversion ========== */
@@ -970,4 +971,4 @@ api_mode_t api_string_to_mode(const char *str) {
     if (strcmp(str, "Direct") == 0) return API_MODE_DIRECT;
     if (strcmp(str, "Google VPN") == 0) return API_MODE_GOOGLE_VPN;
     return API_MODE_RULE;
-}
+}	

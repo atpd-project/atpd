@@ -2,7 +2,7 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
  *
- * GeoIP download - Adapted to async API framework
+ * GeoIP download - Synchronous mode
  */
 
 #include "geoip.h"
@@ -18,12 +18,12 @@
 #include <errno.h>
 #include <time.h>
 #include <pthread.h>
-#include <yyjson.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
 
 #define GEOIP_TIMEOUT_SEC 30
 #define SAFE_PATH_MAX (PATH_MAX + 256)
+#define GEOIP_RESPONSE_MAX (4 * 1024 * 1024)  /* 4MB max for GeoIP data */
 
 static pthread_t geoip_thread;
 static int geoip_async_running = 0;
@@ -40,47 +40,6 @@ static const char *default_cn_cidrs[] = {
     "125.0.0.0/8", "126.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12",
     "192.168.0.0/16", "223.0.0.0/8", NULL
 };
-
-typedef struct {
-    atp_config_t *cfg;
-    char url[512];
-    char output_path[PATH_MAX];
-    void (*on_complete)(int success, void *userdata);
-    void *userdata;
-} geoip_download_ctx_t;
-
-static void geoip_download_callback(int http_code, const char *response, void *userdata) {
-    geoip_download_ctx_t *ctx = (geoip_download_ctx_t*)userdata;
-    if (http_code != 200 || !response) {
-        LOG_ERROR("GeoIP: download failed for %s (HTTP %d)", ctx->url, http_code);
-        if (ctx->on_complete) ctx->on_complete(0, ctx->userdata);
-        free(ctx); return;
-    }
-    FILE *fp = fopen(ctx->output_path, "w");
-    if (!fp) {
-        LOG_ERROR("GeoIP: failed to open %s", ctx->output_path);
-        if (ctx->on_complete) ctx->on_complete(0, ctx->userdata);
-        free(ctx); return;
-    }
-    fwrite(response, 1, strlen(response), fp);
-    fclose(fp);
-    if (ctx->on_complete) ctx->on_complete(1, ctx->userdata);
-    free(ctx);
-}
-
-static int geoip_download_async(atp_config_t *cfg, const char *url, const char *output_path,
-                                 void (*on_complete)(int, void*), void *userdata) {
-    geoip_download_ctx_t *ctx = calloc(1, sizeof(geoip_download_ctx_t));
-    if (!ctx) return -1;
-    ctx->cfg = cfg;
-    snprintf(ctx->url, sizeof(ctx->url), "%.511s", url);
-    snprintf(ctx->output_path, sizeof(ctx->output_path), "%.4095s", output_path);
-    ctx->on_complete = on_complete;
-    ctx->userdata = userdata;
-    extern int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
-                                      const char *body, api_callback_t callback, void *userdata);
-    return api_request_raw_async(&g_api_ctx, "GET", url, NULL, geoip_download_callback, ctx);
-}
 
 static int geoip_create_default_ipset(atp_config_t *cfg) {
     (void)cfg;
@@ -102,7 +61,29 @@ int geoip_init(atp_config_t *cfg) {
 
 int geoip_download_url(const char *url, const char *output_path, int timeout_sec) {
     (void)timeout_sec;
-    return geoip_download_async(NULL, url, output_path, NULL, NULL);
+
+    char *response = malloc(GEOIP_RESPONSE_MAX);
+    if (!response) {
+        LOG_ERROR("GeoIP: malloc failed for download buffer");
+        return -1;
+    }
+
+    if (api_get_sync(url, response, GEOIP_RESPONSE_MAX) != 0) {
+        LOG_ERROR("GeoIP: download failed for %s", url);
+        free(response);
+        return -1;
+    }
+
+    FILE *fp = fopen(output_path, "w");
+    if (!fp) {
+        LOG_ERROR("GeoIP: failed to open %s", output_path);
+        free(response);
+        return -1;
+    }
+    fwrite(response, 1, strlen(response), fp);
+    fclose(fp);
+    free(response);
+    return 0;
 }
 
 int geoip_download(atp_config_t *cfg) {
