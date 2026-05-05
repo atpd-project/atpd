@@ -187,3 +187,33 @@ int geoip_validate_cidr(const char *cidr, int family) {
     if (family == 4) return (inet_pton(AF_INET, ip, &v4) == 1 && prefix <= 32) ? 0 : -1;
     return (inet_pton(AF_INET6, ip, &v6) == 1 && prefix <= 128) ? 0 : -1;
 }
+
+/* ========== ipset Wrapper Functions ========== */
+
+int geoip_ipset_create(const char *name, int family, int hashsize, int maxelem) {
+    return ipset_create(name, family, hashsize, maxelem);
+}
+
+int geoip_ipset_destroy(const char *name) {
+    return ipset_destroy(name);
+}
+
+int geoip_ipset_swap(const char *from, const char *to) {
+    return ipset_swap(from, to);
+}
+
+int geoip_ipset_exists(const char *name) {
+    return ipset_exists(name);
+}
+
+int geoip_ipset_flush(const char *name) {
+    return ipset_flush(name);
+}
+
+int geoip_ipset_restore_file(const char *name, const char *filename) {
+    return ipset_restore_file(name, filename);
+}
+
+int geoip_parse_cidr_file(const char *input_path, const char *output_path, int family) {
+    return ipset_parse_cidr_file(input_path, output_path, family);
+}
