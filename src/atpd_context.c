@@ -1,3 +1,10 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2025 ATP Project
+ *
+ * ATPd Global Context (VPN State Machine + Session List)
+ */
+
 #include "atpd_context.h"
 #include "logger.h"
 #include "session.h"
@@ -56,6 +63,7 @@ void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char
         g_atpd_ctx.vpn_teardown_cb();
     }
 }
+
 /* ========== Session List Management ========== */
 
 void atpd_session_register_to_ctx(struct atpd_session *s) {
@@ -90,15 +98,38 @@ void atpd_session_unregister_from_ctx(struct atpd_session *s) {
 }
 
 void atpd_vpn_killswitch(void) {
-    struct atpd_session_list *node = g_atpd_ctx.sessions;
     int closed = 0;
 
+    /* First pass: collect all session pointers from the list.
+     * We cannot call atpd_session_destroy while iterating the list
+     * because destroy -> unregister_from_ctx modifies the list,
+     * causing double-free of list nodes. */
+    struct atpd_session *session_ptrs[256];
+    int count = 0;
+    struct atpd_session_list *node = g_atpd_ctx.sessions;
+
+    while (node && count < 256) {
+        if (node->session) {
+            session_ptrs[count++] = node->session;
+        }
+        node = node->next;
+    }
+
+    /* Second pass: destroy each session.
+     * atpd_session_destroy will call unregister_from_ctx which
+     * safely removes and frees its own list node. */
+    for (int i = 0; i < count; i++) {
+        atpd_session_destroy(session_ptrs[i]);
+        closed++;
+    }
+
+    /* Any remaining list nodes (sessions created between passes)
+     * are cleaned up by the final reset. */
+    node = g_atpd_ctx.sessions;
     while (node) {
         struct atpd_session_list *next = node->next;
-        struct atpd_session *s = node->session;
-
-        if (s) {
-            atpd_session_destroy(s);
+        if (node->session) {
+            atpd_session_destroy(node->session);
             closed++;
         }
         free(node);
