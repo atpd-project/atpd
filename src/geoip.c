@@ -23,7 +23,7 @@
 
 #define GEOIP_TIMEOUT_SEC 30
 #define SAFE_PATH_MAX (PATH_MAX + 256)
-#define GEOIP_RESPONSE_MAX (4 * 1024 * 1024)  /* 4MB max for GeoIP data */
+#define GEOIP_RESPONSE_MAX (4 * 1024 * 1024)
 
 static pthread_t geoip_thread;
 static int geoip_async_running = 0;
@@ -42,7 +42,11 @@ static const char *default_cn_cidrs[] = {
 };
 
 static int geoip_create_default_ipset(atp_config_t *cfg) {
-    (void)cfg;
+    if (cfg->dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would create default ipset cnip with %d entries",
+                  (int)(sizeof(default_cn_cidrs) / sizeof(default_cn_cidrs[0]) - 1));
+        return 0;
+    }
     LOG_INFO("Creating default ipset (fallback mode)");
     ipset_destroy("cnip");
     ipset_create("cnip", 4, 8192, 65536);
@@ -51,6 +55,10 @@ static int geoip_create_default_ipset(atp_config_t *cfg) {
 }
 
 int geoip_init(atp_config_t *cfg) {
+    if (cfg->dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would initialize GeoIP rules directory");
+        return 0;
+    }
     char rules_dir[SAFE_PATH_MAX];
     if (snprintf(rules_dir, sizeof(rules_dir), "%s/rules", cfg->data_dir) < (int)sizeof(rules_dir)) {
         mkdir_recursive(rules_dir, 0755);
@@ -88,6 +96,10 @@ int geoip_download_url(const char *url, const char *output_path, int timeout_sec
 
 int geoip_download(atp_config_t *cfg) {
     if (!cfg->bypass_cn_ip) return 0;
+    if (cfg->dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would download GeoIP from %s", cfg->cn_ip_url);
+        return 0;
+    }
     char v4_p[SAFE_PATH_MAX], v4_t[SAFE_PATH_MAX];
     snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_t, sizeof(v4_t), "%s/rules/%.255s.tmp", cfg->data_dir, cfg->cn_ip_file);
@@ -99,6 +111,10 @@ int geoip_download(atp_config_t *cfg) {
 
 static void* geoip_async_update_thread(void *arg) {
     atp_config_t *cfg = (atp_config_t*)arg;
+    if (cfg->dry_run) {
+        geoip_async_running = 0; geoip_async_complete = 1;
+        return NULL;
+    }
     char v4_p[SAFE_PATH_MAX], v4_r[SAFE_PATH_MAX];
     snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_r, sizeof(v4_r), "%s/rules/%.255s.parsed", cfg->data_dir, cfg->cn_ip_file);
@@ -116,6 +132,10 @@ static void* geoip_async_update_thread(void *arg) {
 int geoip_setup_ipset_async(atp_config_t *cfg) {
     if (!cfg->bypass_cn_ip) return 0;
     geoip_create_default_ipset(cfg);
+    if (cfg->dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would start async GeoIP update");
+        return 0;
+    }
     if (!geoip_async_running) {
         geoip_async_running = 1; geoip_async_complete = 0;
         if (pthread_create(&geoip_thread, NULL, geoip_async_update_thread, cfg) == 0)
@@ -130,12 +150,20 @@ int geoip_setup_ipset(atp_config_t *cfg) { return geoip_setup_ipset_async(cfg); 
 
 int geoip_cleanup_ipset(atp_config_t *cfg) {
     if (!cfg->bypass_cn_ip) return 0;
+    if (cfg->dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would destroy ipset cnip and cnip6");
+        return 0;
+    }
     ipset_destroy("cnip"); ipset_destroy("cnip6");
     return 0;
 }
 
 int geoip_atomic_update(atp_config_t *cfg) {
     if (!cfg->bypass_cn_ip) return 0;
+    if (cfg->dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would atomically update GeoIP ipset from %s", cfg->cn_ip_url);
+        return 0;
+    }
     char v4_p[SAFE_PATH_MAX], v4_t[SAFE_PATH_MAX], v4_r[SAFE_PATH_MAX], v4_rt[SAFE_PATH_MAX];
     snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_t, sizeof(v4_t), "%s/rules/%.255s.tmp", cfg->data_dir, cfg->cn_ip_file);
@@ -152,6 +180,7 @@ int geoip_atomic_update(atp_config_t *cfg) {
 }
 
 int geoip_check_update_needed(atp_config_t *cfg, int max_age_days) {
+    if (cfg->dry_run) return 0;
     char v4_p[SAFE_PATH_MAX];
     snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
     struct stat st;
@@ -168,8 +197,6 @@ int geoip_validate_cidr(const char *cidr, int family) {
     if (family == 4) return (inet_pton(AF_INET, ip, &v4) == 1 && prefix <= 32) ? 0 : -1;
     return (inet_pton(AF_INET6, ip, &v6) == 1 && prefix <= 128) ? 0 : -1;
 }
-
-/* ========== ipset Wrapper Functions ========== */
 
 int geoip_ipset_create(const char *name, int family, int hashsize, int maxelem) {
     return ipset_create(name, family, hashsize, maxelem);
