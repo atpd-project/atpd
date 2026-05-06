@@ -144,16 +144,16 @@ int iface_monitor_start(iface_monitor_t *monitor) {
 }
 
 int iface_monitor_stop(iface_monitor_t *monitor) {
-    if (!monitor || !monitor->internal) return;
+    if (!monitor || !monitor->internal) return -1;
     reactor_monitor_ctx_t *ctx = monitor->internal;
-    
+
     monitor->running = 0;
-    
+
     if (ctx->vpn_check_timer) {
         reactor_cancel_timer(ctx->reactor, ctx->vpn_check_timer);
         ctx->vpn_check_timer = NULL;
     }
-    
+
     return 0;
 }
 
