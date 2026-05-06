@@ -1,7 +1,15 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2025 ATP Project
+ *
+ * Interface monitor - Reactor-driven netlink
+ */
+
 #include "iface_monitor.h"
 #include "logger.h"
 #include "netlink.h"
 #include "utils.h"
+#include "reactor.h"
 #include <sys/socket.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
@@ -9,216 +17,108 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/epoll.h>
-#include <stdio.h>
 #include <arpa/inet.h>
 #include <net/if.h>
 
-#define NL_BUF_SIZE 8192
-#define EPOLL_TIMEOUT_MS 1000
+typedef struct {
+    iface_monitor_t *base;
+    reactor_t *reactor;
+    reactor_timer_t *vpn_check_timer;
+    int nl_fd;
+    uint8_t owned_reactor;
+} reactor_monitor_ctx_t;
 
-/* Helper function to get interface name by index */
-static int get_ifname_by_index(int ifindex, char *ifname, size_t size) {
-    char cmd[MAX_CMD_LEN];
-    char output[IFNAMSIZ + 1];
+static void check_vpn_status(reactor_monitor_ctx_t *ctx) {
+    if (!ctx || !ctx->base) return;
     
-    snprintf(cmd, sizeof(cmd), 
-             "ip link show %d 2>/dev/null | head -1 | awk '{print $2}' | tr -d ':'",
-             ifindex);
-    
-    if (exec_cmd(cmd, output, sizeof(output), 3) == 0 && output[0] != '\0') {
-        strncpy(ifname, output, size - 1);
-        ifname[size - 1] = '\0';
-        return 0;
-    }
-    
-    /* Fallback: use if_indextoname if available */
-    if (if_indextoname(ifindex, ifname) != NULL) {
-        return 0;
-    }
-    
-    return -1;
-}
-
-static int nl_send_link_dump(int sock) {
-    struct {
-        struct nlmsghdr nlh;
-        struct ifinfomsg ifi;
-    } req;
-    
-    memset(&req, 0, sizeof(req));
-    req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg));
-    req.nlh.nlmsg_type = RTM_GETLINK;
-    req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-    req.nlh.nlmsg_seq = 1;
-    req.nlh.nlmsg_pid = getpid();
-    req.ifi.ifi_family = AF_UNSPEC;
-    
-    struct sockaddr_nl addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.nl_family = AF_NETLINK;
-    
-    struct iovec iov = { &req, req.nlh.nlmsg_len };
-    struct msghdr msg = {
-        .msg_name = &addr,
-        .msg_namelen = sizeof(addr),
-        .msg_iov = &iov,
-        .msg_iovlen = 1
-    };
-    
-    return sendmsg(sock, &msg, 0);
-}
-
-static int nl_send_addr_dump(int sock, int family) {
-    struct {
-        struct nlmsghdr nlh;
-        struct rtgenmsg g;
-    } req;
-    
-    memset(&req, 0, sizeof(req));
-    req.nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtgenmsg));
-    req.nlh.nlmsg_type = RTM_GETADDR;
-    req.nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-    req.nlh.nlmsg_seq = 1;
-    req.nlh.nlmsg_pid = getpid();
-    req.g.rtgen_family = family;
-    
-    struct sockaddr_nl addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.nl_family = AF_NETLINK;
-    
-    struct iovec iov = { &req, req.nlh.nlmsg_len };
-    struct msghdr msg = {
-        .msg_name = &addr,
-        .msg_namelen = sizeof(addr),
-        .msg_iov = &iov,
-        .msg_iovlen = 1
-    };
-    
-    return sendmsg(sock, &msg, 0);
-}
-
-static void handle_link_message(struct nlmsghdr *nlh, iface_monitor_t *monitor) {
-    struct ifinfomsg *ifi = (struct ifinfomsg*)NLMSG_DATA(nlh);
-    struct rtattr *rta;
-    int rta_len = NLMSG_PAYLOAD(nlh, sizeof(*ifi));
-    char ifname[IFNAMSIZ] = {0};
-    
-    for (rta = IFLA_RTA(ifi); RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len)) {
-        if (rta->rta_type == IFLA_IFNAME) {
-            strncpy(ifname, RTA_DATA(rta), IFNAMSIZ - 1);
-            break;
-        }
-    }
-    
-    if (ifname[0] == '\0') return;
-    
-    if (nlh->nlmsg_type == RTM_NEWLINK) {
-        if (ifi->ifi_flags & IFF_RUNNING) {
-            LOG_DEBUG("Interface %s is UP", ifname);
-            if (monitor->callback) {
-                monitor->callback(ifname, IFACE_EVENT_UP, monitor->userdata);
-            }
-        } else {
-            LOG_DEBUG("Interface %s is DOWN", ifname);
-            if (monitor->callback) {
-                monitor->callback(ifname, IFACE_EVENT_DOWN, monitor->userdata);
-            }
-        }
-    }
-}
-
-static void handle_addr_message(struct nlmsghdr *nlh, iface_monitor_t *monitor) {
-    struct ifaddrmsg *ifa = (struct ifaddrmsg*)NLMSG_DATA(nlh);
-    struct rtattr *rta;
-    int rta_len = NLMSG_PAYLOAD(nlh, sizeof(*ifa));
-    char ifname[IFNAMSIZ] = {0};
-    char addr_str[64] = {0};
-    
-    /* Get real interface name by index */
-    if (get_ifname_by_index(ifa->ifa_index, ifname, sizeof(ifname)) != 0) {
-        /* Fallback: use generic name if lookup fails */
-        snprintf(ifname, sizeof(ifname), "if%d", ifa->ifa_index);
-    }
-    
-    for (rta = IFA_RTA(ifa); RTA_OK(rta, rta_len); rta = RTA_NEXT(rta, rta_len)) {
-        if (rta->rta_type == IFA_ADDRESS) {
-            if (ifa->ifa_family == AF_INET) {
-                inet_ntop(AF_INET, RTA_DATA(rta), addr_str, sizeof(addr_str));
-            } else if (ifa->ifa_family == AF_INET6) {
-                inet_ntop(AF_INET6, RTA_DATA(rta), addr_str, sizeof(addr_str));
-            }
-        }
-    }
-    
-    if (addr_str[0]) {
-        if (nlh->nlmsg_type == RTM_NEWADDR) {
-            LOG_DEBUG("Address %s added to %s", addr_str, ifname);
-            if (monitor->callback) {
-                monitor->callback(ifname, IFACE_EVENT_ADDR_ADDED, monitor->userdata);
-            }
-        } else if (nlh->nlmsg_type == RTM_DELADDR) {
-            LOG_DEBUG("Address %s removed from %s", addr_str, ifname);
-            if (monitor->callback) {
-                monitor->callback(ifname, IFACE_EVENT_ADDR_REMOVED, monitor->userdata);
-            }
-        }
-    }
-}
-
-/* VPN interface detection - kept for potential future use */
-static int is_vpn_interface(const char *ifname) {
-    (void)ifname;  /* Suppress unused parameter warning */
-    /* VPN detection is handled by nl_vpn_detect() and nl_link_get_vpn_interface() */
-    return 0;
-}
-
-static void check_vpn_status(iface_monitor_t *monitor) {
     int vpn_enabled = nl_vpn_detect();
     
-    if (vpn_enabled != monitor->vpn_enabled) {
-        monitor->vpn_enabled = vpn_enabled;
-        if (monitor->callback) {
-            iface_event_t event = vpn_enabled ? IFACE_EVENT_VPN_CONNECTED : IFACE_EVENT_VPN_DISCONNECTED;
-            monitor->callback(NULL, event, monitor->userdata);
+    if (vpn_enabled != ctx->base->vpn_enabled) {
+        ctx->base->vpn_enabled = vpn_enabled;
+        if (ctx->base->callback) {
+            iface_event_t event = vpn_enabled ? 
+                IFACE_EVENT_VPN_CONNECTED : IFACE_EVENT_VPN_DISCONNECTED;
+            ctx->base->callback(NULL, event, ctx->base->userdata);
         }
     }
     
-    /* Also check for VPN interface by name */
     char vpn_iface[IFNAMSIZ];
     if (nl_link_get_vpn_interface(vpn_iface, sizeof(vpn_iface)) == 0) {
-        if (strcmp(vpn_iface, monitor->current_vpn_iface) != 0) {
-            if (monitor->current_vpn_iface[0] != '\0') {
-                LOG_INFO("VPN interface changed: %s -> %s", 
-                         monitor->current_vpn_iface, vpn_iface);
-            }
-            strncpy(monitor->current_vpn_iface, vpn_iface, IFNAMSIZ - 1);
-            if (monitor->callback) {
-                monitor->callback(vpn_iface, IFACE_EVENT_ADDED, monitor->userdata);
+        if (strcmp(vpn_iface, ctx->base->current_vpn_iface) != 0) {
+            strncpy(ctx->base->current_vpn_iface, vpn_iface, IFNAMSIZ - 1);
+            ctx->base->current_vpn_iface[IFNAMSIZ - 1] = '\0';
+            
+            if (ctx->base->callback) {
+                ctx->base->callback(vpn_iface, IFACE_EVENT_ADDED, ctx->base->userdata);
             }
         }
     }
+}
+
+static void process_netlink_message(reactor_monitor_ctx_t *ctx) {
+    char buf[8192];
+    struct sockaddr_nl addr;
+    struct iovec iov = { buf, sizeof(buf) };
+    struct msghdr msg = {
+        .msg_name = &addr,
+        .msg_namelen = sizeof(addr),
+        .msg_iov = &iov,
+        .msg_iovlen = 1
+    };
+    
+    ssize_t len = recvmsg(ctx->nl_fd, &msg, MSG_DONTWAIT);
+    if (len <= 0) return;
+    
+    struct nlmsghdr *nlh = (struct nlmsghdr *)buf;
+    for (; NLMSG_OK(nlh, (uint32_t)len); nlh = NLMSG_NEXT(nlh, len)) {
+        char ifname[IFNAMSIZ] = {0};
+        int event_type = -1;
+        
+        if (nlh->nlmsg_type == RTM_NEWLINK) {
+            struct ifinfomsg *ifi = NLMSG_DATA(nlh);
+            if_indextoname(ifi->ifi_index, ifname);
+            int up = (ifi->ifi_flags & IFF_UP) && (ifi->ifi_flags & IFF_RUNNING);
+            event_type = up ? IFACE_EVENT_UP : IFACE_EVENT_DOWN;
+        } else if (nlh->nlmsg_type == RTM_DELLINK) {
+            struct ifinfomsg *ifi = NLMSG_DATA(nlh);
+            if_indextoname(ifi->ifi_index, ifname);
+            event_type = IFACE_EVENT_REMOVED;
+        } else if (nlh->nlmsg_type == RTM_NEWADDR) {
+            struct ifaddrmsg *ifa = NLMSG_DATA(nlh);
+            if_indextoname(ifa->ifa_index, ifname);
+            event_type = IFACE_EVENT_ADDR_ADDED;
+        } else if (nlh->nlmsg_type == RTM_DELADDR) {
+            struct ifaddrmsg *ifa = NLMSG_DATA(nlh);
+            if_indextoname(ifa->ifa_index, ifname);
+            event_type = IFACE_EVENT_ADDR_REMOVED;
+        }
+        
+        if (event_type != -1 && ifname[0] != '\0' && ctx->base->callback) {
+            ctx->base->callback(ifname, event_type, ctx->base->userdata);
+        }
+    }
+    
+    check_vpn_status(ctx);
+}
+
+static void nl_event_callback(reactor_t *r, int fd, uint32_t events, void *userdata) {
+    (void)r;
+    (void)events;
+    reactor_monitor_ctx_t *ctx = userdata;
+    if (!ctx || fd != ctx->nl_fd) return;
+    process_netlink_message(ctx);
+}
+
+static void vpn_check_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+    reactor_monitor_ctx_t *ctx = userdata;
+    if (!ctx) return;
+    check_vpn_status(ctx);
 }
 
 int iface_monitor_init(iface_monitor_t *monitor, iface_callback_t callback, void *userdata) {
     memset(monitor, 0, sizeof(iface_monitor_t));
-    
-    monitor->sock_fd = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
-    if (monitor->sock_fd < 0) {
-        LOG_ERROR("Failed to create netlink socket: %s", strerror(errno));
-        return -1;
-    }
-    
-    struct sockaddr_nl addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.nl_family = AF_NETLINK;
-    addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR;
-    
-    if (bind(monitor->sock_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        LOG_ERROR("Failed to bind netlink socket: %s", strerror(errno));
-        close(monitor->sock_fd);
-        return -1;
-    }
     
     monitor->callback = callback;
     monitor->userdata = userdata;
@@ -231,89 +131,138 @@ int iface_monitor_init(iface_monitor_t *monitor, iface_callback_t callback, void
 }
 
 int iface_monitor_start(iface_monitor_t *monitor) {
-    if (!monitor || monitor->sock_fd < 0) {
-        return -1;
-    }
+    if (!monitor || !monitor->internal) return -1;
+    reactor_monitor_ctx_t *ctx = monitor->internal;
     
     monitor->running = 1;
     
-    /* Initial dump of current state */
-    nl_send_link_dump(monitor->sock_fd);
-    nl_send_addr_dump(monitor->sock_fd, AF_INET);
-    nl_send_addr_dump(monitor->sock_fd, AF_INET6);
+    check_vpn_status(ctx);
     
-    check_vpn_status(monitor);
+    ctx->vpn_check_timer = reactor_add_timer(ctx->reactor, 5000, 5000, vpn_check_timer_cb, ctx);
     
-    LOG_DEBUG("Interface monitor started");
     return 0;
 }
 
-int iface_monitor_poll(iface_monitor_t *monitor, int timeout_ms) {
-    if (!monitor || !monitor->running || monitor->sock_fd < 0) {
-        return -1;
-    }
-    
-    struct epoll_event ev;
-    int epoll_fd = epoll_create1(0);
-    if (epoll_fd < 0) {
-        return -1;
-    }
-    
-    ev.events = EPOLLIN;
-    ev.data.fd = monitor->sock_fd;
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, monitor->sock_fd, &ev);
-    
-    struct epoll_event events[10];
-    int nfds = epoll_wait(epoll_fd, events, 10, timeout_ms);
-    
-    if (nfds > 0) {
-        char buf[NL_BUF_SIZE];
-        struct sockaddr_nl addr;
-        struct iovec iov = { buf, sizeof(buf) };
-        struct msghdr msg = {
-            .msg_name = &addr,
-            .msg_namelen = sizeof(addr),
-            .msg_iov = &iov,
-            .msg_iovlen = 1
-        };
-        
-        ssize_t len = recvmsg(monitor->sock_fd, &msg, 0);
-        if (len > 0) {
-            struct nlmsghdr *nlh;
-            for (nlh = (struct nlmsghdr*)buf; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
-                if (nlh->nlmsg_type == RTM_NEWLINK || nlh->nlmsg_type == RTM_DELLINK) {
-                    handle_link_message(nlh, monitor);
-                } else if (nlh->nlmsg_type == RTM_NEWADDR || nlh->nlmsg_type == RTM_DELADDR) {
-                    handle_addr_message(nlh, monitor);
-                }
-            }
-        }
-    }
-    
-    close(epoll_fd);
-    
-    /* Periodically check VPN status */
-    static int check_counter = 0;
-    if (++check_counter >= 10) {
-        check_counter = 0;
-        check_vpn_status(monitor);
-    }
-    
-    return nfds;
-}
-
 int iface_monitor_stop(iface_monitor_t *monitor) {
-    if (monitor) {
-        monitor->running = 0;
+    if (!monitor || !monitor->internal) return -1;
+    reactor_monitor_ctx_t *ctx = monitor->internal;
+
+    monitor->running = 0;
+
+    if (ctx->vpn_check_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->vpn_check_timer);
+        ctx->vpn_check_timer = NULL;
     }
-    LOG_DEBUG("Interface monitor stopped");
+
     return 0;
 }
 
 void iface_monitor_cleanup(iface_monitor_t *monitor) {
-    if (monitor && monitor->sock_fd >= 0) {
-        close(monitor->sock_fd);
-        monitor->sock_fd = -1;
+    if (!monitor || !monitor->internal) return;
+    reactor_monitor_ctx_t *ctx = monitor->internal;
+    
+    iface_monitor_stop(monitor);
+    
+    if (ctx->nl_fd >= 0) {
+        reactor_remove_fd(ctx->reactor, ctx->nl_fd);
+        close(ctx->nl_fd);
     }
-    LOG_DEBUG("Interface monitor cleaned up");
+    
+    if (ctx->owned_reactor && ctx->reactor) {
+        reactor_destroy(ctx->reactor);
+    }
+    
+    free(ctx);
+    monitor->internal = NULL;
+}
+
+int iface_monitor_poll(iface_monitor_t *monitor, int timeout_ms) {
+    (void)monitor;
+    (void)timeout_ms;
+    return 0;
+}
+
+int iface_monitor_init_reactor(iface_monitor_t *monitor, 
+                                iface_callback_t callback, 
+                                void *userdata,
+                                reactor_t *existing_reactor) {
+    if (!monitor) return -1;
+    
+    reactor_monitor_ctx_t *ctx = calloc(1, sizeof(reactor_monitor_ctx_t));
+    if (!ctx) return -1;
+    
+    monitor->internal = ctx;
+    ctx->base = monitor;
+    
+    if (existing_reactor) {
+        ctx->reactor = existing_reactor;
+        ctx->owned_reactor = 0;
+    } else {
+        ctx->reactor = reactor_create();
+        if (!ctx->reactor) {
+            free(ctx);
+            return -1;
+        }
+        ctx->owned_reactor = 1;
+    }
+    
+    ctx->nl_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (ctx->nl_fd < 0) {
+        if (ctx->owned_reactor) reactor_destroy(ctx->reactor);
+        free(ctx);
+        return -1;
+    }
+    
+    struct sockaddr_nl addr = {
+        .nl_family = AF_NETLINK,
+        .nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR
+    };
+    
+    if (bind(ctx->nl_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(ctx->nl_fd);
+        if (ctx->owned_reactor) reactor_destroy(ctx->reactor);
+        free(ctx);
+        return -1;
+    }
+    
+    reactor_add_fd(ctx->reactor, ctx->nl_fd, REACTOR_EVENT_READ, nl_event_callback, ctx);
+    
+    monitor->callback = callback;
+    monitor->userdata = userdata;
+    monitor->sock_fd = ctx->nl_fd;
+    monitor->running = 0;
+    monitor->vpn_enabled = 0;
+    monitor->current_vpn_iface[0] = '\0';
+    
+    reactor_watch_signal(ctx->reactor, SIGINT);
+    reactor_watch_signal(ctx->reactor, SIGTERM);
+    
+    return 0;
+}
+
+int iface_monitor_start_reactor(iface_monitor_t *monitor) {
+    return iface_monitor_start(monitor);
+}
+
+int iface_monitor_run_reactor(iface_monitor_t *monitor) {
+    if (!monitor || !monitor->internal) return -1;
+    reactor_monitor_ctx_t *ctx = monitor->internal;
+    
+    if (!ctx->owned_reactor) return -1;
+    
+    return reactor_run(ctx->reactor);
+}
+
+void iface_monitor_stop_reactor(iface_monitor_t *monitor) {
+    iface_monitor_stop(monitor);
+}
+
+void iface_monitor_cleanup_reactor(iface_monitor_t *monitor) {
+    iface_monitor_cleanup(monitor);
+}
+
+reactor_t* iface_monitor_get_reactor(iface_monitor_t *monitor) {
+    if (!monitor || !monitor->internal) return NULL;
+    reactor_monitor_ctx_t *ctx = monitor->internal;
+    return ctx->reactor;
 }
