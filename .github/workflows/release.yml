@@ -53,6 +53,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Get Short SHA
+        id: vars
+        run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
       - name: Download Clang Artifact
         uses: actions/download-artifact@v5
         with:
