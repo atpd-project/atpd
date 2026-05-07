@@ -203,6 +203,7 @@ static void run_event_loop(void) {
     reactor_destroy(g_reactor);
     g_reactor = NULL;
 }
+
 static void daemonize(void) {
     pid_t pid = fork();
     if (pid < 0) exit(EXIT_FAILURE);
@@ -285,13 +286,10 @@ static int confirm_operation(const char *op, int force) {
 
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
-        /* -p/--pid from command line takes highest priority */
         snprintf(pp, size, "%s", opts->pid_file);
     } else if (g_config.data_dir[0]) {
-        /* config.data_dir second priority */
         snprintf(pp, size, "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
-        /* Fallback: current directory */
         snprintf(pp, size, "./atpd.pid");
     }
 }
@@ -300,13 +298,11 @@ static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
-    /* 1. 确定配置文件路径 */
     if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
         fprintf(stderr, "Config file not found\n");
         return 1;
     }
 
-    /* 2. 先加载配置（config_load 可能影响 PID 路径） */
     g_config.foreground = opts->foreground;
     g_config.verbose = opts->verbose;
     config_load(cp, &g_config);
@@ -315,10 +311,8 @@ static int do_start(atp_options_t *opts) {
     log_set_level(opts->log_level);
     if (opts->no_color) log_set_color(0);
 
-    /* 3. 确定 PID 文件路径（-p > config.data_dir > ./atpd.pid） */
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    /* 4. 检查已有 PID */
     if (file_exists(pp)) {
         FILE *f = fopen(pp, "r");
         if (f) {
@@ -333,20 +327,18 @@ static int do_start(atp_options_t *opts) {
         unlink(pp);
     }
 
-    /* 5. 守护进程化 */
     if (!opts->foreground && opts->daemon) {
         daemonize();
     }
 
-    /* 6. 写入 PID 文件 */
     if (write_pid_file(pp) < 0) {
         fprintf(stderr, "Failed to write PID file\n");
         return 1;
     }
 
-        atpd_context_init();
+    atpd_context_init();
 
-	if (netlink_init(NULL, &g_config) < 0) {
+    if (netlink_init(NULL, &g_config) < 0) {
         LOG_ERROR("Failed to initialize netlink");
         unlink(pp);
         return 1;
@@ -405,7 +397,6 @@ static int do_start(atp_options_t *opts) {
 static int do_stop(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
 
-    /* Use same resolution logic for consistency */
     if (opts->pid_file[0]) {
         snprintf(pp, sizeof(pp), "%s", opts->pid_file);
     } else {
@@ -464,20 +455,29 @@ static int do_status(atp_options_t *opts) {
     config_set_defaults(&g_config);
     config_load(cp, &g_config);
 
+    log_init();
+    logger_init();
+    log_set_level(LOG_LEVEL_INFO);
+    if (opts->no_color) log_set_color(0);
+
     if (opts->no_color) ui_set_no_color(1);
     ui_init();
 
-    service_ctx_t svc = {0};
+    service_ctx_t svc;
+    memset(&svc, 0, sizeof(svc));
     service_init(&svc, &g_config);
     api_init(&g_api_ctx, &g_config);
 
     netlink_init(NULL, &g_config);
-    /* Sync VPN state for status command (daemon is not running) */
     char vpn_iface[IFNAMSIZ] = {0};
     if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
         atpd_vpn_state_transition(VPN_STATE_READY, 0, vpn_iface);
     }
     status_show(&g_config, &svc, &g_api_ctx);
+
+    netlink_cleanup();
+    api_cleanup(&g_api_ctx);
+    logger_close();
 
     return 0;
 }
@@ -513,6 +513,7 @@ static int do_reload(atp_options_t *opts) {
         return 1;
     }
 }
+
 static int do_version(atp_options_t *opts) {
     (void)opts;
     printf("atpd %s\n", ATP_VERSION_STRING);
