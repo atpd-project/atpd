@@ -197,10 +197,22 @@ void log_write(log_level_t level, const char *file, int line, const char *func, 
 
 /* ========== Public API ========== */
 
+void log_init(void) {
+    pthread_mutex_init(&g_log_config.mutex, NULL);
+    g_log_config.min_level = LOG_LEVEL_INFO;
+    g_log_config.targets = LOG_TARGET_STDERR | LOG_TARGET_FILE;
+    g_log_config.enable_timestamp = 1;
+    g_log_config.enable_color = 1;
+    g_log_config.max_file_size = 10 * 1024 * 1024;
+    g_log_config.rotate_count = 3;
+    g_log_config.log_file[0] = '\0';
+}
+
 void logger_init(void) {
     if (g_log_config.log_file[0] == '\0') {
         if (g_config.data_dir[0]) {
-            snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "%s/%s", g_config.data_dir, ATP_LOG_FILE);
+            snprintf(g_log_config.log_file, sizeof(g_log_config.log_file),
+                     "%s/%s", g_config.data_dir, ATP_LOG_FILE);
         } else {
             snprintf(g_log_config.log_file, sizeof(g_log_config.log_file), "./atpd.log");
         }
