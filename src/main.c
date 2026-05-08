@@ -47,7 +47,7 @@
 
 api_ctx_t g_api_ctx;
 atp_config_t g_config;
-static reactor_t *g_reactor = NULL;
+reactor_t *g_reactor = NULL;
 static service_ctx_t *g_svc = NULL;
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload = 0;
