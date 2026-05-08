@@ -17,19 +17,25 @@ void config_set_defaults(atp_config_t *cfg) {
     memset(cfg, 0, sizeof(atp_config_t));
     pthread_mutex_init(&cfg->config_mutex, NULL);
     snprintf(cfg->data_dir, sizeof(cfg->data_dir), "%s", ATP_DEFAULT_DIR);
-    cfg->tcp_port = DEFAULT_TCP_PORT;
+    cfg->tcp_port = 7891;
     cfg->udp_port = DEFAULT_UDP_PORT;
     cfg->redirect_tcp_port = DEFAULT_REDIRECT_TCP_PORT;
-    cfg->proxy_mode = MODE_AUTO;
+    cfg->proxy_mode = MODE_ENHANCE;
+    cfg->performance_mode = 1;
     cfg->proxy_tcp = 1; cfg->proxy_udp = 1;
+    cfg->proxy_ipv6 = 1;
     cfg->dns_hijack = DNS_HIJACK_TPROXY;
     cfg->dns_port = DEFAULT_DNS_PORT;
     cfg->mark_value = DEFAULT_MARK;
     cfg->mark_value6 = DEFAULT_MARK6;
-    cfg->table_id = DEFAULT_TABLE_ID;
+    cfg->table_id = 150;
     cfg->restart_delay = DEFAULT_RESTART_DELAY;
     cfg->api_port = DEFAULT_API_PORT;
     cfg->ui_emoji_enabled = 1;
+    cfg->proxy_hotspot = 1;
+    cfg->block_quic = 1;
+    cfg->bypass_cn_ip = 1;
+    cfg->app_proxy_enable = 1;
     snprintf(cfg->core_user, sizeof(cfg->core_user), "root");
     snprintf(cfg->core_group, sizeof(cfg->core_group), "net_admin");
     snprintf(cfg->mobile_iface, sizeof(cfg->mobile_iface), "rmnet_data+");
@@ -38,6 +44,20 @@ void config_set_defaults(atp_config_t *cfg) {
     snprintf(cfg->usb_iface, sizeof(cfg->usb_iface), "rndis+");
     cfg->proxy_mobile = 1; cfg->proxy_wifi = 1;
     snprintf(cfg->hotspot_subnet_ipv4, sizeof(cfg->hotspot_subnet_ipv4), "192.168.43.0/24");
+    snprintf(cfg->hotspot_subnet_ipv6, sizeof(cfg->hotspot_subnet_ipv6), "fe80::/10");
+    snprintf(cfg->other_bypass, sizeof(cfg->other_bypass), "tun0 ipsec+");
+    snprintf(cfg->bypass_ipv4_list, sizeof(cfg->bypass_ipv4_list),
+             "0.0.0.0/8 10.0.0.0/8 100.0.0.0/8 127.0.0.0/8 169.254.0.0/16 "
+             "172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32");
+    snprintf(cfg->bypass_ipv6_list, sizeof(cfg->bypass_ipv6_list),
+             "::/128 ::1/128 ::ffff:0:0/96 100::/64 64:ff9b::/96 2001::/32 "
+             "2001:10::/28 2001:20::/28 2001:db8::/32 2002::/16 fe80::/10 ff00::/8");
+    snprintf(cfg->bypass_apps_list, sizeof(cfg->bypass_apps_list),
+             "0:com.android.systemui 0:com.miui.home");
+    snprintf(cfg->cn_ip_url, sizeof(cfg->cn_ip_url),
+             "https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt");
+    snprintf(cfg->cn_ipv6_url, sizeof(cfg->cn_ipv6_url),
+             "https://ispip.clang.cn/all_cn_ipv6.txt");
     snprintf(cfg->cn_ip_file, sizeof(cfg->cn_ip_file), "cn.zone");
     snprintf(cfg->cn_ipv6_file, sizeof(cfg->cn_ipv6_file), "cn_ipv6.zone");
     snprintf(cfg->app_proxy_mode, sizeof(cfg->app_proxy_mode), "blacklist");
