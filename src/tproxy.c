@@ -63,28 +63,22 @@ static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd,
     return ret;
 }
 
+/* P1: Use -S to check chain existence precisely (avoid substring false match with -L) */
 int tproxy_chain_exists(atp_config_t *cfg, int family, const char *table, const char *chain) {
-    char cmd[MAX_CMD_LEN];
-    char output[256];
-
     if (cfg->dry_run) {
         LOG_DEBUG("[DRY_RUN] Check chain %s in table %s", chain, table);
         return 1;
     }
 
+    char cmd[MAX_CMD_LEN];
     if (family == 4) {
-        snprintf(cmd, sizeof(cmd), "%s -t %s -L %s 2>/dev/null | head -1",
-                 IPTABLES_CMD, table, chain);
+        snprintf(cmd, sizeof(cmd), "%s -t %s -S %s 2>/dev/null", IPTABLES_CMD, table, chain);
     } else {
         if (access(IP6TABLES_CMD, X_OK) != 0) return 0;
-        snprintf(cmd, sizeof(cmd), "%s -t %s -L %s 2>/dev/null | head -1",
-                 IP6TABLES_CMD, table, chain);
+        snprintf(cmd, sizeof(cmd), "%s -t %s -S %s 2>/dev/null", IP6TABLES_CMD, table, chain);
     }
 
-    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0] != '\0') {
-        return 1;
-    }
-    return 0;
+    return (exec_cmd_simple(cmd, CMD_TIMEOUT_SEC) == 0) ? 1 : 0;
 }
 
 int tproxy_chain_create(atp_config_t *cfg, int family, const char *table, const char *chain) {
@@ -224,8 +218,10 @@ int tproxy_support_check(atp_config_t *cfg) {
              IPTABLES_CMD);
     int ret = exec_cmd_simple(cmd, 5);
 
-    exec_cmd_simple(IPTABLES_CMD " -t mangle -F ATP_TEST 2>/dev/null", 5);
-    exec_cmd_simple(IPTABLES_CMD " -t mangle -X ATP_TEST 2>/dev/null", 5);
+    snprintf(cmd, sizeof(cmd), "%s -t mangle -F ATP_TEST 2>/dev/null", IPTABLES_CMD);
+    exec_cmd_simple(cmd, 5);
+    snprintf(cmd, sizeof(cmd), "%s -t mangle -X ATP_TEST 2>/dev/null", IPTABLES_CMD);
+    exec_cmd_simple(cmd, 5);
 
     g_tproxy_supported = (ret == 0) ? 1 : 0;
     LOG_INFO("TPROXY support: %s", g_tproxy_supported ? "YES" : "NO");
@@ -271,25 +267,30 @@ static int tproxy_configure_rp_filter(atp_config_t *cfg) {
     return 0;
 }
 
+/* P1: Use IPTABLES_CMD macro instead of hardcoded "iptables" */
 static int tproxy_reject_available(void) {
-    char output[256];
+    char cmd[MAX_CMD_LEN];
 
     /* Create test chain */
-    int ret = exec_cmd("iptables -N ATP_TEST_REJECT 2>/dev/null",
-                       output, sizeof(output), 3);
+    snprintf(cmd, sizeof(cmd), "%s -N ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
+    int ret = exec_cmd_simple(cmd, 3);
     if (ret != 0) {
         /* Can't even create a chain, REJECT is definitely not available */
-        exec_cmd_simple("iptables -X ATP_TEST_REJECT 2>/dev/null", 3);
+        snprintf(cmd, sizeof(cmd), "%s -X ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
+        exec_cmd_simple(cmd, 3);
         return 0;
     }
 
     /* Try adding REJECT rule */
-    ret = exec_cmd("iptables -A ATP_TEST_REJECT -j REJECT 2>&1",
-                   output, sizeof(output), 3);
+    snprintf(cmd, sizeof(cmd), "%s -A ATP_TEST_REJECT -j REJECT 2>&1", IPTABLES_CMD);
+    char output[256];
+    ret = exec_cmd(cmd, output, sizeof(output), 3);
 
     /* Flush and destroy test chain regardless of result */
-    exec_cmd_simple("iptables -F ATP_TEST_REJECT 2>/dev/null", 3);
-    exec_cmd_simple("iptables -X ATP_TEST_REJECT 2>/dev/null", 3);
+    snprintf(cmd, sizeof(cmd), "%s -F ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
+    exec_cmd_simple(cmd, 3);
+    snprintf(cmd, sizeof(cmd), "%s -X ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
+    exec_cmd_simple(cmd, 3);
 
     if (ret != 0 || strstr(output, "No chain/target/match")) {
         return 0;
@@ -514,7 +515,12 @@ int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
     }
 
     LOG_DEBUG("Batch rules: %d bytes", offset);
-    return tproxy_restore_batch(rules, 4);
+    int ret = tproxy_restore_batch(rules, 4);
+    if (ret != 0) {
+        LOG_ERROR("Batch restore failed (ret=%d), falling back to sequential mode", ret);
+        return tproxy_setup_ipv4(cfg);
+    }
+    return 0;
 }
 
 int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
@@ -596,7 +602,12 @@ int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
     }
 
     LOG_DEBUG("Batch rules: %d bytes", offset);
-    return tproxy_restore_batch(rules, 6);
+    int ret = tproxy_restore_batch(rules, 6);
+    if (ret != 0) {
+        LOG_ERROR("Batch restore failed (ret=%d), falling back to sequential mode", ret);
+        return tproxy_setup_ipv6(cfg);
+    }
+    return 0;
 }
 
 int tproxy_setup_ipv4(atp_config_t *cfg) {
