@@ -1295,4 +1295,4 @@ int tproxy_prevent_loop(atp_config_t *cfg) {
     tproxy_rule_insert(cfg, 4, "mangle", "PREROUTING", 1, rule_buf);
 
     return 0;
-}
+}*
