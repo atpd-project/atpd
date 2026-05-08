@@ -51,7 +51,6 @@ static void netlink_event_cb(reactor_t *r, int fd, uint32_t events, void *userda
 static int check_interface_exists(const char *ifname);
 static void cleanup_ctx_locked(iface_wait_ctx_t *ctx, int success);
 static void cleanup_ctx(iface_wait_ctx_t *ctx, int success);
-static void remove_ctx_from_list(iface_wait_ctx_t *ctx);
 
 /* ========== Helper Functions ========== */
 
@@ -88,10 +87,8 @@ static int check_interface_exists(const char *ifname) {
     return idx > 0;
 }
 
-static void remove_ctx_from_list(iface_wait_ctx_t *ctx) {
+static void remove_ctx_from_list_locked(iface_wait_ctx_t *ctx) {
     if (!ctx) return;
-    
-    pthread_mutex_lock(&g_list_mutex);
     
     iface_wait_ctx_t **pp = &g_ctx_list;
     while (*pp) {
@@ -101,8 +98,6 @@ static void remove_ctx_from_list(iface_wait_ctx_t *ctx) {
         }
         pp = &(*pp)->next;
     }
-    
-    pthread_mutex_unlock(&g_list_mutex);
 }
 
 static void process_netlink_events(void) {
@@ -198,15 +193,22 @@ static void cleanup_ctx_locked(iface_wait_ctx_t *ctx, int success) {
         ctx->timer = NULL;
     }
     
-    remove_ctx_from_list(ctx);
+    remove_ctx_from_list_locked(ctx);
     
     LOG_DEBUG("netlink_wait: Context cleanup for %s (success=%d)", ctx->ifname, success);
     
-    if (ctx->callback) {
-        ctx->callback(ctx->ifname, success, ctx->userdata);
-    }
+    netlink_wait_cb callback = ctx->callback;
+    void *userdata = ctx->userdata;
+    char ifname[IFNAMSIZ];
+    snprintf(ifname, sizeof(ifname), "%s", ctx->ifname);
     
     free(ctx);
+    
+    if (callback) {
+        pthread_mutex_unlock(&g_list_mutex);
+        callback(ifname, success, userdata);
+        pthread_mutex_lock(&g_list_mutex);
+    }
 }
 
 static void cleanup_ctx(iface_wait_ctx_t *ctx, int success) {
@@ -267,9 +269,8 @@ int netlink_wait_for_iface(reactor_t *r, const char *ifname, uint32_t timeout_ms
     g_ctx_list = ctx;
     pthread_mutex_unlock(&g_list_mutex);
     
-    LOG_INFO("netlink_wait: Started waiting for interface %s (timeout=%u ms, active_waiters=%d)", 
-             ifname, ctx->timeout_ms, 
-             __builtin_popcount((unsigned int)(uintptr_t)g_ctx_list));
+    LOG_INFO("netlink_wait: Started waiting for interface %s (timeout=%u ms)", 
+             ifname, ctx->timeout_ms);
     
     return 0;
 }
@@ -282,7 +283,7 @@ void netlink_wait_cleanup(void) {
         iface_wait_ctx_t *next = ctx->next;
         if (!ctx->completed) {
             LOG_WARN("netlink_wait: Force cleanup pending wait for %s", ctx->ifname);
-            if (ctx->timer) {
+            if (ctx->timer && ctx->reactor) {
                 reactor_cancel_timer(ctx->reactor, ctx->timer);
             }
             free(ctx);
@@ -294,6 +295,9 @@ void netlink_wait_cleanup(void) {
     pthread_mutex_unlock(&g_list_mutex);
     
     if (g_nl_event_fd >= 0) {
+        if (g_nl_event_registered && g_reactor) {
+            reactor_remove_fd(g_reactor, g_nl_event_fd);
+        }
         close(g_nl_event_fd);
         g_nl_event_fd = -1;
     }
