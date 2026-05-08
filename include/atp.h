@@ -30,21 +30,19 @@
 #define ATP_VERSION_MINOR   0
 #define ATP_VERSION_PATCH   0
 
-/* Security hardening */
 #ifndef _FORTIFY_SOURCE
 #define _FORTIFY_SOURCE 3
 #endif
 
-#define ATP_DEFAULT_DIR     "/data/adb/atp"
+#define ATP_DEFAULT_DIR     "/etc/atp"
 #define ATP_CONF_FILE       "atp.conf"
-#define ATP_PID_FILE        "run/atpd.pid"
-#define ATP_LOG_FILE        "run/atp.log"
-#define ATP_RUNTIME_CONF    "run/runtime_atp.conf"
+#define ATP_PID_FILE        "/var/run/atpd.pid"
+#define ATP_LOG_FILE        "/var/log/atpd.log"
 
 #define PROXY_BIN_NAME      "sing-box"
-#define PROXY_BIN_PATH      ATP_DEFAULT_DIR "/bin/sing-box"
+#define PROXY_BIN_PATH      "/usr/bin/sing-box"
 
-#define DEFAULT_TCP_PORT    1536
+#define DEFAULT_TCP_PORT    7891
 #define DEFAULT_UDP_PORT    1536
 #define DEFAULT_REDIRECT_TCP_PORT  7891
 #define DEFAULT_MARK        20
@@ -80,12 +78,6 @@ typedef enum {
     DNS_HIJACK_REDIRECT = 2
 } dns_hijack_mode_t;
 
-typedef enum {
-    ROOT_UNKNOWN = 0,
-    ROOT_KSU = 1,
-    ROOT_MAGISK = 2
-} root_method_t;
-
 typedef struct {
     char data_dir[PATH_MAX];
     char conf_file[PATH_MAX];
@@ -97,7 +89,6 @@ typedef struct {
     int udp_port;
     int redirect_tcp_port;
     proxy_mode_t proxy_mode;
-    int performance_mode;
     int proxy_tcp;
     int proxy_udp;
     int proxy_ipv6;
@@ -110,8 +101,6 @@ typedef struct {
     int table_id;
     char core_user[64];
     char core_group[64];
-    char routing_mark[32];
-    int force_mark_bypass;
     
     char mobile_iface[64];
     char wifi_iface[64];
@@ -138,19 +127,12 @@ typedef struct {
     char cn_ip_url[512];
     char cn_ipv6_url[512];
     
-    int app_proxy_enable;
-    char proxy_apps_list[4096];
-    char bypass_apps_list[4096];
-    char app_proxy_mode[16];
-    
     int mac_filter_enable;
     char proxy_macs_list[4096];
     char bypass_macs_list[4096];
     char mac_proxy_mode[16];
     
     int block_quic;
-    int log_timestamp;
-    int skip_check_feature;
     char user_clash_mode[32];
     int restart_delay;
     char clash_secret[128];
@@ -158,26 +140,9 @@ typedef struct {
     int api_port;
     char api_host[64];
     
-    int use_tproxy;
-    char current_vpn_iface[32];
-    
-    int ui_emoji_enabled;
-    
     pthread_mutex_t config_mutex;
 } atp_config_t;
 
 extern atp_config_t g_config;
 
-int atp_init(void);
-void atp_cleanup(void);
-int atp_create_pidfile(void);
-void atp_remove_pidfile(void);
-void atp_daemonize(void);
-int atp_signal_setup(void);
-int atp_check_running(void);
-int atp_check_root(void);
-void atp_show_status(void);
-
 #endif
-
-#include "version.h"
