@@ -139,3 +139,38 @@ jobs:
           git config user.name "ATP CI"
           chmod +x scripts/auto_tag.sh
           ./scripts/auto_tag.sh
+
+  auto-release-dev:
+    name: Auto Release (dev)
+    needs: [update-status]
+    if: |
+      always() &&
+      needs.update-status.result == 'success' &&
+      github.ref_name == 'dev'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get Short SHA
+        id: vars
+        run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Download Zig Artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: atpd-zig-${{ steps.vars.outputs.short_sha }}
+
+      - name: Generate Version
+        uses: ./.github/actions/gen-version
+
+      - name: Create Dev Release
+        uses: ./.github/actions/create-release
+        with:
+          binary-path: atpd-zig
+          version: ${{ needs.build-zig.outputs.atpd_version_string }}
+          tag-name: dev-${{ steps.vars.outputs.short_sha }}
+          build-date: ${{ github.event.head_commit.timestamp }}
+          prerelease: 'true'
+          commit-sha: ${{ github.sha }}
