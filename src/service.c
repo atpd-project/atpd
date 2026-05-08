@@ -55,7 +55,6 @@ static int validate_process(service_ctx_t *ctx, pid_t pid) {
     char cmdline_buf[512];
     ssize_t len;
     
-    /* 1. Check /proc/[pid]/exe matches ctx->bin_path */
     snprintf(path, sizeof(path), "/proc/%d/exe", pid);
     len = readlink(path, exe_buf, sizeof(exe_buf) - 1);
     if (len < 0) {
@@ -70,7 +69,6 @@ static int validate_process(service_ctx_t *ctx, pid_t pid) {
         return 0;
     }
     
-    /* 2. Check cmdline contains work_dir */
     snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
     int fd = open(path, O_RDONLY);
     if (fd < 0) return 0;
@@ -111,7 +109,17 @@ static int service_probe_port(int port) {
     if (ret == 0) return 1;
     return (errno == EINPROGRESS) ? 1 : 0;
 }
+
+static int service_binary_exists(service_ctx_t *ctx) {
+    return access(ctx->bin_path, X_OK) == 0;
+}
+
 static int service_spawn(service_ctx_t *ctx) {
+    if (!service_binary_exists(ctx)) {
+        LOG_ERROR("Service: binary not found or not executable: %s", ctx->bin_path);
+        return -1;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         LOG_ERROR("Service: fork failed: %s", strerror(errno));
@@ -172,6 +180,41 @@ static void service_kill(service_ctx_t *ctx) {
     }
 }
 
+/* ========== Delayed Spawn Timer ========== */
+
+static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+
+    service_ctx_t *ctx = userdata;
+    if (!ctx || ctx->state == SERVICE_STOPPED || ctx->state == SERVICE_FAILED) return;
+
+    reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+    ctx->retry_timer = NULL;
+
+    if (service_spawn(ctx) == 0) {
+        ctx->state = SERVICE_STARTING;
+    } else {
+        ctx->fail_count++;
+        if (ctx->fail_count >= ctx->max_failures) {
+            LOG_ERROR("Service: max failures reached, giving up");
+            ctx->state = SERVICE_FAILED;
+        }
+    }
+}
+
+static void service_schedule_retry(service_ctx_t *ctx) {
+    int delay = backoff_next(&ctx->backoff);
+    LOG_INFO("Service: retry in %dms (%d/%d)", 
+             delay, ctx->fail_count, ctx->max_failures);
+
+    if (ctx->retry_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+    }
+    ctx->retry_timer = reactor_add_timer(ctx->reactor, delay, 0,
+                                          service_delayed_spawn_cb, ctx);
+}
+
 /* ========== SIGCHLD Handler ========== */
 
 void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
@@ -202,6 +245,7 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
         }
     }
 }
+
 /* ========== State Machine ========== */
 
 const char *service_state_string(service_state_t state) {
@@ -250,11 +294,7 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                     LOG_ERROR("Service: max failures reached, giving up");
                     ctx->state = SERVICE_FAILED;
                 } else {
-                    int delay = backoff_next(&ctx->backoff);
-                    LOG_INFO("Service: respawning in %dms (%d/%d)", 
-                             delay, ctx->fail_count, ctx->max_failures);
-                    usleep(delay * 1000);
-                    service_spawn(ctx);
+                    service_schedule_retry(ctx);
                 }
             }
             break;
@@ -267,12 +307,7 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                     LOG_ERROR("Service: max failures reached, giving up");
                     ctx->state = SERVICE_FAILED;
                 } else {
-                    int delay = backoff_next(&ctx->backoff);
-                    LOG_INFO("Service: auto-restart in %dms (%d/%d)", 
-                             delay, ctx->fail_count, ctx->max_failures);
-                    usleep(delay * 1000);
-                    service_spawn(ctx);
-                    ctx->state = SERVICE_STARTING;
+                    service_schedule_retry(ctx);
                 }
             }
             break;
@@ -302,14 +337,13 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     ctx->state = SERVICE_STOPPED;
     ctx->fail_count = 0;
     ctx->max_failures = 5;
+    ctx->retry_timer = NULL;
     
     backoff_init(&ctx->backoff);
     
     LOG_DEBUG("Service: initialized (bin=%s, port=%d)", ctx->bin_path, ctx->api_port);
     return 0;
 }
-
-/* ========== Async Config Validation Callback ========== */
 
 static void on_validate_complete(int result, const char *output, void *userdata) {
     service_ctx_t *ctx = userdata;
@@ -346,7 +380,12 @@ int service_start_async(service_ctx_t *ctx) {
         return 0;
     }
 
-    /* Async config validation */
+    if (!service_binary_exists(ctx)) {
+        LOG_ERROR("Service: binary not found: %s", ctx->bin_path);
+        ctx->state = SERVICE_FAILED;
+        return -1;
+    }
+
     ctx->validate_ctx = malloc(sizeof(async_validate_ctx_t));
     if (!ctx->validate_ctx) {
         LOG_ERROR("Service: failed to allocate validate_ctx");
@@ -378,6 +417,10 @@ int service_stop_async(service_ctx_t *ctx) {
     if (ctx->monitor_timer) {
         reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
         ctx->monitor_timer = NULL;
+    }
+    if (ctx->retry_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+        ctx->retry_timer = NULL;
     }
     
     return 0;
