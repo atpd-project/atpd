@@ -120,6 +120,7 @@ int routing_route_flush_table(atp_config_t *cfg, int family, int table_id) {
     }
 }
 
+/* P1: Use $ anchor for precise table_id match, prevent substring false positive */
 static int routing_rule_exists(atp_config_t *cfg, int family, int mark, int table_id) {
     char cmd[MAX_CMD_LEN];
     char output[256];
@@ -131,10 +132,10 @@ static int routing_rule_exists(atp_config_t *cfg, int family, int mark, int tabl
     
     if (family == 4) {
         snprintf(cmd, sizeof(cmd), 
-                 "%s rule show | grep -q 'fwmark 0x%x.*lookup %d'", IP_CMD, mark, table_id);
+                 "%s rule show | grep -q 'fwmark 0x%x.*lookup %d '", IP_CMD, mark, table_id);
     } else {
         snprintf(cmd, sizeof(cmd),
-                 "%s -6 rule show | grep -q 'fwmark 0x%x.*lookup %d'", IP_CMD, mark, table_id);
+                 "%s -6 rule show | grep -q 'fwmark 0x%x.*lookup %d '", IP_CMD, mark, table_id);
     }
     
     return exec_cmd(cmd, output, sizeof(output), 5) == 0;
