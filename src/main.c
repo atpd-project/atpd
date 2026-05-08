@@ -395,7 +395,7 @@ static int do_start(atp_options_t *opts) {
 
     /* P1: Wait for service thread to fully stop before freeing context */
     service_stop_async(g_svc);
-    service_join(g_svc);
+    usleep(500000);  /* 500ms grace period for service thread exit */
     free(g_svc);
     g_svc = NULL;
 
@@ -490,7 +490,6 @@ static int do_status(atp_options_t *opts) {
     /* P1: Cleanup resources initialized for status command */
     netlink_cleanup();
     api_cleanup(&g_api_ctx);
-    service_deinit(&svc);
 
     return 0;
 }
