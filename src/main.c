@@ -1,8 +1,8 @@
 /*
- * ATP - Advanced Transparent Proxy
+ * ATP - Advanced TProxy
  * Copyright (C) 2024-2026 ATP Project
  * 
- * Main entry point - Reactor mode
+ * Main entry point - Linux Gateway
  */
 
 #include "atp.h"
@@ -12,10 +12,6 @@
 #include "utils.h"
 #include "service.h"
 #include "api.h"
-#include "netlink.h"
-#include "app_filter.h"
-#include "fcm_monitor.h"
-#include "perf_mode.h"
 #include "status.h"
 #include "ui.h"
 #include "cli.h"
@@ -24,12 +20,8 @@
 #include "routing.h"
 #include "geoip.h"
 #include "mac_filter.h"
-#include "ipv6_manager.h"
-#include "inet_diag.h"
 #include "reactor.h"
 #include "singbox_api.h"
-#include "atpd_context.h"
-#include "uds.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,16 +44,6 @@ static service_ctx_t *g_svc = NULL;
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload = 0;
 static volatile sig_atomic_t g_show_status = 0;
-
-/* ========== P0: Rate Limiting for API Sync ========== */
-
-typedef struct {
-    char last_name[256];
-    int last_delay;
-    bool first_run;
-} proxy_log_throttle_t;
-
-static proxy_log_throttle_t g_proxy_throttle = { .first_run = true };
 
 static void on_signal(reactor_t *r, int sig, void *userdata) {
     (void)r;
@@ -90,9 +72,6 @@ static void on_idle(reactor_t *r, void *userdata) {
     
     if (g_reload) {
         config_reload(&g_config);
-        if (g_config.app_proxy_enable) {
-            app_filter_reload(&g_config);
-        }
         g_reload = 0;
     }
     
@@ -106,74 +85,12 @@ static void on_idle(reactor_t *r, void *userdata) {
     }
 }
 
-static void process_proxy_list(proxy_list_t *list) {
-    if (!list || list->count == 0) {
-        goto cleanup;
-    }
-
-    for (int i = 0; i < list->count; ++i) {
-        proxy_info_t *info = &list->proxies[i];
-
-        if (info->type && strcmp(info->type, "URLTest") == 0 && info->delay > 0) {
-            bool changed = g_proxy_throttle.first_run ||
-                          strcmp(g_proxy_throttle.last_name, info->name) != 0 ||
-                          g_proxy_throttle.last_delay != info->delay;
-
-            if (changed) {
-                LOG_INFO("URLTest Node: %s (delay: %dms)", info->name, info->delay);
-                strncpy(g_proxy_throttle.last_name, info->name, sizeof(g_proxy_throttle.last_name) - 1);
-                g_proxy_throttle.last_delay = info->delay;
-                g_proxy_throttle.first_run = false;
-            }
-        }
-    }
-
-cleanup:
-    proxy_list_free(list);
-}
-
-static void on_proxies_response(int http_code, const char *body, void *userdata) {
-    (void)userdata;
-
-    if (http_code != 200 || !body) return;
-
-    char *mutable_body = strdup(body);
-    if (!mutable_body) return;
-
-    proxy_list_t list;
-    int count = singbox_parse_proxies(mutable_body, strlen(mutable_body), &list);
-    
-    if (count >= 0) {
-        process_proxy_list(&list);
-    } else {
-        proxy_list_free(&list);
-    }
-
-    free(mutable_body);
-}
-
-static void proxies_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
-    (void)r;
-    (void)timer;
-    (void)userdata;
-    api_get_proxies_async(&g_api_ctx, on_proxies_response, NULL);
-}
-
-static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
-    (void)r;
-    (void)events;
-    netlink_handle_event(fd, userdata);
-}
-
 static void run_event_loop(void) {
     g_reactor = reactor_create();
     if (!g_reactor) {
         LOG_ERROR("Failed to create reactor");
         return;
     }
-
-    netlink_set_reactor(g_reactor);
-    uds_init(g_reactor, ATPD_UDS_PATH);
 
     api_start_with_reactor(&g_api_ctx, g_reactor);
     
@@ -188,18 +105,12 @@ static void run_event_loop(void) {
     reactor_watch_signal(g_reactor, SIGHUP);
     reactor_watch_signal(g_reactor, SIGUSR1);
     reactor_watch_signal(g_reactor, SIGCHLD);
-    
-    int nl_fd = netlink_get_fd();
-    if (nl_fd >= 0) {
-        reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_io_cb, NULL);
-    }
 
     LOG_INFO("Reactor event loop started");
     reactor_run(g_reactor);
     LOG_INFO("Reactor event loop stopped");
 
     tproxy_cleanup_all(&g_config);
-    uds_cleanup();
     reactor_destroy(g_reactor);
     g_reactor = NULL;
 }
@@ -268,7 +179,7 @@ static int find_config_file(char *path, size_t size, const char *user_path) {
             path[dlen] = '/';
             memcpy(path + dlen + 1, "atp.conf", 9);
         } else {
-            snprintf(path, size, "./atp.conf");
+            snprintf(path, size, "/etc/atp/atp.conf");
         }
     }
     return access(path, R_OK);
@@ -282,18 +193,11 @@ static int confirm_operation(const char *op, int force) {
     return (res[0] == 'y' || res[0] == 'Y');
 }
 
-/* ========== PID File Path Resolution ========== */
-
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
-        /* -p/--pid from command line takes highest priority */
         snprintf(pp, size, "%s", opts->pid_file);
-    } else if (g_config.data_dir[0]) {
-        /* config.data_dir second priority */
-        snprintf(pp, size, "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
-        /* Fallback: current directory */
-        snprintf(pp, size, "./atpd.pid");
+        snprintf(pp, size, "/var/run/atpd.pid");
     }
 }
 
@@ -301,27 +205,22 @@ static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
-    /* 1. 确定配置文件路径 */
     if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
         fprintf(stderr, "Config file not found\n");
         return 1;
     }
 
-    /* 2. 先加载配置（比 logger_init 更早，但不输出日志） */
     config_set_defaults(&g_config);
     g_config.foreground = opts->foreground;
     g_config.verbose = opts->verbose;
     config_load(cp, &g_config);
 
-    /* 3. 初始化 logger（config_load 之后，确保 data_dir 等已就绪） */
     logger_init();
     log_set_level(opts->log_level);
     if (opts->no_color) log_set_color(0);
 
-    /* 4. 确定 PID 文件路径（-p > config.data_dir > ./atpd.pid） */
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    /* 5. 检查已有 PID */
     if (file_exists(pp)) {
         FILE *f = fopen(pp, "r");
         if (f) {
@@ -336,33 +235,13 @@ static int do_start(atp_options_t *opts) {
         unlink(pp);
     }
 
-    /* 6. 守护进程化 */
     if (!opts->foreground && opts->daemon) {
         daemonize();
     }
 
-    /* 7. 写入 PID 文件 */
     if (write_pid_file(pp) < 0) {
         fprintf(stderr, "Failed to write PID file\n");
         return 1;
-    }
-
-    atpd_context_init();
-
-    if (netlink_init(NULL, &g_config) < 0) {
-        LOG_ERROR("Failed to initialize netlink");
-        unlink(pp);
-        return 1;
-    }
-
-    if (g_config.app_proxy_enable) {
-        app_filter_init(&g_config);
-    }
-
-    fcm_monitor_init(&g_config);
-
-    if (g_config.performance_mode) {
-        perf_mode_init(&g_config);
     }
 
     api_init(&g_api_ctx, &g_config);
@@ -377,30 +256,16 @@ static int do_start(atp_options_t *opts) {
     if (service_init(g_svc, &g_config) < 0) {
         LOG_ERROR("Failed to initialize service");
         free(g_svc);
-        g_svc = NULL;
         unlink(pp);
         return 1;
     }
 
-    if (g_config.app_proxy_enable) {
-        app_filter_setup(&g_config);
-    }
-
-    if (g_config.performance_mode) {
-        perf_mode_setup(&g_config);
-    }
-
-    netlink_set_tproxy_ready();
     run_event_loop();
 
-    /* P1: Wait for service thread to fully stop before freeing context */
     service_stop_async(g_svc);
-    usleep(500000);  /* 500ms grace period for service thread exit */
     free(g_svc);
     g_svc = NULL;
 
-    fcm_monitor_cleanup();
-    netlink_cleanup();
     api_cleanup(&g_api_ctx);
     unlink(pp);
     logger_close();
@@ -411,13 +276,10 @@ static int do_start(atp_options_t *opts) {
 static int do_stop(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
 
-    /* Use same resolution logic as do_start for consistency */
     if (opts->pid_file[0]) {
         snprintf(pp, sizeof(pp), "%s", opts->pid_file);
-    } else if (g_config.data_dir[0]) {
-        snprintf(pp, sizeof(pp), "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
-        snprintf(pp, sizeof(pp), "./atpd.pid");
+        snprintf(pp, sizeof(pp), "/var/run/atpd.pid");
     }
 
     FILE *f = fopen(pp, "r");
@@ -472,24 +334,22 @@ static int do_status(atp_options_t *opts) {
     config_set_defaults(&g_config);
     config_load(cp, &g_config);
 
+    log_init();
+    logger_init();
+    log_set_level(LOG_LEVEL_INFO);
+    if (opts->no_color) log_set_color(0);
     if (opts->no_color) ui_set_no_color(1);
     ui_init();
 
-    service_ctx_t svc = {0};
+    service_ctx_t svc;
+    memset(&svc, 0, sizeof(svc));
     service_init(&svc, &g_config);
     api_init(&g_api_ctx, &g_config);
 
-    netlink_init(NULL, &g_config);
-    /* Sync VPN state for status command (daemon is not running) */
-    char vpn_iface[IFNAMSIZ] = {0};
-    if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
-        atpd_vpn_state_transition(VPN_STATE_READY, 0, vpn_iface);
-    }
     status_show(&g_config, &svc, &g_api_ctx);
 
-    /* P1: Cleanup resources initialized for status command */
-    netlink_cleanup();
     api_cleanup(&g_api_ctx);
+    logger_close();
 
     return 0;
 }
@@ -499,10 +359,8 @@ static int do_reload(atp_options_t *opts) {
 
     if (opts->pid_file[0]) {
         snprintf(pp, sizeof(pp), "%s", opts->pid_file);
-    } else if (g_config.data_dir[0]) {
-        snprintf(pp, sizeof(pp), "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
-        snprintf(pp, sizeof(pp), "./atpd.pid");
+        snprintf(pp, sizeof(pp), "/var/run/atpd.pid");
     }
 
     FILE *f = fopen(pp, "r");
