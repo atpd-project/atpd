@@ -47,7 +47,7 @@
 
 api_ctx_t g_api_ctx;
 atp_config_t g_config;
-reactor_t *g_reactor = NULL;
+static reactor_t *g_reactor = NULL;
 static service_ctx_t *g_svc = NULL;
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload = 0;
@@ -286,10 +286,13 @@ static int confirm_operation(const char *op, int force) {
 
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
+        /* -p/--pid from command line takes highest priority */
         snprintf(pp, size, "%s", opts->pid_file);
     } else if (g_config.data_dir[0]) {
+        /* config.data_dir second priority */
         snprintf(pp, size, "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
+        /* Fallback: current directory */
         snprintf(pp, size, "./atpd.pid");
     }
 }
@@ -298,21 +301,27 @@ static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
+    /* 1. 确定配置文件路径 */
     if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
         fprintf(stderr, "Config file not found\n");
         return 1;
     }
 
+    /* 2. 先加载配置（比 logger_init 更早，但不输出日志） */
+    config_set_defaults(&g_config);
     g_config.foreground = opts->foreground;
     g_config.verbose = opts->verbose;
     config_load(cp, &g_config);
 
+    /* 3. 初始化 logger（config_load 之后，确保 data_dir 等已就绪） */
     logger_init();
     log_set_level(opts->log_level);
     if (opts->no_color) log_set_color(0);
 
+    /* 4. 确定 PID 文件路径（-p > config.data_dir > ./atpd.pid） */
     resolve_pid_path(opts, pp, sizeof(pp));
 
+    /* 5. 检查已有 PID */
     if (file_exists(pp)) {
         FILE *f = fopen(pp, "r");
         if (f) {
@@ -327,10 +336,12 @@ static int do_start(atp_options_t *opts) {
         unlink(pp);
     }
 
+    /* 6. 守护进程化 */
     if (!opts->foreground && opts->daemon) {
         daemonize();
     }
 
+    /* 7. 写入 PID 文件 */
     if (write_pid_file(pp) < 0) {
         fprintf(stderr, "Failed to write PID file\n");
         return 1;
@@ -366,6 +377,7 @@ static int do_start(atp_options_t *opts) {
     if (service_init(g_svc, &g_config) < 0) {
         LOG_ERROR("Failed to initialize service");
         free(g_svc);
+        g_svc = NULL;
         unlink(pp);
         return 1;
     }
@@ -381,7 +393,9 @@ static int do_start(atp_options_t *opts) {
     netlink_set_tproxy_ready();
     run_event_loop();
 
+    /* P1: Wait for service thread to fully stop before freeing context */
     service_stop_async(g_svc);
+    service_join(g_svc);
     free(g_svc);
     g_svc = NULL;
 
@@ -397,8 +411,11 @@ static int do_start(atp_options_t *opts) {
 static int do_stop(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
 
+    /* Use same resolution logic as do_start for consistency */
     if (opts->pid_file[0]) {
         snprintf(pp, sizeof(pp), "%s", opts->pid_file);
+    } else if (g_config.data_dir[0]) {
+        snprintf(pp, sizeof(pp), "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
         snprintf(pp, sizeof(pp), "./atpd.pid");
     }
@@ -455,29 +472,25 @@ static int do_status(atp_options_t *opts) {
     config_set_defaults(&g_config);
     config_load(cp, &g_config);
 
-    log_init();
-    logger_init();
-    log_set_level(LOG_LEVEL_INFO);
-    if (opts->no_color) log_set_color(0);
-
     if (opts->no_color) ui_set_no_color(1);
     ui_init();
 
-    service_ctx_t svc;
-    memset(&svc, 0, sizeof(svc));
+    service_ctx_t svc = {0};
     service_init(&svc, &g_config);
     api_init(&g_api_ctx, &g_config);
 
     netlink_init(NULL, &g_config);
+    /* Sync VPN state for status command (daemon is not running) */
     char vpn_iface[IFNAMSIZ] = {0};
     if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
         atpd_vpn_state_transition(VPN_STATE_READY, 0, vpn_iface);
     }
     status_show(&g_config, &svc, &g_api_ctx);
 
+    /* P1: Cleanup resources initialized for status command */
     netlink_cleanup();
     api_cleanup(&g_api_ctx);
-    logger_close();
+    service_deinit(&svc);
 
     return 0;
 }
@@ -487,6 +500,8 @@ static int do_reload(atp_options_t *opts) {
 
     if (opts->pid_file[0]) {
         snprintf(pp, sizeof(pp), "%s", opts->pid_file);
+    } else if (g_config.data_dir[0]) {
+        snprintf(pp, sizeof(pp), "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
         snprintf(pp, sizeof(pp), "./atpd.pid");
     }
