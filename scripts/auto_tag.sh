@@ -1,5 +1,4 @@
 #!/bin/bash
-# Auto beta tag for staging branch
 set -e
 
 BRANCH="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
@@ -9,20 +8,26 @@ if [ "$BRANCH" != "staging" ]; then
     exit 0
 fi
 
-BASE_VERSION="0.1"
-LATEST_BETA=$(git tag -l "v${BASE_VERSION}-beta.*" --sort=-v:refname | head -1)
+LATEST_TAG=$(git tag -l "[0-9]*" --sort=-v:refname | head -1 || echo "")
 
-if [ -z "$LATEST_BETA" ]; then
-    NEXT_BETA="v${BASE_VERSION}-beta.1"
+if [ -z "$LATEST_TAG" ]; then
+    NEXT_TAG="0.1-beta.1"
 else
-    LAST_NUM=$(echo "$LATEST_BETA" | grep -oP 'beta\.\K\d+')
-    NEXT_NUM=$((LAST_NUM + 1))
-    NEXT_BETA="v${BASE_VERSION}-beta.${NEXT_NUM}"
+    BASE=$(echo "$LATEST_TAG" | cut -d- -f1)
+    LATEST_BETA=$(git tag -l "${BASE}-beta.*" --sort=-v:refname | head -1 || echo "")
+    
+    if [ -z "$LATEST_BETA" ]; then
+        NEXT_TAG="${BASE}-beta.1"
+    else
+        NUM=$(echo "$LATEST_BETA" | grep -oP 'beta\.\K\d+' || echo "0")
+        NEXT_NUM=$((NUM + 1))
+        NEXT_TAG="${BASE}-beta.${NEXT_NUM}"
+    fi
 fi
 
-echo "Next beta tag: $NEXT_BETA"
+echo "Next beta tag: $NEXT_TAG"
 git config user.email "ci@atpd.project"
 git config user.name "ATP CI"
-git tag -a "$NEXT_BETA" -m "$NEXT_BETA"
-git push origin "$NEXT_BETA"
-echo "Tag pushed: $NEXT_BETA"
+git tag -a "$NEXT_TAG" -m "$NEXT_TAG"
+git push origin "$NEXT_TAG"
+echo "Tag pushed: $NEXT_TAG"

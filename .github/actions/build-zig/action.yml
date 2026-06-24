@@ -53,6 +53,7 @@ runs:
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
+
     - name: Build with Zig CC
       shell: bash
       run: |
@@ -63,12 +64,13 @@ runs:
           -o atpd-zig \
           $(find src -name "*.c" ! -path "src/cjson/*" ! -path "src/yyjson/*" ! -name "epoll.c") \
           src/yyjson/yyjson.c \
-          -Wl,--gc-sections -Wl,--strip-all \
+          -Wl,--gc-sections -Wl,--strip-all
 
     - name: Install QEMU
       shell: bash
       run: |
         sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+
     - name: Verify Binary
       shell: bash
       run: |
