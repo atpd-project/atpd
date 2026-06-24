@@ -116,13 +116,6 @@ jobs:
           chmod +x .github/scripts/notify.sh
           .github/scripts/notify.sh all
 
-      - name: Auto Increment Beta Tag
-        run: |
-          git config user.email "ci@atpd.project"
-          git config user.name "ATP CI"
-          chmod +x scripts/auto_tag.sh
-          ./scripts/auto_tag.sh
-
   auto-release-dev:
     name: Auto Release (dev)
     needs: [update-status]
