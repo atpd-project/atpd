@@ -81,8 +81,7 @@ jobs:
         uses: ./.github/actions/build-zig
         with:
           artifact-suffix: '-${{ steps.vars.outputs.short_sha }}'
-
-  update-status:
+    update-status:
     name: Update Checkpoint
     needs: [build-clang, build-zig]
     if: |
