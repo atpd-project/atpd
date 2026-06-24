@@ -9,7 +9,7 @@ if [ -z "$TAG" ]; then
 else
     SEMANTIC_VERSION="${TAG#v}"
     COMMIT_SINCE_TAG=$(git rev-list --count "$TAG"..HEAD 2>/dev/null || echo "0")
-    
+
     if [ "$COMMIT_SINCE_TAG" -eq 0 ]; then
         VERSION="${SEMANTIC_VERSION}-g${SHORT_HASH}"
     else
@@ -17,7 +17,7 @@ else
     fi
 fi
 
-cat > include/version.h << EOF
+cat > include/version.h << EOF2
 #ifndef ATP_VERSION_H
 #define ATP_VERSION_H
 
@@ -26,6 +26,6 @@ cat > include/version.h << EOF
 #define ATP_COMMIT          "${SHORT_HASH}"
 
 #endif
-EOF
+EOF2
 
 echo "Generated version: ${VERSION}"
