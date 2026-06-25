@@ -42,6 +42,8 @@ jobs:
       compiler_ver: ${{ steps.clang-build.outputs.compiler_ver }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Get Short SHA
         id: vars
@@ -71,6 +73,8 @@ jobs:
       atpd_version_string: ${{ steps.zig-build.outputs.atpd_version_string }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Get Short SHA
         id: vars
@@ -94,6 +98,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Generate Version
         uses: ./.github/actions/gen-version
@@ -128,6 +134,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Get Short SHA
         id: vars
