@@ -37,12 +37,12 @@ runs:
         cat include/version.h
 
     - name: Setup Zig
-      uses: mlugg/setup-zig@v2
+      uses: mlugg/setup-zig@v2.2.1
       with:
         version: ${{ inputs.zig-version }}
 
     - name: Cache Zig
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: |
           ~/.cache/zig
@@ -93,7 +93,7 @@ runs:
         echo "atpd_version_string=$ATPD_VER" >> $GITHUB_OUTPUT
 
     - name: Upload Artifact
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7.0.1
       with:
         name: atpd-zig${{ inputs.artifact-suffix }}
         path: ./atpd-zig
