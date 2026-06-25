@@ -1,1 +1,3 @@
-.github/workflows/*.yml merge=keep-ours
+.github/workflows/* merge=ours
+.github/actions/* merge=ours
+scripts/* merge=ours
