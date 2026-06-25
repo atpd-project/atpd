@@ -81,7 +81,6 @@ jobs:
         uses: ./.github/actions/build-zig
         with:
           artifact-suffix: '-${{ steps.vars.outputs.short_sha }}'
-
   update-status:
     name: Update Checkpoint
     needs: [build-clang, build-zig]
@@ -116,29 +115,6 @@ jobs:
         run: |
           chmod +x .github/scripts/notify.sh
           .github/scripts/notify.sh all
-
-  auto-tag:
-    name: Auto Tag (staging)
-    needs: [update-status]
-    if: |
-      always() &&
-      needs.update-status.result == 'success' &&
-      github.ref_name == 'staging'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Auto Increment Beta Tag
-        run: |
-          git config user.email "ci@atpd.project"
-          git config user.name "ATP CI"
-          chmod +x scripts/auto_tag.sh
-          ./scripts/auto_tag.sh
 
   auto-release-dev:
     name: Auto Release (dev)
