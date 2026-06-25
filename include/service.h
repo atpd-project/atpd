@@ -42,8 +42,9 @@ typedef struct service_ctx {
     
     reactor_t *reactor;
     reactor_timer_t *monitor_timer;
+    reactor_timer_t *retry_timer;
     
-    async_validate_ctx_t *validate_ctx;  // Phase 3: async validation
+    async_validate_ctx_t *validate_ctx;
 } service_ctx_t;
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);

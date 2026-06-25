@@ -113,7 +113,7 @@ atpd [options] command
 | `start` | Start daemon |
 | `stop` | Stop daemon |
 | `restart` | Restart daemon |
-|``status` | Show runtime status |
+| `status` | Show runtime status |
 | `reload` | Reload configuration |
 | `check` | Check configuration syntax and validity |
 | `update-geoip` | Update GeoIP database |

@@ -16,5 +16,6 @@ int perf_mode_cleanup(atp_config_t *cfg);
 int perf_mode_tune_tcp_stack(atp_config_t *cfg);
 int perf_mode_enable_conntrack_optimization(atp_config_t *cfg);
 int perf_mode_enable_socket_match(atp_config_t *cfg);
+int perf_mode_monitor_temperature(void);
 
 #endif

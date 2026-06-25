@@ -103,6 +103,7 @@ static void trigger_network_refresh(reactor_t *r) {
 
 static int g_xfrm_fd = -1;
 static reactor_t *g_xfrm_reactor = NULL;
+static int g_xfrm_registered = 0;
 
 static struct rtattr* atpd_find_rta_nested(struct rtattr *rta, int len, unsigned short type) {
     while (RTA_OK(rta, len)) {
@@ -344,6 +345,7 @@ int netlink_xfrm_init(reactor_t *r) {
     if (r) {
         reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
         g_xfrm_reactor = r;
+        g_xfrm_registered = 1;
     }
 
     LOG_INFO("XFRM: Listener started (fd=%d)", g_xfrm_fd);
@@ -457,6 +459,13 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
 }
 
 void netlink_cleanup(void) {
+    if (g_debounce_timer && g_debounce_reactor) {
+        reactor_cancel_timer(g_debounce_reactor, g_debounce_timer);
+        g_debounce_timer = NULL;
+    }
+    g_debounce_reactor = NULL;
+    g_xfrm_registered = 0;
+
     if (g_sync_fd >= 0) {
         close(g_sync_fd);
         g_sync_fd = -1;
@@ -466,6 +475,9 @@ void netlink_cleanup(void) {
         g_async_fd = -1;
     }
     if (g_xfrm_fd >= 0) {
+        if (g_xfrm_reactor) {
+            reactor_remove_fd(g_xfrm_reactor, g_xfrm_fd);
+        }
         close(g_xfrm_fd);
         g_xfrm_fd = -1;
     }
@@ -480,9 +492,10 @@ int netlink_get_fd(void) {
 void netlink_set_reactor(reactor_t *r) {
     g_debounce_reactor = r;
     
-    if (g_xfrm_fd >= 0 && r) {
+    if (g_xfrm_fd >= 0 && r && !g_xfrm_registered) {
         reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
         g_xfrm_reactor = r;
+        g_xfrm_registered = 1;
     }
 }
 
@@ -521,7 +534,6 @@ int nl_vpn_detect(void) {
         }
     }
 
-    /* Fallback: getifaddrs for XFRM tunnels */
     char ifname[IFNAMSIZ];
     if (getifaddrs_find_vpn(ifname, sizeof(ifname)) == 0) {
         LOG_DEBUG("VPN interface detected via getifaddrs: %s", ifname);
@@ -576,6 +588,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
 
 static int ip_rule_audit(atp_config_t *cfg) {
     if (!g_tproxy_initialized) return 0;
+    if (cfg->dry_run) return 0;
 
     char cmd[MAX_CMD_LEN];
     int needs_repair = 0;
@@ -616,6 +629,7 @@ static int ip_rule_audit(atp_config_t *cfg) {
 
 static int tproxy_refresh_rules(atp_config_t *cfg) {
     if (!g_tproxy_initialized) return 0;
+    if (cfg->dry_run) return 0;
 
     char cmd[MAX_CMD_LEN];
     int needs_repair_v4 = 0;
