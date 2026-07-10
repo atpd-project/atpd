@@ -172,6 +172,37 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
     ui_table_end();
 }
 
+static void status_show_ebpf(void) {
+    ui_table_begin();
+    ui_table_header("eBPF CNIP");
+
+    switch (g_atpd_ctx.ebpf_state) {
+        case EBPF_STATE_READY:
+            ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
+            ui_table_subrow("├─", "Pin Dir", g_atpd_ctx.ebpf_pin_dir);
+            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+            break;
+        case EBPF_STATE_LOADING:
+            ui_table_subrow_color("├─", "State", "LOADING", COLOR_YELLOW);
+            ui_table_subrow("└─", "Pin Dir", "N/A");
+            break;
+        case EBPF_STATE_FAILED:
+            ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
+            ui_table_subrow("└─", "Fallback", "ipset");
+            break;
+        case EBPF_STATE_DISABLED:
+            ui_table_subrow_color("├─", "State", "DISABLED", COLOR_YELLOW);
+            ui_table_subrow("└─", "CNIP Mode", "ipset");
+            break;
+        case EBPF_STATE_UNINITIALIZED:
+        default:
+            ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
+            break;
+    }
+
+    ui_table_end();
+}
+
 static void status_show_monitors(void) {
     time_t last_fcm = fcm_monitor_get_last_detection();
     time_t now = time(NULL);
@@ -525,6 +556,9 @@ void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
     ui_blank();
 
     status_show_clash_mode(cfg, api, svc);
+    ui_blank();
+
+    status_show_ebpf();
     ui_blank();
 
     status_show_monitors();
