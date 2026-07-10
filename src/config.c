@@ -139,11 +139,21 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
         else if (strcmp(v, "ipset") == 0) cfg->cnip_mode = 0;
         else cfg->cnip_mode = atoi(v);
     }
-    else if (strcmp(k, "EBPF_BIN") == 0) snprintf(cfg->ebpf_bin_path, sizeof(cfg->ebpf_bin_path), "%s", v);
-    else if (strcmp(k, "EBPF_PIN_DIR") == 0) snprintf(cfg->ebpf_pin_dir, sizeof(cfg->ebpf_pin_dir), "%s", v);
-    else if (strcmp(k, "EBPF_STATE_DIR") == 0) snprintf(cfg->ebpf_state_dir, sizeof(cfg->ebpf_state_dir), "%s", v);
-    else if (strcmp(k, "EBPF_LOAD_RETRY") == 0) cfg->ebpf_load_retry = atoi(v);
-    else if (strcmp(k, "EBPF_LOAD_DELAY") == 0) cfg->ebpf_load_delay = atoi(v);
+    else if (strcmp(k, "EBPF_BIN") == 0) {
+        snprintf(cfg->ebpf_bin_path, sizeof(cfg->ebpf_bin_path), "%s", v);
+    }
+    else if (strcmp(k, "EBPF_PIN_DIR") == 0) {
+        snprintf(cfg->ebpf_pin_dir, sizeof(cfg->ebpf_pin_dir), "%s", v);
+    }
+    else if (strcmp(k, "EBPF_STATE_DIR") == 0) {
+        snprintf(cfg->ebpf_state_dir, sizeof(cfg->ebpf_state_dir), "%s", v);
+    }
+    else if (strcmp(k, "EBPF_LOAD_RETRY") == 0) {
+        cfg->ebpf_load_retry = atoi(v);
+    }
+    else if (strcmp(k, "EBPF_LOAD_DELAY") == 0) {
+        cfg->ebpf_load_delay = atoi(v);
+    }
     else if (strcmp(k, "CNIP_FORCE_PROXY_APPS") == 0) {
         snprintf(cfg->cnip_force_proxy_apps, sizeof(cfg->cnip_force_proxy_apps), "%s", v);
     }

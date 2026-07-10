@@ -699,10 +699,30 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
         return -1;
     }
 
-    LOG_INFO("eBPF CNIP init: probe=%d, ipv6=%d", cfg->ebpf_enabled, cfg->proxy_ipv6);
+    LOG_INFO("eBPF CNIP init: probe=%d, ipv6=%d, retry=%d, delay=%d",
+             cfg->ebpf_enabled, cfg->proxy_ipv6,
+             cfg->ebpf_load_retry, cfg->ebpf_load_delay);
 
-    if (boxbpf_probe(cfg->proxy_ipv6) != 0) {
-        LOG_WARN("eBPF probe failed");
+    int retry = cfg->ebpf_load_retry > 0 ? cfg->ebpf_load_retry : 3;
+    int delay = cfg->ebpf_load_delay > 0 ? cfg->ebpf_load_delay : 2;
+    int probe_ok = 0;
+
+    for (int i = 0; i < retry; i++) {
+        if (boxbpf_probe(cfg->proxy_ipv6) == 0) {
+            probe_ok = 1;
+            break;
+        }
+        if (i < retry - 1) {
+            LOG_WARN("eBPF probe failed (attempt %d/%d), retrying in %ds...",
+                     i + 1, retry, delay);
+            sleep(delay);
+        } else {
+            LOG_WARN("eBPF probe failed (attempt %d/%d)", i + 1, retry);
+        }
+    }
+
+    if (!probe_ok) {
+        LOG_WARN("eBPF probe failed after %d attempts", retry);
         write_ebpf_state_file("failed");
         return -1;
     }
@@ -733,7 +753,6 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
         return -1;
     }
 
-    /* 1. 检查核心 CNIP pin (必须存在) */
     snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", cfg->ebpf_pin_dir);
     if (stat(pin_path, &st) != 0) {
         strncpy(state, "uninitialized", size);
@@ -746,7 +765,6 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
         return 0;
     }
 
-    /* 2. 检查 IPv6 (如果启用) */
     if (cfg->proxy_ipv6) {
         snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out6", cfg->ebpf_pin_dir);
         if (stat(pin_path, &st) != 0) {
@@ -760,7 +778,6 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
         }
     }
 
-    /* 3. 检查 FORCE UID (如果配置了) */
     int force_loaded = 0;
     if (cfg->cnip_force_proxy_apps[0] != '\0') {
         snprintf(pin_path, sizeof(pin_path), "%s/box_force_out4", cfg->ebpf_pin_dir);
@@ -775,7 +792,6 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
         }
     }
 
-    /* 4. 检查 APP UID (如果配置了) */
     int app_loaded = 0;
     if (cfg->performance_mode && cfg->app_proxy_enable) {
         snprintf(pin_path, sizeof(pin_path), "%s/box_app_out4", cfg->ebpf_pin_dir);
@@ -790,7 +806,6 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
         }
     }
 
-    /* 5. 返回状态 */
     int force_configured = (cfg->cnip_force_proxy_apps[0] != '\0');
     int app_configured = (cfg->performance_mode && cfg->app_proxy_enable);
 
