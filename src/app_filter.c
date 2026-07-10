@@ -668,20 +668,23 @@ int app_filter_setup(atp_config_t *cfg) {
         return -1;
     }
 
-    /* Update cached UIDs */
     if (g_current_uids) {
         free(g_current_uids);
     }
     g_current_uids = uids;
     g_current_uids_count = uid_count;
 
-    /* Add UIDs to ipset (for iptables-level filtering) */
+    if (cfg->ebpf_ready && cfg->performance_mode) {
+        LOG_INFO("APP UID: using eBPF (performance mode), %d UIDs loaded", uid_count);
+        return 0;
+    }
+
+    LOG_INFO("APP UID: using iptables fallback, %d UIDs loaded", uid_count);
+
     app_filter_add_uids_to_ipset(cfg, uids, uid_count, cfg->app_proxy_mode);
 
-    /* Configure IPv4 chain */
     app_filter_configure_chain(cfg, 4);
 
-    /* Configure IPv6 chain if enabled */
     if (cfg->proxy_ipv6) {
         app_filter_configure_chain(cfg, 6);
     }
@@ -689,7 +692,6 @@ int app_filter_setup(atp_config_t *cfg) {
     LOG_INFO("App filter configured with %d UIDs using ipset %s (IPv6: %s)",
              uid_count, APP_IPSET_NAME, cfg->proxy_ipv6 ? "enabled" : "disabled");
 
-    /* Log INET_DIAG status for fine-grained control */
     if (inet_diag_available()) {
         LOG_INFO("Connection-level fine control active (INET_DIAG available)");
     } else {

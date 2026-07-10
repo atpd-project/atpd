@@ -47,4 +47,4 @@ int app_filter_should_proxy(int family, int protocol,
                              void *src_ip, uint16_t src_port,
                              void *dst_ip, uint16_t dst_port);
 
-#endif /* ATP_APP_FILTER_H *//*
+#endif /* ATP_APP_FILTER_H */
