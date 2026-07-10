@@ -25,7 +25,7 @@
 #define LOG_TAG "atpd"
 #define MAX_LOG_MSG 4096
 
-static int g_log_level = LOG_LEVEL_INFO;
+static log_level_t g_log_level = LOG_LEVEL_INFO;
 static int g_log_color = 1;
 static int g_log_timestamp = 1;
 static int g_log_fd = -1;
@@ -47,7 +47,7 @@ static int android_log_levels[] = {
 };
 #endif
 
-int logger_init(void) {
+void logger_init(void) {
     char log_path[PATH_MAX];
     snprintf(log_path, sizeof(log_path), "%s/%s", ATP_DEFAULT_DIR, ATP_LOG_FILE);
 
@@ -56,10 +56,7 @@ int logger_init(void) {
     g_log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0640);
     if (g_log_fd < 0) {
         g_log_fallback = 1;
-        return -1;
     }
-
-    return 0;
 }
 
 void logger_close(void) {
@@ -69,10 +66,8 @@ void logger_close(void) {
     }
 }
 
-void log_set_level(int level) {
-    if (level >= LOG_LEVEL_DEBUG && level <= LOG_LEVEL_ERROR) {
-        g_log_level = level;
-    }
+void log_set_level(log_level_t level) {
+    g_log_level = level;
 }
 
 void log_set_color(int enable) {
@@ -94,7 +89,7 @@ static const char *get_timestamp(void) {
     return "0000-00-00 00:00:00";
 }
 
-void log_write_msg(int level, const char *file, int line, const char *fmt, ...) {
+void log_write_msg(log_level_t level, const char *file, int line, const char *fmt, ...) {
     if (level < g_log_level) return;
 
     char msg[MAX_LOG_MSG];
@@ -136,6 +131,6 @@ void log_write_msg(int level, const char *file, int line, const char *fmt, ...) 
     }
 }
 
-int log_get_level(void) {
+log_level_t log_get_level(void) {
     return g_log_level;
 }
