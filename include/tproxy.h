@@ -41,5 +41,6 @@ int tproxy_atomic_switch(atp_config_t *cfg, int family, const char *table,
 int tproxy_setup_ipv4_batch(atp_config_t *cfg);
 int tproxy_setup_ipv6_batch(atp_config_t *cfg);
 
-#endif
 void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *suffix);
+
+#endif
