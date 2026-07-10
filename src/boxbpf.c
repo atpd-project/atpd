@@ -844,9 +844,9 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
     int perf_mode = 0;
     int app_proxy = 0;
 
-    (void)cfg;
-
-    if (g_pin_dir[0] != '\0') {
+    if (cfg && cfg->ebpf_pin_dir[0] != '\0') {
+        pin_dir = cfg->ebpf_pin_dir;
+    } else if (g_pin_dir[0] != '\0') {
         pin_dir = g_pin_dir;
     } else {
         pin_dir = "/sys/fs/bpf/box";
