@@ -27,9 +27,11 @@
 #include <pthread.h>
 #include <dirent.h>
 #include <ifaddrs.h>
+#include <sys/select.h>
 
 #define NL_BUF_SIZE 16384
 #define NL_DUMP_SIZE 65536
+#define NL_RECV_TIMEOUT_MS 3000
 
 /* ========== Firewall Self-Healing ========== */
 
@@ -77,13 +79,13 @@ static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userda
 static void trigger_network_refresh(reactor_t *r) {
     if (!r) return;
     g_debounce_reactor = r;
-    
+
     if (g_debounce_timer) {
         reactor_cancel_timer(r, g_debounce_timer);
         g_debounce_timer = NULL;
     }
-    
-    g_debounce_timer = reactor_add_timer(r, NETLINK_DEBOUNCE_MS, 0, 
+
+    g_debounce_timer = reactor_add_timer(r, NETLINK_DEBOUNCE_MS, 0,
                                          debounce_flush_cb, NULL);
     LOG_DEBUG("[NET] Debounce timer (re)started: %dms", NETLINK_DEBOUNCE_MS);
 }
@@ -133,19 +135,19 @@ static int detect_xfrm_interface(struct nlmsghdr *h) {
 static int is_proxy_interface(const char *ifname);
 static int getifaddrs_find_vpn(char *output, size_t size) {
     struct ifaddrs *ifaddr, *ifa;
-    
+
     if (getifaddrs(&ifaddr) < 0) return -1;
-    
+
     for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name) continue;
         if (!(ifa->ifa_flags & IFF_UP)) continue;
         if (!is_proxy_interface(ifa->ifa_name)) continue;
-        
+
         snprintf(output, size, "%s", ifa->ifa_name);
         freeifaddrs(ifaddr);
         return 0;
     }
-    
+
     freeifaddrs(ifaddr);
     return -1;
 }
@@ -174,13 +176,13 @@ struct nl_parse_ctx {
 
 static int is_proxy_interface(const char *ifname) {
     if (!ifname) return 0;
-    
+
     if (strncmp(ifname, "ipsec", 5) == 0) {
         const char *p = ifname + 5;
         if (*p >= '0' && *p <= '9') return 1;
         return 0;
     }
-    
+
     static const char *prefixes[] = {"tun", "wg", "vpn", "ppp"};
     for (size_t i = 0; i < (sizeof(prefixes) / sizeof(prefixes[0])); ++i) {
         if (strncmp(ifname, prefixes[i], strlen(prefixes[i])) == 0) return 1;
@@ -216,23 +218,51 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
     return 0;
 }
 
-static int netlink_recv_all(int fd, uint32_t seq, int (*parser)(struct nlmsghdr *, void *), void *ctx) {
+static int netlink_recv_all_with_timeout(int fd, uint32_t seq,
+                                         int (*parser)(struct nlmsghdr *, void *),
+                                         void *ctx, int timeout_ms) {
     char *buf = malloc(NL_DUMP_SIZE);
     if (!buf) return -ENOMEM;
+
     struct sockaddr_nl nladdr;
     struct iovec iov = { buf, NL_DUMP_SIZE };
-    struct msghdr msg = { .msg_name = &nladdr, .msg_namelen = sizeof(nladdr), .msg_iov = &iov, .msg_iovlen = 1 };
+    struct msghdr msg = {
+        .msg_name = &nladdr,
+        .msg_namelen = sizeof(nladdr),
+        .msg_iov = &iov,
+        .msg_iovlen = 1
+    };
     int status = 0;
 
     while (1) {
-        ssize_t ret = recvmsg(fd, &msg, 0);
+        fd_set fds;
+        struct timeval tv;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+        int ret = select(fd + 1, &fds, NULL, NULL, &tv);
         if (ret < 0) {
             if (errno == EINTR) continue;
             status = -errno;
             break;
         }
+        if (ret == 0) {
+            status = -ETIMEDOUT;
+            LOG_WARN("netlink: recv timeout after %dms", timeout_ms);
+            break;
+        }
+
+        ssize_t len = recvmsg(fd, &msg, 0);
+        if (len < 0) {
+            if (errno == EINTR) continue;
+            status = -errno;
+            break;
+        }
+
         struct nlmsghdr *h = (struct nlmsghdr *)buf;
-        for (; NLMSG_OK(h, (uint32_t)ret); h = NLMSG_NEXT(h, ret)) {
+        for (; NLMSG_OK(h, (uint32_t)len); h = NLMSG_NEXT(h, len)) {
             if (h->nlmsg_seq != seq) continue;
             if (h->nlmsg_type == NLMSG_DONE) goto done;
             if (h->nlmsg_type == NLMSG_ERROR) {
@@ -261,7 +291,7 @@ int netlink_init(nl_callback_t callback, void *userdata) {
 
     struct sockaddr_nl sa = {
         .nl_family = AF_NETLINK,
-        .nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR | 
+        .nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR |
                      RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE
     };
 
@@ -286,23 +316,28 @@ void netlink_handle_event(int fd, void *data) {
     uint8_t buf[NL_BUF_SIZE];
     struct sockaddr_nl sa;
     struct iovec iov = { buf, sizeof(buf) };
-    struct msghdr msg = { .msg_name = &sa, .msg_namelen = sizeof(sa), .msg_iov = &iov, .msg_iovlen = 1 };
+    struct msghdr msg = {
+        .msg_name = &sa,
+        .msg_namelen = sizeof(sa),
+        .msg_iov = &iov,
+        .msg_iovlen = 1
+    };
 
     ssize_t len = recvmsg(fd, &msg, MSG_DONTWAIT);
     if (len <= 0) return;
 
     int should_refresh = 0;
 
-    for (struct nlmsghdr *h = (struct nlmsghdr *)buf; 
-         NLMSG_OK(h, (uint32_t)len); 
+    for (struct nlmsghdr *h = (struct nlmsghdr *)buf;
+         NLMSG_OK(h, (uint32_t)len);
          h = NLMSG_NEXT(h, len)) {
-        
+
         if (h->nlmsg_type == NLMSG_DONE) break;
         if (h->nlmsg_type == NLMSG_ERROR) continue;
 
         if (h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_NEWROUTE) {
             char ifname[IFNAMSIZ] = {0};
-            
+
             if (h->nlmsg_type == RTM_NEWADDR) {
                 struct ifaddrmsg *ifa = NLMSG_DATA(h);
                 if_indextoname(ifa->ifa_index, ifname);
@@ -311,7 +346,7 @@ void netlink_handle_event(int fd, void *data) {
                 LOG_DEBUG("[NET] Route table change detected");
                 ifname[0] = '\0';
             }
-            
+
             should_refresh = 1;
         }
     }
@@ -360,7 +395,12 @@ void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata
     uint8_t buf[NL_BUF_SIZE];
     struct sockaddr_nl sa;
     struct iovec iov = { buf, sizeof(buf) };
-    struct msghdr msg = { .msg_name = &sa, .msg_namelen = sizeof(sa), .msg_iov = &iov, .msg_iovlen = 1 };
+    struct msghdr msg = {
+        .msg_name = &sa,
+        .msg_namelen = sizeof(sa),
+        .msg_iov = &iov,
+        .msg_iovlen = 1
+    };
 
     ssize_t len = recvmsg(fd, &msg, MSG_DONTWAIT);
     if (len <= 0) return;
@@ -413,7 +453,8 @@ int netlink_get_active_vpn(char *output, size_t size) {
 
     pthread_mutex_lock(&g_nl_mutex);
     if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) >= 0) {
-        netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+        netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                      parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
     }
     pthread_mutex_unlock(&g_nl_mutex);
 
@@ -446,7 +487,8 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
     if (req.ifi.ifi_index == 0) return -1;
     pthread_mutex_lock(&g_nl_mutex);
     if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) >= 0) {
-        netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+        netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                      parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
     }
     pthread_mutex_unlock(&g_nl_mutex);
 
@@ -491,7 +533,7 @@ int netlink_get_fd(void) {
 
 void netlink_set_reactor(reactor_t *r) {
     g_debounce_reactor = r;
-    
+
     if (g_xfrm_fd >= 0 && r && !g_xfrm_registered) {
         reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
         g_xfrm_reactor = r;
@@ -523,7 +565,8 @@ int nl_vpn_detect(void) {
         LOG_ERROR("nl_vpn_detect: netlink send failed: %s", strerror(errno));
         return -1;
     }
-    netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+    netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                  parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
     pthread_mutex_unlock(&g_nl_mutex);
 
     for (int i = 0; i < ctx.count; i++) {
@@ -569,7 +612,8 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
         iface[0] = '\0';
         return -1;
     }
-    netlink_recv_all(g_sync_fd, req.nlh.nlmsg_seq, parser_link_sync, &ctx);
+    netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                  parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
     pthread_mutex_unlock(&g_nl_mutex);
 
     for (int i = 0; i < ctx.count; i++) {
