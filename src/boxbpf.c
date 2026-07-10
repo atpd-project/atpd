@@ -834,6 +834,48 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     return ATP_OK;
 }
 
+int boxbpf_reload_from_config(atp_config_t *cfg) {
+    if (!cfg) return ATP_ERR_INVAL;
+
+    if (!cfg->ebpf_enabled) {
+        LOG_DEBUG("eBPF disabled by config, skipping reload");
+        write_ebpf_state_file("disabled");
+        return ATP_ERR_EBPF;
+    }
+
+    if (cfg->cnip_mode != 1) {
+        LOG_DEBUG("CNIP_MODE is not ebpf, skipping reload");
+        write_ebpf_state_file("disabled");
+        return ATP_ERR_EBPF;
+    }
+
+    if (cfg->ebpf_state_dir[0] != '\0') {
+        strncpy(g_state_dir, cfg->ebpf_state_dir, sizeof(g_state_dir) - 1);
+        g_state_dir[sizeof(g_state_dir) - 1] = '\0';
+        snprintf(g_status_file, sizeof(g_status_file), "%s/ebpf.status", g_state_dir);
+    }
+
+    if (cfg->ebpf_pin_dir[0] != '\0') {
+        strncpy(g_pin_dir, cfg->ebpf_pin_dir, sizeof(g_pin_dir) - 1);
+        g_pin_dir[sizeof(g_pin_dir) - 1] = '\0';
+    }
+
+    if (cfg->ebpf_ready) {
+        int ret = boxbpf_update(cfg->ebpf_config_path);
+        if (ret == ATP_OK) {
+            LOG_INFO("eBPF CNIP maps updated successfully");
+            return ATP_OK;
+        } else {
+            LOG_WARN("eBPF CNIP update failed, reloading from scratch");
+            boxbpf_clear();
+            cfg->ebpf_ready = 0;
+            return boxbpf_init_from_config(cfg);
+        }
+    } else {
+        return boxbpf_init_from_config(cfg);
+    }
+}
+
 int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
     struct stat st;
     char pin_path[256];

@@ -228,35 +228,15 @@ static void ebpf_reload(atp_config_t *cfg) {
         return;
     }
 
-    if (cfg->ebpf_ready) {
-        int ret = boxbpf_update(cfg->ebpf_config_path);
-        if (ret == ATP_OK) {
-            LOG_INFO("eBPF CNIP maps updated successfully");
-        } else {
-            LOG_WARN("eBPF CNIP update failed, attempting reload");
-            boxbpf_clear();
-            cfg->ebpf_ready = 0;
-            if (boxbpf_init_from_config(cfg) == ATP_OK) {
-                cfg->ebpf_ready = 1;
-                atpd_ebpf_state_transition(EBPF_STATE_READY);
-                LOG_INFO("eBPF CNIP reloaded successfully");
-            } else {
-                cfg->ebpf_ready = 0;
-                atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-                LOG_WARN("eBPF CNIP reload failed");
-            }
-        }
+    int ret = boxbpf_reload_from_config(cfg);
+    if (ret == ATP_OK) {
+        cfg->ebpf_ready = 1;
+        atpd_ebpf_state_transition(EBPF_STATE_READY);
+        LOG_INFO("eBPF CNIP reloaded successfully");
     } else {
-        int ret = boxbpf_init_from_config(cfg);
-        if (ret == ATP_OK) {
-            cfg->ebpf_ready = 1;
-            atpd_ebpf_state_transition(EBPF_STATE_READY);
-            LOG_INFO("eBPF CNIP initialized on reload");
-        } else {
-            cfg->ebpf_ready = 0;
-            atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-            LOG_WARN("eBPF CNIP init on reload failed");
-        }
+        cfg->ebpf_ready = 0;
+        atpd_ebpf_state_transition(EBPF_STATE_FAILED);
+        LOG_WARN("eBPF CNIP reload failed");
     }
 }
 
