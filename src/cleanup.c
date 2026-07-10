@@ -38,3 +38,15 @@ void atp_register_cleanup(atp_config_t *cfg) {
 void atp_cleanup_all(void) {
     atp_cleanup_handler();
 }
+
+void atp_cleanup_manual(atp_config_t *cfg) {
+    if (!cfg) return;
+
+    LOG_INFO("Manual cleanup: removing iptables rules and eBPF pins");
+
+    boxbpf_clear();
+    tproxy_cleanup_all(cfg);
+    tproxy_cleanup_xfrm_bypass(cfg);
+
+    LOG_INFO("Manual cleanup completed");
+}

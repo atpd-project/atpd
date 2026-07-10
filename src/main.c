@@ -314,6 +314,10 @@ static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
+    LOG_INFO("Cleaning up stale rules before start...");
+    boxbpf_clear();
+    tproxy_cleanup_all(&g_config);
+
     if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != ATP_OK) {
         fprintf(stderr, "Config file not found\n");
         return 1;
