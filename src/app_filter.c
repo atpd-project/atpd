@@ -37,6 +37,8 @@ typedef struct {
 static package_cache_t *g_package_cache = NULL;
 static int g_package_cache_count = 0;
 static int g_package_cache_loaded = 0;
+static time_t g_package_cache_mtime = 0;
+static int g_package_cache_version = 0;
 int g_current_uids_count = 0;
 int *g_current_uids = NULL;
 
@@ -77,18 +79,19 @@ static int app_filter_check_connection_cached_v4(uint32_t src_ip, uint16_t src_p
                                                    uint32_t dst_ip, uint16_t dst_port);
 static int app_filter_check_connection_cached_v6(const uint8_t *src_ip, uint16_t src_port,
                                                    const uint8_t *dst_ip, uint16_t dst_port);
+static int app_filter_cache_stale(void);
 
 /* Initialize INET_DIAG module */
 int app_filter_init(atp_config_t *cfg) {
     (void)cfg;
-    
+
     /* Load package cache once at startup */
     if (!g_package_cache_loaded) {
         if (app_filter_load_package_cache() < 0) {
             LOG_WARN("Failed to load package cache, per-app filtering may not work");
         }
     }
-    
+
     /* Create ipset for UIDs */
     if (!cfg->dry_run) {
         char cmd[MAX_CMD_LEN];
@@ -97,7 +100,7 @@ int app_filter_init(atp_config_t *cfg) {
     } else {
         LOG_DEBUG("[DRY_RUN] ipset create %s bitmap:port range 0-65535", APP_IPSET_NAME);
     }
-    
+
     /* Initialize INET_DIAG for connection-level control */
     if (inet_diag_init() != 0) {
         LOG_WARN("INET_DIAG initialization failed, using /proc fallback");
@@ -106,13 +109,13 @@ int app_filter_init(atp_config_t *cfg) {
     } else {
         LOG_DEBUG("INET_DIAG unavailable, using /proc/net/tcp fallback");
     }
-    
+
     /* Initialize connection cache mutex (only once) */
     if (!g_conn_cache_mutex_initialized) {
         pthread_mutex_init(&g_conn_cache_mutex, NULL);
         g_conn_cache_mutex_initialized = 1;
     }
-    
+
     LOG_DEBUG("App filter initialized with ipset %s and connection cache", APP_IPSET_NAME);
     return 0;
 }
@@ -172,10 +175,14 @@ static int app_filter_load_package_cache(void) {
         return -1;
     }
 
-    /* Get file size for initial allocation estimate (exponential growth strategy) */
     struct stat st;
+    if (fstat(fileno(fp), &st) == 0) {
+        g_package_cache_mtime = st.st_mtime;
+    }
+
+    /* Get file size for initial allocation estimate (exponential growth strategy) */
     int estimated_lines = 500;  /* Default estimate */
-    if (fstat(fileno(fp), &st) == 0 && st.st_size > 0) {
+    if (st.st_size > 0) {
         /* Rough estimate: each line is about 100-200 bytes */
         estimated_lines = st.st_size / 100 + 100;
         /* Cap at reasonable maximum */
@@ -234,10 +241,32 @@ static int app_filter_load_package_cache(void) {
     g_package_cache = cache;
     g_package_cache_count = cache_count;
     g_package_cache_loaded = 1;
+    g_package_cache_version++;
 
-    LOG_DEBUG("Loaded %d package entries into cache (initial estimate: %d, final capacity: %d)",
-              cache_count, estimated_lines, cache_count);
+    LOG_DEBUG("Loaded %d package entries (version %d)",
+              cache_count, g_package_cache_version);
     return 0;
+}
+
+static int app_filter_cache_stale(void) {
+    struct stat st;
+    if (stat(PACKAGES_LIST_PATH, &st) != 0) {
+        return 1;
+    }
+    return st.st_mtime != g_package_cache_mtime;
+}
+
+int app_filter_refresh_cache(void) {
+    LOG_INFO("Refreshing package cache...");
+
+    if (g_package_cache) {
+        free(g_package_cache);
+        g_package_cache = NULL;
+        g_package_cache_count = 0;
+    }
+    g_package_cache_loaded = 0;
+
+    return app_filter_load_package_cache();
 }
 
 static int app_filter_find_package_uid(const char *package_name, int user_id) {
@@ -254,6 +283,15 @@ static int app_filter_find_package_uid(const char *package_name, int user_id) {
 }
 
 int app_filter_get_uid_by_package(const char *package_name, int user_id) {
+    if (!g_package_cache_loaded) {
+        app_filter_load_package_cache();
+    }
+
+    if (g_package_cache_loaded && app_filter_cache_stale()) {
+        LOG_DEBUG("Package cache stale, refreshing...");
+        app_filter_refresh_cache();
+    }
+
     return app_filter_find_package_uid(package_name, user_id);
 }
 
@@ -373,9 +411,13 @@ int app_filter_resolve_packages(const char *packages_list, int **uids, int *coun
         return 0;
     }
 
-    /* Ensure package cache is loaded */
     if (!g_package_cache_loaded) {
         app_filter_load_package_cache();
+    }
+
+    if (g_package_cache_loaded && app_filter_cache_stale()) {
+        LOG_DEBUG("Package cache stale, refreshing...");
+        app_filter_refresh_cache();
     }
 
     int *uid_list = malloc(sizeof(int) * pkg_count);
@@ -703,6 +745,8 @@ int app_filter_cleanup(atp_config_t *cfg) {
 /* Helper function to reload app filter without restarting */
 int app_filter_reload(atp_config_t *cfg) {
     LOG_INFO("Reloading app filter configuration");
+
+    app_filter_refresh_cache();
 
     /* Clear connection cache on reload */
     pthread_mutex_lock(&g_conn_cache_mutex);
