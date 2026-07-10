@@ -28,6 +28,12 @@
 
 #define MAX_LOG_SIZE (10 * 1024 * 1024)
 
+typedef struct {
+    service_ctx_t *ctx;
+    int attempts;
+    int max_attempts;
+} kill_state_t;
+
 static void backoff_init(backoff_t *b) {
     b->base_delay_ms = 1000;
     b->max_delay_ms = 60000;
@@ -203,10 +209,63 @@ static int service_spawn(service_ctx_t *ctx) {
     return 0;
 }
 
+static void service_kill_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    kill_state_t *state = userdata;
+    service_ctx_t *ctx = state->ctx;
+    int status;
+    pid_t result;
+
+    (void)r;
+    (void)timer;
+
+    if (!ctx) {
+        free(state);
+        return;
+    }
+
+    result = waitpid(ctx->child_pid, &status, WNOHANG);
+
+    if (result == ctx->child_pid) {
+        if (WIFEXITED(status)) {
+            LOG_DEBUG("Service: sing-box exited with code %d", WEXITSTATUS(status));
+        } else if (WIFSIGNALED(status)) {
+            LOG_DEBUG("Service: sing-box killed by signal %d", WTERMSIG(status));
+        }
+        ctx->child_pid = -1;
+        ctx->validated_pid = 0;
+        free(state);
+        return;
+    }
+
+    if (kill(ctx->child_pid, 0) != 0) {
+        ctx->child_pid = -1;
+        ctx->validated_pid = 0;
+        free(state);
+        return;
+    }
+
+    state->attempts++;
+    if (state->attempts >= state->max_attempts) {
+        LOG_WARN("Service: sing-box did not respond to SIGTERM, sending SIGKILL");
+        kill(ctx->child_pid, SIGKILL);
+        waitpid(ctx->child_pid, NULL, WNOHANG);
+        ctx->child_pid = -1;
+        ctx->validated_pid = 0;
+        free(state);
+        return;
+    }
+
+    reactor_add_timer(r, 100, 0, service_kill_timeout_cb, state);
+}
+
 static void service_kill(service_ctx_t *ctx) {
-    if (ctx->child_pid > 0) {
-        LOG_INFO("Service: stopping sing-box (PID: %d)", ctx->child_pid);
-        kill(ctx->child_pid, SIGTERM);
+    if (!ctx || ctx->child_pid <= 0) return;
+
+    LOG_INFO("Service: stopping sing-box (PID: %d)", ctx->child_pid);
+    kill(ctx->child_pid, SIGTERM);
+
+    if (!ctx->reactor) {
+        LOG_WARN("Service: reactor not available, using blocking fallback");
         usleep(500000);
         if (kill(ctx->child_pid, 0) == 0) {
             kill(ctx->child_pid, SIGKILL);
@@ -214,7 +273,27 @@ static void service_kill(service_ctx_t *ctx) {
         waitpid(ctx->child_pid, NULL, WNOHANG);
         ctx->child_pid = -1;
         ctx->validated_pid = 0;
+        return;
     }
+
+    kill_state_t *state = calloc(1, sizeof(kill_state_t));
+    if (!state) {
+        LOG_WARN("Service: failed to allocate kill state, using blocking fallback");
+        usleep(500000);
+        if (kill(ctx->child_pid, 0) == 0) {
+            kill(ctx->child_pid, SIGKILL);
+        }
+        waitpid(ctx->child_pid, NULL, WNOHANG);
+        ctx->child_pid = -1;
+        ctx->validated_pid = 0;
+        return;
+    }
+
+    state->ctx = ctx;
+    state->attempts = 0;
+    state->max_attempts = 20;
+
+    reactor_add_timer(ctx->reactor, 100, 0, service_kill_timeout_cb, state);
 }
 
 static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
