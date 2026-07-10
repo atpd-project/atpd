@@ -610,9 +610,20 @@ static int do_ebpf_probe(atp_options_t *opts) {
 static int do_ebpf_init(atp_options_t *opts) {
     atp_config_t cfg;
     config_set_defaults(&cfg);
+
+    if (opts->config_file[0] != '\0') {
+        config_load(opts->config_file, &cfg);
+    } else {
+        char cp[SAFE_PATH_MAX];
+        if (find_config_file(cp, SAFE_PATH_MAX, NULL) == 0) {
+            config_load(cp, &cfg);
+        }
+    }
+
     if (opts->ebpf_config[0] != '\0') {
         strncpy(cfg.ebpf_config_path, opts->ebpf_config, sizeof(cfg.ebpf_config_path) - 1);
     }
+
     int ret = boxbpf_init_from_config(&cfg);
     if (ret == 0) {
         printf("eBPF init: SUCCESS\n");
@@ -659,6 +670,16 @@ static int do_ebpf_status(atp_options_t *opts) {
     char state[64] = {0};
     atp_config_t cfg;
     config_set_defaults(&cfg);
+
+    if (opts->config_file[0] != '\0') {
+        config_load(opts->config_file, &cfg);
+    } else {
+        char cp[SAFE_PATH_MAX];
+        if (find_config_file(cp, SAFE_PATH_MAX, NULL) == 0) {
+            config_load(cp, &cfg);
+        }
+    }
+
     if (boxbpf_status(state, sizeof(state), &cfg) == 0) {
         printf("eBPF Status: %s\n", state);
         return 0;
