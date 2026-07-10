@@ -165,7 +165,7 @@ static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
     netlink_handle_event(fd, userdata);
 }
 
-static void run_event_loop(void) {
+static void run_event_loop(service_ctx_t *svc) {
     g_reactor = reactor_create();
     if (!g_reactor) {
         LOG_ERROR("Failed to create reactor");
@@ -177,8 +177,8 @@ static void run_event_loop(void) {
 
     api_start_with_reactor(&g_api_ctx, g_reactor);
 
-    reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
-    service_start_async(g_svc);
+    reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, svc);
+    service_start_async(svc);
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
@@ -437,7 +437,7 @@ static int do_start(atp_options_t *opts) {
     }
 
     netlink_set_tproxy_ready();
-    run_event_loop();
+    run_event_loop(g_svc);
 
     cleanup_ebpf();
 
@@ -482,8 +482,9 @@ static int do_stop(atp_options_t *opts) {
 
     if (kill(pid, 0) < 0) {
         fprintf(stderr, "Daemon is not running (stale PID file)\n");
+        atp_cleanup_manual(&g_config);
         unlink(pp);
-        return 1;
+        return 0;
     }
 
     if (!confirm_operation("stop", opts->force)) {
