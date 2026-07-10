@@ -105,35 +105,6 @@ static int write_ebpf_state_file(const char *state) {
     return 0;
 }
 
-static int read_ebpf_state_file(char *state, size_t size) {
-    if (g_state_dir[0] == '\0') {
-        return -1;
-    }
-
-    FILE *fp = fopen(g_status_file, "r");
-    if (!fp) {
-        return -1;
-    }
-
-    char line[256];
-    int loaded = 0;
-
-    while (fgets(line, sizeof(line), fp)) {
-        if (strncmp(line, "EBPF_LOADED=", 12) == 0) {
-            loaded = atoi(line + 12);
-            break;
-        }
-    }
-    fclose(fp);
-
-    if (loaded == 1) {
-        strncpy(state, "ready", size);
-    } else {
-        strncpy(state, "failed", size);
-    }
-    return 0;
-}
-
 static int create_cidr_map(const char *source, const char *pin_path,
                            bool ipv6, int *fd_out) {
     *fd_out = create_map(
@@ -407,34 +378,55 @@ static int apply_config(const char *config_path) {
     }
 
     if (pin_cidr_out4[0] == '\0') {
-        strcpy(pin_cidr_out4, PIN_CIDR_OUT4);
+        LOG_ERROR("missing pinCidrOut4 in config");
+        return -1;
     }
     if (pin_cidr_pre4[0] == '\0') {
-        strcpy(pin_cidr_pre4, PIN_CIDR_PRE4);
+        LOG_ERROR("missing pinCidrPre4 in config");
+        return -1;
     }
     if (pin_force_out4[0] == '\0') {
-        strcpy(pin_force_out4, PIN_FORCE_OUT4);
+        LOG_ERROR("missing pinForceOut4 in config");
+        return -1;
     }
     if (pin_app_out4[0] == '\0') {
-        strcpy(pin_app_out4, PIN_APP_OUT4);
+        LOG_ERROR("missing pinAppOut4 in config");
+        return -1;
     }
     if (map_cidr4[0] == '\0') {
-        strcpy(map_cidr4, MAP_CIDR4);
-    }
-    if (map_cidr6[0] == '\0') {
-        strcpy(map_cidr6, MAP_CIDR6);
+        LOG_ERROR("missing mapCidr4 in config");
+        return -1;
     }
     if (map_force_uid[0] == '\0') {
-        strcpy(map_force_uid, MAP_FORCE_UID);
+        LOG_ERROR("missing mapForceUid in config");
+        return -1;
     }
     if (map_app_uid[0] == '\0') {
-        strcpy(map_app_uid, MAP_APP_UID);
+        LOG_ERROR("missing mapAppUid in config");
+        return -1;
     }
+
     if (ipv6) {
-        if (pin_cidr_out6[0] == '\0') strcpy(pin_cidr_out6, PIN_CIDR_OUT6);
-        if (pin_cidr_pre6[0] == '\0') strcpy(pin_cidr_pre6, PIN_CIDR_PRE6);
-        if (pin_force_out6[0] == '\0') strcpy(pin_force_out6, PIN_FORCE_OUT6);
-        if (pin_app_out6[0] == '\0') strcpy(pin_app_out6, PIN_APP_OUT6);
+        if (pin_cidr_out6[0] == '\0') {
+            LOG_ERROR("missing pinCidrOut6 in config (ipv6 enabled)");
+            return -1;
+        }
+        if (pin_cidr_pre6[0] == '\0') {
+            LOG_ERROR("missing pinCidrPre6 in config (ipv6 enabled)");
+            return -1;
+        }
+        if (pin_force_out6[0] == '\0') {
+            LOG_ERROR("missing pinForceOut6 in config (ipv6 enabled)");
+            return -1;
+        }
+        if (pin_app_out6[0] == '\0') {
+            LOG_ERROR("missing pinAppOut6 in config (ipv6 enabled)");
+            return -1;
+        }
+        if (map_cidr6[0] == '\0') {
+            LOG_ERROR("missing mapCidr6 in config (ipv6 enabled)");
+            return -1;
+        }
     }
 
     remove_known_pins();
@@ -549,14 +541,29 @@ static int update_config(const char *config_path) {
     yyjson_doc_free(doc);
     free(json_str);
 
-    if (map_cidr4[0] == '\0') strcpy(map_cidr4, MAP_CIDR4);
-    if (map_cidr6[0] == '\0') strcpy(map_cidr6, MAP_CIDR6);
-    if (map_force_uid[0] == '\0') strcpy(map_force_uid, MAP_FORCE_UID);
-    if (map_app_uid[0] == '\0') strcpy(map_app_uid, MAP_APP_UID);
+    if (map_cidr4[0] == '\0') {
+        LOG_ERROR("missing mapCidr4 in config");
+        return -1;
+    }
+    if (map_force_uid[0] == '\0') {
+        LOG_ERROR("missing mapForceUid in config");
+        return -1;
+    }
+    if (map_app_uid[0] == '\0') {
+        LOG_ERROR("missing mapAppUid in config");
+        return -1;
+    }
     if (cidr4_file[0] == '\0') {
         LOG_ERROR("missing cidr4 in config");
         write_ebpf_state_file("failed");
         return -1;
+    }
+
+    if (ipv6) {
+        if (map_cidr6[0] == '\0') {
+            LOG_ERROR("missing mapCidr6 in config (ipv6 enabled)");
+            return -1;
+        }
     }
 
     int cidr4 = get_pinned(map_cidr4);
@@ -717,6 +724,97 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     return 0;
 }
 
-int boxbpf_status(char *state, size_t size) {
-    return read_ebpf_state_file(state, size);
+int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
+    struct stat st;
+    char pin_path[256];
+
+    if (!cfg) {
+        strncpy(state, "uninitialized", size);
+        return -1;
+    }
+
+    /* 1. 检查核心 CNIP pin (必须存在) */
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", cfg->ebpf_pin_dir);
+    if (stat(pin_path, &st) != 0) {
+        strncpy(state, "uninitialized", size);
+        return -1;
+    }
+
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre4", cfg->ebpf_pin_dir);
+    if (stat(pin_path, &st) != 0) {
+        strncpy(state, "partial", size);
+        return 0;
+    }
+
+    /* 2. 检查 IPv6 (如果启用) */
+    if (cfg->proxy_ipv6) {
+        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out6", cfg->ebpf_pin_dir);
+        if (stat(pin_path, &st) != 0) {
+            strncpy(state, "partial", size);
+            return 0;
+        }
+        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre6", cfg->ebpf_pin_dir);
+        if (stat(pin_path, &st) != 0) {
+            strncpy(state, "partial", size);
+            return 0;
+        }
+    }
+
+    /* 3. 检查 FORCE UID (如果配置了) */
+    int force_loaded = 0;
+    if (cfg->cnip_force_proxy_apps[0] != '\0') {
+        snprintf(pin_path, sizeof(pin_path), "%s/box_force_out4", cfg->ebpf_pin_dir);
+        if (stat(pin_path, &st) == 0) {
+            force_loaded = 1;
+        }
+        if (cfg->proxy_ipv6) {
+            snprintf(pin_path, sizeof(pin_path), "%s/box_force_out6", cfg->ebpf_pin_dir);
+            if (stat(pin_path, &st) != 0) {
+                force_loaded = 0;
+            }
+        }
+    }
+
+    /* 4. 检查 APP UID (如果配置了) */
+    int app_loaded = 0;
+    if (cfg->performance_mode && cfg->app_proxy_enable) {
+        snprintf(pin_path, sizeof(pin_path), "%s/box_app_out4", cfg->ebpf_pin_dir);
+        if (stat(pin_path, &st) == 0) {
+            app_loaded = 1;
+        }
+        if (cfg->proxy_ipv6) {
+            snprintf(pin_path, sizeof(pin_path), "%s/box_app_out6", cfg->ebpf_pin_dir);
+            if (stat(pin_path, &st) != 0) {
+                app_loaded = 0;
+            }
+        }
+    }
+
+    /* 5. 返回状态 */
+    int force_configured = (cfg->cnip_force_proxy_apps[0] != '\0');
+    int app_configured = (cfg->performance_mode && cfg->app_proxy_enable);
+
+    if (force_configured && app_configured) {
+        if (force_loaded && app_loaded) {
+            strncpy(state, "ready", size);
+        } else {
+            strncpy(state, "partial", size);
+        }
+    } else if (force_configured) {
+        if (force_loaded) {
+            strncpy(state, "ready", size);
+        } else {
+            strncpy(state, "partial", size);
+        }
+    } else if (app_configured) {
+        if (app_loaded) {
+            strncpy(state, "ready", size);
+        } else {
+            strncpy(state, "partial", size);
+        }
+    } else {
+        strncpy(state, "ready_core", size);
+    }
+
+    return 0;
 }
