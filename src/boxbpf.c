@@ -171,7 +171,7 @@ static int pin_program(const char *section, const char *name,
     return ATP_OK;
 }
 
-static int write_ebpf_config(atp_config_t *cfg) {
+int write_ebpf_config(atp_config_t *cfg) {
     if (!cfg) return ATP_ERR_INVAL;
 
     char *state_dir = cfg->ebpf_state_dir;

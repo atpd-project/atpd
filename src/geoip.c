@@ -208,15 +208,10 @@ int geoip_atomic_update(atp_config_t *cfg) {
 
     if (cfg->ebpf_ready && cfg->ebpf_enabled && cfg->cnip_mode == 1) {
         LOG_INFO("GeoIP: updating eBPF CNIP maps...");
-        if (write_ebpf_config(cfg) == 0) {
-            if (boxbpf_update(cfg->ebpf_config_path) == 0) {
-                LOG_INFO("GeoIP: eBPF CNIP maps updated");
-            } else {
-                LOG_WARN("GeoIP: eBPF CNIP maps update failed");
-                ret = -1;
-            }
+        if (boxbpf_update(cfg->ebpf_config_path) == 0) {
+            LOG_INFO("GeoIP: eBPF CNIP maps updated");
         } else {
-            LOG_WARN("GeoIP: failed to regenerate eBPF config");
+            LOG_WARN("GeoIP: eBPF CNIP maps update failed");
             ret = -1;
         }
     }
