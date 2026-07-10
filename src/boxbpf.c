@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "app_filter.h"
+#include "yyjson.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,31 @@ static void close_fds(struct fds *fds) {
     close_fd(fds->force_uid);
     close_fd(fds->app_uid);
     init_fds(fds);
+}
+
+static char *read_file_content(const char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return NULL;
+
+    fseek(fp, 0, SEEK_END);
+    long size = ftell(fp);
+    if (size <= 0) {
+        fclose(fp);
+        return NULL;
+    }
+
+    char *buf = malloc(size + 1);
+    if (!buf) {
+        fclose(fp);
+        return NULL;
+    }
+
+    fseek(fp, 0, SEEK_SET);
+    size_t read = fread(buf, 1, size, fp);
+    buf[read] = '\0';
+    fclose(fp);
+
+    return buf;
 }
 
 static int create_cidr_map(const char *source, const char *pin_path,
@@ -208,12 +234,27 @@ static int apply_config(const char *config_path) {
         return -1;
     }
 
-    remove_known_pins();
+    char *json_str = read_file_content(config_path);
+    if (!json_str) {
+        LOG_ERROR("Failed to read config: %s", config_path);
+        return -1;
+    }
 
-    int status = -1;
-    struct fds fds;
-    init_fds(&fds);
+    yyjson_doc *doc = yyjson_read(json_str, strlen(json_str), 0);
+    if (!doc) {
+        LOG_ERROR("Failed to parse JSON config: %s", config_path);
+        free(json_str);
+        return -1;
+    }
 
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    if (!root) {
+        yyjson_doc_free(doc);
+        free(json_str);
+        return -1;
+    }
+
+    bool ipv6 = false;
     char cidr4_file[512] = {0};
     char cidr6_file[512] = {0};
     char force_uid_file[512] = {0};
@@ -230,68 +271,63 @@ static int apply_config(const char *config_path) {
     char map_cidr6[128] = {0};
     char map_force_uid[128] = {0};
     char map_app_uid[128] = {0};
-    bool ipv6 = false;
 
-    FILE *fp = fopen(config_path, "r");
-    if (!fp) {
-        LOG_ERROR("Failed to open config: %s", config_path);
-        return -1;
-    }
+    yyjson_val *val;
+    const char *s;
 
-    char line[512];
-    while (fgets(line, sizeof(line), fp)) {
-        char *trimmed = line;
-        while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
-        if (*trimmed == '#' || *trimmed == '\0') continue;
-        size_t len = strlen(trimmed);
-        while (len > 0 && (trimmed[len-1] == '\n' || trimmed[len-1] == '\r')) {
-            trimmed[--len] = '\0';
-        }
-        char *colon = strchr(trimmed, ':');
-        if (!colon) continue;
-        *colon = '\0';
-        char *key = trimmed;
-        char *value = colon + 1;
-        while (*key == ' ' || *key == '\t') ++key;
-        while (*value == ' ' || *value == '\t') ++value;
+    val = yyjson_obj_get(root, "ipv6");
+    if (val) ipv6 = yyjson_is_true(val);
 
-        if (strcmp(key, "ipv6") == 0) {
-            ipv6 = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
-        } else if (strcmp(key, "cidr4") == 0) {
-            strncpy(cidr4_file, value, sizeof(cidr4_file) - 1);
-        } else if (strcmp(key, "cidr6") == 0) {
-            strncpy(cidr6_file, value, sizeof(cidr6_file) - 1);
-        } else if (strcmp(key, "forceUids") == 0) {
-            strncpy(force_uid_file, value, sizeof(force_uid_file) - 1);
-        } else if (strcmp(key, "appUids") == 0) {
-            strncpy(app_uid_file, value, sizeof(app_uid_file) - 1);
-        } else if (strcmp(key, "pinCidrOut4") == 0) {
-            strncpy(pin_cidr_out4, value, sizeof(pin_cidr_out4) - 1);
-        } else if (strcmp(key, "pinCidrOut6") == 0) {
-            strncpy(pin_cidr_out6, value, sizeof(pin_cidr_out6) - 1);
-        } else if (strcmp(key, "pinCidrPre4") == 0) {
-            strncpy(pin_cidr_pre4, value, sizeof(pin_cidr_pre4) - 1);
-        } else if (strcmp(key, "pinCidrPre6") == 0) {
-            strncpy(pin_cidr_pre6, value, sizeof(pin_cidr_pre6) - 1);
-        } else if (strcmp(key, "pinForceOut4") == 0) {
-            strncpy(pin_force_out4, value, sizeof(pin_force_out4) - 1);
-        } else if (strcmp(key, "pinForceOut6") == 0) {
-            strncpy(pin_force_out6, value, sizeof(pin_force_out6) - 1);
-        } else if (strcmp(key, "pinAppOut4") == 0) {
-            strncpy(pin_app_out4, value, sizeof(pin_app_out4) - 1);
-        } else if (strcmp(key, "pinAppOut6") == 0) {
-            strncpy(pin_app_out6, value, sizeof(pin_app_out6) - 1);
-        } else if (strcmp(key, "mapCidr4") == 0) {
-            strncpy(map_cidr4, value, sizeof(map_cidr4) - 1);
-        } else if (strcmp(key, "mapCidr6") == 0) {
-            strncpy(map_cidr6, value, sizeof(map_cidr6) - 1);
-        } else if (strcmp(key, "mapForceUid") == 0) {
-            strncpy(map_force_uid, value, sizeof(map_force_uid) - 1);
-        } else if (strcmp(key, "mapAppUid") == 0) {
-            strncpy(map_app_uid, value, sizeof(map_app_uid) - 1);
-        }
-    }
-    fclose(fp);
+    s = yyjson_get_str(yyjson_obj_get(root, "cidr4"));
+    if (s) strncpy(cidr4_file, s, sizeof(cidr4_file) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "cidr6"));
+    if (s) strncpy(cidr6_file, s, sizeof(cidr6_file) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "forceUids"));
+    if (s) strncpy(force_uid_file, s, sizeof(force_uid_file) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "appUids"));
+    if (s) strncpy(app_uid_file, s, sizeof(app_uid_file) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "pinCidrOut4"));
+    if (s) strncpy(pin_cidr_out4, s, sizeof(pin_cidr_out4) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "pinCidrOut6"));
+    if (s) strncpy(pin_cidr_out6, s, sizeof(pin_cidr_out6) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "pinCidrPre4"));
+    if (s) strncpy(pin_cidr_pre4, s, sizeof(pin_cidr_pre4) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "pinCidrPre6"));
+    if (s) strncpy(pin_cidr_pre6, s, sizeof(pin_cidr_pre6) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "pinForceOut4"));
+    if (s) strncpy(pin_force_out4, s, sizeof(pin_force_out4) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "pinForceOut6"));
+    if (s) strncpy(pin_force_out6, s, sizeof(pin_force_out6) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "pinAppOut4"));
+    if (s) strncpy(pin_app_out4, s, sizeof(pin_app_out4) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "pinAppOut6"));
+    if (s) strncpy(pin_app_out6, s, sizeof(pin_app_out6) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "mapCidr4"));
+    if (s) strncpy(map_cidr4, s, sizeof(map_cidr4) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "mapCidr6"));
+    if (s) strncpy(map_cidr6, s, sizeof(map_cidr6) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "mapForceUid"));
+    if (s) strncpy(map_force_uid, s, sizeof(map_force_uid) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "mapAppUid"));
+    if (s) strncpy(map_app_uid, s, sizeof(map_app_uid) - 1);
+
+    yyjson_doc_free(doc);
+    free(json_str);
 
     if (cidr4_file[0] == '\0') {
         LOG_ERROR("missing cidr4 in config");
@@ -333,6 +369,12 @@ static int apply_config(const char *config_path) {
         if (pin_app_out6[0] == '\0') strcpy(pin_app_out6, PIN_APP_OUT6);
     }
 
+    remove_known_pins();
+
+    int status = -1;
+    struct fds fds;
+    init_fds(&fds);
+
     bool app_uid_required = uid_file_has_entries(app_uid_file);
     if (create_cidr_map(cidr4_file, map_cidr4, false, &fds.cidr4) != 0) goto cleanup;
     if (ipv6 && create_cidr_map(cidr6_file, map_cidr6, true, &fds.cidr6) != 0) goto cleanup;
@@ -365,6 +407,26 @@ static int update_config(const char *config_path) {
         return -1;
     }
 
+    char *json_str = read_file_content(config_path);
+    if (!json_str) {
+        LOG_ERROR("Failed to read config: %s", config_path);
+        return -1;
+    }
+
+    yyjson_doc *doc = yyjson_read(json_str, strlen(json_str), 0);
+    if (!doc) {
+        LOG_ERROR("Failed to parse JSON config: %s", config_path);
+        free(json_str);
+        return -1;
+    }
+
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    if (!root) {
+        yyjson_doc_free(doc);
+        free(json_str);
+        return -1;
+    }
+
     char map_cidr4[128] = {0};
     char map_cidr6[128] = {0};
     char map_force_uid[128] = {0};
@@ -375,50 +437,38 @@ static int update_config(const char *config_path) {
     char app_uid_file[512] = {0};
     bool ipv6 = false;
 
-    FILE *fp = fopen(config_path, "r");
-    if (!fp) {
-        LOG_ERROR("Failed to open config: %s", config_path);
-        return -1;
-    }
+    yyjson_val *val;
+    const char *s;
 
-    char line[512];
-    while (fgets(line, sizeof(line), fp)) {
-        char *trimmed = line;
-        while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
-        if (*trimmed == '#' || *trimmed == '\0') continue;
-        size_t len = strlen(trimmed);
-        while (len > 0 && (trimmed[len-1] == '\n' || trimmed[len-1] == '\r')) {
-            trimmed[--len] = '\0';
-        }
-        char *colon = strchr(trimmed, ':');
-        if (!colon) continue;
-        *colon = '\0';
-        char *key = trimmed;
-        char *value = colon + 1;
-        while (*key == ' ' || *key == '\t') ++key;
-        while (*value == ' ' || *value == '\t') ++value;
+    val = yyjson_obj_get(root, "ipv6");
+    if (val) ipv6 = yyjson_is_true(val);
 
-        if (strcmp(key, "ipv6") == 0) {
-            ipv6 = (strcmp(value, "true") == 0 || strcmp(value, "1") == 0);
-        } else if (strcmp(key, "cidr4") == 0) {
-            strncpy(cidr4_file, value, sizeof(cidr4_file) - 1);
-        } else if (strcmp(key, "cidr6") == 0) {
-            strncpy(cidr6_file, value, sizeof(cidr6_file) - 1);
-        } else if (strcmp(key, "forceUids") == 0) {
-            strncpy(force_uid_file, value, sizeof(force_uid_file) - 1);
-        } else if (strcmp(key, "appUids") == 0) {
-            strncpy(app_uid_file, value, sizeof(app_uid_file) - 1);
-        } else if (strcmp(key, "mapCidr4") == 0) {
-            strncpy(map_cidr4, value, sizeof(map_cidr4) - 1);
-        } else if (strcmp(key, "mapCidr6") == 0) {
-            strncpy(map_cidr6, value, sizeof(map_cidr6) - 1);
-        } else if (strcmp(key, "mapForceUid") == 0) {
-            strncpy(map_force_uid, value, sizeof(map_force_uid) - 1);
-        } else if (strcmp(key, "mapAppUid") == 0) {
-            strncpy(map_app_uid, value, sizeof(map_app_uid) - 1);
-        }
-    }
-    fclose(fp);
+    s = yyjson_get_str(yyjson_obj_get(root, "cidr4"));
+    if (s) strncpy(cidr4_file, s, sizeof(cidr4_file) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "cidr6"));
+    if (s) strncpy(cidr6_file, s, sizeof(cidr6_file) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "forceUids"));
+    if (s) strncpy(force_uid_file, s, sizeof(force_uid_file) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "appUids"));
+    if (s) strncpy(app_uid_file, s, sizeof(app_uid_file) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "mapCidr4"));
+    if (s) strncpy(map_cidr4, s, sizeof(map_cidr4) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "mapCidr6"));
+    if (s) strncpy(map_cidr6, s, sizeof(map_cidr6) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "mapForceUid"));
+    if (s) strncpy(map_force_uid, s, sizeof(map_force_uid) - 1);
+
+    s = yyjson_get_str(yyjson_obj_get(root, "mapAppUid"));
+    if (s) strncpy(map_app_uid, s, sizeof(map_app_uid) - 1);
+
+    yyjson_doc_free(doc);
+    free(json_str);
 
     if (map_cidr4[0] == '\0') strcpy(map_cidr4, MAP_CIDR4);
     if (map_cidr6[0] == '\0') strcpy(map_cidr6, MAP_CIDR6);
