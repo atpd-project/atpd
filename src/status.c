@@ -208,6 +208,10 @@ static void status_show_ebpf(void) {
 
 static void status_show_ebpf(void) {
     char state[64] = {0};
+    char pin_dir[256];
+    struct stat st;
+
+    snprintf(pin_dir, sizeof(pin_dir), "/sys/fs/bpf/box");
 
     ui_table_begin();
     ui_table_header("eBPF CNIP");
@@ -215,7 +219,7 @@ static void status_show_ebpf(void) {
     if (boxbpf_status(state, sizeof(state)) == 0) {
         if (strcmp(state, "ready") == 0) {
             ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", "/sys/fs/bpf/box");
+            ui_table_subrow("├─", "Pin Dir", pin_dir);
             ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
         } else if (strcmp(state, "failed") == 0) {
             ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
@@ -224,14 +228,14 @@ static void status_show_ebpf(void) {
             ui_table_subrow_color("├─", "State", "DISABLED", COLOR_YELLOW);
             ui_table_subrow("└─", "CNIP Mode", "ipset");
         } else {
-            ui_table_subrow_color("└─", "State", "UNKNOWN", COLOR_RED);
+            ui_table_subrow_color("└─", "State", state, COLOR_RED);
         }
     } else {
-        /* 检查 pin 文件是否存在 */
-        struct stat st;
-        if (stat("/sys/fs/bpf/box/box_cidr_out4", &st) == 0) {
+        char pin_path[256];
+        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", pin_dir);
+        if (stat(pin_path, &st) == 0) {
             ui_table_subrow_color("├─", "State", "READY (pin)", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", "/sys/fs/bpf/box");
+            ui_table_subrow("├─", "Pin Dir", pin_dir);
             ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
         } else {
             ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
