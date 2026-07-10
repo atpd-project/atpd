@@ -692,6 +692,6 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     return 0;
 }
 
-int boxbpf_status(const char *state, size_t size) {
-    return read_ebpf_state_file((char *)state, size);
+int boxbpf_status(char *state, size_t size) {
+    return read_ebpf_state_file(state, size);
 }
