@@ -2,6 +2,7 @@
 #include "bpf_common.h"
 #include "logger.h"
 #include "utils.h"
+#include "app_filter.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,6 +85,121 @@ static int pin_program(const char *section, const char *name,
     int rc = pin_replace(fd, pin_path);
     close(fd);
     return rc == 0 ? 0 : -1;
+}
+
+static int write_ebpf_config(atp_config_t *cfg) {
+    if (!cfg) return -1;
+
+    char *state_dir = cfg->ebpf_state_dir;
+    char *pin_dir = cfg->ebpf_pin_dir;
+    char config_path[512];
+    char empty_v4[512], empty_v6[512], force_uids[512], app_uids[512];
+
+    snprintf(config_path, sizeof(config_path), "%s/config.json", state_dir);
+    snprintf(empty_v4, sizeof(empty_v4), "%s/empty-v4.txt", state_dir);
+    snprintf(empty_v6, sizeof(empty_v6), "%s/empty-v6.txt", state_dir);
+    snprintf(force_uids, sizeof(force_uids), "%s/force-uids.txt", state_dir);
+    snprintf(app_uids, sizeof(app_uids), "%s/app-uids.txt", state_dir);
+
+    mkdir_recursive(state_dir, 0755);
+    mkdir_recursive(pin_dir, 0755);
+
+    FILE *f = fopen(empty_v4, "w");
+    if (f) fclose(f);
+    f = fopen(empty_v6, "w");
+    if (f) fclose(f);
+
+    FILE *fu = fopen(force_uids, "w");
+    if (fu) {
+        if (cfg->cnip_force_proxy_apps[0] != '\0') {
+            char *copy = strdup(cfg->cnip_force_proxy_apps);
+            if (copy) {
+                char *token = strtok(copy, " ");
+                while (token) {
+                    int uid = app_filter_get_uid_by_package(token, 0);
+                    if (uid > 0) {
+                        fprintf(fu, "%d\n", uid);
+                    }
+                    token = strtok(NULL, " ");
+                }
+                free(copy);
+            }
+        }
+        fclose(fu);
+    }
+
+    FILE *au = fopen(app_uids, "w");
+    if (au) {
+        if (cfg->performance_mode && cfg->app_proxy_enable) {
+            const char *pkg_list = NULL;
+            if (strcmp(cfg->app_proxy_mode, "blacklist") == 0) {
+                pkg_list = cfg->bypass_apps_list;
+            } else {
+                pkg_list = cfg->proxy_apps_list;
+            }
+            if (pkg_list && pkg_list[0] != '\0') {
+                int *uids = NULL;
+                int count = 0;
+                if (app_filter_resolve_packages(pkg_list, &uids, &count) == 0 && count > 0) {
+                    for (int i = 0; i < count; i++) {
+                        fprintf(au, "%d\n", uids[i]);
+                    }
+                    app_filter_free_uids(uids);
+                }
+            }
+        }
+        fclose(au);
+    }
+
+    char cidr4[512], cidr6[512];
+    snprintf(cidr4, sizeof(cidr4), "%s", empty_v4);
+    snprintf(cidr6, sizeof(cidr6), "%s", empty_v6);
+
+    if (cfg->bypass_cn_ip) {
+        char cn_path[512];
+        snprintf(cn_path, sizeof(cn_path), "%s/%s", cfg->data_dir, cfg->cn_ip_file);
+        if (file_exists(cn_path)) {
+            strncpy(cidr4, cn_path, sizeof(cidr4) - 1);
+            cidr4[sizeof(cidr4) - 1] = '\0';
+        }
+        if (cfg->proxy_ipv6) {
+            snprintf(cn_path, sizeof(cn_path), "%s/%s", cfg->data_dir, cfg->cn_ipv6_file);
+            if (file_exists(cn_path)) {
+                strncpy(cidr6, cn_path, sizeof(cidr6) - 1);
+                cidr6[sizeof(cidr6) - 1] = '\0';
+            }
+        }
+    }
+
+    FILE *fp = fopen(config_path, "w");
+    if (!fp) {
+        LOG_ERROR("Failed to create eBPF config: %s", config_path);
+        return -1;
+    }
+
+    fprintf(fp, "{\n");
+    fprintf(fp, "  \"ipv6\": %s,\n", cfg->proxy_ipv6 ? "true" : "false");
+    fprintf(fp, "  \"cidr4\": \"%s\",\n", cidr4);
+    fprintf(fp, "  \"cidr6\": \"%s\",\n", cidr6);
+    fprintf(fp, "  \"forceUids\": \"%s\",\n", force_uids);
+    fprintf(fp, "  \"appUids\": \"%s\",\n", app_uids);
+    fprintf(fp, "  \"pinCidrOut4\": \"%s/box_cidr_out4\",\n", pin_dir);
+    fprintf(fp, "  \"pinCidrOut6\": \"%s/box_cidr_out6\",\n", pin_dir);
+    fprintf(fp, "  \"pinCidrPre4\": \"%s/box_cidr_pre4\",\n", pin_dir);
+    fprintf(fp, "  \"pinCidrPre6\": \"%s/box_cidr_pre6\",\n", pin_dir);
+    fprintf(fp, "  \"pinForceOut4\": \"%s/box_force_out4\",\n", pin_dir);
+    fprintf(fp, "  \"pinForceOut6\": \"%s/box_force_out6\",\n", pin_dir);
+    fprintf(fp, "  \"pinAppOut4\": \"%s/box_app_out4\",\n", pin_dir);
+    fprintf(fp, "  \"pinAppOut6\": \"%s/box_app_out6\",\n", pin_dir);
+    fprintf(fp, "  \"mapCidr4\": \"%s/box_cidr4_lpm\",\n", pin_dir);
+    fprintf(fp, "  \"mapCidr6\": \"%s/box_cidr6_lpm\",\n", pin_dir);
+    fprintf(fp, "  \"mapForceUid\": \"%s/box_force_uid_set\",\n", pin_dir);
+    fprintf(fp, "  \"mapAppUid\": \"%s/box_app_uid_set\"\n", pin_dir);
+    fprintf(fp, "}\n");
+
+    fclose(fp);
+    LOG_INFO("eBPF config written: %s", config_path);
+    return 0;
 }
 
 static int apply_config(const char *config_path) {
@@ -431,11 +547,16 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
         return -1;
     }
 
+    if (write_ebpf_config(cfg) != 0) {
+        LOG_ERROR("Failed to write eBPF config");
+        return -1;
+    }
+
     if (boxbpf_apply(cfg->ebpf_config_path) != 0) {
         LOG_ERROR("Failed to apply eBPF programs");
         return -1;
     }
 
-    LOG_INFO("eBPF CNIP init success (pin: %s)", g_pin_dir);
+    LOG_INFO("eBPF CNIP init success (pin: %s)", cfg->ebpf_pin_dir);
     return 0;
 }
