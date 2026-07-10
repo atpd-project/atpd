@@ -64,6 +64,17 @@ void config_set_defaults(atp_config_t *cfg) {
     snprintf(cfg->mac_proxy_mode, sizeof(cfg->mac_proxy_mode), "blacklist");
     snprintf(cfg->user_clash_mode, sizeof(cfg->user_clash_mode), "Rule");
     snprintf(cfg->api_host, sizeof(cfg->api_host), "%s", DEFAULT_API_HOST);
+
+    cfg->ebpf_enabled = 1;
+    cfg->cnip_mode = 1;
+    cfg->ebpf_ready = 0;
+    cfg->ebpf_load_retry = 3;
+    cfg->ebpf_load_delay = 2;
+    snprintf(cfg->ebpf_bin_path, sizeof(cfg->ebpf_bin_path), "%s/bin/boxbpf", ATP_DEFAULT_DIR);
+    snprintf(cfg->ebpf_pin_dir, sizeof(cfg->ebpf_pin_dir), "/sys/fs/bpf/box");
+    snprintf(cfg->ebpf_state_dir, sizeof(cfg->ebpf_state_dir), "%s/ebpf", ATP_DEFAULT_DIR);
+    snprintf(cfg->ebpf_config_path, sizeof(cfg->ebpf_config_path), "%s/ebpf/config.json", ATP_DEFAULT_DIR);
+    cfg->cnip_force_proxy_apps[0] = '\0';
 }
 
 static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
@@ -120,12 +131,26 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
     else if (strcmp(k, "API_PORT") == 0) cfg->api_port = atoi(v);
     else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api_host, sizeof(cfg->api_host), "%s", v);
     else if (strcmp(k, "UI_EMOJI_ENABLED") == 0) cfg->ui_emoji_enabled = atoi(v);
+    else if (strcmp(k, "ENABLE_EBPF") == 0) cfg->ebpf_enabled = atoi(v);
+    else if (strcmp(k, "CNIP_MODE") == 0) {
+        if (strcmp(v, "ebpf") == 0) cfg->cnip_mode = 1;
+        else if (strcmp(v, "ipset") == 0) cfg->cnip_mode = 0;
+        else cfg->cnip_mode = atoi(v);
+    }
+    else if (strcmp(k, "EBPF_BIN") == 0) snprintf(cfg->ebpf_bin_path, sizeof(cfg->ebpf_bin_path), "%s", v);
+    else if (strcmp(k, "EBPF_PIN_DIR") == 0) snprintf(cfg->ebpf_pin_dir, sizeof(cfg->ebpf_pin_dir), "%s", v);
+    else if (strcmp(k, "EBPF_STATE_DIR") == 0) snprintf(cfg->ebpf_state_dir, sizeof(cfg->ebpf_state_dir), "%s", v);
+    else if (strcmp(k, "EBPF_LOAD_RETRY") == 0) cfg->ebpf_load_retry = atoi(v);
+    else if (strcmp(k, "EBPF_LOAD_DELAY") == 0) cfg->ebpf_load_delay = atoi(v);
+    else if (strcmp(k, "CNIP_FORCE_PROXY_APPS") == 0) {
+        snprintf(cfg->cnip_force_proxy_apps, sizeof(cfg->cnip_force_proxy_apps), "%s", v);
+    }
     else if (strcmp(k, "CORE_USER_GROUP") == 0) {
         char val[256]; snprintf(val, sizeof(val), "%s", v); char *colon = strchr(val, ':');
-        if (colon) { 
-            *colon = '\0'; 
-            snprintf(cfg->core_user, sizeof(cfg->core_user), "%.63s", val); 
-            snprintf(cfg->core_group, sizeof(cfg->core_group), "%.63s", colon + 1); 
+        if (colon) {
+            *colon = '\0';
+            snprintf(cfg->core_user, sizeof(cfg->core_user), "%.63s", val);
+            snprintf(cfg->core_group, sizeof(cfg->core_group), "%.63s", colon + 1);
         }
     }
 }
@@ -178,8 +203,9 @@ int config_reload(atp_config_t *cfg) {
 int config_save_runtime(const char *path, atp_config_t *cfg) {
     pthread_mutex_lock(&cfg->config_mutex);
     FILE *fp = fopen(path, "w"); if (!fp) { pthread_mutex_unlock(&cfg->config_mutex); return -1; }
-    fprintf(fp, "# ATP Runtime\nUSE_TPROXY=%d\nTABLE_ID=%d\nMARK_VALUE=%d\n", 
-            cfg->use_tproxy, cfg->table_id, cfg->mark_value);
+    fprintf(fp, "# ATP Runtime\nUSE_TPROXY=%d\nTABLE_ID=%d\nMARK_VALUE=%d\nMARK_VALUE6=%d\nEBPF_ENABLED=%d\nCNIP_MODE=%d\nEBPF_READY=%d\nEBPF_PIN_DIR=%s\n",
+            cfg->use_tproxy, cfg->table_id, cfg->mark_value, cfg->mark_value6,
+            cfg->ebpf_enabled, cfg->cnip_mode, cfg->ebpf_ready, cfg->ebpf_pin_dir);
     fclose(fp); pthread_mutex_unlock(&cfg->config_mutex); return 0;
 }
 

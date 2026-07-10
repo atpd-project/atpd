@@ -1,7 +1,7 @@
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
- * 
+ *
  * Main entry point - Reactor mode
  */
 
@@ -30,6 +30,7 @@
 #include "singbox_api.h"
 #include "atpd_context.h"
 #include "uds.h"
+#include "boxbpf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,8 +53,6 @@ static service_ctx_t *g_svc = NULL;
 static volatile sig_atomic_t g_running = 1;
 static volatile sig_atomic_t g_reload = 0;
 static volatile sig_atomic_t g_show_status = 0;
-
-/* ========== P0: Rate Limiting for API Sync ========== */
 
 typedef struct {
     char last_name[256];
@@ -87,7 +86,7 @@ static void on_signal(reactor_t *r, int sig, void *userdata) {
 static void on_idle(reactor_t *r, void *userdata) {
     (void)r;
     (void)userdata;
-    
+
     if (g_reload) {
         config_reload(&g_config);
         if (g_config.app_proxy_enable) {
@@ -95,12 +94,12 @@ static void on_idle(reactor_t *r, void *userdata) {
         }
         g_reload = 0;
     }
-    
+
     if (g_show_status) {
         status_show(&g_config, g_svc, &g_api_ctx);
         g_show_status = 0;
     }
-    
+
     if (!g_running) {
         reactor_stop(r);
     }
@@ -142,7 +141,7 @@ static void on_proxies_response(int http_code, const char *body, void *userdata)
 
     proxy_list_t list;
     int count = singbox_parse_proxies(mutable_body, strlen(mutable_body), &list);
-    
+
     if (count >= 0) {
         process_proxy_list(&list);
     } else {
@@ -176,19 +175,19 @@ static void run_event_loop(void) {
     uds_init(g_reactor, ATPD_UDS_PATH);
 
     api_start_with_reactor(&g_api_ctx, g_reactor);
-    
+
     reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
     service_start_async(g_svc);
-    
+
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
-    
+
     reactor_watch_signal(g_reactor, SIGINT);
     reactor_watch_signal(g_reactor, SIGTERM);
     reactor_watch_signal(g_reactor, SIGHUP);
     reactor_watch_signal(g_reactor, SIGUSR1);
     reactor_watch_signal(g_reactor, SIGCHLD);
-    
+
     int nl_fd = netlink_get_fd();
     if (nl_fd >= 0) {
         reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_io_cb, NULL);
@@ -197,6 +196,12 @@ static void run_event_loop(void) {
     LOG_INFO("Reactor event loop started");
     reactor_run(g_reactor);
     LOG_INFO("Reactor event loop stopped");
+
+    if (g_config.ebpf_ready) {
+        LOG_INFO("Cleaning up eBPF CNIP...");
+        boxbpf_clear();
+        g_config.ebpf_ready = 0;
+    }
 
     tproxy_cleanup_all(&g_config);
     uds_cleanup();
@@ -282,18 +287,21 @@ static int confirm_operation(const char *op, int force) {
     return (res[0] == 'y' || res[0] == 'Y');
 }
 
-/* ========== PID File Path Resolution ========== */
-
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
-        /* -p/--pid from command line takes highest priority */
         snprintf(pp, size, "%s", opts->pid_file);
     } else if (g_config.data_dir[0]) {
-        /* config.data_dir second priority */
         snprintf(pp, size, "%s/%s", g_config.data_dir, ATP_PID_FILE);
     } else {
-        /* Fallback: current directory */
         snprintf(pp, size, "./atpd.pid");
+    }
+}
+
+static void cleanup_ebpf(void) {
+    if (g_config.ebpf_ready) {
+        LOG_INFO("Cleaning up eBPF CNIP...");
+        boxbpf_clear();
+        g_config.ebpf_ready = 0;
     }
 }
 
@@ -301,27 +309,22 @@ static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
-    /* 1. 确定配置文件路径 */
     if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
         fprintf(stderr, "Config file not found\n");
         return 1;
     }
 
-    /* 2. 先加载配置（比 logger_init 更早，但不输出日志） */
     config_set_defaults(&g_config);
     g_config.foreground = opts->foreground;
     g_config.verbose = opts->verbose;
     config_load(cp, &g_config);
 
-    /* 3. 初始化 logger（config_load 之后，确保 data_dir 等已就绪） */
     logger_init();
     log_set_level(opts->log_level);
     if (opts->no_color) log_set_color(0);
 
-    /* 4. 确定 PID 文件路径（-p > config.data_dir > ./atpd.pid） */
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    /* 5. 检查已有 PID */
     if (file_exists(pp)) {
         FILE *f = fopen(pp, "r");
         if (f) {
@@ -336,12 +339,10 @@ static int do_start(atp_options_t *opts) {
         unlink(pp);
     }
 
-    /* 6. 守护进程化 */
     if (!opts->foreground && opts->daemon) {
         daemonize();
     }
 
-    /* 7. 写入 PID 文件 */
     if (write_pid_file(pp) < 0) {
         fprintf(stderr, "Failed to write PID file\n");
         return 1;
@@ -349,8 +350,30 @@ static int do_start(atp_options_t *opts) {
 
     atpd_context_init();
 
+    if (g_config.bypass_cn_ip && g_config.ebpf_enabled && g_config.cnip_mode == 1) {
+        LOG_INFO("Initializing eBPF CNIP...");
+        int ret = boxbpf_init_from_config(&g_config);
+        if (ret == 0) {
+            g_config.ebpf_ready = 1;
+            LOG_INFO("eBPF CNIP ready (pin: %s)", g_config.ebpf_pin_dir);
+        } else {
+            g_config.ebpf_ready = 0;
+            LOG_WARN("eBPF CNIP init failed, using ipset fallback");
+        }
+    } else {
+        g_config.ebpf_ready = 0;
+        if (!g_config.bypass_cn_ip) {
+            LOG_DEBUG("CNIP bypass disabled");
+        } else if (!g_config.ebpf_enabled) {
+            LOG_DEBUG("eBPF disabled (ENABLE_EBPF=0)");
+        } else if (g_config.cnip_mode != 1) {
+            LOG_DEBUG("CNIP_MODE is not 'ebpf'");
+        }
+    }
+
     if (netlink_init(NULL, &g_config) < 0) {
         LOG_ERROR("Failed to initialize netlink");
+        cleanup_ebpf();
         unlink(pp);
         return 1;
     }
@@ -370,6 +393,7 @@ static int do_start(atp_options_t *opts) {
     g_svc = malloc(sizeof(service_ctx_t));
     if (!g_svc) {
         LOG_ERROR("Failed to allocate service context");
+        cleanup_ebpf();
         unlink(pp);
         return 1;
     }
@@ -378,6 +402,7 @@ static int do_start(atp_options_t *opts) {
         LOG_ERROR("Failed to initialize service");
         free(g_svc);
         g_svc = NULL;
+        cleanup_ebpf();
         unlink(pp);
         return 1;
     }
@@ -393,9 +418,10 @@ static int do_start(atp_options_t *opts) {
     netlink_set_tproxy_ready();
     run_event_loop();
 
-    /* P1: Wait for service thread to fully stop before freeing context */
+    cleanup_ebpf();
+
     service_stop_async(g_svc);
-    usleep(500000);  /* 500ms grace period for service thread exit */
+    usleep(500000);
     free(g_svc);
     g_svc = NULL;
 
@@ -411,7 +437,6 @@ static int do_start(atp_options_t *opts) {
 static int do_stop(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
 
-    /* Use same resolution logic as do_start for consistency */
     if (opts->pid_file[0]) {
         snprintf(pp, sizeof(pp), "%s", opts->pid_file);
     } else if (g_config.data_dir[0]) {
@@ -451,6 +476,7 @@ static int do_stop(atp_options_t *opts) {
         if (kill(pid, 0) < 0) {
             printf("Daemon stopped\n");
             unlink(pp);
+            boxbpf_clear();
             return 0;
         }
         usleep(100000);
@@ -459,6 +485,7 @@ static int do_stop(atp_options_t *opts) {
     printf("Daemon not responding, forcing kill...\n");
     kill(pid, SIGKILL);
     unlink(pp);
+    boxbpf_clear();
     return 0;
 }
 
@@ -480,14 +507,12 @@ static int do_status(atp_options_t *opts) {
     api_init(&g_api_ctx, &g_config);
 
     netlink_init(NULL, &g_config);
-    /* Sync VPN state for status command (daemon is not running) */
     char vpn_iface[IFNAMSIZ] = {0};
     if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
         atpd_vpn_state_transition(VPN_STATE_READY, 0, vpn_iface);
     }
     status_show(&g_config, &svc, &g_api_ctx);
 
-    /* P1: Cleanup resources initialized for status command */
     netlink_cleanup();
     api_cleanup(&g_api_ctx);
 

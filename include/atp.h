@@ -30,7 +30,6 @@
 #define ATP_VERSION_MINOR   0
 #define ATP_VERSION_PATCH   0
 
-/* Security hardening */
 #ifndef _FORTIFY_SOURCE
 #define _FORTIFY_SOURCE 3
 #endif
@@ -92,7 +91,7 @@ typedef struct {
     int dry_run;
     int verbose;
     int foreground;
-    
+
     int tcp_port;
     int udp_port;
     int redirect_tcp_port;
@@ -101,10 +100,10 @@ typedef struct {
     int proxy_tcp;
     int proxy_udp;
     int proxy_ipv6;
-    
+
     dns_hijack_mode_t dns_hijack;
     int dns_port;
-    
+
     int mark_value;
     int mark_value6;
     int table_id;
@@ -112,7 +111,7 @@ typedef struct {
     char core_group[64];
     char routing_mark[32];
     int force_mark_bypass;
-    
+
     char mobile_iface[64];
     char wifi_iface[64];
     char hotspot_iface[64];
@@ -123,47 +122,58 @@ typedef struct {
     int proxy_wifi;
     int proxy_hotspot;
     int proxy_usb;
-    
+
     char hotspot_subnet_ipv4[32];
     char hotspot_subnet_ipv6[64];
-    
+
     char proxy_ipv4_list[4096];
     char proxy_ipv6_list[4096];
     char bypass_ipv4_list[4096];
     char bypass_ipv6_list[4096];
-    
+
     int bypass_cn_ip;
     char cn_ip_file[256];
     char cn_ipv6_file[256];
     char cn_ip_url[512];
     char cn_ipv6_url[512];
-    
+
     int app_proxy_enable;
     char proxy_apps_list[4096];
     char bypass_apps_list[4096];
     char app_proxy_mode[16];
-    
+
     int mac_filter_enable;
     char proxy_macs_list[4096];
     char bypass_macs_list[4096];
     char mac_proxy_mode[16];
-    
+
     int block_quic;
     int log_timestamp;
     int skip_check_feature;
     char user_clash_mode[32];
     int restart_delay;
     char clash_secret[128];
-    
+
     int api_port;
     char api_host[64];
-    
+
     int use_tproxy;
     char current_vpn_iface[32];
-    
+
     int ui_emoji_enabled;
-    
+
     pthread_mutex_t config_mutex;
+
+    int ebpf_enabled;
+    int cnip_mode;
+    int ebpf_ready;
+    char ebpf_bin_path[256];
+    char ebpf_pin_dir[256];
+    char ebpf_state_dir[256];
+    char ebpf_config_path[256];
+    int ebpf_load_retry;
+    int ebpf_load_delay;
+    char cnip_force_proxy_apps[4096];
 } atp_config_t;
 
 extern atp_config_t g_config;

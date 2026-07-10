@@ -57,7 +57,9 @@ SRC = \
     src/version.c \
     src/reactor.c \
     src/iface_monitor_reactor.c \
-    src/yyjson/yyjson.c
+    src/yyjson/yyjson.c \
+    src/boxbpf.c \
+    src/bpf_common.c
 
 OBJDIR = build/obj
 OBJ = $(SRC:%.c=$(OBJDIR)/%.o)
