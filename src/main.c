@@ -31,6 +31,7 @@
 #include "atpd_context.h"
 #include "uds.h"
 #include "boxbpf.h"
+#include "cleanup.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -353,6 +354,7 @@ static int do_start(atp_options_t *opts) {
     }
 
     atpd_context_init();
+    atp_register_cleanup(&g_config);
 
     if (g_config.bypass_cn_ip && g_config.ebpf_enabled && g_config.cnip_mode == 1) {
         LOG_INFO("Initializing eBPF CNIP...");
