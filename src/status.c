@@ -173,31 +173,34 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
 }
 
 static void status_show_ebpf(void) {
+    struct stat st;
+    char pin_path[256];
+    int ebpf_active = 0;
+
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", g_atpd_ctx.ebpf_pin_dir);
+
+    if (stat(pin_path, &st) == 0) {
+        ebpf_active = 1;
+    }
+
     ui_table_begin();
     ui_table_header("eBPF CNIP");
 
-    switch (g_atpd_ctx.ebpf_state) {
-        case EBPF_STATE_READY:
-            ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", g_atpd_ctx.ebpf_pin_dir);
-            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
-            break;
-        case EBPF_STATE_LOADING:
-            ui_table_subrow_color("├─", "State", "LOADING", COLOR_YELLOW);
-            ui_table_subrow("└─", "Pin Dir", "N/A");
-            break;
-        case EBPF_STATE_FAILED:
-            ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
-            ui_table_subrow("└─", "Fallback", "ipset");
-            break;
-        case EBPF_STATE_DISABLED:
-            ui_table_subrow_color("├─", "State", "DISABLED", COLOR_YELLOW);
-            ui_table_subrow("└─", "CNIP Mode", "ipset");
-            break;
-        case EBPF_STATE_UNINITIALIZED:
-        default:
-            ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
-            break;
+    if (ebpf_active) {
+        ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
+        ui_table_subrow("├─", "Pin Dir", g_atpd_ctx.ebpf_pin_dir);
+        ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+    } else {
+        /* 检查是否有 ipset fallback */
+        char cmd[256];
+        char output[256];
+        snprintf(cmd, sizeof(cmd), "ipset list cnip 2>/dev/null | head -1");
+        if (exec_cmd(cmd, output, sizeof(output), 2) == 0 && output[0] != '\0') {
+            ui_table_subrow_color("├─", "State", "FALLBACK", COLOR_YELLOW);
+            ui_table_subrow("└─", "Method", "ipset");
+        } else {
+            ui_table_subrow_color("└─", "State", "DISABLED", COLOR_RED);
+        }
     }
 
     ui_table_end();
