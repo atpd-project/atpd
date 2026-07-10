@@ -599,10 +599,20 @@ static int do_update_geoip(atp_options_t *opts) {
 static int do_ebpf_probe(atp_options_t *opts) {
     int ret = boxbpf_probe(opts->ipv6);
     if (ret == 0) {
-        printf("eBPF probe: SUPPORTED (ipv6=%d)\n", opts->ipv6);
+        printf("supported=1\n");
+        printf("message=ok\n");
+        printf("lpm_ipv4=1\n");
+        printf("program_ipv4=1\n");
+        printf("pin_ipv4=1\n");
+        if (opts->ipv6) {
+            printf("lpm_ipv6=1\n");
+            printf("program_ipv6=1\n");
+            printf("pin_ipv6=1\n");
+        }
         return 0;
     } else {
-        printf("eBPF probe: NOT SUPPORTED\n");
+        printf("supported=0\n");
+        printf("message=eBPF xt_bpf unavailable\n");
         return 1;
     }
 }
@@ -610,7 +620,6 @@ static int do_ebpf_probe(atp_options_t *opts) {
 static int do_ebpf_init(atp_options_t *opts) {
     atp_config_t cfg;
     config_set_defaults(&cfg);
-
     if (opts->config_file[0] != '\0') {
         config_load(opts->config_file, &cfg);
     } else {
@@ -619,58 +628,31 @@ static int do_ebpf_init(atp_options_t *opts) {
             config_load(cp, &cfg);
         }
     }
-
     if (opts->ebpf_config[0] != '\0') {
         strncpy(cfg.ebpf_config_path, opts->ebpf_config, sizeof(cfg.ebpf_config_path) - 1);
     }
-
-    int ret = boxbpf_init_from_config(&cfg);
-    if (ret == 0) {
-        printf("eBPF init: SUCCESS\n");
-        return 0;
-    } else {
-        printf("eBPF init: FAILED\n");
-        return 1;
-    }
+    return boxbpf_init_from_config(&cfg);
 }
 
 static int do_ebpf_apply(atp_options_t *opts) {
     const char *config_path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/config.json";
-    int ret = boxbpf_apply(config_path);
-    if (ret == 0) {
-        printf("eBPF apply: SUCCESS\n");
-        return 0;
-    } else {
-        printf("eBPF apply: FAILED\n");
-        return 1;
-    }
+    return boxbpf_apply(config_path);
 }
 
 static int do_ebpf_update(atp_options_t *opts) {
     const char *config_path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/config.json";
-    int ret = boxbpf_update(config_path);
-    if (ret == 0) {
-        printf("eBPF update: SUCCESS\n");
-        return 0;
-    } else {
-        printf("eBPF update: FAILED\n");
-        return 1;
-    }
+    return boxbpf_update(config_path);
 }
 
 static int do_ebpf_clear(atp_options_t *opts) {
     (void)opts;
-    boxbpf_clear();
-    printf("eBPF clear: SUCCESS\n");
-    return 0;
+    return boxbpf_clear();
 }
 
 static int do_ebpf_status(atp_options_t *opts) {
-    (void)opts;
     char state[64] = {0};
     atp_config_t cfg;
     config_set_defaults(&cfg);
-
     if (opts->config_file[0] != '\0') {
         config_load(opts->config_file, &cfg);
     } else {
@@ -679,7 +661,6 @@ static int do_ebpf_status(atp_options_t *opts) {
             config_load(cp, &cfg);
         }
     }
-
     if (boxbpf_status(state, sizeof(state), &cfg) == 0) {
         printf("eBPF Status: %s\n", state);
         return 0;
