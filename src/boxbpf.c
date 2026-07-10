@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <time.h>
 
 static bool g_ebpf_ready = false;
 static char g_pin_dir[256] = "/sys/fs/bpf/box";
@@ -81,9 +82,25 @@ static int write_ebpf_state_file(const char *state) {
         return -1;
     }
 
-    fprintf(fp, "%s\n", state);
-    fclose(fp);
+    int loaded = 0;
+    const char *msg = "Disabled";
 
+    if (strcmp(state, "ready") == 0) {
+        loaded = 1;
+        msg = "Loaded successfully";
+    } else if (strcmp(state, "failed") == 0) {
+        loaded = 0;
+        msg = "Load failed";
+    } else if (strcmp(state, "disabled") == 0) {
+        loaded = 0;
+        msg = "Disabled by config";
+    }
+
+    fprintf(fp, "EBPF_LOADED=%d\n", loaded);
+    fprintf(fp, "EBPF_LOAD_TIME=%ld\n", (long)time(NULL));
+    fprintf(fp, "EBPF_LOAD_MESSAGE=%s\n", msg);
+
+    fclose(fp);
     LOG_DEBUG("eBPF state written: %s -> %s", state, g_status_file);
     return 0;
 }
@@ -98,15 +115,23 @@ static int read_ebpf_state_file(char *state, size_t size) {
         return -1;
     }
 
-    if (fgets(state, size, fp)) {
-        char *nl = strchr(state, '\n');
-        if (nl) *nl = '\0';
-        fclose(fp);
-        return 0;
-    }
+    char line[256];
+    int loaded = 0;
 
+    while (fgets(line, sizeof(line), fp)) {
+        if (strncmp(line, "EBPF_LOADED=", 12) == 0) {
+            loaded = atoi(line + 12);
+            break;
+        }
+    }
     fclose(fp);
-    return -1;
+
+    if (loaded == 1) {
+        strncpy(state, "ready", size);
+    } else {
+        strncpy(state, "failed", size);
+    }
+    return 0;
 }
 
 static int create_cidr_map(const char *source, const char *pin_path,
