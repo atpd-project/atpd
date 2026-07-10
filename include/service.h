@@ -20,6 +20,9 @@ typedef struct {
     int multiplier;
 } backoff_t;
 
+/* Forward declaration of service_ctx_t */
+typedef struct service_ctx_t service_ctx_t;
+
 typedef struct {
     service_ctx_t *ctx;
     int attempts;
