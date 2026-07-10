@@ -34,6 +34,15 @@ typedef struct {
     int max_attempts;
 } kill_state_t;
 
+typedef struct {
+    service_ctx_t *ctx;
+    int attempts;
+    int max_attempts;
+    reactor_timer_t *timer;
+    void (*done_cb)(service_ctx_t *, void *);
+    void *userdata;
+} service_stop_state_t;
+
 static void backoff_init(backoff_t *b) {
     b->base_delay_ms = 1000;
     b->max_delay_ms = 60000;
@@ -296,6 +305,46 @@ static void service_kill(service_ctx_t *ctx) {
     reactor_add_timer(ctx->reactor, 100, 0, service_kill_timeout_cb, state);
 }
 
+static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    service_stop_state_t *state = userdata;
+    service_ctx_t *ctx = state->ctx;
+
+    (void)r;
+    (void)timer;
+
+    if (!ctx) {
+        free(state);
+        return;
+    }
+
+    if (!service_is_alive(ctx)) {
+        LOG_INFO("Service: stopped successfully");
+        ctx->state = SERVICE_STOPPED;
+        if (state->done_cb) {
+            state->done_cb(ctx, state->userdata);
+        }
+        free(state);
+        return;
+    }
+
+    state->attempts++;
+    if (state->attempts >= state->max_attempts) {
+        LOG_WARN("Service: stop timeout, forcing kill");
+        kill(ctx->child_pid, SIGKILL);
+        waitpid(ctx->child_pid, NULL, WNOHANG);
+        ctx->child_pid = -1;
+        ctx->validated_pid = 0;
+        ctx->state = SERVICE_STOPPED;
+        if (state->done_cb) {
+            state->done_cb(ctx, state->userdata);
+        }
+        free(state);
+        return;
+    }
+
+    reactor_add_timer(r, 100, 0, service_stop_wait_cb, state);
+}
+
 static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     (void)r;
     (void)timer;
@@ -364,6 +413,7 @@ const char *service_state_string(service_state_t state) {
         case SERVICE_STARTING: return "STARTING";
         case SERVICE_RUNNING:  return "RUNNING";
         case SERVICE_FAILED:   return "FAILED";
+        case SERVICE_STOPPING: return "STOPPING";
         default:               return "UNKNOWN";
     }
 }
@@ -423,6 +473,9 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
             break;
 
         case SERVICE_FAILED:
+            break;
+
+        case SERVICE_STOPPING:
             break;
     }
 }
@@ -515,21 +568,57 @@ int service_start_async(service_ctx_t *ctx) {
     return 0;
 }
 
-int service_stop_async(service_ctx_t *ctx) {
+int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata) {
     if (!ctx) return -1;
 
-    service_kill(ctx);
-    ctx->state = SERVICE_STOPPED;
-    ctx->fail_count = 0;
+    ctx->state = SERVICE_STOPPING;
 
-    if (ctx->monitor_timer) {
-        reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
-        ctx->monitor_timer = NULL;
+    service_kill(ctx);
+
+    if (!ctx->reactor) {
+        ctx->state = SERVICE_STOPPED;
+        ctx->fail_count = 0;
+        if (ctx->monitor_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
+            ctx->monitor_timer = NULL;
+        }
+        if (ctx->retry_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+            ctx->retry_timer = NULL;
+        }
+        if (done_cb) {
+            done_cb(ctx, userdata);
+        }
+        return 0;
     }
-    if (ctx->retry_timer) {
-        reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
-        ctx->retry_timer = NULL;
+
+    service_stop_state_t *state = calloc(1, sizeof(service_stop_state_t));
+    if (!state) {
+        LOG_WARN("Service: failed to allocate stop state, using blocking fallback");
+        usleep(500000);
+        ctx->state = SERVICE_STOPPED;
+        ctx->fail_count = 0;
+        if (ctx->monitor_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
+            ctx->monitor_timer = NULL;
+        }
+        if (ctx->retry_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+            ctx->retry_timer = NULL;
+        }
+        if (done_cb) {
+            done_cb(ctx, userdata);
+        }
+        return 0;
     }
+
+    state->ctx = ctx;
+    state->attempts = 0;
+    state->max_attempts = 50;
+    state->done_cb = done_cb;
+    state->userdata = userdata;
+
+    reactor_add_timer(ctx->reactor, 100, 0, service_stop_wait_cb, state);
 
     return 0;
 }

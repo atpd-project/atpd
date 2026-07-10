@@ -121,7 +121,7 @@ static void process_proxy_list(proxy_list_t *list) {
 
             if (changed) {
                 LOG_INFO("URLTest Node: %s (delay: %dms)", info->name, info->delay);
-                strncpy(g_proxy_throttle.last_name, info->name, sizeof(g_proxy_throttle.last_name) - 1);
+                snprintf(g_proxy_throttle.last_name, sizeof(g_proxy_throttle.last_name), "%s", info->name);
                 g_proxy_throttle.last_delay = info->delay;
                 g_proxy_throttle.first_run = false;
             }
@@ -165,7 +165,14 @@ static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
     netlink_handle_event(fd, userdata);
 }
 
-static void run_event_loop(service_ctx_t *svc) {
+static void service_stop_done_cb(service_ctx_t *ctx, void *userdata) {
+    (void)userdata;
+    LOG_INFO("Service cleanup complete");
+    free(ctx);
+    g_svc = NULL;
+}
+
+static void run_event_loop(void) {
     g_reactor = reactor_create();
     if (!g_reactor) {
         LOG_ERROR("Failed to create reactor");
@@ -177,8 +184,8 @@ static void run_event_loop(service_ctx_t *svc) {
 
     api_start_with_reactor(&g_api_ctx, g_reactor);
 
-    reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, svc);
-    service_start_async(svc);
+    reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
+    service_start_async(g_svc);
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
@@ -208,6 +215,11 @@ static void run_event_loop(service_ctx_t *svc) {
 
     tproxy_cleanup_all(&g_config);
     uds_cleanup();
+
+    if (g_svc) {
+        service_stop_async(g_svc, service_stop_done_cb, NULL);
+    }
+
     reactor_destroy(g_reactor);
     g_reactor = NULL;
 }
@@ -240,24 +252,54 @@ static int write_pid_file(const char *pid_file) {
         *slash = '\0';
         mkdir_recursive(dir, 0755);
     }
-    FILE *fp = fopen(pid_file, "w");
-    if (!fp) return -1;
-    fprintf(fp, "%d\n", getpid());
-    fclose(fp);
+
+    struct stat st;
+    if (lstat(pid_file, &st) == 0) {
+        if (!S_ISREG(st.st_mode)) {
+            LOG_ERROR("PID file is not a regular file: %s", pid_file);
+            return -1;
+        }
+        if (st.st_uid != getuid()) {
+            LOG_WARN("PID file owned by different user: %s", pid_file);
+        }
+        if (st.st_nlink > 1) {
+            LOG_ERROR("PID file has hard links, refusing to write: %s", pid_file);
+            return -1;
+        }
+    }
+
+    int fd = open(pid_file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        if (errno == EEXIST) {
+            return 0;
+        }
+        LOG_ERROR("Failed to create PID file: %s", strerror(errno));
+        return -1;
+    }
+
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%d\n", getpid());
+    if (write(fd, buf, len) != len) {
+        LOG_ERROR("Failed to write PID file: %s", strerror(errno));
+        close(fd);
+        unlink(pid_file);
+        return -1;
+    }
+    close(fd);
     return 0;
 }
 
 static void get_binary_dir(char *buf, size_t size) {
     ssize_t len = readlink("/proc/self/exe", buf, size - 1);
-    if (len != -1) {
-        buf[len] = '\0';
-        char *dir = dirname(buf);
-        size_t dlen = strlen(dir);
-        if (dlen > 0 && dlen < size) {
-            memmove(buf, dir, dlen + 1);
-        } else {
-            buf[0] = '\0';
-        }
+    if (len <= 0) {
+        buf[0] = '\0';
+        return;
+    }
+    buf[len] = '\0';
+
+    char *last_slash = strrchr(buf, '/');
+    if (last_slash) {
+        *last_slash = '\0';
     } else {
         buf[0] = '\0';
     }
@@ -314,10 +356,6 @@ static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
-    LOG_INFO("Cleaning up stale rules before start...");
-    boxbpf_clear();
-    tproxy_cleanup_all(&g_config);
-
     if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != ATP_OK) {
         fprintf(stderr, "Config file not found\n");
         return 1;
@@ -327,6 +365,10 @@ static int do_start(atp_options_t *opts) {
     g_config.foreground = opts->foreground;
     g_config.verbose = opts->verbose;
     config_load(cp, &g_config);
+
+    LOG_INFO("Cleaning up stale rules before start...");
+    boxbpf_clear();
+    tproxy_cleanup_all(&g_config);
 
     logger_init();
     log_set_level(opts->log_level);
@@ -437,34 +479,23 @@ static int do_start(atp_options_t *opts) {
     }
 
     netlink_set_tproxy_ready();
-    run_event_loop(g_svc);
-
-    cleanup_ebpf();
-
-    service_stop_async(g_svc);
-    usleep(500000);
-    free(g_svc);
-    g_svc = NULL;
-
-    fcm_monitor_cleanup();
-    netlink_cleanup();
-    api_cleanup(&g_api_ctx);
-    unlink(pp);
-    logger_close();
+    run_event_loop();
 
     return 0;
 }
 
 static int do_stop(atp_options_t *opts) {
+    char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
-    if (opts->pid_file[0]) {
-        snprintf(pp, sizeof(pp), "%s", opts->pid_file);
-    } else if (g_config.data_dir[0]) {
-        snprintf(pp, sizeof(pp), "%s/%s", g_config.data_dir, ATP_PID_FILE);
+    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) == ATP_OK) {
+        config_set_defaults(&g_config);
+        config_load(cp, &g_config);
     } else {
-        snprintf(pp, sizeof(pp), "./atpd.pid");
+        config_set_defaults(&g_config);
     }
+
+    resolve_pid_path(opts, pp, sizeof(pp));
 
     FILE *f = fopen(pp, "r");
     if (!f) {
@@ -542,15 +573,17 @@ static int do_status(atp_options_t *opts) {
 }
 
 static int do_reload(atp_options_t *opts) {
+    char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
-    if (opts->pid_file[0]) {
-        snprintf(pp, sizeof(pp), "%s", opts->pid_file);
-    } else if (g_config.data_dir[0]) {
-        snprintf(pp, sizeof(pp), "%s/%s", g_config.data_dir, ATP_PID_FILE);
+    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) == ATP_OK) {
+        config_set_defaults(&g_config);
+        config_load(cp, &g_config);
     } else {
-        snprintf(pp, sizeof(pp), "./atpd.pid");
+        config_set_defaults(&g_config);
     }
+
+    resolve_pid_path(opts, pp, sizeof(pp));
 
     FILE *f = fopen(pp, "r");
     if (!f) {
@@ -595,8 +628,22 @@ static int do_check(atp_options_t *opts) {
 
 static int do_update_geoip(atp_options_t *opts) {
     (void)opts;
-    printf("GeoIP update not yet implemented\n");
-    return 0;
+
+    if (!g_config.bypass_cn_ip) {
+        printf("CNIP bypass disabled, skipping update\n");
+        return 0;
+    }
+
+    printf("Updating GeoIP database...\n");
+
+    int ret = geoip_force_update(&g_config);
+    if (ret == 0) {
+        printf("GeoIP update completed successfully\n");
+        return 0;
+    } else {
+        printf("GeoIP update failed\n");
+        return 1;
+    }
 }
 
 static int do_ebpf_probe(atp_options_t *opts) {
