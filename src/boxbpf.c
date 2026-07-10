@@ -170,6 +170,7 @@ static int pin_program(const char *section, const char *name,
     if (rc != 0) return ATP_ERR_EBPF;
     return ATP_OK;
 }
+
 static int write_ebpf_config(atp_config_t *cfg) {
     if (!cfg) return ATP_ERR_INVAL;
 
@@ -525,6 +526,7 @@ cleanup:
 
     return status;
 }
+
 static int update_config(const char *config_path) {
     if (!config_path || access(config_path, R_OK) != 0) {
         LOG_ERROR("eBPF config not found: %s", config_path);
@@ -770,6 +772,11 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
         snprintf(g_status_file, sizeof(g_status_file), "%s/ebpf.status", g_state_dir);
     }
 
+    if (cfg->ebpf_pin_dir[0] != '\0') {
+        strncpy(g_pin_dir, cfg->ebpf_pin_dir, sizeof(g_pin_dir) - 1);
+        g_pin_dir[sizeof(g_pin_dir) - 1] = '\0';
+    }
+
     if (!cfg->ebpf_enabled) {
         LOG_DEBUG("eBPF disabled by config");
         write_ebpf_state_file("disabled");
@@ -830,31 +837,48 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
 int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
     struct stat st;
     char pin_path[256];
+    const char *pin_dir;
+    int ipv6_enabled = 0;
+    int force_configured = 0;
+    int app_configured = 0;
+    int perf_mode = 0;
+    int app_proxy = 0;
 
-    if (!cfg) {
-        strncpy(state, "uninitialized", size);
-        return ATP_ERR_INVAL;
+    (void)cfg;
+
+    if (g_pin_dir[0] != '\0') {
+        pin_dir = g_pin_dir;
+    } else {
+        pin_dir = "/sys/fs/bpf/box";
     }
 
-    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", cfg->ebpf_pin_dir);
+    if (cfg) {
+        ipv6_enabled = cfg->proxy_ipv6;
+        force_configured = (cfg->cnip_force_proxy_apps[0] != '\0');
+        perf_mode = cfg->performance_mode;
+        app_proxy = cfg->app_proxy_enable;
+        app_configured = (perf_mode && app_proxy);
+    }
+
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", pin_dir);
     if (stat(pin_path, &st) != 0) {
         strncpy(state, "uninitialized", size);
         return ATP_ERR_EBPF;
     }
 
-    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre4", cfg->ebpf_pin_dir);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre4", pin_dir);
     if (stat(pin_path, &st) != 0) {
         strncpy(state, "partial", size);
         return ATP_OK;
     }
 
-    if (cfg->proxy_ipv6) {
-        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out6", cfg->ebpf_pin_dir);
+    if (ipv6_enabled) {
+        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out6", pin_dir);
         if (stat(pin_path, &st) != 0) {
             strncpy(state, "partial", size);
             return ATP_OK;
         }
-        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre6", cfg->ebpf_pin_dir);
+        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre6", pin_dir);
         if (stat(pin_path, &st) != 0) {
             strncpy(state, "partial", size);
             return ATP_OK;
@@ -862,13 +886,13 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
     }
 
     int force_loaded = 0;
-    if (cfg->cnip_force_proxy_apps[0] != '\0') {
-        snprintf(pin_path, sizeof(pin_path), "%s/box_force_out4", cfg->ebpf_pin_dir);
+    if (force_configured) {
+        snprintf(pin_path, sizeof(pin_path), "%s/box_force_out4", pin_dir);
         if (stat(pin_path, &st) == 0) {
             force_loaded = 1;
         }
-        if (cfg->proxy_ipv6) {
-            snprintf(pin_path, sizeof(pin_path), "%s/box_force_out6", cfg->ebpf_pin_dir);
+        if (ipv6_enabled) {
+            snprintf(pin_path, sizeof(pin_path), "%s/box_force_out6", pin_dir);
             if (stat(pin_path, &st) != 0) {
                 force_loaded = 0;
             }
@@ -876,21 +900,18 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
     }
 
     int app_loaded = 0;
-    if (cfg->performance_mode && cfg->app_proxy_enable) {
-        snprintf(pin_path, sizeof(pin_path), "%s/box_app_out4", cfg->ebpf_pin_dir);
+    if (app_configured) {
+        snprintf(pin_path, sizeof(pin_path), "%s/box_app_out4", pin_dir);
         if (stat(pin_path, &st) == 0) {
             app_loaded = 1;
         }
-        if (cfg->proxy_ipv6) {
-            snprintf(pin_path, sizeof(pin_path), "%s/box_app_out6", cfg->ebpf_pin_dir);
+        if (ipv6_enabled) {
+            snprintf(pin_path, sizeof(pin_path), "%s/box_app_out6", pin_dir);
             if (stat(pin_path, &st) != 0) {
                 app_loaded = 0;
             }
         }
     }
-
-    int force_configured = (cfg->cnip_force_proxy_apps[0] != '\0');
-    int app_configured = (cfg->performance_mode && cfg->app_proxy_enable);
 
     if (force_configured && app_configured) {
         if (force_loaded && app_loaded) {
