@@ -2,6 +2,8 @@
 #include "logger.h"
 #include "utils.h"
 #include "atp.h"
+#include "atpd_context.h"
+#include "boxbpf.h"
 #include <pwd.h>
 #include <grp.h>
 #include <arpa/inet.h>
@@ -194,10 +196,62 @@ int config_set_mode(atp_config_t *cfg, const char *mode) {
     fclose(fin); fclose(fout); return rename(tp, cp);
 }
 
+static void ebpf_reload(atp_config_t *cfg) {
+    if (!cfg->bypass_cn_ip) {
+        LOG_DEBUG("CNIP bypass disabled, skipping eBPF reload");
+        return;
+    }
+    if (!cfg->ebpf_enabled) {
+        LOG_DEBUG("eBPF disabled, skipping eBPF reload");
+        return;
+    }
+    if (cfg->cnip_mode != 1) {
+        LOG_DEBUG("CNIP_MODE is not ebpf, skipping eBPF reload");
+        return;
+    }
+
+    if (cfg->ebpf_ready) {
+        int ret = boxbpf_update(cfg->ebpf_config_path);
+        if (ret == 0) {
+            LOG_INFO("eBPF CNIP maps updated successfully");
+        } else {
+            LOG_WARN("eBPF CNIP update failed, attempting reload");
+            boxbpf_clear();
+            cfg->ebpf_ready = 0;
+            if (boxbpf_init_from_config(cfg) == 0) {
+                cfg->ebpf_ready = 1;
+                atpd_ebpf_state_transition(EBPF_STATE_READY);
+                LOG_INFO("eBPF CNIP reloaded successfully");
+            } else {
+                cfg->ebpf_ready = 0;
+                atpd_ebpf_state_transition(EBPF_STATE_FAILED);
+                LOG_WARN("eBPF CNIP reload failed");
+            }
+        }
+    } else {
+        int ret = boxbpf_init_from_config(cfg);
+        if (ret == 0) {
+            cfg->ebpf_ready = 1;
+            atpd_ebpf_state_transition(EBPF_STATE_READY);
+            LOG_INFO("eBPF CNIP initialized on reload");
+        } else {
+            cfg->ebpf_ready = 0;
+            atpd_ebpf_state_transition(EBPF_STATE_FAILED);
+            LOG_WARN("eBPF CNIP init on reload failed");
+        }
+    }
+}
+
 int config_reload(atp_config_t *cfg) {
     char cp[SAFE_PATH_MAX];
     if (snprintf(cp, sizeof(cp), "%s/%s", cfg->data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) return -1;
-    return file_exists(cp) ? config_load(cp, cfg) : -1;
+    if (!file_exists(cp)) return -1;
+
+    int ret = config_load(cp, cfg);
+    if (ret == 0) {
+        ebpf_reload(cfg);
+    }
+    return ret;
 }
 
 int config_save_runtime(const char *path, atp_config_t *cfg) {
