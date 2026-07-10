@@ -17,7 +17,10 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/stat.h>
+
+#ifdef __ANDROID__
 #include <android/log.h>
+#endif
 
 #define LOG_TAG "atpd"
 #define MAX_LOG_MSG 4096
@@ -35,12 +38,14 @@ static const char *level_strings[] = {
     [LOG_LEVEL_ERROR] = "Error"
 };
 
+#ifdef __ANDROID__
 static int android_log_levels[] = {
     [LOG_LEVEL_DEBUG] = ANDROID_LOG_DEBUG,
     [LOG_LEVEL_INFO]  = ANDROID_LOG_INFO,
     [LOG_LEVEL_WARN]  = ANDROID_LOG_WARN,
     [LOG_LEVEL_ERROR] = ANDROID_LOG_ERROR
 };
+#endif
 
 int logger_init(void) {
     char log_path[PATH_MAX];
@@ -115,7 +120,9 @@ void log_write_msg(int level, const char *file, int line, const char *fmt, ...) 
         full_msg[len+1] = '\0';
     }
 
+#ifdef __ANDROID__
     __android_log_write(android_log_levels[level], LOG_TAG, msg);
+#endif
 
     if (!g_log_fallback && g_log_fd >= 0) {
         ssize_t ret = write(g_log_fd, full_msg, strlen(full_msg));
