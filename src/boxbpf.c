@@ -236,33 +236,73 @@ static int write_ebpf_config(atp_config_t *cfg) {
         }
     }
 
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    if (!doc) {
+        LOG_ERROR("Failed to create JSON document");
+        return -1;
+    }
+
+    yyjson_mut_val *root = yyjson_mut_obj(doc);
+    if (!root) {
+        yyjson_mut_doc_free(doc);
+        LOG_ERROR("Failed to create JSON root");
+        return -1;
+    }
+    yyjson_mut_doc_set_root(doc, root);
+
+    yyjson_mut_obj_add_bool(doc, root, "ipv6", cfg->proxy_ipv6 ? true : false);
+    yyjson_mut_obj_add_str(doc, root, "cidr4", cidr4);
+    yyjson_mut_obj_add_str(doc, root, "cidr6", cidr6);
+    yyjson_mut_obj_add_str(doc, root, "forceUids", force_uids);
+    yyjson_mut_obj_add_str(doc, root, "appUids", app_uids);
+
+    char pin_path[256];
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "pinCidrOut4", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out6", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "pinCidrOut6", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre4", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "pinCidrPre4", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre6", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "pinCidrPre6", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_force_out4", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "pinForceOut4", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_force_out6", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "pinForceOut6", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_app_out4", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "pinAppOut4", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_app_out6", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "pinAppOut6", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr4_lpm", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "mapCidr4", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_cidr6_lpm", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "mapCidr6", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_force_uid_set", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "mapForceUid", pin_path);
+    snprintf(pin_path, sizeof(pin_path), "%s/box_app_uid_set", pin_dir);
+    yyjson_mut_obj_add_str(doc, root, "mapAppUid", pin_path);
+
+    const char *json_str = yyjson_mut_write(doc, 0, NULL);
+    if (!json_str) {
+        yyjson_mut_doc_free(doc);
+        LOG_ERROR("Failed to serialize JSON");
+        return -1;
+    }
+
     FILE *fp = fopen(config_path, "w");
     if (!fp) {
+        free((void *)json_str);
+        yyjson_mut_doc_free(doc);
         LOG_ERROR("Failed to create eBPF config: %s", config_path);
         return -1;
     }
 
-    fprintf(fp, "{\n");
-    fprintf(fp, "  \"ipv6\": %s,\n", cfg->proxy_ipv6 ? "true" : "false");
-    fprintf(fp, "  \"cidr4\": \"%s\",\n", cidr4);
-    fprintf(fp, "  \"cidr6\": \"%s\",\n", cidr6);
-    fprintf(fp, "  \"forceUids\": \"%s\",\n", force_uids);
-    fprintf(fp, "  \"appUids\": \"%s\",\n", app_uids);
-    fprintf(fp, "  \"pinCidrOut4\": \"%s/box_cidr_out4\",\n", pin_dir);
-    fprintf(fp, "  \"pinCidrOut6\": \"%s/box_cidr_out6\",\n", pin_dir);
-    fprintf(fp, "  \"pinCidrPre4\": \"%s/box_cidr_pre4\",\n", pin_dir);
-    fprintf(fp, "  \"pinCidrPre6\": \"%s/box_cidr_pre6\",\n", pin_dir);
-    fprintf(fp, "  \"pinForceOut4\": \"%s/box_force_out4\",\n", pin_dir);
-    fprintf(fp, "  \"pinForceOut6\": \"%s/box_force_out6\",\n", pin_dir);
-    fprintf(fp, "  \"pinAppOut4\": \"%s/box_app_out4\",\n", pin_dir);
-    fprintf(fp, "  \"pinAppOut6\": \"%s/box_app_out6\",\n", pin_dir);
-    fprintf(fp, "  \"mapCidr4\": \"%s/box_cidr4_lpm\",\n", pin_dir);
-    fprintf(fp, "  \"mapCidr6\": \"%s/box_cidr6_lpm\",\n", pin_dir);
-    fprintf(fp, "  \"mapForceUid\": \"%s/box_force_uid_set\",\n", pin_dir);
-    fprintf(fp, "  \"mapAppUid\": \"%s/box_app_uid_set\"\n", pin_dir);
-    fprintf(fp, "}\n");
-
+    fprintf(fp, "%s\n", json_str);
     fclose(fp);
+
+    free((void *)json_str);
+    yyjson_mut_doc_free(doc);
+
     LOG_INFO("eBPF config written: %s", config_path);
     return 0;
 }
