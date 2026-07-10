@@ -206,36 +206,36 @@ static void status_show_ebpf(void) {
     ui_table_end();
 }
 
-static void status_show_monitors(void) {
-    time_t last_fcm = fcm_monitor_get_last_detection();
-    time_t now = time(NULL);
-    char fcm_status[64];
+static void status_show_ebpf(void) {
+    char state[64] = {0};
 
     ui_table_begin();
-    ui_table_header("MONITORS");
+    ui_table_header("eBPF CNIP");
 
-    if (0) {
-        ui_table_subrow_color("├─", "Netlink Monitor", "ACTIVE", COLOR_GREEN);
-    } else {
-        ui_table_subrow_color("├─", "Netlink Monitor", "INACTIVE", COLOR_RED);
-    }
-
-    if (fcm_monitor_is_running()) {
-        if (last_fcm > 0) {
-            int elapsed = (int)(now - last_fcm);
-            if (elapsed < 60) {
-                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %ds ago)", elapsed);
-            } else if (elapsed < 3600) {
-                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %dm %ds ago)", elapsed / 60, elapsed % 60);
-            } else {
-                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %dh ago)", elapsed / 3600);
-            }
-            ui_table_subrow_color("└─", "FCM Monitor", fcm_status, COLOR_GREEN);
+    if (boxbpf_status(state, sizeof(state)) == 0) {
+        if (strcmp(state, "ready") == 0) {
+            ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
+            ui_table_subrow("├─", "Pin Dir", "/sys/fs/bpf/box");
+            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+        } else if (strcmp(state, "failed") == 0) {
+            ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
+            ui_table_subrow("└─", "Fallback", "ipset");
+        } else if (strcmp(state, "disabled") == 0) {
+            ui_table_subrow_color("├─", "State", "DISABLED", COLOR_YELLOW);
+            ui_table_subrow("└─", "CNIP Mode", "ipset");
         } else {
-            ui_table_subrow_color("└─", "FCM Monitor", "ACTIVE (waiting for FCM)", COLOR_CYAN);
+            ui_table_subrow_color("└─", "State", "UNKNOWN", COLOR_RED);
         }
     } else {
-        ui_table_subrow_color("└─", "FCM Monitor", "INACTIVE", COLOR_RED);
+        /* 检查 pin 文件是否存在 */
+        struct stat st;
+        if (stat("/sys/fs/bpf/box/box_cidr_out4", &st) == 0) {
+            ui_table_subrow_color("├─", "State", "READY (pin)", COLOR_GREEN);
+            ui_table_subrow("├─", "Pin Dir", "/sys/fs/bpf/box");
+            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+        } else {
+            ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
+        }
     }
 
     ui_table_end();

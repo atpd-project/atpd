@@ -13,6 +13,8 @@
 
 static bool g_ebpf_ready = false;
 static char g_pin_dir[256] = "/sys/fs/bpf/box";
+static char g_state_dir[256] = "/data/adb/atp/ebpf";
+static char g_status_file[512] = "/data/adb/atp/ebpf/ebpf.status";
 
 static void raise_memlock(void) {
     struct rlimit unlimited = {RLIM_INFINITY, RLIM_INFINITY};
@@ -64,6 +66,47 @@ static char *read_file_content(const char *path) {
     fclose(fp);
 
     return buf;
+}
+
+static int write_ebpf_state_file(const char *state) {
+    if (g_state_dir[0] == '\0') {
+        return -1;
+    }
+
+    mkdir_recursive(g_state_dir, 0755);
+
+    FILE *fp = fopen(g_status_file, "w");
+    if (!fp) {
+        LOG_ERROR("Failed to write ebpf.status: %s", g_status_file);
+        return -1;
+    }
+
+    fprintf(fp, "%s\n", state);
+    fclose(fp);
+
+    LOG_DEBUG("eBPF state written: %s -> %s", state, g_status_file);
+    return 0;
+}
+
+static int read_ebpf_state_file(char *state, size_t size) {
+    if (g_state_dir[0] == '\0') {
+        return -1;
+    }
+
+    FILE *fp = fopen(g_status_file, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    if (fgets(state, size, fp)) {
+        char *nl = strchr(state, '\n');
+        if (nl) *nl = '\0';
+        fclose(fp);
+        return 0;
+    }
+
+    fclose(fp);
+    return -1;
 }
 
 static int create_cidr_map(const char *source, const char *pin_path,
@@ -398,18 +441,27 @@ static int apply_config(const char *config_path) {
 cleanup:
     if (status != 0) remove_known_pins();
     close_fds(&fds);
+
+    if (status == 0) {
+        write_ebpf_state_file("ready");
+    } else {
+        write_ebpf_state_file("failed");
+    }
+
     return status;
 }
 
 static int update_config(const char *config_path) {
     if (!config_path || access(config_path, R_OK) != 0) {
         LOG_ERROR("eBPF config not found: %s", config_path);
+        write_ebpf_state_file("failed");
         return -1;
     }
 
     char *json_str = read_file_content(config_path);
     if (!json_str) {
         LOG_ERROR("Failed to read config: %s", config_path);
+        write_ebpf_state_file("failed");
         return -1;
     }
 
@@ -417,6 +469,7 @@ static int update_config(const char *config_path) {
     if (!doc) {
         LOG_ERROR("Failed to parse JSON config: %s", config_path);
         free(json_str);
+        write_ebpf_state_file("failed");
         return -1;
     }
 
@@ -424,6 +477,7 @@ static int update_config(const char *config_path) {
     if (!root) {
         yyjson_doc_free(doc);
         free(json_str);
+        write_ebpf_state_file("failed");
         return -1;
     }
 
@@ -476,6 +530,7 @@ static int update_config(const char *config_path) {
     if (map_app_uid[0] == '\0') strcpy(map_app_uid, MAP_APP_UID);
     if (cidr4_file[0] == '\0') {
         LOG_ERROR("missing cidr4 in config");
+        write_ebpf_state_file("failed");
         return -1;
     }
 
@@ -489,7 +544,13 @@ static int update_config(const char *config_path) {
         close_fd(cidr6);
         close_fd(force_uid);
         close_fd(app_uid);
-        return apply_config(config_path);
+        int ret = apply_config(config_path);
+        if (ret == 0) {
+            write_ebpf_state_file("ready");
+        } else {
+            write_ebpf_state_file("failed");
+        }
+        return ret;
     }
 
     int status = 0;
@@ -508,6 +569,13 @@ static int update_config(const char *config_path) {
     close_fd(cidr6);
     close_fd(force_uid);
     close_fd(app_uid);
+
+    if (status == 0) {
+        write_ebpf_state_file("ready");
+    } else {
+        write_ebpf_state_file("failed");
+    }
+
     return status;
 }
 
@@ -566,6 +634,7 @@ int boxbpf_update(const char *config_path) {
 int boxbpf_clear(void) {
     remove_known_pins();
     g_ebpf_ready = false;
+    write_ebpf_state_file("disabled");
     return 0;
 }
 
@@ -580,13 +649,21 @@ const char *boxbpf_pin_dir(void) {
 int boxbpf_init_from_config(atp_config_t *cfg) {
     if (!cfg) return -1;
 
+    if (cfg->ebpf_state_dir[0] != '\0') {
+        strncpy(g_state_dir, cfg->ebpf_state_dir, sizeof(g_state_dir) - 1);
+        g_state_dir[sizeof(g_state_dir) - 1] = '\0';
+        snprintf(g_status_file, sizeof(g_status_file), "%s/ebpf.status", g_state_dir);
+    }
+
     if (!cfg->ebpf_enabled) {
         LOG_DEBUG("eBPF disabled by config");
+        write_ebpf_state_file("disabled");
         return -1;
     }
 
     if (cfg->cnip_mode != 1) {
         LOG_DEBUG("CNIP_MODE is not ebpf");
+        write_ebpf_state_file("disabled");
         return -1;
     }
 
@@ -594,19 +671,27 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
 
     if (boxbpf_probe(cfg->proxy_ipv6) != 0) {
         LOG_WARN("eBPF probe failed");
+        write_ebpf_state_file("failed");
         return -1;
     }
 
     if (write_ebpf_config(cfg) != 0) {
         LOG_ERROR("Failed to write eBPF config");
+        write_ebpf_state_file("failed");
         return -1;
     }
 
     if (boxbpf_apply(cfg->ebpf_config_path) != 0) {
         LOG_ERROR("Failed to apply eBPF programs");
+        write_ebpf_state_file("failed");
         return -1;
     }
 
+    write_ebpf_state_file("ready");
     LOG_INFO("eBPF CNIP init success (pin: %s)", cfg->ebpf_pin_dir);
     return 0;
+}
+
+int boxbpf_status(const char *state, size_t size) {
+    return read_ebpf_state_file((char *)state, size);
 }
