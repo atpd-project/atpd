@@ -169,7 +169,11 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
 
 int config_load(const char *path, atp_config_t *cfg) {
     pthread_mutex_lock(&cfg->config_mutex);
-    FILE *fp = fopen(path, "r"); if (!fp) { pthread_mutex_unlock(&cfg->config_mutex); return -1; }
+    FILE *fp = fopen(path, "r");
+    if (!fp) {
+        pthread_mutex_unlock(&cfg->config_mutex);
+        return ATP_ERR_NOENT;
+    }
     char line[1024];
     while (fgets(line, sizeof(line), fp)) {
         trim(line); if (line[0] == '#' || line[0] == '\0') continue;
@@ -180,8 +184,10 @@ int config_load(const char *path, atp_config_t *cfg) {
         }
         parse_key_value(k, v, cfg);
     }
-    fclose(fp); pthread_mutex_unlock(&cfg->config_mutex);
-    LOG_INFO("Configuration loaded: %s", path); return 0;
+    fclose(fp);
+    pthread_mutex_unlock(&cfg->config_mutex);
+    LOG_INFO("Configuration loaded: %s", path);
+    return ATP_OK;
 }
 
 int config_set_mode(atp_config_t *cfg, const char *mode) {
@@ -192,18 +198,20 @@ int config_set_mode(atp_config_t *cfg, const char *mode) {
     pthread_mutex_unlock(&cfg->config_mutex);
 
     char cp[SAFE_PATH_MAX], tp[SAFE_PATH_MAX];
-    if (snprintf(cp, sizeof(cp), "%s/%s", data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) return -1;
-    if (!file_exists(cp)) return 0;
-    if (snprintf(tp, sizeof(tp), "%s.tmp", cp) >= (int)sizeof(tp)) return -1;
+    if (snprintf(cp, sizeof(cp), "%s/%s", data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) return ATP_ERR_INVAL;
+    if (!file_exists(cp)) return ATP_OK;
+    if (snprintf(tp, sizeof(tp), "%s.tmp", cp) >= (int)sizeof(tp)) return ATP_ERR_INVAL;
     FILE *fin = fopen(cp, "r"), *fout = fopen(tp, "w");
-    if (!fin || !fout) { if (fin) fclose(fin); if (fout) fclose(fout); return -1; }
+    if (!fin || !fout) { if (fin) fclose(fin); if (fout) fclose(fout); return ATP_ERR_IO; }
     char line[1024]; int found = 0;
     while (fgets(line, sizeof(line), fin)) {
         if (strncmp(line, "USER_CLASH_MODE=", 16) == 0) { fprintf(fout, "USER_CLASH_MODE=\"%s\"\n", mode); found = 1; }
         else fputs(line, fout);
     }
     if (!found) fprintf(fout, "USER_CLASH_MODE=\"%s\"\n", mode);
-    fclose(fin); fclose(fout); return rename(tp, cp);
+    fclose(fin); fclose(fout);
+    if (rename(tp, cp) != 0) return ATP_ERR_IO;
+    return ATP_OK;
 }
 
 static void ebpf_reload(atp_config_t *cfg) {
@@ -222,13 +230,13 @@ static void ebpf_reload(atp_config_t *cfg) {
 
     if (cfg->ebpf_ready) {
         int ret = boxbpf_update(cfg->ebpf_config_path);
-        if (ret == 0) {
+        if (ret == ATP_OK) {
             LOG_INFO("eBPF CNIP maps updated successfully");
         } else {
             LOG_WARN("eBPF CNIP update failed, attempting reload");
             boxbpf_clear();
             cfg->ebpf_ready = 0;
-            if (boxbpf_init_from_config(cfg) == 0) {
+            if (boxbpf_init_from_config(cfg) == ATP_OK) {
                 cfg->ebpf_ready = 1;
                 atpd_ebpf_state_transition(EBPF_STATE_READY);
                 LOG_INFO("eBPF CNIP reloaded successfully");
@@ -240,7 +248,7 @@ static void ebpf_reload(atp_config_t *cfg) {
         }
     } else {
         int ret = boxbpf_init_from_config(cfg);
-        if (ret == 0) {
+        if (ret == ATP_OK) {
             cfg->ebpf_ready = 1;
             atpd_ebpf_state_transition(EBPF_STATE_READY);
             LOG_INFO("eBPF CNIP initialized on reload");
@@ -254,11 +262,11 @@ static void ebpf_reload(atp_config_t *cfg) {
 
 int config_reload(atp_config_t *cfg) {
     char cp[SAFE_PATH_MAX];
-    if (snprintf(cp, sizeof(cp), "%s/%s", cfg->data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) return -1;
-    if (!file_exists(cp)) return -1;
+    if (snprintf(cp, sizeof(cp), "%s/%s", cfg->data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) return ATP_ERR_INVAL;
+    if (!file_exists(cp)) return ATP_ERR_NOENT;
 
     int ret = config_load(cp, cfg);
-    if (ret == 0) {
+    if (ret == ATP_OK) {
         ebpf_reload(cfg);
     }
     return ret;
@@ -266,18 +274,31 @@ int config_reload(atp_config_t *cfg) {
 
 int config_save_runtime(const char *path, atp_config_t *cfg) {
     pthread_mutex_lock(&cfg->config_mutex);
-    FILE *fp = fopen(path, "w"); if (!fp) { pthread_mutex_unlock(&cfg->config_mutex); return -1; }
+    FILE *fp = fopen(path, "w");
+    if (!fp) {
+        pthread_mutex_unlock(&cfg->config_mutex);
+        return ATP_ERR_IO;
+    }
     fprintf(fp, "# ATP Runtime\nUSE_TPROXY=%d\nTABLE_ID=%d\nMARK_VALUE=%d\nMARK_VALUE6=%d\nEBPF_ENABLED=%d\nCNIP_MODE=%d\nEBPF_READY=%d\nEBPF_PIN_DIR=%s\n",
             cfg->use_tproxy, cfg->table_id, cfg->mark_value, cfg->mark_value6,
             cfg->ebpf_enabled, cfg->cnip_mode, cfg->ebpf_ready, cfg->ebpf_pin_dir);
-    fclose(fp); pthread_mutex_unlock(&cfg->config_mutex); return 0;
+    fclose(fp);
+    pthread_mutex_unlock(&cfg->config_mutex);
+    return ATP_OK;
 }
 
 int validate_interface_name(const char *n) {
-    if (!n || !*n || strlen(n) > 15) return -1;
-    for (const char *p = n; *p; p++) if (!isalnum(*p) && !strchr("_+-.", *p)) return -1;
-    return 0;
+    if (!n || !*n || strlen(n) > 15) return ATP_ERR_INVAL;
+    for (const char *p = n; *p; p++) if (!isalnum(*p) && !strchr("_+-.", *p)) return ATP_ERR_INVAL;
+    return ATP_OK;
 }
 
-int validate_port(int p) { return p > 0 && p <= 65535; }
-int validate_mark(int m) { return m >= 1 && m <= 2147483647; }
+int validate_port(int p) {
+    if (p > 0 && p <= 65535) return ATP_OK;
+    return ATP_ERR_INVAL;
+}
+
+int validate_mark(int m) {
+    if (m >= 1 && m <= 2147483647) return ATP_OK;
+    return ATP_ERR_INVAL;
+}

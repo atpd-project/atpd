@@ -22,6 +22,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <pthread.h>
+#include "atp_error.h"
 
 #define ATP_NAME            "atpd"
 #define ATP_BUILD_TIME      __TIME__
@@ -179,7 +180,7 @@ typedef struct {
 extern atp_config_t g_config;
 
 int atp_init(void);
-void atp_cleanup(void);
+int atp_cleanup(void);
 int atp_create_pidfile(void);
 void atp_remove_pidfile(void);
 void atp_daemonize(void);

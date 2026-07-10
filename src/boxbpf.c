@@ -4,6 +4,7 @@
 #include "utils.h"
 #include "app_filter.h"
 #include "yyjson.h"
+#include "atp_error.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,11 +12,22 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <signal.h>
+#include <setjmp.h>
 
 static bool g_ebpf_ready = false;
 static char g_pin_dir[256] = "/sys/fs/bpf/box";
 static char g_state_dir[256] = "/data/adb/atp/ebpf";
 static char g_status_file[512] = "/data/adb/atp/ebpf/ebpf.status";
+
+static sigjmp_buf g_bpf_timeout_env;
+static volatile sig_atomic_t g_bpf_timeout = 0;
+
+static void bpf_timeout_handler(int sig) {
+    (void)sig;
+    g_bpf_timeout = 1;
+    siglongjmp(g_bpf_timeout_env, 1);
+}
 
 static void raise_memlock(void) {
     struct rlimit unlimited = {RLIM_INFINITY, RLIM_INFINITY};
@@ -71,7 +83,7 @@ static char *read_file_content(const char *path) {
 
 static int write_ebpf_state_file(const char *state) {
     if (g_state_dir[0] == '\0') {
-        return -1;
+        return ATP_ERR_INVAL;
     }
 
     mkdir_recursive(g_state_dir, 0755);
@@ -79,7 +91,7 @@ static int write_ebpf_state_file(const char *state) {
     FILE *fp = fopen(g_status_file, "w");
     if (!fp) {
         LOG_ERROR("Failed to write ebpf.status: %s", g_status_file);
-        return -1;
+        return ATP_ERR_IO;
     }
 
     int loaded = 0;
@@ -102,7 +114,7 @@ static int write_ebpf_state_file(const char *state) {
 
     fclose(fp);
     LOG_DEBUG("eBPF state written: %s -> %s", state, g_status_file);
-    return 0;
+    return ATP_OK;
 }
 
 static int create_cidr_map(const char *source, const char *pin_path,
@@ -116,11 +128,14 @@ static int create_cidr_map(const char *source, const char *pin_path,
     );
     if (*fd_out < 0) {
         LOG_ERROR("create IPv%d CIDR map failed", ipv6 ? 6 : 4);
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
     load_cidr_file(*fd_out, source, ipv6);
-    return pin_replace(*fd_out, pin_path) == 0 ? 0 : -1;
+    if (pin_replace(*fd_out, pin_path) != 0) {
+        return ATP_ERR_EBPF;
+    }
+    return ATP_OK;
 }
 
 static int create_uid_map(const char *source, const char *pin_path,
@@ -129,31 +144,34 @@ static int create_uid_map(const char *source, const char *pin_path,
                          sizeof(uint8_t), MAX_UIDS, 0);
     if (*fd_out < 0) {
         LOG_ERROR("create UID map failed");
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
     int loaded = load_uid_file(*fd_out, source);
     if (required && loaded <= 0) {
         LOG_ERROR("required UID map is empty: %s", source ? source : "-");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
 
-    return pin_replace(*fd_out, pin_path) == 0 ? 0 : -1;
+    if (pin_replace(*fd_out, pin_path) != 0) {
+        return ATP_ERR_EBPF;
+    }
+    return ATP_OK;
 }
 
 static int pin_program(const char *section, const char *name,
                        const char *pin_path, const struct fds *fds) {
     int fd = load_program(section, name, fds->cidr4, fds->cidr6,
                           fds->force_uid, fds->app_uid);
-    if (fd < 0) return -1;
+    if (fd < 0) return ATP_ERR_EBPF;
 
     int rc = pin_replace(fd, pin_path);
     close(fd);
-    return rc == 0 ? 0 : -1;
+    if (rc != 0) return ATP_ERR_EBPF;
+    return ATP_OK;
 }
-
 static int write_ebpf_config(atp_config_t *cfg) {
-    if (!cfg) return -1;
+    if (!cfg) return ATP_ERR_INVAL;
 
     char *state_dir = cfg->ebpf_state_dir;
     char *pin_dir = cfg->ebpf_pin_dir;
@@ -239,14 +257,14 @@ static int write_ebpf_config(atp_config_t *cfg) {
     yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
     if (!doc) {
         LOG_ERROR("Failed to create JSON document");
-        return -1;
+        return ATP_ERR_NOMEM;
     }
 
     yyjson_mut_val *root = yyjson_mut_obj(doc);
     if (!root) {
         yyjson_mut_doc_free(doc);
         LOG_ERROR("Failed to create JSON root");
-        return -1;
+        return ATP_ERR_NOMEM;
     }
     yyjson_mut_doc_set_root(doc, root);
 
@@ -286,7 +304,7 @@ static int write_ebpf_config(atp_config_t *cfg) {
     if (!json_str) {
         yyjson_mut_doc_free(doc);
         LOG_ERROR("Failed to serialize JSON");
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
     FILE *fp = fopen(config_path, "w");
@@ -294,7 +312,7 @@ static int write_ebpf_config(atp_config_t *cfg) {
         free((void *)json_str);
         yyjson_mut_doc_free(doc);
         LOG_ERROR("Failed to create eBPF config: %s", config_path);
-        return -1;
+        return ATP_ERR_IO;
     }
 
     fprintf(fp, "%s\n", json_str);
@@ -304,33 +322,33 @@ static int write_ebpf_config(atp_config_t *cfg) {
     yyjson_mut_doc_free(doc);
 
     LOG_INFO("eBPF config written: %s", config_path);
-    return 0;
+    return ATP_OK;
 }
 
 static int apply_config(const char *config_path) {
     if (!config_path || access(config_path, R_OK) != 0) {
         LOG_ERROR("eBPF config not found: %s", config_path);
-        return -1;
+        return ATP_ERR_NOENT;
     }
 
     char *json_str = read_file_content(config_path);
     if (!json_str) {
         LOG_ERROR("Failed to read config: %s", config_path);
-        return -1;
+        return ATP_ERR_IO;
     }
 
     yyjson_doc *doc = yyjson_read(json_str, strlen(json_str), 0);
     if (!doc) {
         LOG_ERROR("Failed to parse JSON config: %s", config_path);
         free(json_str);
-        return -1;
+        return ATP_ERR_CONFIG;
     }
 
     yyjson_val *root = yyjson_doc_get_root(doc);
     if (!root) {
         yyjson_doc_free(doc);
         free(json_str);
-        return -1;
+        return ATP_ERR_CONFIG;
     }
 
     bool ipv6 = false;
@@ -410,96 +428,96 @@ static int apply_config(const char *config_path) {
 
     if (cidr4_file[0] == '\0') {
         LOG_ERROR("missing cidr4 in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (ipv6 && cidr6_file[0] == '\0') {
         LOG_ERROR("missing cidr6 in config (ipv6 enabled)");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
 
     if (pin_cidr_out4[0] == '\0') {
         LOG_ERROR("missing pinCidrOut4 in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (pin_cidr_pre4[0] == '\0') {
         LOG_ERROR("missing pinCidrPre4 in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (pin_force_out4[0] == '\0') {
         LOG_ERROR("missing pinForceOut4 in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (pin_app_out4[0] == '\0') {
         LOG_ERROR("missing pinAppOut4 in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (map_cidr4[0] == '\0') {
         LOG_ERROR("missing mapCidr4 in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (map_force_uid[0] == '\0') {
         LOG_ERROR("missing mapForceUid in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (map_app_uid[0] == '\0') {
         LOG_ERROR("missing mapAppUid in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
 
     if (ipv6) {
         if (pin_cidr_out6[0] == '\0') {
             LOG_ERROR("missing pinCidrOut6 in config (ipv6 enabled)");
-            return -1;
+            return ATP_ERR_CONFIG;
         }
         if (pin_cidr_pre6[0] == '\0') {
             LOG_ERROR("missing pinCidrPre6 in config (ipv6 enabled)");
-            return -1;
+            return ATP_ERR_CONFIG;
         }
         if (pin_force_out6[0] == '\0') {
             LOG_ERROR("missing pinForceOut6 in config (ipv6 enabled)");
-            return -1;
+            return ATP_ERR_CONFIG;
         }
         if (pin_app_out6[0] == '\0') {
             LOG_ERROR("missing pinAppOut6 in config (ipv6 enabled)");
-            return -1;
+            return ATP_ERR_CONFIG;
         }
         if (map_cidr6[0] == '\0') {
             LOG_ERROR("missing mapCidr6 in config (ipv6 enabled)");
-            return -1;
+            return ATP_ERR_CONFIG;
         }
     }
 
     remove_known_pins();
 
-    int status = -1;
+    int status = ATP_ERR_GENERAL;
     struct fds fds;
     init_fds(&fds);
 
     bool app_uid_required = uid_file_has_entries(app_uid_file);
-    if (create_cidr_map(cidr4_file, map_cidr4, false, &fds.cidr4) != 0) goto cleanup;
-    if (ipv6 && create_cidr_map(cidr6_file, map_cidr6, true, &fds.cidr6) != 0) goto cleanup;
-    if (create_uid_map(force_uid_file, map_force_uid, false, &fds.force_uid) != 0) goto cleanup;
-    if (create_uid_map(app_uid_file, map_app_uid, app_uid_required, &fds.app_uid) != 0) goto cleanup;
+    if (create_cidr_map(cidr4_file, map_cidr4, false, &fds.cidr4) != ATP_OK) goto cleanup;
+    if (ipv6 && create_cidr_map(cidr6_file, map_cidr6, true, &fds.cidr6) != ATP_OK) goto cleanup;
+    if (create_uid_map(force_uid_file, map_force_uid, false, &fds.force_uid) != ATP_OK) goto cleanup;
+    if (create_uid_map(app_uid_file, map_app_uid, app_uid_required, &fds.app_uid) != ATP_OK) goto cleanup;
 
-    if (pin_program("socket/cidr4", "cidr4", pin_cidr_out4, &fds) != 0) goto cleanup;
-    if (pin_program("socket/cidr4", "pre4", pin_cidr_pre4, &fds) != 0) goto cleanup;
-    if (pin_program("socket/force4", "force4", pin_force_out4, &fds) != 0) goto cleanup;
-    if (pin_program("socket/appuid", "app4", pin_app_out4, &fds) != 0) goto cleanup;
+    if (pin_program("socket/cidr4", "cidr4", pin_cidr_out4, &fds) != ATP_OK) goto cleanup;
+    if (pin_program("socket/cidr4", "pre4", pin_cidr_pre4, &fds) != ATP_OK) goto cleanup;
+    if (pin_program("socket/force4", "force4", pin_force_out4, &fds) != ATP_OK) goto cleanup;
+    if (pin_program("socket/appuid", "app4", pin_app_out4, &fds) != ATP_OK) goto cleanup;
 
     if (ipv6) {
-        if (pin_program("socket/cidr6", "cidr6", pin_cidr_out6, &fds) != 0) goto cleanup;
-        if (pin_program("socket/cidr6", "pre6", pin_cidr_pre6, &fds) != 0) goto cleanup;
-        if (pin_program("socket/force6", "force6", pin_force_out6, &fds) != 0) goto cleanup;
-        if (pin_program("socket/appuid", "app6", pin_app_out6, &fds) != 0) goto cleanup;
+        if (pin_program("socket/cidr6", "cidr6", pin_cidr_out6, &fds) != ATP_OK) goto cleanup;
+        if (pin_program("socket/cidr6", "pre6", pin_cidr_pre6, &fds) != ATP_OK) goto cleanup;
+        if (pin_program("socket/force6", "force6", pin_force_out6, &fds) != ATP_OK) goto cleanup;
+        if (pin_program("socket/appuid", "app6", pin_app_out6, &fds) != ATP_OK) goto cleanup;
     }
 
-    status = 0;
+    status = ATP_OK;
 
 cleanup:
-    if (status != 0) remove_known_pins();
+    if (status != ATP_OK) remove_known_pins();
     close_fds(&fds);
 
-    if (status == 0) {
+    if (status == ATP_OK) {
         write_ebpf_state_file("ready");
     } else {
         write_ebpf_state_file("failed");
@@ -507,19 +525,18 @@ cleanup:
 
     return status;
 }
-
 static int update_config(const char *config_path) {
     if (!config_path || access(config_path, R_OK) != 0) {
         LOG_ERROR("eBPF config not found: %s", config_path);
         write_ebpf_state_file("failed");
-        return -1;
+        return ATP_ERR_NOENT;
     }
 
     char *json_str = read_file_content(config_path);
     if (!json_str) {
         LOG_ERROR("Failed to read config: %s", config_path);
         write_ebpf_state_file("failed");
-        return -1;
+        return ATP_ERR_IO;
     }
 
     yyjson_doc *doc = yyjson_read(json_str, strlen(json_str), 0);
@@ -527,7 +544,7 @@ static int update_config(const char *config_path) {
         LOG_ERROR("Failed to parse JSON config: %s", config_path);
         free(json_str);
         write_ebpf_state_file("failed");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
 
     yyjson_val *root = yyjson_doc_get_root(doc);
@@ -535,7 +552,7 @@ static int update_config(const char *config_path) {
         yyjson_doc_free(doc);
         free(json_str);
         write_ebpf_state_file("failed");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
 
     char map_cidr4[128] = {0};
@@ -583,26 +600,26 @@ static int update_config(const char *config_path) {
 
     if (map_cidr4[0] == '\0') {
         LOG_ERROR("missing mapCidr4 in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (map_force_uid[0] == '\0') {
         LOG_ERROR("missing mapForceUid in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (map_app_uid[0] == '\0') {
         LOG_ERROR("missing mapAppUid in config");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
     if (cidr4_file[0] == '\0') {
         LOG_ERROR("missing cidr4 in config");
         write_ebpf_state_file("failed");
-        return -1;
+        return ATP_ERR_CONFIG;
     }
 
     if (ipv6) {
         if (map_cidr6[0] == '\0') {
             LOG_ERROR("missing mapCidr6 in config (ipv6 enabled)");
-            return -1;
+            return ATP_ERR_CONFIG;
         }
     }
 
@@ -617,7 +634,7 @@ static int update_config(const char *config_path) {
         close_fd(force_uid);
         close_fd(app_uid);
         int ret = apply_config(config_path);
-        if (ret == 0) {
+        if (ret == ATP_OK) {
             write_ebpf_state_file("ready");
         } else {
             write_ebpf_state_file("failed");
@@ -625,16 +642,16 @@ static int update_config(const char *config_path) {
         return ret;
     }
 
-    int status = 0;
-    if (clear_map(cidr4, sizeof(struct lpm4_key)) < 0) status = -1;
+    int status = ATP_OK;
+    if (clear_map(cidr4, sizeof(struct lpm4_key)) < 0) status = ATP_ERR_EBPF;
     load_cidr_file(cidr4, cidr4_file, false);
     if (ipv6) {
-        if (clear_map(cidr6, sizeof(struct lpm6_key)) < 0) status = -1;
+        if (clear_map(cidr6, sizeof(struct lpm6_key)) < 0) status = ATP_ERR_EBPF;
         load_cidr_file(cidr6, cidr6_file, true);
     }
-    if (clear_map(force_uid, sizeof(uint32_t)) < 0) status = -1;
+    if (clear_map(force_uid, sizeof(uint32_t)) < 0) status = ATP_ERR_EBPF;
     load_uid_file(force_uid, force_uid_file);
-    if (clear_map(app_uid, sizeof(uint32_t)) < 0) status = -1;
+    if (clear_map(app_uid, sizeof(uint32_t)) < 0) status = ATP_ERR_EBPF;
     load_uid_file(app_uid, app_uid_file);
 
     close_fd(cidr4);
@@ -642,7 +659,7 @@ static int update_config(const char *config_path) {
     close_fd(force_uid);
     close_fd(app_uid);
 
-    if (status == 0) {
+    if (status == ATP_OK) {
         write_ebpf_state_file("ready");
     } else {
         write_ebpf_state_file("failed");
@@ -652,7 +669,23 @@ static int update_config(const char *config_path) {
 }
 
 int boxbpf_probe(bool ipv6) {
+    struct sigaction sa, old_sa;
+    int ret = ATP_OK;
+
     raise_memlock();
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = bpf_timeout_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGALRM, &sa, &old_sa);
+
+    if (sigsetjmp(g_bpf_timeout_env, 1) != 0) {
+        LOG_WARN("eBPF probe timeout after 10 seconds");
+        sigaction(SIGALRM, &old_sa, NULL);
+        return ATP_ERR_TIMEOUT;
+    }
+
+    alarm(10);
 
     char map_cidr4[128];
     char map_cidr6[128];
@@ -667,14 +700,14 @@ int boxbpf_probe(bool ipv6) {
     init_fds(&fds);
     bool ok = false;
 
-    if (create_cidr_map("/dev/null", map_cidr4, false, &fds.cidr4) != 0) goto cleanup;
-    if (create_cidr_map("/dev/null", map_cidr6, true, &fds.cidr6) != 0) goto cleanup;
-    if (create_uid_map("", map_force_uid, false, &fds.force_uid) != 0) goto cleanup;
-    if (create_uid_map("", map_app_uid, false, &fds.app_uid) != 0) goto cleanup;
+    if (create_cidr_map("/dev/null", map_cidr4, false, &fds.cidr4) != ATP_OK) goto cleanup;
+    if (create_cidr_map("/dev/null", map_cidr6, true, &fds.cidr6) != ATP_OK) goto cleanup;
+    if (create_uid_map("", map_force_uid, false, &fds.force_uid) != ATP_OK) goto cleanup;
+    if (create_uid_map("", map_app_uid, false, &fds.app_uid) != ATP_OK) goto cleanup;
 
-    ok = pin_program("socket/cidr4", "probe4", PROBE_PIN4, &fds) == 0;
+    ok = pin_program("socket/cidr4", "probe4", PROBE_PIN4, &fds) == ATP_OK;
     if (ipv6) {
-        ok = pin_program("socket/cidr6", "probe6", PROBE_PIN6, &fds) == 0 && ok;
+        ok = pin_program("socket/cidr6", "probe6", PROBE_PIN6, &fds) == ATP_OK && ok;
     }
 
 cleanup:
@@ -688,13 +721,23 @@ cleanup:
     rmdir(PIN_DIR);
 
     g_ebpf_ready = ok;
-    return ok ? 0 : -1;
+
+    alarm(0);
+    sigaction(SIGALRM, &old_sa, NULL);
+
+    if (ok) {
+        ret = ATP_OK;
+    } else {
+        ret = ATP_ERR_EBPF;
+    }
+
+    return ret;
 }
 
 int boxbpf_apply(const char *config_path) {
     raise_memlock();
     int ret = apply_config(config_path);
-    g_ebpf_ready = (ret == 0);
+    g_ebpf_ready = (ret == ATP_OK);
     return ret;
 }
 
@@ -707,7 +750,7 @@ int boxbpf_clear(void) {
     remove_known_pins();
     g_ebpf_ready = false;
     write_ebpf_state_file("disabled");
-    return 0;
+    return ATP_OK;
 }
 
 bool boxbpf_is_ready(void) {
@@ -719,7 +762,7 @@ const char *boxbpf_pin_dir(void) {
 }
 
 int boxbpf_init_from_config(atp_config_t *cfg) {
-    if (!cfg) return -1;
+    if (!cfg) return ATP_ERR_INVAL;
 
     if (cfg->ebpf_state_dir[0] != '\0') {
         strncpy(g_state_dir, cfg->ebpf_state_dir, sizeof(g_state_dir) - 1);
@@ -730,13 +773,13 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     if (!cfg->ebpf_enabled) {
         LOG_DEBUG("eBPF disabled by config");
         write_ebpf_state_file("disabled");
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
     if (cfg->cnip_mode != 1) {
         LOG_DEBUG("CNIP_MODE is not ebpf");
         write_ebpf_state_file("disabled");
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
     LOG_INFO("eBPF CNIP init: probe=%d, ipv6=%d, retry=%d, delay=%d",
@@ -748,7 +791,7 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     int probe_ok = 0;
 
     for (int i = 0; i < retry; i++) {
-        if (boxbpf_probe(cfg->proxy_ipv6) == 0) {
+        if (boxbpf_probe(cfg->proxy_ipv6) == ATP_OK) {
             probe_ok = 1;
             break;
         }
@@ -764,24 +807,24 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     if (!probe_ok) {
         LOG_WARN("eBPF probe failed after %d attempts", retry);
         write_ebpf_state_file("failed");
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
-    if (write_ebpf_config(cfg) != 0) {
+    if (write_ebpf_config(cfg) != ATP_OK) {
         LOG_ERROR("Failed to write eBPF config");
         write_ebpf_state_file("failed");
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
-    if (boxbpf_apply(cfg->ebpf_config_path) != 0) {
+    if (boxbpf_apply(cfg->ebpf_config_path) != ATP_OK) {
         LOG_ERROR("Failed to apply eBPF programs");
         write_ebpf_state_file("failed");
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
     write_ebpf_state_file("ready");
     LOG_INFO("eBPF CNIP init success (pin: %s)", cfg->ebpf_pin_dir);
-    return 0;
+    return ATP_OK;
 }
 
 int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
@@ -790,31 +833,31 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
 
     if (!cfg) {
         strncpy(state, "uninitialized", size);
-        return -1;
+        return ATP_ERR_INVAL;
     }
 
     snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", cfg->ebpf_pin_dir);
     if (stat(pin_path, &st) != 0) {
         strncpy(state, "uninitialized", size);
-        return -1;
+        return ATP_ERR_EBPF;
     }
 
     snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre4", cfg->ebpf_pin_dir);
     if (stat(pin_path, &st) != 0) {
         strncpy(state, "partial", size);
-        return 0;
+        return ATP_OK;
     }
 
     if (cfg->proxy_ipv6) {
         snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out6", cfg->ebpf_pin_dir);
         if (stat(pin_path, &st) != 0) {
             strncpy(state, "partial", size);
-            return 0;
+            return ATP_OK;
         }
         snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre6", cfg->ebpf_pin_dir);
         if (stat(pin_path, &st) != 0) {
             strncpy(state, "partial", size);
-            return 0;
+            return ATP_OK;
         }
     }
 
@@ -871,5 +914,5 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
         strncpy(state, "ready_core", size);
     }
 
-    return 0;
+    return ATP_OK;
 }

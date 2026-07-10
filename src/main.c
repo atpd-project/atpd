@@ -314,7 +314,7 @@ static int do_start(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     char pp[SAFE_PATH_MAX];
 
-    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
+    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != ATP_OK) {
         fprintf(stderr, "Config file not found\n");
         return 1;
     }
@@ -360,7 +360,7 @@ static int do_start(atp_options_t *opts) {
         LOG_INFO("Initializing eBPF CNIP...");
         atpd_ebpf_state_transition(EBPF_STATE_LOADING);
         int ret = boxbpf_init_from_config(&g_config);
-        if (ret == 0) {
+        if (ret == ATP_OK) {
             g_config.ebpf_ready = 1;
             g_atpd_ctx.ebpf_enabled = true;
             g_atpd_ctx.ebpf_probed = true;
@@ -508,7 +508,7 @@ static int do_stop(atp_options_t *opts) {
 
 static int do_status(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
-    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
+    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != ATP_OK) {
         fprintf(stderr, "Config file not found\n");
         return 1;
     }
@@ -572,13 +572,13 @@ static int do_reload(atp_options_t *opts) {
 
 static int do_check(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
-    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
+    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != ATP_OK) {
         fprintf(stderr, "Config file not found\n");
         return 1;
     }
 
     config_set_defaults(&g_config);
-    if (config_load(cp, &g_config) != 0) {
+    if (config_load(cp, &g_config) != ATP_OK) {
         fprintf(stderr, "Failed to load config\n");
         return 1;
     }
@@ -594,11 +594,9 @@ static int do_update_geoip(atp_options_t *opts) {
     return 0;
 }
 
-/* ========== eBPF Commands ========== */
-
 static int do_ebpf_probe(atp_options_t *opts) {
     int ret = boxbpf_probe(opts->ipv6);
-    if (ret == 0) {
+    if (ret == ATP_OK) {
         printf("supported=1\n");
         printf("message=ok\n");
         printf("lpm_ipv4=1\n");
@@ -609,11 +607,11 @@ static int do_ebpf_probe(atp_options_t *opts) {
             printf("program_ipv6=1\n");
             printf("pin_ipv6=1\n");
         }
-        return 0;
+        return ATP_OK;
     } else {
         printf("supported=0\n");
         printf("message=eBPF xt_bpf unavailable\n");
-        return 1;
+        return ATP_ERR_EBPF;
     }
 }
 
@@ -624,7 +622,7 @@ static int do_ebpf_init(atp_options_t *opts) {
         config_load(opts->config_file, &cfg);
     } else {
         char cp[SAFE_PATH_MAX];
-        if (find_config_file(cp, SAFE_PATH_MAX, NULL) == 0) {
+        if (find_config_file(cp, SAFE_PATH_MAX, NULL) == ATP_OK) {
             config_load(cp, &cfg);
         }
     }
@@ -657,16 +655,16 @@ static int do_ebpf_status(atp_options_t *opts) {
         config_load(opts->config_file, &cfg);
     } else {
         char cp[SAFE_PATH_MAX];
-        if (find_config_file(cp, SAFE_PATH_MAX, NULL) == 0) {
+        if (find_config_file(cp, SAFE_PATH_MAX, NULL) == ATP_OK) {
             config_load(cp, &cfg);
         }
     }
-    if (boxbpf_status(state, sizeof(state), &cfg) == 0) {
+    if (boxbpf_status(state, sizeof(state), &cfg) == ATP_OK) {
         printf("eBPF Status: %s\n", state);
-        return 0;
+        return ATP_OK;
     } else {
         printf("eBPF Status: UNINITIALIZED\n");
-        return 1;
+        return ATP_ERR_EBPF;
     }
 }
 
