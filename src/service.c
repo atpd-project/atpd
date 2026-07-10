@@ -28,21 +28,6 @@
 
 #define MAX_LOG_SIZE (10 * 1024 * 1024)
 
-typedef struct {
-    service_ctx_t *ctx;
-    int attempts;
-    int max_attempts;
-} kill_state_t;
-
-typedef struct {
-    service_ctx_t *ctx;
-    int attempts;
-    int max_attempts;
-    reactor_timer_t *timer;
-    void (*done_cb)(service_ctx_t *, void *);
-    void *userdata;
-} service_stop_state_t;
-
 static void backoff_init(backoff_t *b) {
     b->base_delay_ms = 1000;
     b->max_delay_ms = 60000;

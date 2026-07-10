@@ -14,6 +14,28 @@ typedef enum {
 } service_state_t;
 
 typedef struct {
+    int base_delay_ms;
+    int max_delay_ms;
+    int current_delay_ms;
+    int multiplier;
+} backoff_t;
+
+typedef struct {
+    service_ctx_t *ctx;
+    int attempts;
+    int max_attempts;
+    reactor_timer_t *timer;
+    void (*done_cb)(service_ctx_t *, void *);
+    void *userdata;
+} service_stop_state_t;
+
+typedef struct {
+    service_ctx_t *ctx;
+    int attempts;
+    int max_attempts;
+} kill_state_t;
+
+struct service_ctx_t {
     char bin_path[PATH_MAX];
     char work_dir[PATH_MAX];
     char conf_path[PATH_MAX];
@@ -30,22 +52,8 @@ typedef struct {
     reactor_timer_t *monitor_timer;
     reactor_timer_t *retry_timer;
     void *validate_ctx;
-    struct {
-        int base_delay_ms;
-        int max_delay_ms;
-        int current_delay_ms;
-        int multiplier;
-    } backoff;
-} service_ctx_t;
-
-typedef struct {
-    service_ctx_t *ctx;
-    int attempts;
-    int max_attempts;
-    reactor_timer_t *timer;
-    void (*done_cb)(service_ctx_t *, void *);
-    void *userdata;
-} service_stop_state_t;
+    backoff_t backoff;
+};
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
 int service_start_async(service_ctx_t *ctx);
