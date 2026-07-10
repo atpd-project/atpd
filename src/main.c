@@ -201,6 +201,8 @@ static void run_event_loop(void) {
         LOG_INFO("Cleaning up eBPF CNIP...");
         boxbpf_clear();
         g_config.ebpf_ready = 0;
+        g_atpd_ctx.ebpf_enabled = false;
+        atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
     }
 
     tproxy_cleanup_all(&g_config);
@@ -302,6 +304,8 @@ static void cleanup_ebpf(void) {
         LOG_INFO("Cleaning up eBPF CNIP...");
         boxbpf_clear();
         g_config.ebpf_ready = 0;
+        g_atpd_ctx.ebpf_enabled = false;
+        atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
     }
 }
 
@@ -352,16 +356,27 @@ static int do_start(atp_options_t *opts) {
 
     if (g_config.bypass_cn_ip && g_config.ebpf_enabled && g_config.cnip_mode == 1) {
         LOG_INFO("Initializing eBPF CNIP...");
+        atpd_ebpf_state_transition(EBPF_STATE_LOADING);
         int ret = boxbpf_init_from_config(&g_config);
         if (ret == 0) {
             g_config.ebpf_ready = 1;
+            g_atpd_ctx.ebpf_enabled = true;
+            g_atpd_ctx.ebpf_probed = true;
+            strncpy(g_atpd_ctx.ebpf_pin_dir, g_config.ebpf_pin_dir,
+                    sizeof(g_atpd_ctx.ebpf_pin_dir) - 1);
+            g_atpd_ctx.ebpf_pin_dir[sizeof(g_atpd_ctx.ebpf_pin_dir) - 1] = '\0';
+            atpd_ebpf_state_transition(EBPF_STATE_READY);
             LOG_INFO("eBPF CNIP ready (pin: %s)", g_config.ebpf_pin_dir);
         } else {
             g_config.ebpf_ready = 0;
+            g_atpd_ctx.ebpf_enabled = false;
+            atpd_ebpf_state_transition(EBPF_STATE_FAILED);
             LOG_WARN("eBPF CNIP init failed, using ipset fallback");
         }
     } else {
         g_config.ebpf_ready = 0;
+        g_atpd_ctx.ebpf_enabled = false;
+        atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
         if (!g_config.bypass_cn_ip) {
             LOG_DEBUG("CNIP bypass disabled");
         } else if (!g_config.ebpf_enabled) {
