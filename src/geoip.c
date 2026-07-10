@@ -11,6 +11,7 @@
 #include "atp.h"
 #include "ipset.h"
 #include "api.h"
+#include "boxbpf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -164,19 +165,63 @@ int geoip_atomic_update(atp_config_t *cfg) {
         LOG_DEBUG("[DRY_RUN] Would atomically update GeoIP ipset from %s", cfg->cn_ip_url);
         return 0;
     }
+
     char v4_p[SAFE_PATH_MAX], v4_t[SAFE_PATH_MAX], v4_r[SAFE_PATH_MAX], v4_rt[SAFE_PATH_MAX];
+    char v6_p[SAFE_PATH_MAX], v6_t[SAFE_PATH_MAX], v6_r[SAFE_PATH_MAX], v6_rt[SAFE_PATH_MAX];
+    int ret = 0;
+
     snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_t, sizeof(v4_t), "%s/rules/%.255s.tmp", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_r, sizeof(v4_r), "%s/rules/%.255s.parsed", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_rt, sizeof(v4_rt), "%s/rules/%.255s.parsed.tmp", cfg->data_dir, cfg->cn_ip_file);
-    if (geoip_download_url(cfg->cn_ip_url, v4_t, GEOIP_TIMEOUT_SEC) != 0) return -1;
+
+    if (geoip_download_url(cfg->cn_ip_url, v4_t, GEOIP_TIMEOUT_SEC) != 0) {
+        LOG_ERROR("GeoIP: failed to download IPv4 list");
+        return -1;
+    }
     ipset_parse_cidr_file(v4_t, v4_rt, 4);
     ipset_create("cnip_temp", 4, 8192, 65536);
     ipset_restore_file("cnip_temp", v4_rt);
     ipset_swap("cnip_temp", "cnip");
     ipset_destroy("cnip_temp");
-    rename(v4_t, v4_p); rename(v4_rt, v4_r);
-    return 0;
+    rename(v4_t, v4_p);
+    rename(v4_rt, v4_r);
+
+    if (cfg->proxy_ipv6) {
+        snprintf(v6_p, sizeof(v6_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ipv6_file);
+        snprintf(v6_t, sizeof(v6_t), "%s/rules/%.255s.tmp", cfg->data_dir, cfg->cn_ipv6_file);
+        snprintf(v6_r, sizeof(v6_r), "%s/rules/%.255s.parsed", cfg->data_dir, cfg->cn_ipv6_file);
+        snprintf(v6_rt, sizeof(v6_rt), "%s/rules/%.255s.parsed.tmp", cfg->data_dir, cfg->cn_ipv6_file);
+
+        if (geoip_download_url(cfg->cn_ipv6_url, v6_t, GEOIP_TIMEOUT_SEC) != 0) {
+            LOG_WARN("GeoIP: failed to download IPv6 list, skipping");
+        } else {
+            ipset_parse_cidr_file(v6_t, v6_rt, 6);
+            ipset_create("cnip6_temp", 6, 8192, 65536);
+            ipset_restore_file("cnip6_temp", v6_rt);
+            ipset_swap("cnip6_temp", "cnip6");
+            ipset_destroy("cnip6_temp");
+            rename(v6_t, v6_p);
+            rename(v6_rt, v6_r);
+        }
+    }
+
+    if (cfg->ebpf_ready && cfg->ebpf_enabled && cfg->cnip_mode == 1) {
+        LOG_INFO("GeoIP: updating eBPF CNIP maps...");
+        if (write_ebpf_config(cfg) == 0) {
+            if (boxbpf_update(cfg->ebpf_config_path) == 0) {
+                LOG_INFO("GeoIP: eBPF CNIP maps updated");
+            } else {
+                LOG_WARN("GeoIP: eBPF CNIP maps update failed");
+                ret = -1;
+            }
+        } else {
+            LOG_WARN("GeoIP: failed to regenerate eBPF config");
+            ret = -1;
+        }
+    }
+
+    return ret;
 }
 
 int geoip_check_update_needed(atp_config_t *cfg, int max_age_days) {
