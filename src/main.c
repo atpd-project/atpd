@@ -344,7 +344,7 @@ static int do_start(atp_options_t *opts) {
         unlink(pp);
     }
 
-    if (!opts->foreground && opts->daemon) {
+    if (opts->daemon && !opts->foreground) {
         daemonize();
     }
 
@@ -570,72 +570,144 @@ static int do_reload(atp_options_t *opts) {
     }
 }
 
-static int do_version(atp_options_t *opts) {
-    (void)opts;
-    printf("atpd %s\n", ATP_VERSION_STRING);
+static int do_check(atp_options_t *opts) {
+    char cp[SAFE_PATH_MAX];
+    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != 0) {
+        fprintf(stderr, "Config file not found\n");
+        return 1;
+    }
+
+    config_set_defaults(&g_config);
+    if (config_load(cp, &g_config) != 0) {
+        fprintf(stderr, "Failed to load config\n");
+        return 1;
+    }
+
+    printf("Config file: %s\n", cp);
+    printf("Configuration valid\n");
     return 0;
 }
 
-static int do_help(atp_options_t *opts) {
+static int do_update_geoip(atp_options_t *opts) {
     (void)opts;
-    printf("Usage: atpd [start|stop|status|reload|version]\n");
-    printf("\nOptions:\n");
-    printf("  -c, --config FILE   Specify configuration file\n");
-    printf("  -p, --pid FILE      Specify PID file path\n");
-    printf("  -f, --force         Skip confirmation prompts\n");
-    printf("  -v, --version       Print version and exit\n");
+    printf("GeoIP update not yet implemented\n");
     return 0;
 }
 
-typedef struct {
-    const char *name;
-    int (*handler)(atp_options_t *);
-} command_t;
+/* ========== eBPF Commands ========== */
 
-static const command_t commands[] = {
-    {"start",   do_start},
-    {"stop",    do_stop},
-    {"status",  do_status},
-    {"reload",  do_reload},
-    {"version", do_version},
-    {"help",    do_help},
-    {NULL, NULL}
-};
+static int do_ebpf_probe(atp_options_t *opts) {
+    int ret = boxbpf_probe(opts->ipv6);
+    if (ret == 0) {
+        printf("eBPF probe: SUPPORTED (ipv6=%d)\n", opts->ipv6);
+        return 0;
+    } else {
+        printf("eBPF probe: NOT SUPPORTED\n");
+        return 1;
+    }
+}
+
+static int do_ebpf_init(atp_options_t *opts) {
+    atp_config_t cfg;
+    config_set_defaults(&cfg);
+    if (opts->ebpf_config[0] != '\0') {
+        strncpy(cfg.ebpf_config_path, opts->ebpf_config, sizeof(cfg.ebpf_config_path) - 1);
+    }
+    int ret = boxbpf_init_from_config(&cfg);
+    if (ret == 0) {
+        printf("eBPF init: SUCCESS\n");
+        return 0;
+    } else {
+        printf("eBPF init: FAILED\n");
+        return 1;
+    }
+}
+
+static int do_ebpf_apply(atp_options_t *opts) {
+    const char *config_path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/config.json";
+    int ret = boxbpf_apply(config_path);
+    if (ret == 0) {
+        printf("eBPF apply: SUCCESS\n");
+        return 0;
+    } else {
+        printf("eBPF apply: FAILED\n");
+        return 1;
+    }
+}
+
+static int do_ebpf_update(atp_options_t *opts) {
+    const char *config_path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/config.json";
+    int ret = boxbpf_update(config_path);
+    if (ret == 0) {
+        printf("eBPF update: SUCCESS\n");
+        return 0;
+    } else {
+        printf("eBPF update: FAILED\n");
+        return 1;
+    }
+}
+
+static int do_ebpf_clear(atp_options_t *opts) {
+    (void)opts;
+    boxbpf_clear();
+    printf("eBPF clear: SUCCESS\n");
+    return 0;
+}
+
+static int do_ebpf_status(atp_options_t *opts) {
+    (void)opts;
+    char state[64] = {0};
+    atp_config_t cfg;
+    config_set_defaults(&cfg);
+    if (boxbpf_status(state, sizeof(state), &cfg) == 0) {
+        printf("eBPF Status: %s\n", state);
+        return 0;
+    } else {
+        printf("eBPF Status: UNINITIALIZED\n");
+        return 1;
+    }
+}
 
 int main(int argc, char *argv[]) {
     atp_options_t opts = {0};
 
-    static struct option long_options[] = {
-        {"config",  required_argument, 0, 'c'},
-        {"pid",     required_argument, 0, 'p'},
-        {"force",   no_argument,       0, 'f'},
-        {"version", no_argument,       0, 'v'},
-        {0, 0, 0, 0}
-    };
-
-    int c;
-    while ((c = getopt_long(argc, argv, "c:p:fv", long_options, NULL)) != -1) {
-        if (c == 'c') {
-            snprintf(opts.config_file, sizeof(opts.config_file), "%s", optarg);
-        } else if (c == 'p') {
-            snprintf(opts.pid_file, sizeof(opts.pid_file), "%s", optarg);
-        } else if (c == 'f') {
-            opts.force = 1;
-        } else if (c == 'v') {
-            return do_version(&opts);
-        }
+    if (parse_arguments(argc, argv, &opts) != 0) {
+        return 1;
     }
 
-    if (optind >= argc) {
-        return do_help(&opts);
+    switch (opts.command) {
+        case CMD_START:
+            return do_start(&opts);
+        case CMD_STOP:
+            return do_stop(&opts);
+        case CMD_STATUS:
+            return do_status(&opts);
+        case CMD_RELOAD:
+            return do_reload(&opts);
+        case CMD_CHECK:
+            return do_check(&opts);
+        case CMD_UPDATE_GEOIP:
+            return do_update_geoip(&opts);
+        case CMD_VERSION:
+            print_version();
+            return 0;
+        case CMD_HELP:
+            print_usage(argv[0]);
+            return 0;
+        case CMD_EBPF_PROBE:
+            return do_ebpf_probe(&opts);
+        case CMD_EBPF_INIT:
+            return do_ebpf_init(&opts);
+        case CMD_EBPF_APPLY:
+            return do_ebpf_apply(&opts);
+        case CMD_EBPF_UPDATE:
+            return do_ebpf_update(&opts);
+        case CMD_EBPF_CLEAR:
+            return do_ebpf_clear(&opts);
+        case CMD_EBPF_STATUS:
+            return do_ebpf_status(&opts);
+        default:
+            print_usage(argv[0]);
+            return 0;
     }
-
-    for (int i = 0; commands[i].name; i++) {
-        if (strcmp(commands[i].name, argv[optind]) == 0) {
-            return commands[i].handler(&opts);
-        }
-    }
-
-    fprintf(stderr, "Unknown command: %s\n", argv[optind]);
-    return 1;
 }
