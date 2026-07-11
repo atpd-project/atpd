@@ -830,7 +830,7 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     }
 
     write_ebpf_state_file("ready");
-    cfg->ebpf_ready = 1;
+    cfg->ebpf.ready = 1;
     LOG_INFO("eBPF CNIP init success (pin: %s)", cfg->ebpf.pin_dir);
     return ATP_OK;
 }
@@ -861,7 +861,7 @@ int boxbpf_reload_from_config(atp_config_t *cfg) {
         g_pin_dir[sizeof(g_pin_dir) - 1] = '\0';
     }
 
-    if (cfg->ebpf_ready) {
+    if (cfg->ebpf.ready) {
         int ret = boxbpf_update(cfg->ebpf.config_path);
         if (ret == ATP_OK) {
             LOG_INFO("eBPF CNIP maps updated successfully");
@@ -869,7 +869,7 @@ int boxbpf_reload_from_config(atp_config_t *cfg) {
         } else {
             LOG_ERROR("eBPF CNIP update failed, reloading from scratch");
             boxbpf_clear();
-            cfg->ebpf_ready = 0;
+            cfg->ebpf.ready = 0;
             return boxbpf_init_from_config(cfg);
         }
     } else {
