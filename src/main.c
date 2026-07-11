@@ -56,6 +56,12 @@
 #define g_reload g_atpd.reload
 #define g_show_status g_atpd.show_status
 
+typedef struct {
+    char last_name[256];
+    int last_delay;
+    bool first_run;
+} proxy_log_throttle_t;
+
 static proxy_log_throttle_t g_proxy_throttle = { .first_run = true };
 
 static void on_signal(reactor_t *r, int sig, void *userdata) {
