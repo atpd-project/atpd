@@ -417,7 +417,7 @@ static int do_start(atp_options_t *opts) {
             g_config.ebpf_ready = 0;
             g_atpd_ctx.ebpf_enabled = false;
             atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-            LOG_WARN("eBPF CNIP init failed, using ipset fallback");
+            LOG_ERROR("eBPF CNIP init failed, using ipset fallback");
         }
     } else {
         g_config.ebpf_ready = 0;

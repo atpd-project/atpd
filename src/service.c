@@ -314,7 +314,7 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
 
     state->attempts++;
     if (state->attempts >= state->max_attempts) {
-        LOG_WARN("Service: stop timeout, forcing kill");
+        LOG_ERROR("Service: stop timeout, forcing kill");
         kill(ctx->child_pid, SIGKILL);
         waitpid(ctx->child_pid, NULL, WNOHANG);
         ctx->child_pid = -1;

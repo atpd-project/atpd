@@ -237,7 +237,7 @@ static void ebpf_reload(atp_config_t *cfg) {
     } else {
         cfg->ebpf_ready = 0;
         atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-        LOG_WARN("eBPF CNIP reload failed");
+        LOG_ERROR("eBPF CNIP reload failed");
     }
 }
 
@@ -257,7 +257,7 @@ int config_reload(atp_config_t *cfg) {
             if (app_filter_reload(cfg) == ATP_OK) {
                 LOG_INFO("App filter reloaded successfully");
             } else {
-                LOG_WARN("App filter reload failed");
+                LOG_ERROR("App filter reload failed");
             }
         }
         LOG_INFO("Configuration reloaded successfully");

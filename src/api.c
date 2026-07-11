@@ -594,7 +594,7 @@ static void api_process_requests(api_ctx_t *ctx) {
         int should_remove = 0;
         
         if (now - req->start_time > ctx->timeout_sec) {
-            LOG_WARN("API: request timeout (%ds)", ctx->timeout_sec);
+            LOG_ERROR("API: request timeout (%ds)", ctx->timeout_sec);
             req->state = API_STATE_ERROR;
         }
         

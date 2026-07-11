@@ -812,7 +812,7 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     }
 
     if (!probe_ok) {
-        LOG_WARN("eBPF probe failed after %d attempts", retry);
+        LOG_ERROR("eBPF probe failed after %d attempts", retry);
         write_ebpf_state_file("failed");
         return ATP_ERR_EBPF;
     }
@@ -867,7 +867,7 @@ int boxbpf_reload_from_config(atp_config_t *cfg) {
             LOG_INFO("eBPF CNIP maps updated successfully");
             return ATP_OK;
         } else {
-            LOG_WARN("eBPF CNIP update failed, reloading from scratch");
+            LOG_ERROR("eBPF CNIP update failed, reloading from scratch");
             boxbpf_clear();
             cfg->ebpf_ready = 0;
             return boxbpf_init_from_config(cfg);
