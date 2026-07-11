@@ -49,13 +49,6 @@
 #define g_reload g_atpd.reload
 #define g_show_status g_atpd.show_status
 
-static reactor_t *g_reactor = NULL;
-static service_ctx_t *g_svc = NULL;
-static volatile sig_atomic_t g_running = 1;
-static volatile sig_atomic_t g_reload = 0;
-static volatile sig_atomic_t g_show_status = 0;
-
-static atpd_global_t g_atpd;
 
 /* ========== Forward Declarations ========== */
 
