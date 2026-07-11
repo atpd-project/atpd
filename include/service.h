@@ -4,6 +4,7 @@
 #include "atp.h"
 #include "reactor.h"
 #include <sys/types.h>
+#include <time.h>
 
 typedef enum {
     SERVICE_STOPPED = 0,
@@ -20,7 +21,6 @@ typedef struct {
     int multiplier;
 } backoff_t;
 
-/* Forward declaration of service_ctx_t */
 typedef struct service_ctx_t service_ctx_t;
 
 typedef struct {
@@ -38,6 +38,14 @@ typedef struct {
     int max_attempts;
 } kill_state_t;
 
+typedef struct {
+    int consecutive_failures;
+    int threshold;
+    int cooldown_seconds;
+    time_t last_failure_time;
+    int circuit_open;
+} circuit_breaker_t;
+
 struct service_ctx_t {
     char bin_path[PATH_MAX];
     char work_dir[PATH_MAX];
@@ -45,17 +53,28 @@ struct service_ctx_t {
     char log_path[PATH_MAX];
     char user[64];
     char group[64];
+    char service_args[512];
+    char service_env[512];
     int api_port;
     pid_t child_pid;
     int validated_pid;
     service_state_t state;
     int fail_count;
     int max_failures;
+    int start_timeout_sec;
+    int stop_timeout_sec;
+    int grace_period_sec;
     reactor_t *reactor;
     reactor_timer_t *monitor_timer;
     reactor_timer_t *retry_timer;
+    reactor_timer_t *health_timer;
     void *validate_ctx;
     backoff_t backoff;
+    circuit_breaker_t breaker;
+    time_t last_health_check;
+    int health_check_interval_ms;
+    int running_healthy;
+    int stop_attempts;
 };
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
@@ -63,8 +82,11 @@ int service_start_async(service_ctx_t *ctx);
 int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata);
 int service_get_pid(service_ctx_t *ctx);
 int service_is_running(service_ctx_t *ctx);
+int service_is_healthy(service_ctx_t *ctx);
 void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
+void service_health_check_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
 void service_sigchld_cb(reactor_t *r, int signo, void *userdata);
 const char* service_state_string(service_state_t state);
+void service_rotate_log(service_ctx_t *ctx);
 
 #endif

@@ -78,6 +78,15 @@
 #define NETLINK_RECV_TIMEOUT_MS   3000
 #define NETLINK_DEBOUNCE_MS       500
 
+/* Service configuration defaults */
+#define SERVICE_DEFAULT_START_TIMEOUT_SEC 30
+#define SERVICE_DEFAULT_STOP_TIMEOUT_SEC 10
+#define SERVICE_DEFAULT_GRACE_PERIOD_SEC 3
+#define SERVICE_DEFAULT_MAX_FAILURES 5
+#define SERVICE_DEFAULT_CIRCUIT_THRESHOLD 5
+#define SERVICE_DEFAULT_CIRCUIT_COOLDOWN_SEC 60
+#define SERVICE_DEFAULT_HEALTH_CHECK_INTERVAL_MS 5000
+
 typedef enum {
     MODE_AUTO = 0,
     MODE_TPROXY = 1,
@@ -98,94 +107,78 @@ typedef enum {
 } root_method_t;
 
 typedef struct {
-    char data_dir[PATH_MAX];
-    char conf_file[PATH_MAX];
-    int dry_run;
-    int verbose;
+    /* Core */
     int foreground;
+    int verbose;
+    char data_dir[PATH_MAX];
+    char core_user[64];
+    char core_group[64];
+    char pid_file[PATH_MAX];
 
+    /* Network */
+    int use_tproxy;
+    int proxy_mode;
     int tcp_port;
     int udp_port;
     int redirect_tcp_port;
-    proxy_mode_t proxy_mode;
-    int performance_mode;
-    int proxy_tcp;
-    int proxy_udp;
-    int proxy_ipv6;
-
-    dns_hijack_mode_t dns_hijack;
-    int dns_port;
-
     int mark_value;
     int mark_value6;
     int table_id;
-    char core_user[64];
-    char core_group[64];
-    char routing_mark[32];
-    int force_mark_bypass;
+    int proxy_ipv6;
+    int dns_hijack;
+    int dns_port;
 
-    char mobile_iface[64];
-    char wifi_iface[64];
-    char hotspot_iface[64];
-    char usb_iface[64];
-    char other_bypass[512];
-    char other_proxy[512];
+    /* Interface */
+    char mobile_iface[IFNAMSIZ];
+    char wifi_iface[IFNAMSIZ];
+    char hotspot_iface[IFNAMSIZ];
+    char usb_iface[IFNAMSIZ];
     int proxy_mobile;
     int proxy_wifi;
     int proxy_hotspot;
     int proxy_usb;
 
-    char hotspot_subnet_ipv4[32];
-    char hotspot_subnet_ipv6[64];
-
-    char proxy_ipv4_list[4096];
-    char proxy_ipv6_list[4096];
-    char bypass_ipv4_list[4096];
-    char bypass_ipv6_list[4096];
-
-    int bypass_cn_ip;
-    char cn_ip_file[256];
-    char cn_ipv6_file[256];
-    char cn_ip_url[512];
-    char cn_ipv6_url[512];
-
+    /* Filters */
     int app_proxy_enable;
-    char proxy_apps_list[4096];
-    char bypass_apps_list[4096];
-    char app_proxy_mode[16];
-
+    char app_proxy_mode[32];
     int mac_filter_enable;
-    char proxy_macs_list[4096];
-    char bypass_macs_list[4096];
-    char mac_proxy_mode[16];
+    char mac_proxy_mode[32];
+    int bypass_cn_ip;
+    char cn_ip_url[256];
+    char cn_ip_file[64];
+    char cn_ipv6_url[256];
+    char cn_ipv6_file[64];
+    int cnip_mode;
 
-    int block_quic;
-    int log_timestamp;
-    int skip_check_feature;
-    char user_clash_mode[32];
-    int restart_delay;
-    char clash_secret[128];
+    /* Performance */
+    int performance_mode;
+    int dry_run;
 
+    /* API */
     int api_port;
     char api_host[64];
 
-    int use_tproxy;
-    char current_vpn_iface[32];
-
-    int ui_emoji_enabled;
-
-    pthread_mutex_t config_mutex;
-
+    /* eBPF */
     int ebpf_enabled;
-    int cnip_mode;
     int ebpf_ready;
-    char ebpf_bin_path[256];
-    char ebpf_pin_dir[256];
-    char ebpf_state_dir[256];
-    char ebpf_config_path[256];
-    int ebpf_load_retry;
-    int ebpf_load_delay;
-    char cnip_force_proxy_apps[4096];
+    char ebpf_config_path[PATH_MAX];
+    char ebpf_pin_dir[PATH_MAX];
+
+    /* UI */
+    int ui_emoji_enabled;
+    int no_color;
+
+    /* Service configuration */
+    int service_start_timeout_sec;
+    int service_stop_timeout_sec;
+    int service_grace_period_sec;
+    int service_max_failures;
+    int service_circuit_threshold;
+    int service_circuit_cooldown_sec;
+    int service_health_check_interval_ms;
+    char service_args[512];
+    char service_env[512];
+
 } atp_config_t;
 
 int atp_init(void);
@@ -199,5 +192,3 @@ int atp_check_root(void);
 void atp_show_status(void);
 
 #endif
-
-#include "version.h"

@@ -3,7 +3,8 @@
  * Copyright (C) 2024-2026 ATP Project
  *
  * Service Manager - Industrial-grade async state machine
- * Features: PID validation, SIGCHLD integration, exponential backoff
+ * Features: PID validation, SIGCHLD integration, exponential backoff,
+ *           circuit breaker, health check, configurable timeouts
  */
 
 #include "service.h"
@@ -46,6 +47,42 @@ static int backoff_next(backoff_t *b) {
         b->current_delay_ms = b->max_delay_ms;
     }
     return delay;
+}
+
+static void circuit_breaker_reset(circuit_breaker_t *cb) {
+    cb->consecutive_failures = 0;
+    cb->circuit_open = 0;
+    cb->last_failure_time = 0;
+}
+
+static int circuit_breaker_should_allow(circuit_breaker_t *cb) {
+    if (!cb->circuit_open) return 1;
+    if (time(NULL) - cb->last_failure_time > cb->cooldown_seconds) {
+        cb->circuit_open = 0;
+        cb->consecutive_failures = 0;
+        LOG_INFO("Circuit breaker: closed (cooldown expired)");
+        return 1;
+    }
+    return 0;
+}
+
+static void circuit_breaker_record_failure(circuit_breaker_t *cb) {
+    cb->consecutive_failures++;
+    cb->last_failure_time = time(NULL);
+    if (cb->consecutive_failures >= cb->threshold && !cb->circuit_open) {
+        cb->circuit_open = 1;
+        LOG_WARN("Circuit breaker: opened after %d failures", cb->consecutive_failures);
+    }
+}
+
+static void circuit_breaker_record_success(circuit_breaker_t *cb) {
+    if (cb->consecutive_failures > 0) {
+        cb->consecutive_failures = 0;
+    }
+    if (cb->circuit_open) {
+        cb->circuit_open = 0;
+        LOG_INFO("Circuit breaker: closed (success)");
+    }
 }
 
 static int validate_process(service_ctx_t *ctx, pid_t pid) {
@@ -109,6 +146,25 @@ static int service_probe_port(int port) {
     return (errno == EINPROGRESS) ? 1 : 0;
 }
 
+static int service_api_health_check(service_ctx_t *ctx) {
+    int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (sock < 0) return 0;
+
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons(ctx->api_port),
+        .sin_addr = { .s_addr = htonl(INADDR_LOOPBACK) }
+    };
+
+    int ret = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+    close(sock);
+    return ret == 0;
+}
+
 static int service_binary_exists(service_ctx_t *ctx) {
     return access(ctx->bin_path, X_OK) == 0;
 }
@@ -117,17 +173,11 @@ static void service_rotate_log(service_ctx_t *ctx) {
     struct stat st;
     char backup_path[512];
     char timestamp[64];
-    char cmd[1024];
     time_t now;
     struct tm *tm_info;
 
-    if (stat(ctx->log_path, &st) != 0) {
-        return;
-    }
-
-    if (st.st_size < MAX_LOG_SIZE) {
-        return;
-    }
+    if (stat(ctx->log_path, &st) != 0) return;
+    if (st.st_size < MAX_LOG_SIZE) return;
 
     now = time(NULL);
     tm_info = localtime(&now);
@@ -140,12 +190,46 @@ static void service_rotate_log(service_ctx_t *ctx) {
     snprintf(backup_path, sizeof(backup_path), "%s.%s", ctx->log_path, timestamp);
 
     if (rename(ctx->log_path, backup_path) == 0) {
-        snprintf(cmd, sizeof(cmd), "busybox gzip -9 %s 2>/dev/null || true", backup_path);
-        exec_cmd_simple(cmd, 5);
-        LOG_INFO("Service: rotated and compressed log to %s.gz (size: %ld bytes)",
+        LOG_INFO("Service: rotated log to %s (size: %ld bytes)",
                  backup_path, (long)st.st_size);
     } else {
         LOG_WARN("Service: failed to rotate log: %s", strerror(errno));
+    }
+}
+
+static char** build_service_args(service_ctx_t *ctx) {
+    char **args = malloc(20 * sizeof(char*));
+    if (!args) return NULL;
+
+    int idx = 0;
+    args[idx++] = ctx->bin_path;
+    args[idx++] = "run";
+    args[idx++] = "-D";
+    args[idx++] = ctx->work_dir;
+
+    if (ctx->service_args[0]) {
+        char args_copy[512];
+        strncpy(args_copy, ctx->service_args, sizeof(args_copy) - 1);
+        char *token = strtok(args_copy, " ");
+        while (token && idx < 18) {
+            args[idx++] = token;
+            token = strtok(NULL, " ");
+        }
+    }
+
+    args[idx] = NULL;
+    return args;
+}
+
+static void set_service_environment(service_ctx_t *ctx) {
+    if (ctx->service_env[0]) {
+        char env_copy[512];
+        strncpy(env_copy, ctx->service_env, sizeof(env_copy) - 1);
+        char *token = strtok(env_copy, " ");
+        while (token) {
+            putenv(token);
+            token = strtok(NULL, " ");
+        }
     }
 }
 
@@ -192,8 +276,13 @@ static int service_spawn(service_ctx_t *ctx) {
         if (grp) setgid(grp->gr_gid);
         if (pwd) setuid(pwd->pw_uid);
 
-        char *argv[] = { ctx->bin_path, "run", "-D", ctx->work_dir, NULL };
-        execv(ctx->bin_path, argv);
+        set_service_environment(ctx);
+
+        char **args = build_service_args(ctx);
+        if (!args) _exit(127);
+
+        execv(ctx->bin_path, args);
+        free(args);
         _exit(127);
     }
 
@@ -201,6 +290,32 @@ static int service_spawn(service_ctx_t *ctx) {
     ctx->validated_pid = 0;
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
     return 0;
+}
+
+static int service_wait_ready(service_ctx_t *ctx, int timeout_sec) {
+    int elapsed_ms = 0;
+    int interval_ms = 500;
+    int max_attempts = (timeout_sec * 1000) / interval_ms;
+
+    for (int i = 0; i < max_attempts; i++) {
+        if (!service_is_alive(ctx)) {
+            LOG_WARN("Service: process died during startup");
+            return -1;
+        }
+
+        if (service_probe_port(ctx->api_port)) {
+            if (service_api_health_check(ctx)) {
+                LOG_DEBUG("Service: API health check passed");
+                return 0;
+            }
+        }
+
+        usleep(interval_ms * 1000);
+        elapsed_ms += interval_ms;
+    }
+
+    LOG_WARN("Service: start timeout after %d seconds", timeout_sec);
+    return -1;
 }
 
 static void service_kill_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
@@ -285,7 +400,7 @@ static void service_kill(service_ctx_t *ctx) {
 
     state->ctx = ctx;
     state->attempts = 0;
-    state->max_attempts = 20;
+    state->max_attempts = ctx->stop_timeout_sec * 10;
 
     reactor_add_timer(ctx->reactor, 100, 0, service_kill_timeout_cb, state);
 }
@@ -305,6 +420,7 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
     if (!service_is_alive(ctx)) {
         LOG_INFO("Service: stopped successfully");
         ctx->state = SERVICE_STOPPED;
+        ctx->running_healthy = 0;
         if (state->done_cb) {
             state->done_cb(ctx, state->userdata);
         }
@@ -320,6 +436,7 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
         ctx->child_pid = -1;
         ctx->validated_pid = 0;
         ctx->state = SERVICE_STOPPED;
+        ctx->running_healthy = 0;
         if (state->done_cb) {
             state->done_cb(ctx, state->userdata);
         }
@@ -340,13 +457,22 @@ static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void 
     reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
     ctx->retry_timer = NULL;
 
+    if (!circuit_breaker_should_allow(&ctx->breaker)) {
+        LOG_WARN("Circuit breaker: open, delaying retry");
+        service_schedule_retry(ctx);
+        return;
+    }
+
     if (service_spawn(ctx) == 0) {
         ctx->state = SERVICE_STARTING;
     } else {
         ctx->fail_count++;
+        circuit_breaker_record_failure(&ctx->breaker);
         if (ctx->fail_count >= ctx->max_failures) {
             LOG_ERROR("Service: max failures reached, giving up");
             ctx->state = SERVICE_FAILED;
+        } else {
+            service_schedule_retry(ctx);
         }
     }
 }
@@ -383,9 +509,11 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
 
             ctx->child_pid = -1;
             ctx->validated_pid = 0;
+            ctx->running_healthy = 0;
 
             if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
                 ctx->state = SERVICE_FAILED;
+                circuit_breaker_record_failure(&ctx->breaker);
                 LOG_INFO("Service: state -> FAILED, will restart on next monitor tick");
             }
         }
@@ -400,6 +528,30 @@ const char *service_state_string(service_state_t state) {
         case SERVICE_FAILED:   return "FAILED";
         case SERVICE_STOPPING: return "STOPPING";
         default:               return "UNKNOWN";
+    }
+}
+
+void service_health_check_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+
+    service_ctx_t *ctx = userdata;
+    if (!ctx || ctx->state != SERVICE_RUNNING) return;
+
+    if (!service_is_alive(ctx)) {
+        ctx->running_healthy = 0;
+        return;
+    }
+
+    int healthy = service_api_health_check(ctx);
+    ctx->running_healthy = healthy;
+    ctx->last_health_check = time(NULL);
+
+    if (!healthy) {
+        LOG_DEBUG("Service: health check failed");
+        circuit_breaker_record_failure(&ctx->breaker);
+    } else {
+        circuit_breaker_record_success(&ctx->breaker);
     }
 }
 
@@ -430,11 +582,25 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                     LOG_INFO("Service: ready on port %d", ctx->api_port);
                     ctx->state = SERVICE_RUNNING;
                     ctx->fail_count = 0;
+                    ctx->running_healthy = 1;
+                    ctx->last_health_check = time(NULL);
                     backoff_reset(&ctx->backoff);
+                    circuit_breaker_record_success(&ctx->breaker);
+
+                    if (ctx->reactor && ctx->health_check_interval_ms > 0) {
+                        if (ctx->health_timer) {
+                            reactor_cancel_timer(ctx->reactor, ctx->health_timer);
+                        }
+                        ctx->health_timer = reactor_add_timer(
+                            ctx->reactor, ctx->health_check_interval_ms,
+                            ctx->health_check_interval_ms,
+                            service_health_check_cb, ctx);
+                    }
                 }
             } else {
                 LOG_WARN("Service: process died during startup");
                 ctx->fail_count++;
+                circuit_breaker_record_failure(&ctx->breaker);
                 if (ctx->fail_count >= ctx->max_failures) {
                     LOG_ERROR("Service: max failures reached, giving up");
                     ctx->state = SERVICE_FAILED;
@@ -447,7 +613,9 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
         case SERVICE_RUNNING:
             if (!service_is_alive(ctx)) {
                 LOG_WARN("Service: process died unexpectedly");
+                ctx->state = SERVICE_FAILED;
                 ctx->fail_count++;
+                circuit_breaker_record_failure(&ctx->breaker);
                 if (ctx->fail_count >= ctx->max_failures) {
                     LOG_ERROR("Service: max failures reached, giving up");
                     ctx->state = SERVICE_FAILED;
@@ -482,12 +650,32 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     ctx->validated_pid = 0;
     ctx->state = SERVICE_STOPPED;
     ctx->fail_count = 0;
-    ctx->max_failures = 5;
+    ctx->max_failures = cfg->service_max_failures > 0 ? cfg->service_max_failures : 5;
+    ctx->start_timeout_sec = cfg->service_start_timeout_sec > 0 ? cfg->service_start_timeout_sec : 30;
+    ctx->stop_timeout_sec = cfg->service_stop_timeout_sec > 0 ? cfg->service_stop_timeout_sec : 10;
+    ctx->grace_period_sec = cfg->service_grace_period_sec > 0 ? cfg->service_grace_period_sec : 3;
+    ctx->health_check_interval_ms = cfg->service_health_check_interval_ms > 0 ? cfg->service_health_check_interval_ms : 5000;
+    ctx->stop_attempts = 0;
+    ctx->running_healthy = 0;
+    ctx->last_health_check = 0;
     ctx->retry_timer = NULL;
+    ctx->health_timer = NULL;
+
+    if (cfg->service_args[0]) {
+        strncpy(ctx->service_args, cfg->service_args, sizeof(ctx->service_args) - 1);
+    }
+    if (cfg->service_env[0]) {
+        strncpy(ctx->service_env, cfg->service_env, sizeof(ctx->service_env) - 1);
+    }
 
     backoff_init(&ctx->backoff);
 
-    LOG_DEBUG("Service: initialized (bin=%s, port=%d)", ctx->bin_path, ctx->api_port);
+    ctx->breaker.threshold = cfg->service_circuit_threshold > 0 ? cfg->service_circuit_threshold : 5;
+    ctx->breaker.cooldown_seconds = cfg->service_circuit_cooldown_sec > 0 ? cfg->service_circuit_cooldown_sec : 60;
+    circuit_breaker_reset(&ctx->breaker);
+
+    LOG_DEBUG("Service: initialized (bin=%s, port=%d, timeout=%ds, max_fail=%d)",
+              ctx->bin_path, ctx->api_port, ctx->start_timeout_sec, ctx->max_failures);
     return 0;
 }
 
@@ -496,16 +684,23 @@ static void on_validate_complete(int result, const char *output, void *userdata)
 
     if (result) {
         LOG_INFO("Service: config validation passed");
+        if (!circuit_breaker_should_allow(&ctx->breaker)) {
+            LOG_WARN("Circuit breaker: open, delaying start");
+            service_schedule_retry(ctx);
+            return;
+        }
         if (service_spawn(ctx) == 0) {
             ctx->state = SERVICE_STARTING;
             ctx->fail_count = 0;
             backoff_reset(&ctx->backoff);
         } else {
             ctx->state = SERVICE_FAILED;
+            circuit_breaker_record_failure(&ctx->breaker);
         }
     } else {
         LOG_ERROR("Service: config validation failed: %s", output ? output : "unknown error");
         ctx->state = SERVICE_FAILED;
+        circuit_breaker_record_failure(&ctx->breaker);
     }
 
     free(ctx->validate_ctx);
@@ -518,6 +713,11 @@ int service_start_async(service_ctx_t *ctx) {
     if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
         LOG_WARN("Service: already running or starting");
         return 0;
+    }
+
+    if (!circuit_breaker_should_allow(&ctx->breaker)) {
+        LOG_WARN("Service: circuit breaker open, refusing to start");
+        return -1;
     }
 
     if (service_is_alive(ctx)) {
@@ -558,11 +758,17 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
 
     ctx->state = SERVICE_STOPPING;
 
+    if (ctx->health_timer && ctx->reactor) {
+        reactor_cancel_timer(ctx->reactor, ctx->health_timer);
+        ctx->health_timer = NULL;
+    }
+
     service_kill(ctx);
 
     if (!ctx->reactor) {
         ctx->state = SERVICE_STOPPED;
         ctx->fail_count = 0;
+        ctx->running_healthy = 0;
         if (ctx->monitor_timer) {
             reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
             ctx->monitor_timer = NULL;
@@ -583,6 +789,7 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
         usleep(500000);
         ctx->state = SERVICE_STOPPED;
         ctx->fail_count = 0;
+        ctx->running_healthy = 0;
         if (ctx->monitor_timer) {
             reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
             ctx->monitor_timer = NULL;
@@ -599,7 +806,7 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
 
     state->ctx = ctx;
     state->attempts = 0;
-    state->max_attempts = 50;
+    state->max_attempts = ctx->stop_timeout_sec * 10;
     state->done_cb = done_cb;
     state->userdata = userdata;
 
@@ -634,4 +841,8 @@ int service_get_pid(service_ctx_t *ctx) {
 
 int service_is_running(service_ctx_t *ctx) {
     return ctx && ctx->state == SERVICE_RUNNING && service_is_alive(ctx);
+}
+
+int service_is_healthy(service_ctx_t *ctx) {
+    return ctx && service_is_running(ctx) && ctx->running_healthy;
 }
