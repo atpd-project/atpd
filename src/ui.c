@@ -1,3 +1,4 @@
+#include "atpd_global.h"
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
@@ -22,7 +23,6 @@ void ui_set_no_color(int enable) {
 }
 
 /* External global configuration */
-extern atp_config_t g_config;
 
 /* Terminal width */
 static int g_term_width = 80;

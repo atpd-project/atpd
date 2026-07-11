@@ -1,3 +1,4 @@
+#include "atpd_global.h"
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
@@ -22,7 +23,6 @@
 #include <errno.h>
 
 /* External global configuration */
-extern atp_config_t g_config;
 
 #define PACKAGES_LIST_PATH "/data/system/packages.list"
 #define APP_IPSET_NAME "atp_app_uids"

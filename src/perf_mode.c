@@ -24,7 +24,6 @@
 
 #define g_config g_atpd.config
 
-extern reactor_t *g_reactor;
 
 #define PROC_CPUINFO "/proc/cpuinfo"
 #define PROC_SYS_NET_CORE_RMEM_MAX "/proc/sys/net/core/rmem_max"
