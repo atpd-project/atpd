@@ -477,18 +477,24 @@ static int do_reload(atp_options_t *opts) {
 
 static int do_check(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
-    if (find_config_file(opts->config_file) != ATP_OK) {
-        fprintf(stderr, "Config file not found\n");
+    const char *config_path = opts->config_file;
+    
+    if (!config_path || !config_path[0]) {
+        config_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+    }
+    
+    if (access(config_path, R_OK) != 0) {
+        fprintf(stderr, "Config file not found: %s\n", config_path);
         return 1;
     }
 
     config_set_defaults(&g_config);
-    if (config_load(opts->config_file, &g_config) != ATP_OK) {
+    if (config_load(config_path, &g_config) != ATP_OK) {
         fprintf(stderr, "Failed to load config\n");
         return 1;
     }
 
-    printf("Config file: %s\n", cp);
+    printf("Config file: %s\n", config_path);
     printf("Configuration valid\n");
     return 0;
 }
@@ -527,14 +533,17 @@ static int do_ebpf_probe(atp_options_t *opts) {
 static int do_ebpf_init(atp_options_t *opts) {
     atp_config_t cfg;
     config_set_defaults(&cfg);
-    if (opts->config_file[0] != '\0') {
-        config_load(opts->config_file, &cfg);
+    
+    const char *config_path = opts->config_file;
+    if (config_path && config_path[0]) {
+        config_load(config_path, &cfg);
     } else {
-        char cp[SAFE_PATH_MAX];
-        if (find_config_file(NULL) == ATP_OK) {
-            config_load(cp, &cfg);
+        const char *default_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+        if (access(default_path, R_OK) == 0) {
+            config_load(default_path, &cfg);
         }
     }
+    
     if (opts->ebpf_config[0] != '\0') {
         strncpy(cfg.ebpf_config_path, opts->ebpf_config, sizeof(cfg.ebpf_config_path) - 1);
     }
@@ -560,14 +569,17 @@ static int do_ebpf_status(atp_options_t *opts) {
     char state[64] = {0};
     atp_config_t cfg;
     config_set_defaults(&cfg);
-    if (opts->config_file[0] != '\0') {
-        config_load(opts->config_file, &cfg);
+    
+    const char *config_path = opts->config_file;
+    if (config_path && config_path[0]) {
+        config_load(config_path, &cfg);
     } else {
-        char cp[SAFE_PATH_MAX];
-        if (find_config_file(NULL) == ATP_OK) {
-            config_load(cp, &cfg);
+        const char *default_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+        if (access(default_path, R_OK) == 0) {
+            config_load(default_path, &cfg);
         }
     }
+    
     if (boxbpf_status(state, sizeof(state), &cfg) == ATP_OK) {
         printf("eBPF Status: %s\n", state);
         return ATP_OK;
