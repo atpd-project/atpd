@@ -18,6 +18,17 @@
 
 #define LOG_TAG "atpd"
 
+/* ========== Color Macros ========== */
+#define COLOR_RESET   "\033[0m"
+#define COLOR_BOLD    "\033[1m"
+#define COLOR_RED     "\033[31m"
+#define COLOR_GREEN   "\033[32m"
+#define COLOR_YELLOW  "\033[33m"
+#define COLOR_BLUE    "\033[34m"
+#define COLOR_MAGENTA "\033[35m"
+#define COLOR_CYAN    "\033[36m"
+#define COLOR_WHITE   "\033[37m"
+
 #ifndef LOG_LOCATION_ENABLED
 #define LOG_LOCATION_ENABLED 1
 #endif
@@ -42,6 +53,9 @@ typedef struct {
     char log_file[256];
     uint32_t targets;
     int enable_color;
+    int enable_timestamp;
+    size_t max_file_size;
+    int rotate_count;
     pthread_mutex_t mutex;
 } log_config_t;
 
@@ -55,6 +69,10 @@ void log_set_file(const char *path);
 void log_set_targets(uint32_t targets);
 void log_set_color(int enable);
 log_level_t log_get_level(void);
+void log_rotate(void);
+void logger_init(void);
+void logger_close(void);
+void log_set_target(int targets);
 
 void log_write(log_level_t level, const char *file, int line, const char *func,
                const char *fmt, ...) __attribute__((format(printf, 5, 6)));
@@ -109,8 +127,11 @@ void log_write_v(log_level_t level, const char *file, int line, const char *func
     log_write(level, __FILE__, __LINE__, __FUNCTION__, "[EBPF] " fmt, ##__VA_ARGS__); \
 } while(0)
 
+#define LOG_EXEC(cmd) do { \
+    log_write(LOG_LEVEL_DEBUG, __FILE__, __LINE__, __FUNCTION__, "EXEC: %s", cmd); \
+} while(0)
+
 #define LOG_DEBUG_LAZY(fmt, ...) LOG_DEBUG(fmt, ##__VA_ARGS__)
-#define LOG_EXEC(cmd) do { log_write(LOG_LEVEL_DEBUG, __FILE__, __LINE__, __FUNCTION__, "EXEC: %s", cmd); } while(0)
 #define LOG_INFO_LAZY(fmt, ...)  LOG_INFO(fmt, ##__VA_ARGS__)
 #define LOG_WARN_LAZY(fmt, ...)  LOG_WARN(fmt, ##__VA_ARGS__)
 
