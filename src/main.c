@@ -93,8 +93,6 @@ static void on_idle(reactor_t *r, void *userdata) {
         config_reload(&g_config);
         g_reload = 0;
     }
-        g_reload = 0;
-    }
 
     if (g_show_status) {
         status_show(&g_config, g_svc, &g_api_ctx);
