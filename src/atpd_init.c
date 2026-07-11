@@ -38,16 +38,19 @@ static init_phase_config_t init_phases[] = {
 int atpd_init_phase_config(atpd_init_context_t *ctx) {
     LOG_INFO("Loading configuration...");
     
-    char cp[PATH_MAX];
-    if (find_config_file(cp, PATH_MAX, ctx->opts->config_file) != ATP_OK) {
-        LOG_ERROR("Config file not found");
-        return -1;
-    }
-    
     config_set_defaults(ctx->config);
     ctx->config->foreground = ctx->opts->foreground;
     ctx->config->verbose = ctx->opts->verbose;
-    config_load(cp, ctx->config);
+    
+    const char *config_path = ctx->opts->config_file;
+    if (!config_path || !config_path[0]) {
+        config_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+    }
+    
+    if (config_load(config_path, ctx->config) != ATP_OK) {
+        LOG_ERROR("Failed to load config: %s", config_path);
+        return -1;
+    }
     
     atp_register_cleanup(ctx->config);
     
