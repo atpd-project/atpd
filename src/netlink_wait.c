@@ -43,7 +43,6 @@ static iface_wait_ctx_t *g_ctx_list = NULL;
 static pthread_mutex_t g_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_nl_event_fd = -1;
 static int g_nl_event_registered = 0;
-static reactor_t *g_reactor = NULL;
 
 /* ========== Forward Declarations ========== */
 
