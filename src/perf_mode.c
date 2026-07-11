@@ -61,7 +61,7 @@ static thermal_state_t g_thermal = {0};
 static reactor_timer_t *g_thermal_timer = NULL;
 
 static int perf_write_sysctl(const char *path, const char *value) {
-    if (g_config.dry_run) {
+    if (g_config.core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would write '%s' to %s", value, path);
         return 0;
     }
@@ -379,7 +379,7 @@ static int perf_tune_cpu(void) {
 }
 
 int perf_mode_tune_tcp_stack(atp_config_t *cfg) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] TCP stack tuning skipped");
         return 0;
     }
@@ -420,7 +420,7 @@ static int perf_check_conntrack_available(void) {
 }
 
 int perf_mode_enable_conntrack_optimization(atp_config_t *cfg) {
-    if (!cfg->performance_mode) {
+    if (!cfg->core.performance_mode) {
         return 0;
     }
 
@@ -440,7 +440,7 @@ int perf_mode_enable_conntrack_optimization(atp_config_t *cfg) {
 }
 
 int perf_mode_enable_socket_match(atp_config_t *cfg) {
-    if (!cfg->performance_mode) {
+    if (!cfg->core.performance_mode) {
         return 0;
     }
 
@@ -450,7 +450,7 @@ int perf_mode_enable_socket_match(atp_config_t *cfg) {
 }
 
 int perf_mode_setup(atp_config_t *cfg) {
-    if (!cfg->performance_mode) {
+    if (!cfg->core.performance_mode) {
         LOG_INFO("Performance mode disabled");
         return 0;
     }
@@ -476,7 +476,7 @@ int perf_mode_setup(atp_config_t *cfg) {
 }
 
 int perf_mode_cleanup(atp_config_t *cfg) {
-    if (!cfg->performance_mode) {
+    if (!cfg->core.performance_mode) {
         return 0;
     }
 
@@ -508,7 +508,7 @@ int perf_mode_cleanup(atp_config_t *cfg) {
 }
 
 int perf_mode_init(atp_config_t *cfg) {
-    if (cfg->performance_mode) {
+    if (cfg->core.performance_mode) {
         LOG_INFO("Performance mode initialization");
         memset(&g_thermal, 0, sizeof(g_thermal));
     }
