@@ -19,3 +19,6 @@ typedef struct {
 extern atpd_global_t g_atpd;
 
 #endif
+
+#define g_reactor g_atpd.reactor
+#define g_config g_atpd.config

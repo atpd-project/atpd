@@ -22,7 +22,6 @@
 #include <fcntl.h>
 #include <ctype.h>
 
-#define g_config g_atpd.config
 
 
 #define PROC_CPUINFO "/proc/cpuinfo"

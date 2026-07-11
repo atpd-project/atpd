@@ -25,7 +25,6 @@
 #include <dirent.h>
 #include <fcntl.h>
 
-#define g_config g_atpd.config
 
 #define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
