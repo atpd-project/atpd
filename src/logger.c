@@ -26,6 +26,10 @@
 
 #define MAX_LOG_MSG 4096
 
+#ifndef LOG_LOCATION_ENABLED
+#define LOG_LOCATION_ENABLED 1
+#endif
+
 log_config_t g_log_config = {
     .min_level = LOG_LEVEL_INFO,
     .targets = LOG_TARGET_STDERR | LOG_TARGET_FILE,
@@ -139,8 +143,13 @@ static void log_write_file(log_level_t level, const char *file, int line,
     if (!fp) return;
 
     const char *ts = get_timestamp();
+#if LOG_LOCATION_ENABLED
     fprintf(fp, "[%s] %s %s:%d %s: %s\n",
             ts, level_strings[level], file, line, func, msg);
+#else
+    fprintf(fp, "[%s] %s: %s\n",
+            ts, level_strings[level], msg);
+#endif
     fclose(fp);
 }
 
@@ -168,12 +177,22 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
     if (g_log_config.targets & LOG_TARGET_STDERR) {
         const char *ts = get_timestamp();
         if (g_log_config.enable_color) {
+#if LOG_LOCATION_ENABLED
             fprintf(stderr, "[%s] %s%s%s %s:%d %s: %s\n",
                     ts, level_colors[level], level_strings[level], COLOR_RESET,
                     file, line, func, msg);
+#else
+            fprintf(stderr, "[%s] %s%s%s: %s\n",
+                    ts, level_colors[level], level_strings[level], COLOR_RESET, msg);
+#endif
         } else {
+#if LOG_LOCATION_ENABLED
             fprintf(stderr, "[%s] %s %s:%d %s: %s\n",
                     ts, level_strings[level], file, line, func, msg);
+#else
+            fprintf(stderr, "[%s] %s: %s\n",
+                    ts, level_strings[level], msg);
+#endif
         }
     }
 

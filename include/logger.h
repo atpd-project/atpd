@@ -18,6 +18,10 @@
 
 #define LOG_TAG "atpd"
 
+#ifndef LOG_LOCATION_ENABLED
+#define LOG_LOCATION_ENABLED 1
+#endif
+
 typedef enum {
     LOG_LEVEL_DEBUG = 0,
     LOG_LEVEL_INFO = 1,
@@ -59,10 +63,6 @@ void log_write_v(log_level_t level, const char *file, int line, const char *func
 
 #ifdef __cplusplus
 }
-#endif
-
-#ifndef LOG_LOCATION_ENABLED
-#define LOG_LOCATION_ENABLED 1
 #endif
 
 #define LOG_DEBUG(fmt, ...) do { \
