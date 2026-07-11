@@ -253,39 +253,13 @@ int config_reload(atp_config_t *cfg) {
     int ret = config_load(cp, cfg);
     if (ret == ATP_OK) {
         ebpf_reload(cfg);
-        // 1. 先更新 eBPF
-
-        ebpf_reload(cfg);
-
-        
-
-        // 2. 同步 app_filter（完整重载，不只是刷新缓存）
-
         if (cfg->app_proxy_enable) {
-
             if (app_filter_reload(cfg) == ATP_OK) {
-
                 LOG_INFO("App filter reloaded successfully");
-
             } else {
-
                 LOG_WARN("App filter reload failed");
-
             }
-
         }
-
-        
-
-        // 3. 标记同步完成
-
-        cfg->config_version++;
-
-        
-
-        LOG_INFO("Configuration reloaded successfully (version: %llu)", 
-
-                 (unsigned long long)cfg->config_version);
         LOG_INFO("Configuration reloaded successfully");
     }
     return ret;
