@@ -121,10 +121,6 @@ void log_set_color(int enable) {
     pthread_mutex_unlock(&g_log_config.mutex);
 }
 
-void log_rotate(void) {
-    /* TODO: implement log rotation */
-}
-
 static const char *get_timestamp(void) {
     static char buf[32];
     time_t now = time(NULL);
@@ -134,6 +130,39 @@ static const char *get_timestamp(void) {
         return buf;
     }
     return "0000-00-00 00:00:00";
+}
+
+static void log_rotate_file(const char *path) {
+    if (!path || !path[0]) return;
+
+    struct stat st;
+    if (stat(path, &st) != 0) return;
+
+    if (st.st_size < g_log_config.max_file_size) return;
+
+    char old_path[PATH_MAX];
+    char new_path[PATH_MAX];
+
+    for (int i = g_log_config.rotate_count - 1; i > 0; i--) {
+        if (i == 1) {
+            snprintf(new_path, sizeof(new_path), "%s.1", path);
+            rename(path, new_path);
+        } else {
+            snprintf(old_path, sizeof(old_path), "%s.%d", path, i - 1);
+            snprintf(new_path, sizeof(new_path), "%s.%d", path, i);
+            if (access(old_path, F_OK) == 0) {
+                rename(old_path, new_path);
+            }
+        }
+    }
+}
+
+void log_rotate(void) {
+    pthread_mutex_lock(&g_log_config.mutex);
+    if (g_log_config.log_file[0]) {
+        log_rotate_file(g_log_config.log_file);
+    }
+    pthread_mutex_unlock(&g_log_config.mutex);
 }
 
 static void log_write_file(log_level_t level, const char *file, int line,
