@@ -4,6 +4,9 @@
 #include "atp.h"
 #include "atpd_context.h"
 #include "reactor.h"
+#include "service.h"
+#include "api.h"
+#include "cli.h"
 
 typedef struct atpd_init_context {
     atp_config_t *config;

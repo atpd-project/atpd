@@ -9,6 +9,7 @@
 #include "atpd_global.h"
 #include "logger.h"
 #include "config.h"
+#include "utils.h"
 #include "boxbpf.h"
 #include "netlink.h"
 #include "app_filter.h"
@@ -19,6 +20,7 @@
 #include "tproxy.h"
 #include "cleanup.h"
 #include "atpd_context.h"
+#include "cli.h"
 
 #include <stdlib.h>
 
@@ -36,7 +38,8 @@ static init_phase_config_t init_phases[] = {
 int atpd_init_phase_config(atpd_init_context_t *ctx) {
     LOG_INFO("Loading configuration...");
     
-    if (find_config_file(ctx->opts->config_file) != ATP_OK) {
+    char cp[PATH_MAX];
+    if (find_config_file(cp, PATH_MAX, ctx->opts->config_file) != ATP_OK) {
         LOG_ERROR("Config file not found");
         return -1;
     }
@@ -44,7 +47,7 @@ int atpd_init_phase_config(atpd_init_context_t *ctx) {
     config_set_defaults(ctx->config);
     ctx->config->foreground = ctx->opts->foreground;
     ctx->config->verbose = ctx->opts->verbose;
-    config_load(ctx->opts->config_file, ctx->config);
+    config_load(cp, ctx->config);
     
     atp_register_cleanup(ctx->config);
     
@@ -103,10 +106,12 @@ int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
 int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing netlink...");
     
-    if (netlink_init(ctx->reactor, ctx->config) < 0) {
+    if (netlink_init(NULL, ctx->config) < 0) {
         LOG_ERROR("Failed to initialize netlink");
         return -1;
     }
+    
+    netlink_set_reactor(ctx->reactor);
     
     return 0;
 }
