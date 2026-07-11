@@ -149,6 +149,9 @@ typedef struct {
     char cn_ipv6_url[256];
     char cn_ipv6_file[64];
     int cnip_mode;
+    char cnip_force_proxy_apps[4096];
+    char bypass_apps_list[4096];
+    char proxy_apps_list[4096];
 
     /* Performance */
     int performance_mode;
@@ -163,6 +166,9 @@ typedef struct {
     int ebpf_ready;
     char ebpf_config_path[PATH_MAX];
     char ebpf_pin_dir[PATH_MAX];
+    char ebpf_state_dir[PATH_MAX];
+    int ebpf_load_retry;
+    int ebpf_load_delay;
 
     /* UI */
     int ui_emoji_enabled;
