@@ -147,6 +147,7 @@ typedef struct {
     char usb_iface[IFNAMSIZ];
     char hotspot_subnet_ipv4[64];
     char hotspot_subnet_ipv6[64];
+    char current_vpn_iface[IFNAMSIZ];
     int proxy_mobile;
     int proxy_wifi;
     int proxy_hotspot;
