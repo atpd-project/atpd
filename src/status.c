@@ -5,6 +5,7 @@
  * Status display
  */
 
+#include "atpd_global.h"
 #include "status.h"
 #include "logger.h"
 #include "utils.h"
@@ -16,7 +17,6 @@
 #include "perf_mode.h"
 #include "atpd_context.h"
 #include "boxbpf.h"
-#include "atpd_global.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -24,8 +24,6 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fcntl.h>
-
-#define g_config g_atpd.config
 
 #define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
