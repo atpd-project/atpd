@@ -31,7 +31,7 @@
 #define COLOR_WHITE   "\033[37m"
 
 #ifndef LOG_LOCATION_ENABLED
-#define LOG_LOCATION_ENABLED 1
+#define LOG_LOCATION_ENABLED 0
 #endif
 
 typedef enum {
