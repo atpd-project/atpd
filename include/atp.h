@@ -23,6 +23,7 @@
 #include <net/if.h>
 #include <pthread.h>
 #include "atp_error.h"
+#include "atp_config.h"
 
 #define ATP_NAME            "atpd"
 #define ATP_BUILD_TIME      __TIME__
@@ -78,7 +79,6 @@
 #define NETLINK_RECV_TIMEOUT_MS   3000
 #define NETLINK_DEBOUNCE_MS       500
 
-/* Service configuration defaults */
 #define SERVICE_DEFAULT_START_TIMEOUT_SEC 30
 #define SERVICE_DEFAULT_STOP_TIMEOUT_SEC 10
 #define SERVICE_DEFAULT_GRACE_PERIOD_SEC 3
@@ -106,133 +106,7 @@ typedef enum {
     ROOT_MAGISK = 2
 } root_method_t;
 
-typedef struct {
-    /* Core */
-    int foreground;
-    int verbose;
-    int no_color;
-    int ui_emoji_enabled;
-    int performance_mode;
-    int dry_run;
-    int skip_check_feature;
-    int force_mark_bypass;
-    int log_timestamp;
-    int restart_delay;
-    int proxy_tcp;
-    int proxy_udp;
-    int block_quic;
-    char data_dir[PATH_MAX];
-    char core_user[64];
-    char core_group[64];
-    char pid_file[PATH_MAX];
-    char routing_mark[32];
-
-    /* Network */
-    int use_tproxy;
-    int proxy_mode;
-    int tcp_port;
-    int udp_port;
-    int redirect_tcp_port;
-    int mark_value;
-    int mark_value6;
-    int table_id;
-    int proxy_ipv6;
-    int dns_hijack;
-    int dns_port;
-
-    /* Interface */
-    char mobile_iface[IFNAMSIZ];
-    char wifi_iface[IFNAMSIZ];
-    char hotspot_iface[IFNAMSIZ];
-    char usb_iface[IFNAMSIZ];
-    char hotspot_subnet_ipv4[64];
-    char hotspot_subnet_ipv6[64];
-    char current_vpn_iface[IFNAMSIZ];
-    int proxy_mobile;
-    int proxy_wifi;
-    int proxy_hotspot;
-    int proxy_usb;
-
-    /* Other interfaces */
-    char other_proxy[4096];
-    char other_bypass[4096];
-
-    /* IP Lists */
-    char bypass_ipv4_list[4096];
-    char bypass_ipv6_list[4096];
-    char proxy_ipv4_list[4096];
-    char proxy_ipv6_list[4096];
-
-    /* CNIP */
-    int bypass_cn_ip;
-    int cnip_mode;
-    char cn_ip_url[256];
-    char cn_ip_file[64];
-    char cn_ipv6_url[256];
-    char cn_ipv6_file[64];
-    char cnip_force_proxy_apps[4096];
-
-    /* App Filter */
-    int app_proxy_enable;
-    char app_proxy_mode[32];
-    char proxy_apps_list[4096];
-    char bypass_apps_list[4096];
-
-    /* MAC Filter */
-    int mac_filter_enable;
-    char mac_proxy_mode[32];
-    char proxy_macs_list[4096];
-    char bypass_macs_list[4096];
-
-    /* Clash */
-    char user_clash_mode[32];
-    char clash_secret[128];
-
-    /* API */
-    int api_port;
-    char api_host[64];
-
-    /* eBPF */
-    int ebpf_enabled;
-    int ebpf_ready;
-    int ebpf_load_retry;
-    int ebpf_load_delay;
-    char ebpf_bin_path[PATH_MAX];
-    char ebpf_config_path[PATH_MAX];
-    char ebpf_pin_dir[PATH_MAX];
-    char ebpf_state_dir[PATH_MAX];
-
-    /* Service */
-    int service_start_timeout_sec;
-    int service_stop_timeout_sec;
-    int service_grace_period_sec;
-    int service_max_failures;
-    int service_circuit_threshold;
-    int service_circuit_cooldown_sec;
-    int service_health_check_interval_ms;
-    char service_args[512];
-    char service_env[512];
-
-    /* Mutex */
-    pthread_mutex_t config_mutex;
-
-} atp_config_t;
-
-int atp_init(void);
-int atp_cleanup(void);
-int atp_create_pidfile(void);
-void atp_remove_pidfile(void);
-void atp_daemonize(void);
-int atp_signal_setup(void);
-int atp_check_running(void);
-int atp_check_root(void);
-void atp_show_status(void);
-
-#endif
-
 /* ========== Compatibility Macros ========== */
-/* Map old flat field access to new modular structure */
-
 #define cfg_foreground          cfg->core.foreground
 #define cfg_verbose             cfg->core.verbose
 #define cfg_no_color            cfg->core.no_color
@@ -317,11 +191,22 @@ void atp_show_status(void);
 #define cfg_service_circuit_threshold      cfg->service.circuit_threshold
 #define cfg_service_circuit_cooldown_sec   cfg->service.circuit_cooldown_sec
 #define cfg_service_health_check_interval_ms cfg->service.health_check_interval_ms
-#define cfg_service_args                    cfg->service.args
-#define cfg_service_env                     cfg->service.env
+#define cfg_service_args                   cfg->service.args
+#define cfg_service_env                    cfg->service.env
 
 #define cfg_api_port          cfg->api.port
 #define cfg_api_host          cfg->api.host
 
 #define cfg_config_mutex      cfg->mutex
 
+int atp_init(void);
+int atp_cleanup(void);
+int atp_create_pidfile(void);
+void atp_remove_pidfile(void);
+void atp_daemonize(void);
+int atp_signal_setup(void);
+int atp_check_running(void);
+int atp_check_root(void);
+void atp_show_status(void);
+
+#endif
