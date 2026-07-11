@@ -60,7 +60,9 @@ SRC = \
     src/yyjson/yyjson.c \
     src/boxbpf.c \
     src/bpf_common.c \
-    src/cleanup.c
+    src/cleanup.c \
+    src/atpd_global.c \
+    src/atpd_context.c
 
 OBJDIR = build/obj
 OBJ = $(SRC:%.c=$(OBJDIR)/%.o)

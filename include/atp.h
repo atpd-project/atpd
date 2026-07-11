@@ -188,8 +188,6 @@ typedef struct {
     char cnip_force_proxy_apps[4096];
 } atp_config_t;
 
-extern atp_config_t g_config;
-
 int atp_init(void);
 int atp_cleanup(void);
 int atp_create_pidfile(void);

@@ -830,6 +830,7 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     }
 
     write_ebpf_state_file("ready");
+    cfg->ebpf_ready = 1;
     LOG_INFO("eBPF CNIP init success (pin: %s)", cfg->ebpf_pin_dir);
     return ATP_OK;
 }
@@ -979,3 +980,4 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
 
     return ATP_OK;
 }
+

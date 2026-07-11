@@ -4,6 +4,7 @@
 #include "atp.h"
 #include "atpd_context.h"
 #include "boxbpf.h"
+#include "app_filter.h"
 #include <pwd.h>
 #include <grp.h>
 #include <arpa/inet.h>
@@ -242,12 +243,20 @@ static void ebpf_reload(atp_config_t *cfg) {
 
 int config_reload(atp_config_t *cfg) {
     char cp[SAFE_PATH_MAX];
-    if (snprintf(cp, sizeof(cp), "%s/%s", cfg->data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) return ATP_ERR_INVAL;
-    if (!file_exists(cp)) return ATP_ERR_NOENT;
+    if (snprintf(cp, sizeof(cp), "%s/%s", cfg->data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) {
+        return ATP_ERR_INVAL;
+    }
+    if (!file_exists(cp)) {
+        return ATP_ERR_NOENT;
+    }
 
     int ret = config_load(cp, cfg);
     if (ret == ATP_OK) {
         ebpf_reload(cfg);
+        if (cfg->app_proxy_enable) {
+            app_filter_refresh_cache();
+        }
+        LOG_INFO("Configuration reloaded successfully");
     }
     return ret;
 }

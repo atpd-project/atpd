@@ -32,6 +32,7 @@
 #include "uds.h"
 #include "boxbpf.h"
 #include "cleanup.h"
+#include "atpd_global.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,19 +48,13 @@
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 
-api_ctx_t g_api_ctx;
-atp_config_t g_config;
-reactor_t *g_reactor = NULL;
-static service_ctx_t *g_svc = NULL;
-static volatile sig_atomic_t g_running = 1;
-static volatile sig_atomic_t g_reload = 0;
-static volatile sig_atomic_t g_show_status = 0;
-
-typedef struct {
-    char last_name[256];
-    int last_delay;
-    bool first_run;
-} proxy_log_throttle_t;
+#define g_config g_atpd.config
+#define g_api_ctx g_atpd.api_ctx
+#define g_reactor g_atpd.reactor
+#define g_svc g_atpd.svc
+#define g_running g_atpd.running
+#define g_reload g_atpd.reload
+#define g_show_status g_atpd.show_status
 
 static proxy_log_throttle_t g_proxy_throttle = { .first_run = true };
 
