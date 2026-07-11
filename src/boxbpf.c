@@ -174,8 +174,8 @@ static int pin_program(const char *section, const char *name,
 int write_ebpf_config(atp_config_t *cfg) {
     if (!cfg) return ATP_ERR_INVAL;
 
-    char *state_dir = cfg->ebpf_state_dir;
-    char *pin_dir = cfg->ebpf_pin_dir;
+    char *state_dir = cfg->ebpf.state_dir;
+    char *pin_dir = cfg->ebpf.pin_dir;
     char config_path[512];
     char empty_v4[512], empty_v6[512], force_uids[512], app_uids[512];
 
@@ -195,8 +195,8 @@ int write_ebpf_config(atp_config_t *cfg) {
 
     FILE *fu = fopen(force_uids, "w");
     if (fu) {
-        if (cfg->cnip_force_proxy_apps[0] != '\0') {
-            char *copy = strdup(cfg->cnip_force_proxy_apps);
+        if (cfg->filter.cnip_force_proxy_apps[0] != '\0') {
+            char *copy = strdup(cfg->filter.cnip_force_proxy_apps);
             if (copy) {
                 char *token = strtok(copy, " ");
                 while (token) {
@@ -214,12 +214,12 @@ int write_ebpf_config(atp_config_t *cfg) {
 
     FILE *au = fopen(app_uids, "w");
     if (au) {
-        if (cfg->performance_mode && cfg->app_proxy_enable) {
+        if (cfg->core.performance_mode && cfg->filter.app_proxy_enable) {
             const char *pkg_list = NULL;
-            if (strcmp(cfg->app_proxy_mode, "blacklist") == 0) {
-                pkg_list = cfg->bypass_apps_list;
+            if (strcmp(cfg->filter.app_proxy_mode, "blacklist") == 0) {
+                pkg_list = cfg->filter.bypass_apps_list;
             } else {
-                pkg_list = cfg->proxy_apps_list;
+                pkg_list = cfg->filter.proxy_apps_list;
             }
             if (pkg_list && pkg_list[0] != '\0') {
                 int *uids = NULL;
@@ -239,15 +239,15 @@ int write_ebpf_config(atp_config_t *cfg) {
     snprintf(cidr4, sizeof(cidr4), "%s", empty_v4);
     snprintf(cidr6, sizeof(cidr6), "%s", empty_v6);
 
-    if (cfg->bypass_cn_ip) {
+    if (cfg->filter.bypass_cn_ip) {
         char cn_path[512];
-        snprintf(cn_path, sizeof(cn_path), "%s/%s", cfg->data_dir, cfg->cn_ip_file);
+        snprintf(cn_path, sizeof(cn_path), "%s/%s", cfg->core.data_dir, cfg->filter.cn_ip_file);
         if (file_exists(cn_path)) {
             strncpy(cidr4, cn_path, sizeof(cidr4) - 1);
             cidr4[sizeof(cidr4) - 1] = '\0';
         }
-        if (cfg->proxy_ipv6) {
-            snprintf(cn_path, sizeof(cn_path), "%s/%s", cfg->data_dir, cfg->cn_ipv6_file);
+        if (cfg->network.proxy_ipv6) {
+            snprintf(cn_path, sizeof(cn_path), "%s/%s", cfg->core.data_dir, cfg->filter.cn_ipv6_file);
             if (file_exists(cn_path)) {
                 strncpy(cidr6, cn_path, sizeof(cidr6) - 1);
                 cidr6[sizeof(cidr6) - 1] = '\0';
@@ -269,7 +269,7 @@ int write_ebpf_config(atp_config_t *cfg) {
     }
     yyjson_mut_doc_set_root(doc, root);
 
-    yyjson_mut_obj_add_bool(doc, root, "ipv6", cfg->proxy_ipv6 ? true : false);
+    yyjson_mut_obj_add_bool(doc, root, "ipv6", cfg->network.proxy_ipv6 ? true : false);
     yyjson_mut_obj_add_str(doc, root, "cidr4", cidr4);
     yyjson_mut_obj_add_str(doc, root, "cidr6", cidr6);
     yyjson_mut_obj_add_str(doc, root, "forceUids", force_uids);
@@ -766,39 +766,39 @@ const char *boxbpf_pin_dir(void) {
 int boxbpf_init_from_config(atp_config_t *cfg) {
     if (!cfg) return ATP_ERR_INVAL;
 
-    if (cfg->ebpf_state_dir[0] != '\0') {
-        strncpy(g_state_dir, cfg->ebpf_state_dir, sizeof(g_state_dir) - 1);
+    if (cfg->ebpf.state_dir[0] != '\0') {
+        strncpy(g_state_dir, cfg->ebpf.state_dir, sizeof(g_state_dir) - 1);
         g_state_dir[sizeof(g_state_dir) - 1] = '\0';
         snprintf(g_status_file, sizeof(g_status_file), "%s/ebpf.status", g_state_dir);
     }
 
-    if (cfg->ebpf_pin_dir[0] != '\0') {
-        strncpy(g_pin_dir, cfg->ebpf_pin_dir, sizeof(g_pin_dir) - 1);
+    if (cfg->ebpf.pin_dir[0] != '\0') {
+        strncpy(g_pin_dir, cfg->ebpf.pin_dir, sizeof(g_pin_dir) - 1);
         g_pin_dir[sizeof(g_pin_dir) - 1] = '\0';
     }
 
-    if (!cfg->ebpf_enabled) {
+    if (!cfg->ebpf.enabled) {
         LOG_DEBUG("eBPF disabled by config");
         write_ebpf_state_file("disabled");
         return ATP_ERR_EBPF;
     }
 
-    if (cfg->cnip_mode != 1) {
+    if (cfg->filter.cnip_mode != 1) {
         LOG_DEBUG("CNIP_MODE is not ebpf");
         write_ebpf_state_file("disabled");
         return ATP_ERR_EBPF;
     }
 
     LOG_INFO("eBPF CNIP init: probe=%d, ipv6=%d, retry=%d, delay=%d",
-             cfg->ebpf_enabled, cfg->proxy_ipv6,
-             cfg->ebpf_load_retry, cfg->ebpf_load_delay);
+             cfg->ebpf.enabled, cfg->network.proxy_ipv6,
+             cfg->ebpf.load_retry, cfg->ebpf.load_delay);
 
-    int retry = cfg->ebpf_load_retry > 0 ? cfg->ebpf_load_retry : 3;
-    int delay = cfg->ebpf_load_delay > 0 ? cfg->ebpf_load_delay : 2;
+    int retry = cfg->ebpf.load_retry > 0 ? cfg->ebpf.load_retry : 3;
+    int delay = cfg->ebpf.load_delay > 0 ? cfg->ebpf.load_delay : 2;
     int probe_ok = 0;
 
     for (int i = 0; i < retry; i++) {
-        if (boxbpf_probe(cfg->proxy_ipv6) == ATP_OK) {
+        if (boxbpf_probe(cfg->network.proxy_ipv6) == ATP_OK) {
             probe_ok = 1;
             break;
         }
@@ -823,7 +823,7 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
         return ATP_ERR_EBPF;
     }
 
-    if (boxbpf_apply(cfg->ebpf_config_path) != ATP_OK) {
+    if (boxbpf_apply(cfg->ebpf.config_path) != ATP_OK) {
         LOG_ERROR("Failed to apply eBPF programs");
         write_ebpf_state_file("failed");
         return ATP_ERR_EBPF;
@@ -831,38 +831,38 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
 
     write_ebpf_state_file("ready");
     cfg->ebpf_ready = 1;
-    LOG_INFO("eBPF CNIP init success (pin: %s)", cfg->ebpf_pin_dir);
+    LOG_INFO("eBPF CNIP init success (pin: %s)", cfg->ebpf.pin_dir);
     return ATP_OK;
 }
 
 int boxbpf_reload_from_config(atp_config_t *cfg) {
     if (!cfg) return ATP_ERR_INVAL;
 
-    if (!cfg->ebpf_enabled) {
+    if (!cfg->ebpf.enabled) {
         LOG_DEBUG("eBPF disabled by config, skipping reload");
         write_ebpf_state_file("disabled");
         return ATP_ERR_EBPF;
     }
 
-    if (cfg->cnip_mode != 1) {
+    if (cfg->filter.cnip_mode != 1) {
         LOG_DEBUG("CNIP_MODE is not ebpf, skipping reload");
         write_ebpf_state_file("disabled");
         return ATP_ERR_EBPF;
     }
 
-    if (cfg->ebpf_state_dir[0] != '\0') {
-        strncpy(g_state_dir, cfg->ebpf_state_dir, sizeof(g_state_dir) - 1);
+    if (cfg->ebpf.state_dir[0] != '\0') {
+        strncpy(g_state_dir, cfg->ebpf.state_dir, sizeof(g_state_dir) - 1);
         g_state_dir[sizeof(g_state_dir) - 1] = '\0';
         snprintf(g_status_file, sizeof(g_status_file), "%s/ebpf.status", g_state_dir);
     }
 
-    if (cfg->ebpf_pin_dir[0] != '\0') {
-        strncpy(g_pin_dir, cfg->ebpf_pin_dir, sizeof(g_pin_dir) - 1);
+    if (cfg->ebpf.pin_dir[0] != '\0') {
+        strncpy(g_pin_dir, cfg->ebpf.pin_dir, sizeof(g_pin_dir) - 1);
         g_pin_dir[sizeof(g_pin_dir) - 1] = '\0';
     }
 
     if (cfg->ebpf_ready) {
-        int ret = boxbpf_update(cfg->ebpf_config_path);
+        int ret = boxbpf_update(cfg->ebpf.config_path);
         if (ret == ATP_OK) {
             LOG_INFO("eBPF CNIP maps updated successfully");
             return ATP_OK;
@@ -887,8 +887,8 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
     int perf_mode = 0;
     int app_proxy = 0;
 
-    if (cfg && cfg->ebpf_pin_dir[0] != '\0') {
-        pin_dir = cfg->ebpf_pin_dir;
+    if (cfg && cfg->ebpf.pin_dir[0] != '\0') {
+        pin_dir = cfg->ebpf.pin_dir;
     } else if (g_pin_dir[0] != '\0') {
         pin_dir = g_pin_dir;
     } else {
@@ -896,10 +896,10 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
     }
 
     if (cfg) {
-        ipv6_enabled = cfg->proxy_ipv6;
-        force_configured = (cfg->cnip_force_proxy_apps[0] != '\0');
-        perf_mode = cfg->performance_mode;
-        app_proxy = cfg->app_proxy_enable;
+        ipv6_enabled = cfg->network.proxy_ipv6;
+        force_configured = (cfg->filter.cnip_force_proxy_apps[0] != '\0');
+        perf_mode = cfg->core.performance_mode;
+        app_proxy = cfg->filter.app_proxy_enable;
         app_configured = (perf_mode && app_proxy);
     }
 
