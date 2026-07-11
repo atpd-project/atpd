@@ -14,7 +14,7 @@
 #define SAFE_CMD_LEN (MAX_CMD_LEN + 256)
 
 static int exec_ipset(atp_config_t *cfg, const char *cmd, const char *arg) {
-    if (cfg && cfg->dry_run) {
+    if (cfg && cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] ipset %s %s", cmd, arg ? arg : "");
         return 0;
     }
@@ -32,7 +32,7 @@ static int exec_ipset(atp_config_t *cfg, const char *cmd, const char *arg) {
 
 int ipset_init(atp_config_t *cfg) {
     char rules_dir[SAFE_PATH_MAX];
-    if (snprintf(rules_dir, sizeof(rules_dir), "%s/rules", cfg->data_dir) < (int)sizeof(rules_dir)) {
+    if (snprintf(rules_dir, sizeof(rules_dir), "%s/rules", cfg->core.data_dir) < (int)sizeof(rules_dir)) {
         mkdir_recursive(rules_dir, 0755);
     }
     
