@@ -366,13 +366,13 @@ static int do_start(atp_options_t *opts) {
     g_config.verbose = opts->verbose;
     config_load(cp, &g_config);
 
-    LOG_INFO("Cleaning up stale rules before start...");
-    boxbpf_clear();
-    tproxy_cleanup_all(&g_config);
-
     logger_init();
     log_set_level(opts->log_level);
     if (opts->no_color) log_set_color(0);
+
+    LOG_INFO("Cleaning up stale rules before start...");
+    boxbpf_clear();
+    tproxy_cleanup_all(&g_config);
 
     resolve_pid_path(opts, pp, sizeof(pp));
 
@@ -525,14 +525,14 @@ static int do_stop(atp_options_t *opts) {
     printf("Stopping daemon (PID: %d)...\n", pid);
     kill(pid, SIGTERM);
 
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < SERVICE_STOP_RETRY_COUNT; i++) {
         if (kill(pid, 0) < 0) {
             printf("Daemon stopped\n");
             unlink(pp);
             boxbpf_clear();
             return 0;
         }
-        usleep(100000);
+        usleep(SERVICE_STOP_INTERVAL_MS * 1000);
     }
 
     printf("Daemon not responding, forcing kill...\n");
