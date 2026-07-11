@@ -26,6 +26,9 @@
 #include <grp.h>
 #include <time.h>
 #include "async_validate.h"
+ 
+/* Forward declarations */
+void service_schedule_retry(service_ctx_t *ctx);
 
 #define MAX_LOG_SIZE (10 * 1024 * 1024)
 
@@ -169,7 +172,7 @@ static int service_binary_exists(service_ctx_t *ctx) {
     return access(ctx->bin_path, X_OK) == 0;
 }
 
-static void service_rotate_log(service_ctx_t *ctx) {
+void service_rotate_log(service_ctx_t *ctx) {
     struct stat st;
     char backup_path[512];
     char timestamp[64];
@@ -477,7 +480,7 @@ static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void 
     }
 }
 
-static void service_schedule_retry(service_ctx_t *ctx) {
+void service_schedule_retry(service_ctx_t *ctx) {
     int delay = backoff_next(&ctx->backoff);
     LOG_INFO("Service: retry in %dms (%d/%d)",
              delay, ctx->fail_count, ctx->max_failures);
