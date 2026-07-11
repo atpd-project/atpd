@@ -1,763 +1,593 @@
 /*
  * ATP - Advanced Transparent Proxy
- * Copyright (C) 2024-2026 ATP Project
+ * Copyright (C) 2024-2025 ATP Project
  *
- * Main entry point - Reactor mode
+ * Status display
  */
 
-#include "atp.h"
-#include "config.h"
-#include "config_validator.h"
+#include "status.h"
 #include "logger.h"
 #include "utils.h"
+#include "netlink.h"
 #include "service.h"
 #include "api.h"
-#include "netlink.h"
-#include "app_filter.h"
 #include "fcm_monitor.h"
-#include "perf_mode.h"
-#include "status.h"
 #include "ui.h"
-#include "cli.h"
-#include "version.h"
-#include "tproxy.h"
-#include "routing.h"
-#include "geoip.h"
-#include "mac_filter.h"
-#include "ipv6_manager.h"
-#include "inet_diag.h"
-#include "reactor.h"
-#include "singbox_api.h"
+#include "perf_mode.h"
 #include "atpd_context.h"
-#include "uds.h"
 #include "boxbpf.h"
-#include "cleanup.h"
 #include "atpd_global.h"
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <getopt.h>
+#include <time.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
+#include <dirent.h>
 #include <fcntl.h>
-#include <errno.h>
-#include <pthread.h>
-#include <libgen.h>
-#include <signal.h>
-
-#define SAFE_PATH_MAX (PATH_MAX + 256)
 
 #define g_config g_atpd.config
-#define g_api_ctx g_atpd.api_ctx
-#define g_reactor g_atpd.reactor
-#define g_svc g_atpd.svc
-#define g_running g_atpd.running
-#define g_reload g_atpd.reload
-#define g_show_status g_atpd.show_status
 
-typedef struct {
-    char last_name[256];
-    int last_delay;
-    bool first_run;
-} proxy_log_throttle_t;
+#define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
+#define THERMAL_ZONE_BASE "/sys/class/thermal"
+#define THERMAL_TEMP_WARN 75000
+#define THERMAL_TEMP_CRITICAL 85000
 
-static proxy_log_throttle_t g_proxy_throttle = { .first_run = true };
+static const char* proxy_mode_to_string(atp_config_t *cfg) {
+    switch (cfg->proxy_mode) {
+        case 0: return cfg->use_tproxy ? "TPROXY (auto)" : "REDIRECT (auto)";
+        case 1: return "TPROXY (TCP+UDP)";
+        case 2: return "REDIRECT (TCP only)";
+        case 3: return "ENHANCE (TCP=REDIRECT, UDP=TPROXY)";
+        default: return "UNKNOWN";
+    }
+}
 
-static void on_signal(reactor_t *r, int sig, void *userdata) {
-    (void)r;
-    (void)userdata;
+static void format_uptime_human(int seconds, char *buf, size_t size) {
+    int days = seconds / 86400;
+    int hours = (seconds % 86400) / 3600;
+    int mins = (seconds % 3600) / 60;
+    int secs = seconds % 60;
 
-    if (sig == SIGCHLD) {
-        service_sigchld_cb(r, sig, g_svc);
+    if (days > 0) {
+        snprintf(buf, size, "%dd %02d:%02d:%02d", days, hours, mins, secs);
+    } else if (hours > 0) {
+        snprintf(buf, size, "%dh %02dm %02ds", hours, mins, secs);
+    } else if (mins > 0) {
+        snprintf(buf, size, "%dm %02ds", mins, secs);
+    } else {
+        snprintf(buf, size, "%ds", secs);
+    }
+}
+
+static void format_bytes(char *buf, size_t size, unsigned long long bytes) {
+    if (bytes >= 1024 * 1024 * 1024) {
+        snprintf(buf, size, "%.2f GB", (double)bytes / (1024 * 1024 * 1024));
+    } else if (bytes >= 1024 * 1024) {
+        snprintf(buf, size, "%.2f MB", (double)bytes / (1024 * 1024));
+    } else if (bytes >= 1024) {
+        snprintf(buf, size, "%.2f KB", (double)bytes / 1024);
+    } else {
+        snprintf(buf, size, "%llu B", bytes);
+    }
+}
+
+static void format_speed(char *buf, size_t size, unsigned long long bytes_per_sec) {
+    unsigned long long bits_per_sec = bytes_per_sec * 8;
+
+    if (bits_per_sec >= 1024 * 1024 * 1024) {
+        snprintf(buf, size, "%.2f Gbps", (double)bits_per_sec / (1024 * 1024 * 1024));
+    } else if (bits_per_sec >= 1024 * 1024) {
+        snprintf(buf, size, "%.2f Mbps", (double)bits_per_sec / (1024 * 1024));
+    } else if (bits_per_sec >= 1024) {
+        snprintf(buf, size, "%.2f Kbps", (double)bits_per_sec / 1024);
+    } else {
+        snprintf(buf, size, "%llu bps", bits_per_sec);
+    }
+}
+
+static int get_cpu_temperature(void) {
+    DIR *dir;
+    struct dirent *entry;
+    char path[PATH_MAX];
+    char temp_str[16];
+    int temp = 0;
+
+    dir = opendir(THERMAL_ZONE_BASE);
+    if (!dir) return -1;
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (strncmp(entry->d_name, "thermal_zone", 12) == 0) {
+            snprintf(path, sizeof(path), "%s/%s/temp", THERMAL_ZONE_BASE, entry->d_name);
+            FILE *fp = fopen(path, "r");
+            if (fp) {
+                if (fgets(temp_str, sizeof(temp_str), fp)) {
+                    temp = atoi(temp_str) / 1000;
+                    fclose(fp);
+                    closedir(dir);
+                    return temp;
+                }
+                fclose(fp);
+            }
+        }
+    }
+    closedir(dir);
+    return -1;
+}
+
+static void status_show_proxy_core(service_ctx_t *svc) {
+    int pid = service_get_pid(svc);
+    char uptime_str[64];
+    char mem_str[32];
+    char cpu_str[16];
+    char threads_str[16];
+    char fds_str[16];
+    char version_str[64];
+
+    ui_table_begin();
+    ui_table_header("PROXY CORE");
+
+    if (pid <= 0) {
+        ui_table_row_color("STATUS", "sing-box", COLOR_RED);
+        ui_table_end();
         return;
     }
 
-    if (sig == SIGHUP) {
-        g_reload = 1;
-        LOG_INFO("Reload signal received");
-    } else if (sig == SIGUSR1) {
-        g_show_status = 1;
-        LOG_INFO("Status signal received");
+    long mem_kb = get_process_memory_kb(pid);
+    double cpu = get_process_cpu_percent(pid);
+    int threads = get_process_threads(pid);
+    int fd_count = get_process_fd_count(pid);
+    int uptime_sec = get_process_uptime_sec(pid);
+
+    format_uptime_human(uptime_sec, uptime_str, sizeof(uptime_str));
+    format_bytes(mem_str, sizeof(mem_str), mem_kb * 1024);
+    snprintf(cpu_str, sizeof(cpu_str), "%.1f%%", cpu);
+    snprintf(threads_str, sizeof(threads_str), "%d", threads);
+    snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
+    get_binary_version(PROXY_BIN_PATH, version_str, sizeof(version_str));
+
+    ui_table_row_color(ui_emoji_service(1), "sing-box", COLOR_GREEN);
+    ui_table_subrow_int("├─", "PID", pid);
+    ui_table_subrow("├─", "Uptime", uptime_str);
+    ui_table_subrow("├─", "Memory", mem_str);
+    ui_table_subrow("├─", "CPU", cpu_str);
+    ui_table_subrow("├─", "Threads", threads_str);
+    ui_table_subrow("├─", "FDs", fds_str);
+    ui_table_subrow("└─", "Version", version_str);
+
+    ui_table_end();
+}
+
+static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ctx_t *svc) {
+    char current_mode[64] = {0};
+
+    ui_table_begin();
+    ui_table_header("CLASH MODE");
+
+    if (service_get_pid(svc) <= 0) {
+        ui_table_row_color("MODE", "N/A (service stopped)", COLOR_YELLOW);
+        ui_table_end();
+        return;
+    }
+
+    if (api_get_mode_sync(api, current_mode, sizeof(current_mode)) == 0) {
+        const char *color = COLOR_GREEN;
+        if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
+        else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
+        else if (strcmp(current_mode, "Google VPN") == 0) color = COLOR_GREEN;
+        ui_table_row_color(ui_emoji_info(), current_mode, color);
     } else {
-        LOG_INFO("Termination signal received");
-        g_running = 0;
+        ui_table_row_color(ui_emoji_info(), cfg->user_clash_mode, COLOR_YELLOW);
+        ui_table_warning("API unavailable, using cached value");
     }
+
+    ui_table_end();
 }
 
-static void on_idle(reactor_t *r, void *userdata) {
-    (void)r;
-    (void)userdata;
+static void status_show_ebpf(void) {
+    char state[64] = {0};
+    char pin_dir[256];
+    struct stat st;
 
-    if (g_reload) {
-        config_reload(&g_config);
-        g_reload = 0;
+    snprintf(pin_dir, sizeof(pin_dir), "/sys/fs/bpf/box");
+
+    ui_table_begin();
+    ui_table_header("eBPF CNIP");
+
+    if (boxbpf_status(state, sizeof(state), &g_config) == 0) {
+        if (strcmp(state, "ready") == 0) {
+            ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
+            ui_table_subrow("├─", "Pin Dir", g_config.ebpf_pin_dir);
+            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+        } else if (strcmp(state, "failed") == 0) {
+            ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
+            ui_table_subrow("└─", "Fallback", "ipset");
+        } else if (strcmp(state, "disabled") == 0) {
+            ui_table_subrow_color("├─", "State", "DISABLED", COLOR_YELLOW);
+            ui_table_subrow("└─", "CNIP Mode", "ipset");
+        } else {
+            ui_table_subrow_color("└─", "State", state, COLOR_RED);
+        }
+    } else {
+        char pin_path[256];
+        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", pin_dir);
+        if (stat(pin_path, &st) == 0) {
+            ui_table_subrow_color("├─", "State", "READY (pin)", COLOR_GREEN);
+            ui_table_subrow("├─", "Pin Dir", pin_dir);
+            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+        } else {
+            ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
+        }
     }
 
-    if (g_show_status) {
-        status_show(&g_config, g_svc, &g_api_ctx);
-        g_show_status = 0;
-    }
-
-    if (!g_running) {
-        reactor_stop(r);
-    }
+    ui_table_end();
 }
 
-static void process_proxy_list(proxy_list_t *list) {
-    if (!list || list->count == 0) {
-        goto cleanup;
+static void status_show_monitors(void) {
+    time_t last_fcm = fcm_monitor_get_last_detection();
+    time_t now = time(NULL);
+    char fcm_status[64];
+
+    ui_table_begin();
+    ui_table_header("MONITORS");
+
+    if (0) {
+        ui_table_subrow_color("├─", "Netlink Monitor", "ACTIVE", COLOR_GREEN);
+    } else {
+        ui_table_subrow_color("├─", "Netlink Monitor", "INACTIVE", COLOR_RED);
     }
 
-    for (int i = 0; i < list->count; ++i) {
-        proxy_info_t *info = &list->proxies[i];
+    if (fcm_monitor_is_running()) {
+        if (last_fcm > 0) {
+            int elapsed = (int)(now - last_fcm);
+            if (elapsed < 60) {
+                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %ds ago)", elapsed);
+            } else if (elapsed < 3600) {
+                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %dm %ds ago)", elapsed / 60, elapsed % 60);
+            } else {
+                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %dh ago)", elapsed / 3600);
+            }
+            ui_table_subrow_color("└─", "FCM Monitor", fcm_status, COLOR_GREEN);
+        } else {
+            ui_table_subrow_color("└─", "FCM Monitor", "ACTIVE (waiting for FCM)", COLOR_CYAN);
+        }
+    } else {
+        ui_table_subrow_color("└─", "FCM Monitor", "INACTIVE", COLOR_RED);
+    }
 
-        if (info->type && strcmp(info->type, "URLTest") == 0 && info->delay > 0) {
-            bool changed = g_proxy_throttle.first_run ||
-                          strcmp(g_proxy_throttle.last_name, info->name) != 0 ||
-                          g_proxy_throttle.last_delay != info->delay;
+    ui_table_end();
+}
 
-            if (changed) {
-                LOG_INFO("URLTest Node: %s (delay: %dms)", info->name, info->delay);
-                snprintf(g_proxy_throttle.last_name, sizeof(g_proxy_throttle.last_name), "%s", info->name);
-                g_proxy_throttle.last_delay = info->delay;
-                g_proxy_throttle.first_run = false;
+typedef struct {
+    unsigned long long rx_bytes;
+    unsigned long long tx_bytes;
+    time_t timestamp;
+    char iface[IFNAMSIZ];
+} iface_stats_t;
+
+static int get_iface_traffic(const char *iface, unsigned long long *rx_bytes, unsigned long long *tx_bytes) {
+    FILE *fp = fopen("/proc/net/dev", "r");
+    if (!fp) return -1;
+
+    char line[512];
+    int found = 0;
+
+    fgets(line, sizeof(line), fp);
+    fgets(line, sizeof(line), fp);
+
+    while (fgets(line, sizeof(line), fp)) {
+        char name[64];
+        unsigned long long rx_bytes_val, tx_bytes_val;
+
+        if (sscanf(line, "%63[^:]: %llu %*u %*u %*u %*u %*u %*u %*u %llu",
+                   name, &rx_bytes_val, &tx_bytes_val) >= 3) {
+            char *p = name;
+            while (*p == ' ') p++;
+
+            if (strcmp(p, iface) == 0) {
+                *rx_bytes = rx_bytes_val;
+                *tx_bytes = tx_bytes_val;
+                found = 1;
+                break;
             }
         }
     }
 
-cleanup:
-    proxy_list_free(list);
+    fclose(fp);
+    return found ? 0 : -1;
 }
 
-static void on_proxies_response(int http_code, const char *body, void *userdata) {
-    (void)userdata;
+static int load_traffic_state(iface_stats_t *stats) {
+    FILE *fp = fopen(TRAFFIC_STATE_FILE, "r");
+    if (!fp) return -1;
 
-    if (http_code != 200 || !body) return;
+    int ret = fscanf(fp, "%s %llu %llu %ld",
+                     stats->iface, &stats->rx_bytes, &stats->tx_bytes, (long*)&stats->timestamp);
+    fclose(fp);
 
-    char *mutable_body = strdup(body);
-    if (!mutable_body) return;
-
-    proxy_list_t list;
-    int count = singbox_parse_proxies(mutable_body, strlen(mutable_body), &list);
-
-    if (count >= 0) {
-        process_proxy_list(&list);
-    } else {
-        proxy_list_free(&list);
-    }
-
-    free(mutable_body);
+    return (ret == 4 && stats->iface[0] != '\0') ? 0 : -1;
 }
 
-static void proxies_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
-    (void)r;
-    (void)timer;
-    (void)userdata;
-    api_get_proxies_async(&g_api_ctx, on_proxies_response, NULL);
-}
-
-static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
-    (void)r;
-    (void)events;
-    netlink_handle_event(fd, userdata);
-}
-
-static void service_stop_done_cb(service_ctx_t *ctx, void *userdata) {
-    (void)userdata;
-    LOG_INFO("Service cleanup complete");
-    free(ctx);
-    g_svc = NULL;
-}
-
-static void run_event_loop(void) {
-    g_reactor = reactor_create();
-    if (!g_reactor) {
-        LOG_ERROR("Failed to create reactor");
-        return;
-    }
-
-    netlink_set_reactor(g_reactor);
-    uds_init(g_reactor, ATPD_UDS_PATH);
-
-    api_start_with_reactor(&g_api_ctx, g_reactor);
-
-    reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
-    service_start_async(g_svc);
-
-    reactor_set_signal_cb(g_reactor, on_signal);
-    reactor_set_idle_cb(g_reactor, on_idle);
-
-    reactor_watch_signal(g_reactor, SIGINT);
-    reactor_watch_signal(g_reactor, SIGTERM);
-    reactor_watch_signal(g_reactor, SIGHUP);
-    reactor_watch_signal(g_reactor, SIGUSR1);
-    reactor_watch_signal(g_reactor, SIGCHLD);
-
-    int nl_fd = netlink_get_fd();
-    if (nl_fd >= 0) {
-        reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_io_cb, NULL);
-    }
-
-    LOG_INFO("Reactor event loop started");
-    reactor_run(g_reactor);
-    LOG_INFO("Reactor event loop stopped");
-
-    if (g_config.ebpf_ready) {
-        LOG_INFO("Cleaning up eBPF CNIP...");
-        boxbpf_clear();
-        g_config.ebpf_ready = 0;
-        g_atpd_ctx.ebpf_enabled = false;
-        atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
-    }
-
-    tproxy_cleanup_all(&g_config);
-    uds_cleanup();
-
-    if (g_svc) {
-        service_stop_async(g_svc, service_stop_done_cb, NULL);
-    }
-
-    reactor_destroy(g_reactor);
-    g_reactor = NULL;
-}
-
-static void daemonize(void) {
-    pid_t pid = fork();
-    if (pid < 0) exit(EXIT_FAILURE);
-    if (pid > 0) exit(EXIT_SUCCESS);
-    if (setsid() < 0) exit(EXIT_FAILURE);
-    pid = fork();
-    if (pid < 0) exit(EXIT_FAILURE);
-    if (pid > 0) exit(EXIT_SUCCESS);
-    umask(0);
-    int fd = open("/dev/null", O_RDWR);
-    if (fd >= 0) {
-        dup2(fd, STDIN_FILENO);
-        dup2(fd, STDOUT_FILENO);
-        dup2(fd, STDERR_FILENO);
-        if (fd > 2) close(fd);
-    }
-    (void)chdir("/");
-}
-
-static int write_pid_file(const char *pid_file) {
-    char dir[SAFE_PATH_MAX];
-    if (!pid_file || strlen(pid_file) >= PATH_MAX) return -1;
-    snprintf(dir, sizeof(dir), "%s", pid_file);
+static int save_traffic_state(const iface_stats_t *stats) {
+    char dir[PATH_MAX];
+    strncpy(dir, TRAFFIC_STATE_FILE, sizeof(dir) - 1);
     char *slash = strrchr(dir, '/');
     if (slash) {
         *slash = '\0';
         mkdir_recursive(dir, 0755);
     }
 
-    struct stat st;
-    if (lstat(pid_file, &st) == 0) {
-        if (!S_ISREG(st.st_mode)) {
-            LOG_ERROR("PID file is not a regular file: %s", pid_file);
-            return -1;
-        }
-        if (st.st_uid != getuid()) {
-            LOG_WARN("PID file owned by different user: %s", pid_file);
-        }
-        if (st.st_nlink > 1) {
-            LOG_ERROR("PID file has hard links, refusing to write: %s", pid_file);
-            return -1;
-        }
-    }
+    FILE *fp = fopen(TRAFFIC_STATE_FILE, "w");
+    if (!fp) return -1;
 
-    int fd = open(pid_file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
-    if (fd < 0) {
-        if (errno == EEXIST) {
-            return 0;
-        }
-        LOG_ERROR("Failed to create PID file: %s", strerror(errno));
-        return -1;
-    }
-
-    char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%d\n", getpid());
-    if (write(fd, buf, len) != len) {
-        LOG_ERROR("Failed to write PID file: %s", strerror(errno));
-        close(fd);
-        unlink(pid_file);
-        return -1;
-    }
-    close(fd);
+    fprintf(fp, "%s %llu %llu %ld\n", stats->iface, stats->rx_bytes, stats->tx_bytes, (long)stats->timestamp);
+    fclose(fp);
     return 0;
 }
 
-static void get_binary_dir(char *buf, size_t size) {
-    ssize_t len = readlink("/proc/self/exe", buf, size - 1);
-    if (len <= 0) {
-        buf[0] = '\0';
+static void status_show_vpn(void) {
+    char vpn_iface[IFNAMSIZ] = {0};
+    unsigned long long rx_bytes = 0, tx_bytes = 0;
+    char rx_str[32], tx_str[32];
+    char rx_speed_str[32], tx_speed_str[32];
+    iface_stats_t current_stats, prev_stats;
+    int has_vpn = 0;
+
+    ui_table_begin();
+    ui_table_header("VPN STATUS");
+
+    if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
+        has_vpn = 1;
+    }
+
+    if (!has_vpn) {
+        ui_table_row_color(ui_emoji_vpn(0), "DISCONNECTED", COLOR_RED);
+        ui_table_end();
         return;
     }
-    buf[len] = '\0';
 
-    char *last_slash = strrchr(buf, '/');
-    if (last_slash) {
-        *last_slash = '\0';
-    } else {
-        buf[0] = '\0';
-    }
-}
+    ui_table_subrow("├─", "Interface", vpn_iface);
+    ui_table_subrow_color("├─", ui_emoji_vpn(1), "CONNECTED", COLOR_GREEN);
 
-static int find_config_file(char *path, size_t size, const char *user_path) {
-    if (user_path && user_path[0]) {
-        if (strlen(user_path) >= size) return -1;
-        snprintf(path, size, "%s", user_path);
-    } else {
-        char bin_dir[PATH_MAX] = {0};
-        get_binary_dir(bin_dir, sizeof(bin_dir));
-        size_t dlen = strlen(bin_dir);
-        if (dlen > 0 && dlen < (size - 16)) {
-            memcpy(path, bin_dir, dlen);
-            path[dlen] = '/';
-            memcpy(path + dlen + 1, "atp.conf", 9);
-        } else {
-            snprintf(path, size, "./atp.conf");
-        }
-    }
-    return access(path, R_OK);
-}
+    if (get_iface_traffic(vpn_iface, &rx_bytes, &tx_bytes) == 0) {
+        format_bytes(rx_str, sizeof(rx_str), rx_bytes);
+        format_bytes(tx_str, sizeof(tx_str), tx_bytes);
+        ui_table_subrow("├─", "📥 Total RX", rx_str);
+        ui_table_subrow("├─", "📤 Total TX", tx_str);
 
-static int confirm_operation(const char *op, int force) {
-    if (force) return 1;
-    char res[8];
-    fprintf(stderr, "Warning: This will %s the ATP daemon. Are you sure? [y/N] ", op);
-    if (!fgets(res, sizeof(res), stdin)) return 0;
-    return (res[0] == 'y' || res[0] == 'Y');
-}
+        memset(&current_stats, 0, sizeof(current_stats));
+        strncpy(current_stats.iface, vpn_iface, IFNAMSIZ - 1);
+        current_stats.rx_bytes = rx_bytes;
+        current_stats.tx_bytes = tx_bytes;
+        current_stats.timestamp = time(NULL);
 
-static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
-    if (opts->pid_file[0]) {
-        snprintf(pp, size, "%s", opts->pid_file);
-    } else if (g_config.data_dir[0]) {
-        snprintf(pp, size, "%s/%s", g_config.data_dir, ATP_PID_FILE);
-    } else {
-        snprintf(pp, size, "./atpd.pid");
-    }
-}
-
-static void cleanup_ebpf(void) {
-    if (g_config.ebpf_ready) {
-        LOG_INFO("Cleaning up eBPF CNIP...");
-        boxbpf_clear();
-        g_config.ebpf_ready = 0;
-        g_atpd_ctx.ebpf_enabled = false;
-        atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
-    }
-}
-
-static int do_start(atp_options_t *opts) {
-    char cp[SAFE_PATH_MAX];
-    char pp[SAFE_PATH_MAX];
-
-    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != ATP_OK) {
-        fprintf(stderr, "Config file not found\n");
-        return 1;
-    }
-
-    config_set_defaults(&g_config);
-    g_config.foreground = opts->foreground;
-    g_config.verbose = opts->verbose;
-    config_load(cp, &g_config);
-
-    logger_init();
-    log_set_level(opts->log_level);
-    if (opts->no_color) log_set_color(0);
-
-    LOG_INFO("Cleaning up stale rules before start...");
-    boxbpf_clear();
-    tproxy_cleanup_all(&g_config);
-
-    resolve_pid_path(opts, pp, sizeof(pp));
-
-    if (file_exists(pp)) {
-        FILE *f = fopen(pp, "r");
-        if (f) {
-            int pid;
-            if (fscanf(f, "%d", &pid) == 1 && kill(pid, 0) == 0) {
-                fprintf(stderr, "Daemon already running (PID: %d)\n", pid);
-                fclose(f);
-                return 1;
+        if (load_traffic_state(&prev_stats) == 0 &&
+            strcmp(prev_stats.iface, vpn_iface) == 0 &&
+            prev_stats.timestamp > 0) {
+            double elapsed = difftime(current_stats.timestamp, prev_stats.timestamp);
+            if (elapsed >= 1.0 && elapsed <= 3600.0) {
+                unsigned long long rx_diff = (current_stats.rx_bytes > prev_stats.rx_bytes) ?
+                                             (current_stats.rx_bytes - prev_stats.rx_bytes) : 0;
+                unsigned long long tx_diff = (current_stats.tx_bytes > prev_stats.tx_bytes) ?
+                                             (current_stats.tx_bytes - prev_stats.tx_bytes) : 0;
+                unsigned long long rx_speed = (unsigned long long)((double)rx_diff / elapsed);
+                unsigned long long tx_speed = (unsigned long long)((double)tx_diff / elapsed);
+                format_speed(rx_speed_str, sizeof(rx_speed_str), rx_speed);
+                format_speed(tx_speed_str, sizeof(tx_speed_str), tx_speed);
+                char speed_info[64];
+                snprintf(speed_info, sizeof(speed_info), "%s (over %.0fs)", rx_speed_str, elapsed);
+                ui_table_subrow("├─", "📈 Avg RX Speed", speed_info);
+                snprintf(speed_info, sizeof(speed_info), "%s (over %.0fs)", tx_speed_str, elapsed);
+                ui_table_subrow("└─", "📉 Avg TX Speed", speed_info);
+            } else {
+                ui_table_subrow("├─", "📈 Avg RX Speed", "(sampling...)");
+                ui_table_subrow("└─", "📉 Avg TX Speed", "(sampling...)");
             }
-            fclose(f);
-        }
-        unlink(pp);
-    }
-
-    if (opts->daemon && !opts->foreground) {
-        daemonize();
-    }
-
-    if (write_pid_file(pp) < 0) {
-        fprintf(stderr, "Failed to write PID file\n");
-        return 1;
-    }
-
-    atpd_context_init();
-    atp_register_cleanup(&g_config);
-
-    if (g_config.bypass_cn_ip && g_config.ebpf_enabled && g_config.cnip_mode == 1) {
-        LOG_INFO("Initializing eBPF CNIP...");
-        atpd_ebpf_state_transition(EBPF_STATE_LOADING);
-        int ret = boxbpf_init_from_config(&g_config);
-        if (ret == ATP_OK) {
-            g_config.ebpf_ready = 1;
-            g_atpd_ctx.ebpf_enabled = true;
-            g_atpd_ctx.ebpf_probed = true;
-            strncpy(g_atpd_ctx.ebpf_pin_dir, g_config.ebpf_pin_dir,
-                    sizeof(g_atpd_ctx.ebpf_pin_dir) - 1);
-            g_atpd_ctx.ebpf_pin_dir[sizeof(g_atpd_ctx.ebpf_pin_dir) - 1] = '\0';
-            atpd_ebpf_state_transition(EBPF_STATE_READY);
-            LOG_INFO("eBPF CNIP ready (pin: %s)", g_config.ebpf_pin_dir);
         } else {
-            g_config.ebpf_ready = 0;
-            g_atpd_ctx.ebpf_enabled = false;
-            atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-            LOG_WARN("eBPF CNIP init failed, using ipset fallback");
+            ui_table_subrow("├─", "📈 Avg RX Speed", "(first sample)");
+            ui_table_subrow("└─", "📉 Avg TX Speed", "(first sample)");
         }
+        save_traffic_state(&current_stats);
     } else {
-        g_config.ebpf_ready = 0;
-        g_atpd_ctx.ebpf_enabled = false;
-        atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
-        if (!g_config.bypass_cn_ip) {
-            LOG_DEBUG("CNIP bypass disabled");
-        } else if (!g_config.ebpf_enabled) {
-            LOG_DEBUG("eBPF disabled (ENABLE_EBPF=0)");
-        } else if (g_config.cnip_mode != 1) {
-            LOG_DEBUG("CNIP_MODE is not 'ebpf'");
-        }
+        ui_table_subrow("├─", "📥 Total RX", "N/A");
+        ui_table_subrow("├─", "📤 Total TX", "N/A");
+        ui_table_subrow("├─", "📈 Avg RX Speed", "N/A");
+        ui_table_subrow("└─", "📉 Avg TX Speed", "N/A");
     }
 
-    if (netlink_init(NULL, &g_config) < 0) {
-        LOG_ERROR("Failed to initialize netlink");
-        cleanup_ebpf();
-        unlink(pp);
-        return 1;
-    }
-
-    if (g_config.app_proxy_enable) {
-        app_filter_init(&g_config);
-    }
-
-    fcm_monitor_init(&g_config);
-
-    if (g_config.performance_mode) {
-        perf_mode_init(&g_config);
-    }
-
-    api_init(&g_api_ctx, &g_config);
-
-    g_svc = malloc(sizeof(service_ctx_t));
-    if (!g_svc) {
-        LOG_ERROR("Failed to allocate service context");
-        cleanup_ebpf();
-        unlink(pp);
-        return 1;
-    }
-
-    if (service_init(g_svc, &g_config) < 0) {
-        LOG_ERROR("Failed to initialize service");
-        free(g_svc);
-        g_svc = NULL;
-        cleanup_ebpf();
-        unlink(pp);
-        return 1;
-    }
-
-    if (g_config.app_proxy_enable) {
-        app_filter_setup(&g_config);
-    }
-
-    if (g_config.performance_mode) {
-        perf_mode_setup(&g_config);
-    }
-
-    netlink_set_tproxy_ready();
-    run_event_loop();
-
-    return 0;
+    ui_table_end();
 }
 
-static int do_stop(atp_options_t *opts) {
-    char cp[SAFE_PATH_MAX];
-    char pp[SAFE_PATH_MAX];
+static void status_show_engine_v2(void) {
+    char buf[128];
+    const char *stage = "IDLE";
+    const char *color = COLOR_RED;
+    const char *emoji = "x";
 
-    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) == ATP_OK) {
-        config_set_defaults(&g_config);
-        config_load(cp, &g_config);
-    } else {
-        config_set_defaults(&g_config);
-    }
+    ui_table_begin();
+    ui_table_header("REACTOR ENGINE (v2.0)");
 
-    resolve_pid_path(opts, pp, sizeof(pp));
-
-    FILE *f = fopen(pp, "r");
-    if (!f) {
-        fprintf(stderr, "Daemon is not running (no PID file)\n");
-        return 1;
-    }
-
-    int pid;
-    if (fscanf(f, "%d", &pid) != 1) {
-        fprintf(stderr, "Invalid PID file\n");
-        fclose(f);
-        return 1;
-    }
-    fclose(f);
-
-    if (kill(pid, 0) < 0) {
-        fprintf(stderr, "Daemon is not running (stale PID file)\n");
-        atp_cleanup_manual(&g_config);
-        unlink(pp);
-        return 0;
-    }
-
-    if (!confirm_operation("stop", opts->force)) {
-        return 0;
-    }
-
-    printf("Stopping daemon (PID: %d)...\n", pid);
-    kill(pid, SIGTERM);
-
-    for (int i = 0; i < SERVICE_STOP_RETRY_COUNT; i++) {
-        if (kill(pid, 0) < 0) {
-            printf("Daemon stopped\n");
-            unlink(pp);
-            boxbpf_clear();
-            return 0;
-        }
-        usleep(SERVICE_STOP_INTERVAL_MS * 1000);
-    }
-
-    printf("Daemon not responding, forcing kill...\n");
-    kill(pid, SIGKILL);
-    unlink(pp);
-    boxbpf_clear();
-    return 0;
-}
-
-static int do_status(atp_options_t *opts) {
-    char cp[SAFE_PATH_MAX];
-    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != ATP_OK) {
-        fprintf(stderr, "Config file not found\n");
-        return 1;
-    }
-
-    config_set_defaults(&g_config);
-    config_load(cp, &g_config);
-
-    if (opts->no_color) ui_set_no_color(1);
-    ui_init();
-
-    service_ctx_t svc = {0};
-    service_init(&svc, &g_config);
-    api_init(&g_api_ctx, &g_config);
-
-    netlink_init(NULL, &g_config);
-    char vpn_iface[IFNAMSIZ] = {0};
-    if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
-        atpd_vpn_state_transition(VPN_STATE_READY, 0, vpn_iface);
-    }
-    status_show(&g_config, &svc, &g_api_ctx);
-
-    netlink_cleanup();
-    api_cleanup(&g_api_ctx);
-
-    return 0;
-}
-
-static int do_reload(atp_options_t *opts) {
-    char cp[SAFE_PATH_MAX];
-    char pp[SAFE_PATH_MAX];
-
-    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) == ATP_OK) {
-        config_set_defaults(&g_config);
-        config_load(cp, &g_config);
-    } else {
-        config_set_defaults(&g_config);
-    }
-
-    resolve_pid_path(opts, pp, sizeof(pp));
-
-    FILE *f = fopen(pp, "r");
-    if (!f) {
-        fprintf(stderr, "Daemon is not running\n");
-        return 1;
-    }
-
-    int pid;
-    if (fscanf(f, "%d", &pid) != 1) {
-        fprintf(stderr, "Invalid PID file\n");
-        fclose(f);
-        return 1;
-    }
-    fclose(f);
-
-    if (kill(pid, SIGHUP) == 0) {
-        printf("Reload signal sent to daemon (PID: %d)\n", pid);
-        return 0;
-    } else {
-        fprintf(stderr, "Failed to send reload signal\n");
-        return 1;
-    }
-}
-
-static int do_check(atp_options_t *opts) {
-    char cp[SAFE_PATH_MAX];
-    if (find_config_file(cp, SAFE_PATH_MAX, opts->config_file) != ATP_OK) {
-        fprintf(stderr, "Config file not found\n");
-        return 1;
-    }
-
-    config_set_defaults(&g_config);
-    if (config_load(cp, &g_config) != ATP_OK) {
-        fprintf(stderr, "Failed to load config\n");
-        return 1;
-    }
-
-    printf("Config file: %s\n", cp);
-    printf("Configuration valid\n");
-    return 0;
-}
-
-static int do_update_geoip(atp_options_t *opts) {
-    (void)opts;
-
-    if (!g_config.bypass_cn_ip) {
-        printf("CNIP bypass disabled, skipping update\n");
-        return 0;
-    }
-
-    printf("Updating GeoIP database...\n");
-
-    int ret = geoip_force_update(&g_config);
-    if (ret == 0) {
-        printf("GeoIP update completed successfully\n");
-        return 0;
-    } else {
-        printf("GeoIP update failed\n");
-        return 1;
-    }
-}
-
-static int do_ebpf_probe(atp_options_t *opts) {
-    int ret = boxbpf_probe(opts->ipv6);
-    if (ret == ATP_OK) {
-        printf("supported=1\n");
-        printf("message=ok\n");
-        printf("lpm_ipv4=1\n");
-        printf("program_ipv4=1\n");
-        printf("pin_ipv4=1\n");
-        if (opts->ipv6) {
-            printf("lpm_ipv6=1\n");
-            printf("program_ipv6=1\n");
-            printf("pin_ipv6=1\n");
-        }
-        return ATP_OK;
-    } else {
-        printf("supported=0\n");
-        printf("message=eBPF xt_bpf unavailable\n");
-        return ATP_ERR_EBPF;
-    }
-}
-
-static int do_ebpf_init(atp_options_t *opts) {
-    atp_config_t cfg;
-    config_set_defaults(&cfg);
-    if (opts->config_file[0] != '\0') {
-        config_load(opts->config_file, &cfg);
-    } else {
-        char cp[SAFE_PATH_MAX];
-        if (find_config_file(cp, SAFE_PATH_MAX, NULL) == ATP_OK) {
-            config_load(cp, &cfg);
-        }
-    }
-    if (opts->ebpf_config[0] != '\0') {
-        strncpy(cfg.ebpf_config_path, opts->ebpf_config, sizeof(cfg.ebpf_config_path) - 1);
-    }
-    return boxbpf_init_from_config(&cfg);
-}
-
-static int do_ebpf_apply(atp_options_t *opts) {
-    const char *config_path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/config.json";
-    return boxbpf_apply(config_path);
-}
-
-static int do_ebpf_update(atp_options_t *opts) {
-    const char *config_path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/config.json";
-    return boxbpf_update(config_path);
-}
-
-static int do_ebpf_clear(atp_options_t *opts) {
-    (void)opts;
-    return boxbpf_clear();
-}
-
-static int do_ebpf_status(atp_options_t *opts) {
-    char state[64] = {0};
-    atp_config_t cfg;
-    config_set_defaults(&cfg);
-    if (opts->config_file[0] != '\0') {
-        config_load(opts->config_file, &cfg);
-    } else {
-        char cp[SAFE_PATH_MAX];
-        if (find_config_file(cp, SAFE_PATH_MAX, NULL) == ATP_OK) {
-            config_load(cp, &cfg);
-        }
-    }
-    if (boxbpf_status(state, sizeof(state), &cfg) == ATP_OK) {
-        printf("eBPF Status: %s\n", state);
-        return ATP_OK;
-    } else {
-        printf("eBPF Status: UNINITIALIZED\n");
-        return ATP_ERR_EBPF;
-    }
-}
-
-int status_main(int argc, char *argv[]) {
-    atp_options_t opts = {0};
-
-    if (parse_arguments(argc, argv, &opts) != 0) {
-        return 1;
-    }
-
-    switch (opts.command) {
-        case CMD_START:
-            return do_start(&opts);
-        case CMD_STOP:
-            return do_stop(&opts);
-        case CMD_STATUS:
-            return do_status(&opts);
-        case CMD_RELOAD:
-            return do_reload(&opts);
-        case CMD_CHECK:
-            return do_check(&opts);
-        case CMD_UPDATE_GEOIP:
-            return do_update_geoip(&opts);
-        case CMD_VERSION:
-            print_version();
-            return 0;
-        case CMD_HELP:
-            print_usage(argv[0]);
-            return 0;
-        case CMD_EBPF_PROBE:
-            return do_ebpf_probe(&opts);
-        case CMD_EBPF_INIT:
-            return do_ebpf_init(&opts);
-        case CMD_EBPF_APPLY:
-            return do_ebpf_apply(&opts);
-        case CMD_EBPF_UPDATE:
-            return do_ebpf_update(&opts);
-        case CMD_EBPF_CLEAR:
-            return do_ebpf_clear(&opts);
-        case CMD_EBPF_STATUS:
-            return do_ebpf_status(&opts);
+    switch (g_atpd_ctx.vpn_state) {
+        case VPN_STATE_READY:
+            stage = "READY";
+            color = COLOR_GREEN;
+            emoji = "⚡";
+            break;
+        case VPN_STATE_PREDICTING:
+            stage = "PREDICTING";
+            color = COLOR_CYAN;
+            emoji = "~";
+            break;
+        case VPN_STATE_TEARDOWN:
+            stage = "TEARDOWN";
+            color = COLOR_RED;
+            emoji = "!";
+            break;
         default:
-            print_usage(argv[0]);
-            return 0;
+            stage = "IDLE";
+            color = COLOR_RED;
+            emoji = "x";
+            break;
     }
+
+    snprintf(buf, sizeof(buf), "%s  %s", emoji, stage);
+    ui_table_row_color("State Machine", buf, color);
+
+    int pipe_size = 0;
+    if (g_atpd_ctx.xfrm_fd > 0) {
+        pipe_size = fcntl(g_atpd_ctx.xfrm_fd, F_GETPIPE_SZ);
+    }
+    if (pipe_size > 0) {
+        snprintf(buf, sizeof(buf), "%d KB", pipe_size / 1024);
+    } else {
+        snprintf(buf, sizeof(buf), "N/A");
+    }
+    ui_table_subrow("├─", "Pipe Size", buf);
+
+    snprintf(buf, sizeof(buf), "0");
+    ui_table_subrow_color("├─", "Backpressure", buf, COLOR_GREEN);
+
+    snprintf(buf, sizeof(buf), "%llu bytes", (unsigned long long)g_atpd_ctx.splice_bytes_total);
+    ui_table_subrow("├─", "Total Spliced", buf);
+
+    const char *xfrm_status = "PENDING";
+    const char *xfrm_color = COLOR_YELLOW;
+
+    if (g_atpd_ctx.xfrm_if_id == 41) {
+        xfrm_status = "LOCKED (IF_ID=41)";
+        xfrm_color = COLOR_GREEN;
+    } else if (g_atpd_ctx.vpn_state == VPN_STATE_READY) {
+        xfrm_status = "LOCKED";
+        xfrm_color = COLOR_GREEN;
+    } else if (g_atpd_ctx.vpn_state == VPN_STATE_PREDICTING) {
+        xfrm_status = "PREDICTING";
+        xfrm_color = COLOR_CYAN;
+    }
+
+    snprintf(buf, sizeof(buf), "%s", xfrm_status);
+    ui_table_subrow_color("└─", "XFRM Sync", buf, xfrm_color);
+
+    ui_table_end();
+}
+
+static void status_show_system(void) {
+    int temp = get_cpu_temperature();
+    char pid_path[PATH_MAX];
+    struct stat st;
+    char uptime_str[64];
+
+    ui_table_begin();
+    ui_table_header("SYSTEM");
+
+    if (temp > 0) {
+        char temp_str[32];
+        if (temp >= THERMAL_TEMP_CRITICAL / 1000) {
+            snprintf(temp_str, sizeof(temp_str), "%d°C [CRITICAL]", temp);
+            ui_table_subrow_color("├─", "🌡️ CPU Temp", temp_str, COLOR_RED);
+        } else if (temp >= THERMAL_TEMP_WARN / 1000) {
+            snprintf(temp_str, sizeof(temp_str), "%d°C [WARN]", temp);
+            ui_table_subrow_color("├─", "🌡️ CPU Temp", temp_str, COLOR_YELLOW);
+        } else {
+            snprintf(temp_str, sizeof(temp_str), "%d°C", temp);
+            ui_table_subrow_color("├─", "🌡️ CPU Temp", temp_str, COLOR_GREEN);
+        }
+    } else {
+        ui_table_subrow("├─", "🌡️ CPU Temp", "N/A");
+    }
+
+    snprintf(pid_path, sizeof(pid_path), "%s/%s", ATP_DEFAULT_DIR, ATP_PID_FILE);
+    if (stat(pid_path, &st) == 0) {
+        time_t now = time(NULL);
+        int elapsed = (int)(now - st.st_mtime);
+        format_uptime_human(elapsed, uptime_str, sizeof(uptime_str));
+        ui_table_subrow("└─", "⏱️ Daemon Uptime", uptime_str);
+    } else {
+        ui_table_subrow("└─", "⏱️ Daemon Uptime", "N/A");
+    }
+
+    ui_table_end();
+}
+
+void status_show_config(atp_config_t *cfg) {
+    char ports_str[64];
+    char mark_str[64];
+
+    ui_title("ATP Configuration");
+
+    ui_table_begin();
+    ui_table_header("CONFIGURATION");
+    ui_table_subrow("├─", "Proxy Mode", proxy_mode_to_string(cfg));
+    ui_table_subrow("├─", "Performance", cfg->performance_mode ? "ACTIVE" : "DISABLED");
+    snprintf(ports_str, sizeof(ports_str), "TCP=%d, UDP=%d, REDIRECT=%d", cfg->tcp_port, cfg->udp_port, cfg->redirect_tcp_port);
+    ui_table_subrow("├─", "Ports", ports_str);
+    ui_table_subrow("├─", "IPv6", cfg->proxy_ipv6 ? "ENABLED" : "DISABLED");
+    char dns_str[64];
+    snprintf(dns_str, sizeof(dns_str), "%s (port %d)", cfg->dns_hijack ? "ENABLED" : "DISABLED", cfg->dns_port);
+    ui_table_subrow("├─", "DNS Hijack", dns_str);
+    ui_table_subrow_int("├─", "Table ID", cfg->table_id);
+    snprintf(mark_str, sizeof(mark_str), "IPv4=0x%x, IPv6=0x%x", cfg->mark_value, cfg->mark_value6);
+    ui_table_subrow("└─", "Mark", mark_str);
+    ui_table_end();
+
+    ui_table_begin();
+    ui_table_header("INTERFACE CONTROL");
+    char mobile_status[64];
+    snprintf(mobile_status, sizeof(mobile_status), "%s -> %s", cfg->mobile_iface, cfg->proxy_mobile ? "PROXIED" : "BYPASS");
+    ui_table_subrow_emoji("├─", ui_emoji_mobile(), mobile_status);
+    char wifi_status[64];
+    snprintf(wifi_status, sizeof(wifi_status), "%s -> %s", cfg->wifi_iface, cfg->proxy_wifi ? "PROXIED" : "BYPASS");
+    ui_table_subrow_emoji("├─", ui_emoji_wifi(1), wifi_status);
+    char hotspot_status[64];
+    snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s", cfg->hotspot_iface, cfg->proxy_hotspot ? "PROXIED" : "BYPASS");
+    ui_table_subrow_emoji("├─", ui_emoji_hotspot(), hotspot_status);
+    char usb_status[64];
+    snprintf(usb_status, sizeof(usb_status), "%s -> %s", cfg->usb_iface, cfg->proxy_usb ? "PROXIED" : "BYPASS");
+    ui_table_subrow_emoji("└─", ui_emoji_usb(), usb_status);
+    ui_table_end();
+
+    ui_table_begin();
+    ui_table_header("FILTERS");
+    if (cfg->app_proxy_enable) {
+        char app_status[128];
+        snprintf(app_status, sizeof(app_status), "ENABLED (%s mode)", cfg->app_proxy_mode);
+        ui_table_subrow_emoji("├─", ui_emoji_mobile(), app_status);
+    } else {
+        ui_table_subrow_emoji("├─", ui_emoji_mobile(), "DISABLED");
+    }
+    if (cfg->mac_filter_enable) {
+        char mac_status[128];
+        snprintf(mac_status, sizeof(mac_status), "ENABLED (%s mode)", cfg->mac_proxy_mode);
+        ui_table_subrow_emoji("├─", "🔢", mac_status);
+    } else {
+        ui_table_subrow_emoji("├─", "🔢", "DISABLED");
+    }
+    if (cfg->bypass_cn_ip) {
+        ui_table_subrow_emoji("└─", "🌏", "ENABLED (ipset cnip)");
+    } else {
+        ui_table_subrow_emoji("└─", "🌏", "DISABLED");
+    }
+    ui_table_end();
+}
+
+void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
+    ui_title("ATP Status");
+
+    status_show_proxy_core(svc);
+    ui_blank();
+
+    status_show_clash_mode(cfg, api, svc);
+    ui_blank();
+
+    status_show_ebpf();
+    ui_blank();
+
+    status_show_monitors();
+    ui_blank();
+
+    status_show_vpn();
+    ui_blank();
+
+    status_show_engine_v2();
+    ui_blank();
+
+    status_show_system();
 }
