@@ -1,5 +1,5 @@
-#ifndef ATP_CONFIG_H
-#define ATP_CONFIG_H
+#ifndef CONFIG_H
+#define CONFIG_H
 
 #include "atp.h"
 
