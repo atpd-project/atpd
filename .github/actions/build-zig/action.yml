@@ -62,6 +62,7 @@ runs:
           -Iinclude \
           -D_GNU_SOURCE \
           -DNDEBUG \
+          -DLOG_LOCATION_ENABLED=0 \
           -o atpd-zig \
           $(find src -name "*.c" ! -path "src/cjson/*" ! -path "src/yyjson/*" ! -name "epoll.c") \
           src/yyjson/yyjson.c \
