@@ -1,3 +1,10 @@
+/*
+ * ATP - Advanced Transparent Proxy
+ * Copyright (C) 2024-2025 ATP Project
+ *
+ * Status display
+ */
+
 #include "status.h"
 #include "logger.h"
 #include "utils.h"
@@ -9,6 +16,7 @@
 #include "perf_mode.h"
 #include "atpd_context.h"
 #include "boxbpf.h"
+#include "atpd_global.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -16,6 +24,8 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fcntl.h>
+
+#define g_config g_atpd.config
 
 #define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
@@ -175,28 +185,38 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
 
 static void status_show_ebpf(void) {
     char state[64] = {0};
+    char pin_dir[256];
+    struct stat st;
+
+    snprintf(pin_dir, sizeof(pin_dir), "/sys/fs/bpf/box");
 
     ui_table_begin();
     ui_table_header("eBPF CNIP");
 
     if (boxbpf_status(state, sizeof(state), &g_config) == 0) {
-        if (strcmp(state, "uninitialized") == 0) {
-            ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
-        } else if (strcmp(state, "partial") == 0) {
-            ui_table_subrow_color("├─", "State", "PARTIAL", COLOR_YELLOW);
-            ui_table_subrow("├─", "Pin Dir", g_config.ebpf_pin_dir);
-            ui_table_subrow("└─", "Note", "Some configured features not loaded");
-        } else if (strcmp(state, "ready_core") == 0) {
-            ui_table_subrow_color("├─", "State", "READY (core)", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", g_config.ebpf_pin_dir);
-            ui_table_subrow("└─", "Note", "CNIP only, extensions not configured");
-        } else {
+        if (strcmp(state, "ready") == 0) {
             ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
             ui_table_subrow("├─", "Pin Dir", g_config.ebpf_pin_dir);
-            ui_table_subrow("└─", "Note", "All configured features loaded");
+            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+        } else if (strcmp(state, "failed") == 0) {
+            ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
+            ui_table_subrow("└─", "Fallback", "ipset");
+        } else if (strcmp(state, "disabled") == 0) {
+            ui_table_subrow_color("├─", "State", "DISABLED", COLOR_YELLOW);
+            ui_table_subrow("└─", "CNIP Mode", "ipset");
+        } else {
+            ui_table_subrow_color("└─", "State", state, COLOR_RED);
         }
     } else {
-        ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
+        char pin_path[256];
+        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", pin_dir);
+        if (stat(pin_path, &st) == 0) {
+            ui_table_subrow_color("├─", "State", "READY (pin)", COLOR_GREEN);
+            ui_table_subrow("├─", "Pin Dir", pin_dir);
+            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+        } else {
+            ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
+        }
     }
 
     ui_table_end();
