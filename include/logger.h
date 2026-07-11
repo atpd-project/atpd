@@ -110,6 +110,7 @@ void log_write_v(log_level_t level, const char *file, int line, const char *func
 } while(0)
 
 #define LOG_DEBUG_LAZY(fmt, ...) LOG_DEBUG(fmt, ##__VA_ARGS__)
+#define LOG_EXEC(cmd) do { log_write(LOG_LEVEL_DEBUG, __FILE__, __LINE__, __FUNCTION__, "EXEC: %s", cmd); } while(0)
 #define LOG_INFO_LAZY(fmt, ...)  LOG_INFO(fmt, ##__VA_ARGS__)
 #define LOG_WARN_LAZY(fmt, ...)  LOG_WARN(fmt, ##__VA_ARGS__)
 
