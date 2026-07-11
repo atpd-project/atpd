@@ -1,3 +1,4 @@
+#include "atpd_global.h"
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
@@ -38,7 +39,6 @@ static void api_process_requests(api_ctx_t *ctx);
 
 /* ========== Global Context ========== */
 
-extern api_ctx_t g_api_ctx;
 
 /* ========== URL Parsing ========== */
 
