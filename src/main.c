@@ -91,9 +91,8 @@ static void on_idle(reactor_t *r, void *userdata) {
 
     if (g_reload) {
         config_reload(&g_config);
-        if (g_config.app_proxy_enable) {
-            app_filter_reload(&g_config);
-        }
+        g_reload = 0;
+    }
         g_reload = 0;
     }
 

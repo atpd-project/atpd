@@ -169,25 +169,50 @@ int geoip_atomic_update(atp_config_t *cfg) {
     char v4_p[SAFE_PATH_MAX], v4_t[SAFE_PATH_MAX], v4_r[SAFE_PATH_MAX], v4_rt[SAFE_PATH_MAX];
     char v6_p[SAFE_PATH_MAX], v6_t[SAFE_PATH_MAX], v6_r[SAFE_PATH_MAX], v6_rt[SAFE_PATH_MAX];
     int ret = 0;
+    int ipset_v4_updated = 0;
+    int ipset_v6_updated = 0;
+    int has_backup = 0;
 
     snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_t, sizeof(v4_t), "%s/rules/%.255s.tmp", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_r, sizeof(v4_r), "%s/rules/%.255s.parsed", cfg->data_dir, cfg->cn_ip_file);
     snprintf(v4_rt, sizeof(v4_rt), "%s/rules/%.255s.parsed.tmp", cfg->data_dir, cfg->cn_ip_file);
 
+    /* 备份现有的 ipset */
+    if (ipset_exists("cnip")) {
+        ipset_create("cnip_backup", 4, 8192, 65536);
+        ipset_swap("cnip", "cnip_backup");
+        has_backup = 1;
+        LOG_DEBUG("GeoIP: Created backup of cnip ipset");
+    }
+
     if (geoip_download_url(cfg->cn_ip_url, v4_t, GEOIP_TIMEOUT_SEC) != 0) {
         LOG_ERROR("GeoIP: failed to download IPv4 list");
+        /* 恢复备份 */
+        if (has_backup && ipset_exists("cnip_backup")) {
+            ipset_swap("cnip_backup", "cnip");
+            ipset_destroy("cnip_backup");
+            LOG_INFO("GeoIP: Restored cnip from backup");
+        }
         return -1;
     }
     ipset_parse_cidr_file(v4_t, v4_rt, 4);
     ipset_create("cnip_temp", 4, 8192, 65536);
     ipset_restore_file("cnip_temp", v4_rt);
     ipset_swap("cnip_temp", "cnip");
+    ipset_v4_updated = 1;
     ipset_destroy("cnip_temp");
     rename(v4_t, v4_p);
     rename(v4_rt, v4_r);
 
     if (cfg->proxy_ipv6) {
+        /* 备份 IPv6 ipset */
+        if (ipset_exists("cnip6")) {
+            ipset_create("cnip6_backup", 6, 8192, 65536);
+            ipset_swap("cnip6", "cnip6_backup");
+            LOG_DEBUG("GeoIP: Created backup of cnip6 ipset");
+        }
+
         snprintf(v6_p, sizeof(v6_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ipv6_file);
         snprintf(v6_t, sizeof(v6_t), "%s/rules/%.255s.tmp", cfg->data_dir, cfg->cn_ipv6_file);
         snprintf(v6_r, sizeof(v6_r), "%s/rules/%.255s.parsed", cfg->data_dir, cfg->cn_ipv6_file);
@@ -200,21 +225,53 @@ int geoip_atomic_update(atp_config_t *cfg) {
             ipset_create("cnip6_temp", 6, 8192, 65536);
             ipset_restore_file("cnip6_temp", v6_rt);
             ipset_swap("cnip6_temp", "cnip6");
+            ipset_v6_updated = 1;
             ipset_destroy("cnip6_temp");
             rename(v6_t, v6_p);
             rename(v6_rt, v6_r);
         }
     }
 
+    /* 更新 eBPF */
     if (cfg->ebpf_ready && cfg->ebpf_enabled && cfg->cnip_mode == 1) {
         LOG_INFO("GeoIP: updating eBPF CNIP maps...");
         if (boxbpf_update(cfg->ebpf_config_path) != 0) {
-            LOG_WARN("GeoIP: eBPF CNIP maps update failed, ipset already updated");
+            LOG_ERROR("GeoIP: eBPF CNIP maps update failed! Rolling back ipset...");
+
+            /* 回滚 IPv4 ipset */
+            if (has_backup && ipset_exists("cnip_backup")) {
+                ipset_swap("cnip_backup", "cnip");
+                ipset_destroy("cnip_backup");
+                LOG_INFO("GeoIP: cnip rolled back to previous version");
+            } else {
+                LOG_WARN("GeoIP: No cnip backup available, ipset may be inconsistent");
+                ret = -1;
+            }
+
+            /* 回滚 IPv6 ipset */
+            if (cfg->proxy_ipv6 && ipset_exists("cnip6_backup")) {
+                ipset_swap("cnip6_backup", "cnip6");
+                ipset_destroy("cnip6_backup");
+                LOG_INFO("GeoIP: cnip6 rolled back to previous version");
+            }
+
+            return -1;
         } else {
             LOG_INFO("GeoIP: eBPF CNIP maps updated");
         }
     }
 
+    /* 清理备份 */
+    if (ipset_exists("cnip_backup")) {
+        ipset_destroy("cnip_backup");
+    }
+    if (cfg->proxy_ipv6 && ipset_exists("cnip6_backup")) {
+        ipset_destroy("cnip6_backup");
+    }
+
+    LOG_INFO("GeoIP: atomic update completed (ipset_v4=%d, ipset_v6=%d, ebpf_updated=%d)",
+             ipset_v4_updated, ipset_v6_updated,
+             cfg->ebpf_ready && cfg->ebpf_enabled && cfg->cnip_mode == 1);
     return ret;
 }
 
