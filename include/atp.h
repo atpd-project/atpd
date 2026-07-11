@@ -133,6 +133,8 @@ typedef struct {
     char wifi_iface[IFNAMSIZ];
     char hotspot_iface[IFNAMSIZ];
     char usb_iface[IFNAMSIZ];
+    char hotspot_subnet_ipv4[64];
+    char hotspot_subnet_ipv6[64];
     int proxy_mobile;
     int proxy_wifi;
     int proxy_hotspot;
@@ -141,6 +143,12 @@ typedef struct {
     /* Filters */
     int app_proxy_enable;
     char app_proxy_mode[32];
+    char other_proxy[4096];
+    char other_bypass[4096];
+    char bypass_ipv4_list[4096];
+    char bypass_ipv6_list[4096];
+    char proxy_ipv4_list[4096];
+    char proxy_ipv6_list[4096];
     int mac_filter_enable;
     char mac_proxy_mode[32];
     int bypass_cn_ip;
