@@ -718,7 +718,7 @@ static int do_ebpf_status(atp_options_t *opts) {
     }
 }
 
-int main(int argc, char *argv[]) {
+int status_main(int argc, char *argv[]) {
     atp_options_t opts = {0};
 
     if (parse_arguments(argc, argv, &opts) != 0) {
