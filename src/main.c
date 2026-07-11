@@ -29,7 +29,6 @@
 #include "reactor.h"
 #include "uds.h"
 #include "singbox_api.h"
-#include "atpd_state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -600,7 +599,6 @@ int main(int argc, char *argv[]) {
 
     config_set_defaults(&g_config);
     atpd_context_init();
-    atpd_state_machine_init(NULL);
 
     switch (opts.command) {
         case CMD_START:
