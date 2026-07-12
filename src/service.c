@@ -673,8 +673,8 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
 
     backoff_init(&ctx->backoff);
 
-    ctx->breaker.threshold = cfg->service_circuit_threshold > 0 ? cfg->service_circuit_threshold : 5;
-    ctx->breaker.cooldown_seconds = cfg->service_circuit_cooldown_sec > 0 ? cfg->service_circuit_cooldown_sec : 60;
+    ctx->breaker.threshold = cfg->service.circuit_threshold > 0 ? cfg->service.circuit_threshold : 5;
+    ctx->breaker.cooldown_seconds = cfg->service.circuit_cooldown_sec > 0 ? cfg->service.circuit_cooldown_sec : 60;
     circuit_breaker_reset(&ctx->breaker);
 
     LOG_DEBUG("Service: initialized (bin=%s, port=%d, timeout=%ds, max_fail=%d)",
