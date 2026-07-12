@@ -66,8 +66,8 @@ static void cleanup_ebpf(void);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
         snprintf(pp, size, "%s", opts->pid_file);
-    } else if (g_config.data_dir[0]) {
-        snprintf(pp, size, "%s/%s", g_config.data_dir, ATP_PID_FILE);
+    } else if (g_config.core.data_dir[0]) {
+        snprintf(pp, size, "%s/%s", g_config.core.data_dir, ATP_PID_FILE);
     } else {
         snprintf(pp, size, "./atpd.pid");
     }
@@ -140,10 +140,10 @@ static void daemonize(void) {
 }
 
 static void cleanup_ebpf(void) {
-    if (g_config.ebpf_ready) {
+    if (g_config.ebpf.ready) {
         LOG_INFO("Cleaning up eBPF CNIP...");
         boxbpf_clear();
-        g_config.ebpf_ready = 0;
+        g_config.ebpf.ready = 0;
         g_atpd_ctx.ebpf_enabled = false;
         atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
     }
@@ -363,7 +363,7 @@ static int do_start(atp_options_t *opts) {
 
     g_svc = init_ctx.service;
 
-    if (g_config.performance_mode) {
+    if (g_config.core.performance_mode) {
         perf_mode_init(&g_config);
         perf_mode_setup(&g_config);
     }
@@ -493,7 +493,7 @@ static int do_check(atp_options_t *opts) {
 
 static int do_update_geoip(atp_options_t *opts) {
     (void)opts;
-    if (!g_config.bypass_cn_ip) {
+    if (!g_config.filter.bypass_cn_ip) {
         printf("CNIP bypass disabled, skipping update\n");
         return 0;
     }
@@ -537,7 +537,7 @@ static int do_ebpf_init(atp_options_t *opts) {
     }
     
     if (opts->ebpf_config[0] != '\0') {
-        strncpy(cfg.ebpf_config_path, opts->ebpf_config, sizeof(cfg.ebpf_config_path) - 1);
+        strncpy(cfg.ebpf.config_path, opts->ebpf_config, sizeof(cfg.ebpf.config_path) - 1);
     }
     return boxbpf_init_from_config(&cfg);
 }
