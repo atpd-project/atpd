@@ -277,20 +277,20 @@ int config_validate_values(atp_config_t *cfg) {
         errors += validate_app_proxy_mode(cfg->filter.app_proxy_mode) ? 1 : 0;
     }
     if (cfg->filter.mac_filter_enable) {
-        errors += validate_mac_proxy_mode(cfg->mac_proxy_mode) ? 1 : 0;
+        errors += validate_mac_proxy_mode(cfg->filter.mac_proxy_mode) ? 1 : 0;
     }
 
-    errors += validate_interface_name(cfg->mobile_iface, "MOBILE_INTERFACE") ? 1 : 0;
-    errors += validate_interface_name(cfg->wifi_iface, "WIFI_INTERFACE") ? 1 : 0;
-    errors += validate_interface_name(cfg->hotspot_iface, "HOTSPOT_INTERFACE") ? 1 : 0;
-    errors += validate_interface_name(cfg->usb_iface, "USB_INTERFACE") ? 1 : 0;
+    errors += validate_interface_name(cfg->interface.mobile_iface, "MOBILE_INTERFACE") ? 1 : 0;
+    errors += validate_interface_name(cfg->interface.wifi_iface, "WIFI_INTERFACE") ? 1 : 0;
+    errors += validate_interface_name(cfg->interface.hotspot_iface, "HOTSPOT_INTERFACE") ? 1 : 0;
+    errors += validate_interface_name(cfg->interface.usb_iface, "USB_INTERFACE") ? 1 : 0;
 
     char user_group[128];
-    snprintf(user_group, sizeof(user_group), "%s:%s", cfg->core_user, cfg->core_group);
+    snprintf(user_group, sizeof(user_group), "%s:%s", cfg->core.core_user, cfg->core.core_group);
     errors += validate_user_group(user_group) ? 1 : 0;
 
-    if (cfg->restart_delay < 0 || cfg->restart_delay > 3600) {
-        LOG_ERROR("RESTART_DELAY must be between 0-3600 seconds, got %d", cfg->restart_delay);
+    if (cfg->core.restart_delay < 0 || cfg->core.restart_delay > 3600) {
+        LOG_ERROR("RESTART_DELAY must be between 0-3600 seconds, got %d", cfg->core.restart_delay);
         errors++;
     }
 
