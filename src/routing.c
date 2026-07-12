@@ -11,7 +11,7 @@
 #define IP_CMD "/system/bin/ip"
 
 static int exec_ip(atp_config_t *cfg, const char *cmd, const char *arg) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] ip %s %s", cmd, arg ? arg : "");
         return 0;
     }
@@ -27,7 +27,7 @@ static int exec_ip(atp_config_t *cfg, const char *cmd, const char *arg) {
 }
 
 static int exec_ip6(atp_config_t *cfg, const char *cmd, const char *arg) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] ip -6 %s %s", cmd, arg ? arg : "");
         return 0;
     }
@@ -69,7 +69,7 @@ int routing_rule_del_all_by_pref(atp_config_t *cfg, int family, int pref) {
     char check_buf[256];
     char output[256];
     
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would delete all rules with pref %d", pref);
         return 0;
     }
@@ -125,7 +125,7 @@ static int routing_rule_exists(atp_config_t *cfg, int family, int mark, int tabl
     char cmd[MAX_CMD_LEN];
     char output[256];
     
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Check routing rule exists: fwmark 0x%x table %d", mark, table_id);
         return 0;
     }
@@ -143,14 +143,14 @@ static int routing_rule_exists(atp_config_t *cfg, int family, int mark, int tabl
 
 int routing_setup_ipv4(atp_config_t *cfg) {
     LOG_INFO("Setting up IPv4 policy routing (table=%d, mark=%d)", 
-             cfg->table_id, cfg->mark_value);
+             cfg->network.table_id, cfg->network.mark_value);
     
-    routing_rule_del_all_by_pref(cfg, 4, cfg->table_id);
+    routing_rule_del_all_by_pref(cfg, 4, cfg->network.table_id);
     
-    if (!routing_rule_exists(cfg, 4, cfg->mark_value, cfg->table_id)) {
+    if (!routing_rule_exists(cfg, 4, cfg->network.mark_value, cfg->network.table_id)) {
         char rule_buf[128];
         snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x%x table %d pref %d",
-                 cfg->mark_value, cfg->table_id, cfg->table_id);
+                 cfg->network.mark_value, cfg->network.table_id, cfg->network.table_id);
         routing_rule_add(cfg, 4, rule_buf);
         LOG_DEBUG("Added IPv4 routing rule");
     } else {
@@ -159,7 +159,7 @@ int routing_setup_ipv4(atp_config_t *cfg) {
     
     char route_buf[128];
     snprintf(route_buf, sizeof(route_buf), "local 0.0.0.0/0 dev lo table %d",
-             cfg->table_id);
+             cfg->network.table_id);
     routing_route_add(cfg, 4, route_buf);
     
     routing_ip_forward_enable(cfg, 1);
@@ -169,20 +169,20 @@ int routing_setup_ipv4(atp_config_t *cfg) {
 }
 
 int routing_setup_ipv6(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) {
+    if (!cfg->network.proxy_ipv6) {
         LOG_DEBUG("IPv6 proxy disabled, skipping routing");
         return 0;
     }
     
     LOG_INFO("Setting up IPv6 policy routing (table=%d, mark=%d)", 
-             cfg->table_id, cfg->mark_value6);
+             cfg->network.table_id, cfg->network.mark_value6);
     
-    routing_rule_del_all_by_pref(cfg, 6, cfg->table_id);
+    routing_rule_del_all_by_pref(cfg, 6, cfg->network.table_id);
     
-    if (!routing_rule_exists(cfg, 6, cfg->mark_value6, cfg->table_id)) {
+    if (!routing_rule_exists(cfg, 6, cfg->network.mark_value6, cfg->network.table_id)) {
         char rule_buf[128];
         snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x%x table %d pref %d",
-                 cfg->mark_value6, cfg->table_id, cfg->table_id);
+                 cfg->network.mark_value6, cfg->network.table_id, cfg->network.table_id);
         routing_rule_add(cfg, 6, rule_buf);
         LOG_DEBUG("Added IPv6 routing rule");
     } else {
@@ -191,7 +191,7 @@ int routing_setup_ipv6(atp_config_t *cfg) {
     
     char route_buf[128];
     snprintf(route_buf, sizeof(route_buf), "local ::/0 dev lo table %d",
-             cfg->table_id);
+             cfg->network.table_id);
     routing_route_add(cfg, 6, route_buf);
     
     routing_ipv6_forward_enable(cfg, 1);
@@ -203,14 +203,14 @@ int routing_setup_ipv6(atp_config_t *cfg) {
 int routing_cleanup_ipv4(atp_config_t *cfg) {
     LOG_INFO("Cleaning up IPv4 policy routing");
     
-    routing_rule_del_all_by_pref(cfg, 4, cfg->table_id);
+    routing_rule_del_all_by_pref(cfg, 4, cfg->network.table_id);
     
     char route_buf[128];
     snprintf(route_buf, sizeof(route_buf), "local 0.0.0.0/0 dev lo table %d",
-             cfg->table_id);
+             cfg->network.table_id);
     routing_route_del(cfg, 4, route_buf);
     
-    routing_route_flush_table(cfg, 4, cfg->table_id);
+    routing_route_flush_table(cfg, 4, cfg->network.table_id);
     
     routing_ip_forward_enable(cfg, 0);
     
@@ -221,14 +221,14 @@ int routing_cleanup_ipv4(atp_config_t *cfg) {
 int routing_cleanup_ipv6(atp_config_t *cfg) {
     LOG_INFO("Cleaning up IPv6 policy routing");
     
-    routing_rule_del_all_by_pref(cfg, 6, cfg->table_id);
+    routing_rule_del_all_by_pref(cfg, 6, cfg->network.table_id);
     
     char route_buf[128];
     snprintf(route_buf, sizeof(route_buf), "local ::/0 dev lo table %d",
-             cfg->table_id);
+             cfg->network.table_id);
     routing_route_del(cfg, 6, route_buf);
     
-    routing_route_flush_table(cfg, 6, cfg->table_id);
+    routing_route_flush_table(cfg, 6, cfg->network.table_id);
     
     routing_ipv6_forward_enable(cfg, 0);
     
@@ -248,12 +248,12 @@ int routing_add_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
     LOG_INFO("Adding VPN policy for interface: %s", vpn_iface);
     
     char rule_buf[128];
-    snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x20000 table %d pref 20000", cfg->table_id);
+    snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x20000 table %d pref 20000", cfg->network.table_id);
     routing_rule_add(cfg, 4, rule_buf);
     LOG_DEBUG("Added global fwmark lock (pref 20000)");
     
-    if (cfg->proxy_ipv6) {
-        snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x20000 table %d pref 20000", cfg->table_id);
+    if (cfg->network.proxy_ipv6) {
+        snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x20000 table %d pref 20000", cfg->network.table_id);
         routing_rule_add(cfg, 6, rule_buf);
         LOG_DEBUG("Added IPv6 global fwmark lock");
     }
@@ -262,14 +262,14 @@ int routing_add_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
     routing_rule_add(cfg, 4, rule_buf);
     LOG_DEBUG("Added hotspot policy (iif ap0 -> %s)", vpn_iface);
     
-    if (cfg->proxy_ipv6) {
+    if (cfg->network.proxy_ipv6) {
         snprintf(rule_buf, sizeof(rule_buf), "from all iif ap0 lookup %s pref 100", vpn_iface);
         routing_rule_add(cfg, 6, rule_buf);
         LOG_DEBUG("Added IPv6 hotspot policy");
     }
     
-    strncpy(cfg->current_vpn_iface, vpn_iface, sizeof(cfg->current_vpn_iface) - 1);
-    cfg->current_vpn_iface[sizeof(cfg->current_vpn_iface) - 1] = '\0';
+    strncpy(cfg->interface.current_vpn_iface, vpn_iface, sizeof(cfg->interface.current_vpn_iface) - 1);
+    cfg->interface.current_vpn_iface[sizeof(cfg->interface.current_vpn_iface) - 1] = '\0';
     
     LOG_INFO("VPN policy added successfully");
     return 0;
@@ -277,7 +277,7 @@ int routing_add_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
 
 int routing_remove_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
     if (!vpn_iface || !vpn_iface[0]) {
-        vpn_iface = cfg->current_vpn_iface;
+        vpn_iface = cfg->interface.current_vpn_iface;
     }
     
     if (!vpn_iface || !vpn_iface[0]) return 0;
@@ -287,7 +287,7 @@ int routing_remove_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
     routing_rule_del_by_pref(cfg, 4, 20000);
     LOG_DEBUG("Removed global fwmark lock");
     
-    if (cfg->proxy_ipv6) {
+    if (cfg->network.proxy_ipv6) {
         routing_rule_del_by_pref(cfg, 6, 20000);
         LOG_DEBUG("Removed IPv6 global fwmark lock");
     }
@@ -295,12 +295,12 @@ int routing_remove_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
     routing_rule_del_by_pref(cfg, 4, 100);
     LOG_DEBUG("Removed hotspot policy");
     
-    if (cfg->proxy_ipv6) {
+    if (cfg->network.proxy_ipv6) {
         routing_rule_del_by_pref(cfg, 6, 100);
         LOG_DEBUG("Removed IPv6 hotspot policy");
     }
     
-    cfg->current_vpn_iface[0] = '\0';
+    cfg->interface.current_vpn_iface[0] = '\0';
     
     LOG_INFO("VPN policy removed successfully");
     return 0;
@@ -311,7 +311,7 @@ int routing_add_mss_clamp(atp_config_t *cfg, const char *iface) {
     
     LOG_INFO("Adding MSS clamp for interface: %s", iface);
     
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] iptables -t mangle -A FORWARD -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu", iface);
         return 0;
     }
@@ -342,7 +342,7 @@ int routing_remove_mss_clamp(atp_config_t *cfg, const char *iface) {
     
     LOG_INFO("Removing MSS clamp for interface: %s", iface);
     
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] iptables -t mangle -D FORWARD -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu", iface);
         return 0;
     }
@@ -364,7 +364,7 @@ int routing_remove_mss_clamp(atp_config_t *cfg, const char *iface) {
 int routing_ip_forward_enable(atp_config_t *cfg, int enable) {
     const char *path = "/proc/sys/net/ipv4/ip_forward";
     
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] echo %d > %s", enable, path);
         return 0;
     }
@@ -385,7 +385,7 @@ int routing_ip_forward_enable(atp_config_t *cfg, int enable) {
 int routing_ipv6_forward_enable(atp_config_t *cfg, int enable) {
     const char *path = "/proc/sys/net/ipv6/conf/all/forwarding";
     
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] echo %d > %s", enable, path);
         return 0;
     }
@@ -416,7 +416,7 @@ int routing_rp_filter_set(atp_config_t *cfg, int value) {
         
         snprintf(path, sizeof(path), "/proc/sys/net/ipv4/conf/%s/rp_filter", entry->d_name);
         
-        if (cfg->dry_run) {
+        if (cfg->core.dry_run) {
             LOG_DEBUG("[DRY_RUN] echo %d > %s", value, path);
             continue;
         }
@@ -434,7 +434,7 @@ int routing_rp_filter_set(atp_config_t *cfg, int value) {
 }
 
 int routing_tcp_stack_tune(atp_config_t *cfg) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] TCP stack tuning skipped");
         return 0;
     }
