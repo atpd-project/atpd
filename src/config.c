@@ -15,6 +15,13 @@
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 
+static config_snapshot_t g_snapshot = {
+    .has_backup = 0,
+    .backup_path = "",
+    .version = 0,
+    .load_time = 0
+};
+
 void config_set_defaults(atp_config_t *cfg) {
     if (!cfg) return;
     memset(cfg, 0, sizeof(atp_config_t));
@@ -317,6 +324,85 @@ int config_reload(atp_config_t *cfg) {
         LOG_INFO("Configuration reloaded successfully");
     }
     return ret;
+}
+
+int config_reload_atomic(atp_config_t *cfg) {
+    char cp[SAFE_PATH_MAX];
+    if (snprintf(cp, sizeof(cp), "%s/%s", cfg->core.data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) {
+        return ATP_ERR_INVAL;
+    }
+    if (!file_exists(cp)) {
+        return ATP_ERR_NOENT;
+    }
+
+    atp_config_t new_config;
+    memcpy(&new_config, cfg, sizeof(atp_config_t));
+    pthread_mutex_init(&new_config.mutex, NULL);
+
+    int ret = config_load(cp, &new_config);
+    if (ret != ATP_OK) {
+        LOG_ERROR("Atomic reload: failed to load new config");
+        return ret;
+    }
+
+    char backup_path[SAFE_PATH_MAX];
+    snprintf(backup_path, sizeof(backup_path), "%s/runtime_atp.conf.backup", cfg->core.data_dir);
+    config_save_runtime(backup_path, cfg);
+
+    memcpy(cfg, &new_config, sizeof(atp_config_t));
+
+    g_snapshot.has_backup = 1;
+    snprintf(g_snapshot.backup_path, sizeof(g_snapshot.backup_path), "%s", backup_path);
+    g_snapshot.version++;
+    g_snapshot.load_time = time(NULL);
+
+    ebpf_reload(cfg);
+    if (cfg->filter.app_proxy_enable) {
+        if (app_filter_reload(cfg) != ATP_OK) {
+            LOG_ERROR("App filter reload failed after atomic reload");
+        }
+    }
+
+    LOG_INFO("Atomic reload completed (version: %llu)", (unsigned long long)g_snapshot.version);
+    return ATP_OK;
+}
+
+int config_rollback(atp_config_t *cfg) {
+    if (!g_snapshot.has_backup) {
+        LOG_ERROR("No backup available for rollback");
+        return ATP_ERR_NOENT;
+    }
+
+    if (!file_exists(g_snapshot.backup_path)) {
+        LOG_ERROR("Backup file not found: %s", g_snapshot.backup_path);
+        g_snapshot.has_backup = 0;
+        return ATP_ERR_NOENT;
+    }
+
+    atp_config_t backup_config;
+    memcpy(&backup_config, cfg, sizeof(atp_config_t));
+    pthread_mutex_init(&backup_config.mutex, NULL);
+
+    int ret = config_load(g_snapshot.backup_path, &backup_config);
+    if (ret != ATP_OK) {
+        LOG_ERROR("Rollback: failed to load backup config");
+        return ret;
+    }
+
+    memcpy(cfg, &backup_config, sizeof(atp_config_t));
+    g_snapshot.has_backup = 0;
+
+    ebpf_reload(cfg);
+    if (cfg->filter.app_proxy_enable) {
+        app_filter_reload(cfg);
+    }
+
+    LOG_INFO("Configuration rolled back to previous version");
+    return ATP_OK;
+}
+
+const config_snapshot_t* config_get_snapshot(void) {
+    return &g_snapshot;
 }
 
 int config_save_runtime(const char *path, atp_config_t *cfg) {
