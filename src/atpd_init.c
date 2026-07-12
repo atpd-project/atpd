@@ -40,8 +40,8 @@ int atpd_init_phase_config(atpd_init_context_t *ctx) {
     LOG_INFO("Loading configuration...");
     
     config_set_defaults(ctx->config);
-    ctx->config->foreground = ctx->opts->foreground;
-    ctx->config->verbose = ctx->opts->verbose;
+    ctx->config->core.foreground = ctx->opts->foreground;
+    ctx->config->core.verbose = ctx->opts->verbose;
     
     const char *config_path = ctx->opts->config_file;
     if (!config_path || !config_path[0]) {
@@ -71,16 +71,16 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
-    if (!ctx->config->bypass_cn_ip || !ctx->config->ebpf_enabled) {
+    if (!ctx->config->filter.bypass_cn_ip || !ctx->config->ebpf.enabled) {
         LOG_DEBUG("eBPF disabled, skipping");
-        ctx->config->ebpf_ready = 0;
+        ctx->config->ebpf.ready = 0;
         atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
         return 0;
     }
     
-    if (ctx->config->cnip_mode != 1) {
+    if (ctx->config->filter.cnip_mode != 1) {
         LOG_DEBUG("CNIP_MODE is not ebpf, skipping");
-        ctx->config->ebpf_ready = 0;
+        ctx->config->ebpf.ready = 0;
         atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
         return 0;
     }
@@ -90,16 +90,16 @@ int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
     
     int ret = boxbpf_init_from_config(ctx->config);
     if (ret == ATP_OK) {
-        ctx->config->ebpf_ready = 1;
+        ctx->config->ebpf.ready = 1;
         ctx->ctx->ebpf_enabled = true;
         ctx->ctx->ebpf_probed = true;
-        strncpy(ctx->ctx->ebpf_pin_dir, ctx->config->ebpf_pin_dir,
+        strncpy(ctx->ctx->ebpf_pin_dir, ctx->config->ebpf.pin_dir,
                 sizeof(ctx->ctx->ebpf_pin_dir) - 1);
         atpd_ebpf_state_transition(EBPF_STATE_READY);
-        LOG_INFO("eBPF CNIP ready (pin: %s)", ctx->config->ebpf_pin_dir);
+        LOG_INFO("eBPF CNIP ready (pin: %s)", ctx->config->ebpf.pin_dir);
         return 0;
     } else {
-        ctx->config->ebpf_ready = 0;
+        ctx->config->ebpf.ready = 0;
         ctx->ctx->ebpf_enabled = false;
         atpd_ebpf_state_transition(EBPF_STATE_FAILED);
         LOG_WARN("eBPF CNIP init failed, using ipset fallback");
@@ -121,7 +121,7 @@ int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_phase_filter(atpd_init_context_t *ctx) {
-    if (!ctx->config->app_proxy_enable) {
+    if (!ctx->config->filter.app_proxy_enable) {
         LOG_DEBUG("App filter disabled, skipping");
         return 0;
     }
@@ -207,9 +207,9 @@ int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
                 }
                 break;
             case INIT_PHASE_EBPF:
-                if (ctx->config->ebpf_ready) {
+                if (ctx->config->ebpf.ready) {
                     boxbpf_clear();
-                    ctx->config->ebpf_ready = 0;
+                    ctx->config->ebpf.ready = 0;
                 }
                 break;
             case INIT_PHASE_NETLINK:
