@@ -641,34 +641,34 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(service_ctx_t));
 
     snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%.4000s/bin/%.63s",
-             cfg->data_dir, PROXY_BIN_NAME);
-    snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%.4000s/sing-box", cfg->data_dir);
-    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%.4000s/sing-box/config.json", cfg->data_dir);
-    snprintf(ctx->log_path, sizeof(ctx->log_path), "%.4000s/run/sing-box.log", cfg->data_dir);
-    snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core_user);
-    snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core_group);
+             cfg->core.data_dir, PROXY_BIN_NAME);
+    snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%.4000s/sing-box", cfg->core.data_dir);
+    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%.4000s/sing-box/config.json", cfg->core.data_dir);
+    snprintf(ctx->log_path, sizeof(ctx->log_path), "%.4000s/run/sing-box.log", cfg->core.data_dir);
+    snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core.core_user);
+    snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core.core_group);
 
-    ctx->api_port = cfg->api_port;
+    ctx->api_port = cfg->api.port;
     ctx->child_pid = -1;
     ctx->validated_pid = 0;
     ctx->state = SERVICE_STOPPED;
     ctx->fail_count = 0;
-    ctx->max_failures = cfg->service_max_failures > 0 ? cfg->service_max_failures : 5;
-    ctx->start_timeout_sec = cfg->service_start_timeout_sec > 0 ? cfg->service_start_timeout_sec : 30;
-    ctx->stop_timeout_sec = cfg->service_stop_timeout_sec > 0 ? cfg->service_stop_timeout_sec : 10;
-    ctx->grace_period_sec = cfg->service_grace_period_sec > 0 ? cfg->service_grace_period_sec : 3;
-    ctx->health_check_interval_ms = cfg->service_health_check_interval_ms > 0 ? cfg->service_health_check_interval_ms : 5000;
+    ctx->max_failures = cfg->service.max_failures > 0 ? cfg->service.max_failures : 5;
+    ctx->start_timeout_sec = cfg->service.start_timeout_sec > 0 ? cfg->service.start_timeout_sec : 30;
+    ctx->stop_timeout_sec = cfg->service.stop_timeout_sec > 0 ? cfg->service.stop_timeout_sec : 10;
+    ctx->grace_period_sec = cfg->service.grace_period_sec > 0 ? cfg->service.grace_period_sec : 3;
+    ctx->health_check_interval_ms = cfg->service.health_check_interval_ms > 0 ? cfg->service.health_check_interval_ms : 5000;
     ctx->stop_attempts = 0;
     ctx->running_healthy = 0;
     ctx->last_health_check = 0;
     ctx->retry_timer = NULL;
     ctx->health_timer = NULL;
 
-    if (cfg->service_args[0]) {
-        strncpy(ctx->service_args, cfg->service_args, sizeof(ctx->service_args) - 1);
+    if (cfg->service.args[0]) {
+        strncpy(ctx->service_args, cfg->service.args, sizeof(ctx->service_args) - 1);
     }
-    if (cfg->service_env[0]) {
-        strncpy(ctx->service_env, cfg->service_env, sizeof(ctx->service_env) - 1);
+    if (cfg->service.env[0]) {
+        strncpy(ctx->service_env, cfg->service.env, sizeof(ctx->service_env) - 1);
     }
 
     backoff_init(&ctx->backoff);
