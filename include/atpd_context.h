@@ -120,9 +120,6 @@ void atpd_stats_increment_errors(void);
 void atpd_stats_add_bytes(uint64_t rx, uint64_t tx);
 
 /* Error */
-void atpd_error_record(int code, const char *msg);
-const char* atpd_error_get_last(void);
-uint32_t atpd_error_get_last_code(void);
 
 /* Session */
 struct atpd_session_list {
