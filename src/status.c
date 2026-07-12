@@ -194,7 +194,7 @@ static void status_show_ebpf(void) {
     if (boxbpf_status(state, sizeof(state), &g_config) == 0) {
         if (strcmp(state, "ready") == 0) {
             ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", g_config.ebpf_pin_dir);
+            ui_table_subrow("├─", "Pin Dir", g_config.ebpf.pin_dir);
             ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
         } else if (strcmp(state, "failed") == 0) {
             ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
@@ -538,7 +538,7 @@ void status_show_config(atp_config_t *cfg) {
     snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s", cfg->interface.hotspot_iface, cfg->interface.proxy_hotspot ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("├─", ui_emoji_hotspot(), hotspot_status);
     char usb_status[64];
-    snprintf(usb_status, sizeof(usb_status), "%s -> %s", cfg->usb_iface, cfg->interface.proxy_usb ? "PROXIED" : "BYPASS");
+    snprintf(usb_status, sizeof(usb_status), "%s -> %s", cfg->interface.usb_iface, cfg->interface.proxy_usb ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("└─", ui_emoji_usb(), usb_status);
     ui_table_end();
 
