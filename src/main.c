@@ -162,12 +162,14 @@ static void on_signal(reactor_t *r, int sig, void *userdata) {
 
     if (sig == SIGHUP) {
         g_reload = 1;
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING);
         LOG_INFO("Reload signal received");
     } else if (sig == SIGUSR1) {
         g_show_status = 1;
         LOG_INFO("Status signal received");
     } else {
         LOG_INFO("Termination signal received");
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
         g_running = 0;
     }
 }
@@ -178,6 +180,7 @@ static void on_idle(reactor_t *r, void *userdata) {
 
     if (g_reload) {
         config_reload(&g_config);
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
         g_reload = 0;
     }
 
@@ -187,6 +190,7 @@ static void on_idle(reactor_t *r, void *userdata) {
     }
 
     if (!g_running) {
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPED);
         reactor_stop(r);
     }
 }
@@ -357,11 +361,13 @@ static int do_start(atp_options_t *opts) {
 
     if (atpd_init_run(&init_ctx) != 0) {
         LOG_ERROR("Initialization failed");
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
         unlink(pp);
         return 1;
     }
 
     g_svc = init_ctx.service;
+    atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
 
     if (g_config.core.performance_mode) {
         perf_mode_init(&g_config);
@@ -592,6 +598,7 @@ int main(int argc, char *argv[]) {
 
     config_set_defaults(&g_config);
     atpd_context_init();
+    atpd_runtime_state_transition(ATPD_RUNTIME_STATE_INITIALIZING);
 
     switch (opts.command) {
         case CMD_START:
