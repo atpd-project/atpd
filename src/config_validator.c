@@ -251,32 +251,32 @@ static int validate_user_group(const char *user_group) {
 int config_validate_values(atp_config_t *cfg) {
     int errors = 0;
 
-    errors += validate_port(cfg->tcp_port, "PROXY_TCP_PORT") ? 1 : 0;
-    errors += validate_port(cfg->udp_port, "PROXY_UDP_PORT") ? 1 : 0;
-    errors += validate_port(cfg->redirect_tcp_port, "REDIRECT_TCP_PORT") ? 1 : 0;
-    errors += validate_port(cfg->dns_port, "DNS_PORT") ? 1 : 0;
-    errors += validate_port(cfg->api_port, "API_PORT") ? 1 : 0;
+    errors += validate_port(cfg->network.tcp_port, "PROXY_TCP_PORT") ? 1 : 0;
+    errors += validate_port(cfg->network.udp_port, "PROXY_UDP_PORT") ? 1 : 0;
+    errors += validate_port(cfg->network.redirect_tcp_port, "REDIRECT_TCP_PORT") ? 1 : 0;
+    errors += validate_port(cfg->network.dns_port, "DNS_PORT") ? 1 : 0;
+    errors += validate_port(cfg->api.port, "API_PORT") ? 1 : 0;
 
-    if (cfg->tcp_port == cfg->redirect_tcp_port) {
+    if (cfg->network.tcp_port == cfg->network.redirect_tcp_port) {
         LOG_ERROR("PROXY_TCP_PORT and REDIRECT_TCP_PORT cannot be the same (%d)",
-                  cfg->tcp_port);
+                  cfg->network.tcp_port);
         errors++;
     }
 
-    if (cfg->udp_port == cfg->dns_port && cfg->dns_hijack) {
+    if (cfg->network.udp_port == cfg->network.dns_port && cfg->network.dns_hijack) {
         LOG_WARN("PROXY_UDP_PORT and DNS_PORT are the same (%d) - DNS may not work correctly",
-                 cfg->udp_port);
+                 cfg->network.udp_port);
     }
 
-    errors += validate_proxy_mode(cfg->proxy_mode) ? 1 : 0;
-    errors += validate_table_id(cfg->table_id) ? 1 : 0;
-    errors += validate_mark_value(cfg->mark_value, "MARK_VALUE") ? 1 : 0;
-    errors += validate_mark_value(cfg->mark_value6, "MARK_VALUE6") ? 1 : 0;
+    errors += validate_proxy_mode(cfg->network.proxy_mode) ? 1 : 0;
+    errors += validate_table_id(cfg->network.table_id) ? 1 : 0;
+    errors += validate_mark_value(cfg->network.mark_value, "MARK_VALUE") ? 1 : 0;
+    errors += validate_mark_value(cfg->network.mark_value6, "MARK_VALUE6") ? 1 : 0;
 
-    if (cfg->app_proxy_enable) {
-        errors += validate_app_proxy_mode(cfg->app_proxy_mode) ? 1 : 0;
+    if (cfg->filter.app_proxy_enable) {
+        errors += validate_app_proxy_mode(cfg->filter.app_proxy_mode) ? 1 : 0;
     }
-    if (cfg->mac_filter_enable) {
+    if (cfg->filter.mac_filter_enable) {
         errors += validate_mac_proxy_mode(cfg->mac_proxy_mode) ? 1 : 0;
     }
 
