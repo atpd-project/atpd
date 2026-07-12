@@ -93,7 +93,7 @@ int app_filter_init(atp_config_t *cfg) {
     }
 
     /* Create ipset for UIDs */
-    if (!cfg->dry_run) {
+    if (!cfg->core.dry_run) {
         char cmd[MAX_CMD_LEN];
         snprintf(cmd, sizeof(cmd), "ipset create %s bitmap:port range 0-65535 2>/dev/null", APP_IPSET_NAME);
         exec_cmd_simple(cmd, 5);
@@ -348,7 +348,7 @@ static int app_filter_add_uids_to_ipset(atp_config_t *cfg, int *uids, int count,
     if (count == 0) return 0;
     (void)mode;
 
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would add %d UIDs to ipset %s", count, APP_IPSET_NAME);
         return 0;
     }
@@ -576,7 +576,7 @@ int app_filter_should_proxy_v4(uint32_t src_ip, uint16_t src_port,
     /* Check if UID is in our list */
     int in_list = app_filter_uid_in_list(uid, g_current_uids, g_current_uids_count);
 
-    if (strcmp(g_config.app_proxy_mode, "blacklist") == 0) {
+    if (strcmp(g_config.filter.app_proxy_mode, "blacklist") == 0) {
         return in_list ? 0 : 1;
     } else {
         return in_list ? 1 : 0;
@@ -596,7 +596,7 @@ int app_filter_should_proxy_v6(const uint8_t *src_ip, uint16_t src_port,
     /* Check if UID is in our list */
     int in_list = app_filter_uid_in_list(uid, g_current_uids, g_current_uids_count);
 
-    if (strcmp(g_config.app_proxy_mode, "blacklist") == 0) {
+    if (strcmp(g_config.filter.app_proxy_mode, "blacklist") == 0) {
         return in_list ? 0 : 1;
     } else {
         return in_list ? 1 : 0;
@@ -632,7 +632,7 @@ static void app_filter_configure_chain(atp_config_t *cfg, int family) {
     tproxy_chain_flush(cfg, family, table, chain_name);
 
     char rule[256];
-    if (strcmp(cfg->app_proxy_mode, "blacklist") == 0) {
+    if (strcmp(cfg->filter.app_proxy_mode, "blacklist") == 0) {
         /* Blacklist: UIDs in set go to ACCEPT (bypass), others go to RETURN (TPROXY) */
         snprintf(rule, sizeof(rule), "-m set --match-set %s src -j ACCEPT", APP_IPSET_NAME);
         tproxy_rule_add(cfg, family, table, chain_name, rule);
@@ -646,21 +646,21 @@ static void app_filter_configure_chain(atp_config_t *cfg, int family) {
 }
 
 int app_filter_setup(atp_config_t *cfg) {
-    if (!cfg->app_proxy_enable) {
+    if (!cfg->filter.app_proxy_enable) {
         LOG_DEBUG("App filter disabled");
         return 0;
     }
 
-    LOG_INFO("Setting up application filter (%s mode)", cfg->app_proxy_mode);
+    LOG_INFO("Setting up application filter (%s mode)", cfg->filter.app_proxy_mode);
 
     int *uids = NULL;
     int uid_count = 0;
     const char *packages_list = NULL;
 
-    if (strcmp(cfg->app_proxy_mode, "blacklist") == 0) {
-        packages_list = cfg->bypass_apps_list;
+    if (strcmp(cfg->filter.app_proxy_mode, "blacklist") == 0) {
+        packages_list = cfg->filter.bypass_apps_list;
     } else {
-        packages_list = cfg->proxy_apps_list;
+        packages_list = cfg->filter.proxy_apps_list;
     }
 
     if (app_filter_resolve_packages(packages_list, &uids, &uid_count) < 0) {
@@ -674,23 +674,23 @@ int app_filter_setup(atp_config_t *cfg) {
     g_current_uids = uids;
     g_current_uids_count = uid_count;
 
-    if (cfg->ebpf_ready && cfg->performance_mode) {
+    if (cfg->ebpf.ready && cfg->core.performance_mode) {
         LOG_INFO("APP UID: using eBPF (performance mode), %d UIDs loaded", uid_count);
         return 0;
     }
 
     LOG_INFO("APP UID: using iptables fallback, %d UIDs loaded", uid_count);
 
-    app_filter_add_uids_to_ipset(cfg, uids, uid_count, cfg->app_proxy_mode);
+    app_filter_add_uids_to_ipset(cfg, uids, uid_count, cfg->filter.app_proxy_mode);
 
     app_filter_configure_chain(cfg, 4);
 
-    if (cfg->proxy_ipv6) {
+    if (cfg->network.proxy_ipv6) {
         app_filter_configure_chain(cfg, 6);
     }
 
     LOG_INFO("App filter configured with %d UIDs using ipset %s (IPv6: %s)",
-             uid_count, APP_IPSET_NAME, cfg->proxy_ipv6 ? "enabled" : "disabled");
+             uid_count, APP_IPSET_NAME, cfg->network.proxy_ipv6 ? "enabled" : "disabled");
 
     if (inet_diag_available()) {
         LOG_INFO("Connection-level fine control active (INET_DIAG available)");
@@ -702,11 +702,11 @@ int app_filter_setup(atp_config_t *cfg) {
 }
 
 int app_filter_cleanup(atp_config_t *cfg) {
-    if (!cfg->app_proxy_enable) {
+    if (!cfg->filter.app_proxy_enable) {
         return 0;
     }
 
-    if (!cfg->dry_run) {
+    if (!cfg->core.dry_run) {
         /* Flush and destroy ipset */
         char cmd[MAX_CMD_LEN];
         snprintf(cmd, sizeof(cmd), "ipset flush %s 2>/dev/null; ipset destroy %s 2>/dev/null",
@@ -720,7 +720,7 @@ int app_filter_cleanup(atp_config_t *cfg) {
     tproxy_chain_flush(cfg, 4, "mangle", "ATP_APP_0");
 
     /* Flush IPv6 chain if it exists */
-    if (cfg->proxy_ipv6) {
+    if (cfg->network.proxy_ipv6) {
         tproxy_chain_flush(cfg, 6, "mangle", "ATP6_APP_0");
     }
 
