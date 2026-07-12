@@ -83,9 +83,9 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->filter.bypass_macs_list[0] = '\0';
     cfg->filter.cnip_force_proxy_apps[0] = '\0';
     snprintf(cfg->filter.cn_ip_url, sizeof(cfg->filter.cn_ip_url),
-             "https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt"\)\;
+             "https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt");
     snprintf(cfg->filter.cn_ipv6_url, sizeof(cfg->filter.cn_ipv6_url),
-             "https://ispip.clang.cn/all_cn_ipv6.txt"\)\;
+             "https://ispip.clang.cn/all_cn_ipv6.txt");
     snprintf(cfg->filter.cn_ip_file, sizeof(cfg->filter.cn_ip_file), "cn.zone");
     snprintf(cfg->filter.cn_ipv6_file, sizeof(cfg->filter.cn_ipv6_file), "cn_ipv6.zone");
 
