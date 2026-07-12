@@ -115,10 +115,10 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(api_ctx_t));
     
     snprintf(ctx->base_url, sizeof(ctx->base_url), "http://%s:%d", 
-             cfg->api_host, cfg->api_port);
+             cfg->api.host, cfg->api.port);
     
-    if (cfg->clash_secret[0] != '\0') {
-        strncpy(ctx->secret, cfg->clash_secret, sizeof(ctx->secret) - 1);
+    if (cfg->filter.clash_secret[0] != '\0') {
+        strncpy(ctx->secret, cfg->filter.clash_secret, sizeof(ctx->secret) - 1);
     }
     
     ctx->timeout_sec = 2;
