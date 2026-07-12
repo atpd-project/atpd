@@ -54,6 +54,7 @@ const char* atpd_runtime_state_string(atpd_runtime_state_t state) {
 }
 
 void atpd_context_init(void) {
+    atpd_error_init();
     memset(&g_atpd_ctx, 0, sizeof(g_atpd_ctx));
     
     /* VPN State */
