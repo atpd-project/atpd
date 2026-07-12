@@ -31,8 +31,8 @@
 #define THERMAL_TEMP_CRITICAL 85000
 
 static const char* proxy_mode_to_string(atp_config_t *cfg) {
-    switch (cfg->proxy_mode) {
-        case 0: return cfg->use_tproxy ? "TPROXY (auto)" : "REDIRECT (auto)";
+    switch (cfg->network.proxy_mode) {
+        case 0: return cfg->network.use_tproxy ? "TPROXY (auto)" : "REDIRECT (auto)";
         case 1: return "TPROXY (TCP+UDP)";
         case 2: return "REDIRECT (TCP only)";
         case 3: return "ENHANCE (TCP=REDIRECT, UDP=TPROXY)";
@@ -174,7 +174,7 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
         else if (strcmp(current_mode, "Google VPN") == 0) color = COLOR_GREEN;
         ui_table_row_color(ui_emoji_info(), current_mode, color);
     } else {
-        ui_table_row_color(ui_emoji_info(), cfg->user_clash_mode, COLOR_YELLOW);
+        ui_table_row_color(ui_emoji_info(), cfg->filter.user_clash_mode, COLOR_YELLOW);
         ui_table_warning("API unavailable, using cached value");
     }
 
@@ -514,51 +514,51 @@ void status_show_config(atp_config_t *cfg) {
     ui_table_begin();
     ui_table_header("CONFIGURATION");
     ui_table_subrow("├─", "Proxy Mode", proxy_mode_to_string(cfg));
-    ui_table_subrow("├─", "Performance", cfg->performance_mode ? "ACTIVE" : "DISABLED");
-    snprintf(ports_str, sizeof(ports_str), "TCP=%d, UDP=%d, REDIRECT=%d", cfg->tcp_port, cfg->udp_port, cfg->redirect_tcp_port);
+    ui_table_subrow("├─", "Performance", cfg->core.performance_mode ? "ACTIVE" : "DISABLED");
+    snprintf(ports_str, sizeof(ports_str), "TCP=%d, UDP=%d, REDIRECT=%d", cfg->network.tcp_port, cfg->network.udp_port, cfg->network.redirect_tcp_port);
     ui_table_subrow("├─", "Ports", ports_str);
-    ui_table_subrow("├─", "IPv6", cfg->proxy_ipv6 ? "ENABLED" : "DISABLED");
+    ui_table_subrow("├─", "IPv6", cfg->network.proxy_ipv6 ? "ENABLED" : "DISABLED");
     char dns_str[64];
-    snprintf(dns_str, sizeof(dns_str), "%s (port %d)", cfg->dns_hijack ? "ENABLED" : "DISABLED", cfg->dns_port);
+    snprintf(dns_str, sizeof(dns_str), "%s (port %d)", cfg->network.dns_hijack ? "ENABLED" : "DISABLED", cfg->network.dns_port);
     ui_table_subrow("├─", "DNS Hijack", dns_str);
-    ui_table_subrow_int("├─", "Table ID", cfg->table_id);
-    snprintf(mark_str, sizeof(mark_str), "IPv4=0x%x, IPv6=0x%x", cfg->mark_value, cfg->mark_value6);
+    ui_table_subrow_int("├─", "Table ID", cfg->network.table_id);
+    snprintf(mark_str, sizeof(mark_str), "IPv4=0x%x, IPv6=0x%x", cfg->network.mark_value, cfg->network.mark_value6);
     ui_table_subrow("└─", "Mark", mark_str);
     ui_table_end();
 
     ui_table_begin();
     ui_table_header("INTERFACE CONTROL");
     char mobile_status[64];
-    snprintf(mobile_status, sizeof(mobile_status), "%s -> %s", cfg->mobile_iface, cfg->proxy_mobile ? "PROXIED" : "BYPASS");
+    snprintf(mobile_status, sizeof(mobile_status), "%s -> %s", cfg->interface.mobile_iface, cfg->interface.proxy_mobile ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("├─", ui_emoji_mobile(), mobile_status);
     char wifi_status[64];
-    snprintf(wifi_status, sizeof(wifi_status), "%s -> %s", cfg->wifi_iface, cfg->proxy_wifi ? "PROXIED" : "BYPASS");
+    snprintf(wifi_status, sizeof(wifi_status), "%s -> %s", cfg->interface.wifi_iface, cfg->interface.proxy_wifi ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("├─", ui_emoji_wifi(1), wifi_status);
     char hotspot_status[64];
-    snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s", cfg->hotspot_iface, cfg->proxy_hotspot ? "PROXIED" : "BYPASS");
+    snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s", cfg->interface.hotspot_iface, cfg->interface.proxy_hotspot ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("├─", ui_emoji_hotspot(), hotspot_status);
     char usb_status[64];
-    snprintf(usb_status, sizeof(usb_status), "%s -> %s", cfg->usb_iface, cfg->proxy_usb ? "PROXIED" : "BYPASS");
+    snprintf(usb_status, sizeof(usb_status), "%s -> %s", cfg->usb_iface, cfg->interface.proxy_usb ? "PROXIED" : "BYPASS");
     ui_table_subrow_emoji("└─", ui_emoji_usb(), usb_status);
     ui_table_end();
 
     ui_table_begin();
     ui_table_header("FILTERS");
-    if (cfg->app_proxy_enable) {
+    if (cfg->filter.app_proxy_enable) {
         char app_status[128];
-        snprintf(app_status, sizeof(app_status), "ENABLED (%s mode)", cfg->app_proxy_mode);
+        snprintf(app_status, sizeof(app_status), "ENABLED (%s mode)", cfg->filter.app_proxy_mode);
         ui_table_subrow_emoji("├─", ui_emoji_mobile(), app_status);
     } else {
         ui_table_subrow_emoji("├─", ui_emoji_mobile(), "DISABLED");
     }
-    if (cfg->mac_filter_enable) {
+    if (cfg->filter.mac_filter_enable) {
         char mac_status[128];
-        snprintf(mac_status, sizeof(mac_status), "ENABLED (%s mode)", cfg->mac_proxy_mode);
+        snprintf(mac_status, sizeof(mac_status), "ENABLED (%s mode)", cfg->filter.mac_proxy_mode);
         ui_table_subrow_emoji("├─", "🔢", mac_status);
     } else {
         ui_table_subrow_emoji("├─", "🔢", "DISABLED");
     }
-    if (cfg->bypass_cn_ip) {
+    if (cfg->filter.bypass_cn_ip) {
         ui_table_subrow_emoji("└─", "🌏", "ENABLED (ipset cnip)");
     } else {
         ui_table_subrow_emoji("└─", "🌏", "DISABLED");
