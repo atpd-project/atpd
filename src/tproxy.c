@@ -15,7 +15,7 @@ static int g_tproxy_supported = -1;
 #define IP6TABLES_CMD "/system/bin/ip6tables"
 
 static int exec_iptables(atp_config_t *cfg, const char *table, const char *cmd, const char *chain, const char *rule) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] iptables -t %s %s %s %s", table, cmd, chain, rule ? rule : "");
         return 0;
     }
@@ -37,7 +37,7 @@ static int exec_iptables(atp_config_t *cfg, const char *table, const char *cmd, 
 }
 
 static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd, const char *chain, const char *rule) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] ip6tables -t %s %s %s %s", table, cmd, chain, rule ? rule : "");
         return 0;
     }
@@ -64,7 +64,7 @@ static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd,
 }
 
 int tproxy_chain_exists(atp_config_t *cfg, int family, const char *table, const char *chain) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Check chain %s in table %s", chain, table);
         return 1;
     }
@@ -142,7 +142,7 @@ int tproxy_rule_del(atp_config_t *cfg, int family, const char *table,
 
 int tproxy_rule_insert(atp_config_t *cfg, int family, const char *table,
                        const char *chain, int position, const char *rule) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] %s -t %s -I %s %d %s",
                   family == 4 ? IPTABLES_CMD : IP6TABLES_CMD,
                   table, chain, position, rule);
@@ -198,7 +198,7 @@ int tproxy_atomic_switch(atp_config_t *cfg, int family, const char *table,
 int tproxy_support_check(atp_config_t *cfg) {
     if (g_tproxy_supported >= 0) return g_tproxy_supported;
 
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         g_tproxy_supported = 1;
         return 1;
     }
@@ -229,7 +229,7 @@ static int tproxy_configure_rp_filter(atp_config_t *cfg) {
     char path[256];
     int success = 0;
 
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would set rp_filter=2 for all interfaces");
         return 0;
     }
@@ -386,71 +386,71 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family, const char *
 
     tproxy_rule_add(cfg, family, "mangle", proxy_chain, "-i lo -j RETURN");
 
-    if (cfg->proxy_mobile) {
-        snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->mobile_iface);
+    if (cfg->interface.proxy_mobile) {
+        snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.mobile_iface);
         tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
     } else {
-        snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->mobile_iface);
+        snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.mobile_iface);
         tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-        snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->mobile_iface);
+        snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.mobile_iface);
         tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
     }
 
-    int hotspot_on_wifi = (strcmp(cfg->hotspot_iface, cfg->wifi_iface) == 0);
-    const char *hotspot_subnet = (family == 4) ? cfg->hotspot_subnet_ipv4 : cfg->hotspot_subnet_ipv6;
+    int hotspot_on_wifi = (strcmp(cfg->interface.hotspot_iface, cfg->interface.wifi_iface) == 0);
+    const char *hotspot_subnet = (family == 4) ? cfg->interface.hotspot_subnet_ipv4 : cfg->interface.hotspot_subnet_ipv6;
 
     if (hotspot_on_wifi) {
-        if (cfg->proxy_hotspot) {
-            snprintf(rule, sizeof(rule), "-i %s -s %s -j RETURN", cfg->hotspot_iface, hotspot_subnet);
+        if (cfg->interface.proxy_hotspot) {
+            snprintf(rule, sizeof(rule), "-i %s -s %s -j RETURN", cfg->interface.hotspot_iface, hotspot_subnet);
             tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
         } else {
-            snprintf(rule, sizeof(rule), "-i %s -s %s -j ACCEPT", cfg->hotspot_iface, hotspot_subnet);
+            snprintf(rule, sizeof(rule), "-i %s -s %s -j ACCEPT", cfg->interface.hotspot_iface, hotspot_subnet);
             tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
         }
 
-        if (cfg->proxy_wifi) {
-            snprintf(rule, sizeof(rule), "-i %s ! -s %s -j RETURN", cfg->wifi_iface, hotspot_subnet);
+        if (cfg->interface.proxy_wifi) {
+            snprintf(rule, sizeof(rule), "-i %s ! -s %s -j RETURN", cfg->interface.wifi_iface, hotspot_subnet);
             tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
         } else {
-            snprintf(rule, sizeof(rule), "-i %s ! -s %s -j ACCEPT", cfg->wifi_iface, hotspot_subnet);
+            snprintf(rule, sizeof(rule), "-i %s ! -s %s -j ACCEPT", cfg->interface.wifi_iface, hotspot_subnet);
             tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-            snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->wifi_iface);
+            snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.wifi_iface);
             tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
         }
     } else {
-        if (cfg->proxy_wifi) {
-            snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->wifi_iface);
+        if (cfg->interface.proxy_wifi) {
+            snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.wifi_iface);
             tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
         } else {
-            snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->wifi_iface);
+            snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.wifi_iface);
             tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-            snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->wifi_iface);
+            snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.wifi_iface);
             tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
         }
 
-        if (cfg->proxy_hotspot) {
-            snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->hotspot_iface);
+        if (cfg->interface.proxy_hotspot) {
+            snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.hotspot_iface);
             tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
         } else {
-            snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->hotspot_iface);
+            snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.hotspot_iface);
             tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-            snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->hotspot_iface);
+            snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.hotspot_iface);
             tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
         }
     }
 
     if (cfg->proxy_usb) {
-        snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->usb_iface);
+        snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.usb_iface);
         tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
     } else {
-        snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->usb_iface);
+        snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.usb_iface);
         tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-        snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->usb_iface);
+        snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.usb_iface);
         tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
     }
 
-    if (cfg->other_proxy[0]) {
-        strncpy(list_buf, cfg->other_proxy, sizeof(list_buf) - 1);
+    if (cfg->interface.other_proxy[0]) {
+        strncpy(list_buf, cfg->interface.other_proxy, sizeof(list_buf) - 1);
         list_buf[sizeof(list_buf) - 1] = '\0';
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
@@ -460,8 +460,8 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family, const char *
         }
     }
 
-    if (cfg->other_bypass[0]) {
-        strncpy(list_buf, cfg->other_bypass, sizeof(list_buf) - 1);
+    if (cfg->interface.other_bypass[0]) {
+        strncpy(list_buf, cfg->interface.other_bypass, sizeof(list_buf) - 1);
         list_buf[sizeof(list_buf) - 1] = '\0';
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
@@ -484,13 +484,13 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family, const char *suf
     if (suffix && suffix[0]) {
         snprintf(proxy_chain, sizeof(proxy_chain), "ATP_PROXY_IP_0%s", suffix);
         snprintf(bypass_chain, sizeof(bypass_chain), "ATP_BYPASS_IP_0%s", suffix);
-        bypass_list = (family == 4) ? cfg->bypass_ipv4_list : cfg->bypass_ipv6_list;
-        proxy_list = (family == 4) ? cfg->proxy_ipv4_list : cfg->proxy_ipv6_list;
+        bypass_list = (family == 4) ? cfg->iplist.bypass_ipv4_list : cfg->iplist.bypass_ipv6_list;
+        proxy_list = (family == 4) ? cfg->iplist.proxy_ipv4_list : cfg->iplist.proxy_ipv6_list;
     } else {
         snprintf(proxy_chain, sizeof(proxy_chain), "ATP_PROXY_IP_0");
         snprintf(bypass_chain, sizeof(bypass_chain), "ATP_BYPASS_IP_0");
-        bypass_list = cfg->bypass_ipv4_list;
-        proxy_list = cfg->proxy_ipv4_list;
+        bypass_list = cfg->iplist.bypass_ipv4_list;
+        proxy_list = cfg->iplist.proxy_ipv4_list;
     }
 
     if (proxy_list && proxy_list[0]) {
@@ -517,7 +517,7 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family, const char *suf
         }
     }
 
-    if (cfg->bypass_cn_ip) {
+    if (cfg->filter.bypass_cn_ip) {
         if (cfg->ebpf_ready) {
             const char *pin_dir = boxbpf_pin_dir();
             const char *pin_out, *pin_pre;
@@ -645,7 +645,7 @@ int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
     offset += snprintf(rules + offset, sizeof(rules) - offset,
         "-A ATP_DIVERT_0 -j MARK --set-mark %d\n"
         "-A ATP_DIVERT_0 -j ACCEPT\n",
-        cfg->mark_value
+        cfg->network.mark_value
     );
 
     offset += snprintf(rules + offset, sizeof(rules) - offset,
@@ -676,8 +676,8 @@ int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
     offset += snprintf(rules + offset, sizeof(rules) - offset,
         "-A PREROUTING -m connmark --mark %d/0xff -j TPROXY --on-port %d --tproxy-mark %d\n"
         "-A OUTPUT -m connmark --mark %d/0xff -j MARK --set-mark %d\n",
-        cfg->mark_value, cfg->tcp_port, cfg->mark_value,
-        cfg->mark_value, cfg->mark_value
+        cfg->network.mark_value, cfg->network.tcp_port, cfg->network.mark_value,
+        cfg->network.mark_value, cfg->network.mark_value
     );
 
     offset += snprintf(rules + offset, sizeof(rules) - offset,
@@ -701,14 +701,14 @@ int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
 }
 
 int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) {
+    if (!cfg->network.proxy_ipv6) {
         LOG_DEBUG("IPv6 proxy disabled, skipping");
         return 0;
     }
 
     if (access(IP6TABLES_CMD, X_OK) != 0) {
         LOG_WARN("ip6tables not found, IPv6 setup skipped");
-        cfg->proxy_ipv6 = 0;
+        cfg->network.proxy_ipv6 = 0;
         return 0;
     }
 
@@ -748,7 +748,7 @@ int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
     offset += snprintf(rules + offset, sizeof(rules) - offset,
         "-A ATP6_DIVERT_0 -j MARK --set-mark %d\n"
         "-A ATP6_DIVERT_0 -j ACCEPT\n",
-        cfg->mark_value6
+        cfg->network.mark_value6
     );
 
     offset += snprintf(rules + offset, sizeof(rules) - offset,
@@ -773,8 +773,8 @@ int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
     offset += snprintf(rules + offset, sizeof(rules) - offset,
         "-A PREROUTING -m connmark --mark %d/0xff -j TPROXY --on-port %d --tproxy-mark %d\n"
         "-A OUTPUT -m connmark --mark %d/0xff -j MARK --set-mark %d\n",
-        cfg->mark_value6, cfg->tcp_port, cfg->mark_value6,
-        cfg->mark_value6, cfg->mark_value6
+        cfg->network.mark_value6, cfg->network.tcp_port, cfg->network.mark_value6,
+        cfg->network.mark_value6, cfg->network.mark_value6
     );
 
     offset += snprintf(rules + offset, sizeof(rules) - offset,
@@ -802,7 +802,7 @@ int tproxy_setup_ipv4(atp_config_t *cfg) {
 
     tproxy_configure_rp_filter(cfg);
     tproxy_create_standard_chains(cfg, 4, "");
-    tproxy_setup_divert_chain(cfg, 4, "", cfg->mark_value);
+    tproxy_setup_divert_chain(cfg, 4, "", cfg->network.mark_value);
     tproxy_setup_socket_match(cfg, 4, "", "ATP_DIVERT_0");
     tproxy_setup_chain_jumps(cfg, 4, "", 1);
     tproxy_setup_iface_rules(cfg, 4, "");
@@ -810,11 +810,11 @@ int tproxy_setup_ipv4(atp_config_t *cfg) {
 
     char rule_buf[256];
     snprintf(rule_buf, sizeof(rule_buf), "-m connmark --mark %d/0xff -j TPROXY --on-port %d --tproxy-mark %d",
-             cfg->mark_value, cfg->tcp_port, cfg->mark_value);
+             cfg->network.mark_value, cfg->network.tcp_port, cfg->network.mark_value);
     tproxy_rule_add(cfg, 4, "mangle", "PREROUTING", rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-m connmark --mark %d/0xff -j MARK --set-mark %d",
-             cfg->mark_value, cfg->mark_value);
+             cfg->network.mark_value, cfg->network.mark_value);
     tproxy_rule_add(cfg, 4, "mangle", "OUTPUT", rule_buf);
 
     tproxy_hook_main_chains(cfg, 4, "");
@@ -824,21 +824,21 @@ int tproxy_setup_ipv4(atp_config_t *cfg) {
 }
 
 int tproxy_setup_ipv6(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) {
+    if (!cfg->network.proxy_ipv6) {
         LOG_DEBUG("IPv6 proxy disabled, skipping");
         return 0;
     }
 
     if (access(IP6TABLES_CMD, X_OK) != 0) {
         LOG_WARN("ip6tables not found, IPv6 setup skipped");
-        cfg->proxy_ipv6 = 0;
+        cfg->network.proxy_ipv6 = 0;
         return 0;
     }
 
     LOG_INFO("Setting up IPv6 TPROXY chains");
 
     tproxy_create_standard_chains(cfg, 6, "6");
-    tproxy_setup_divert_chain(cfg, 6, "6", cfg->mark_value6);
+    tproxy_setup_divert_chain(cfg, 6, "6", cfg->network.mark_value6);
     tproxy_setup_socket_match(cfg, 6, "6", "ATP6_DIVERT_0");
     tproxy_setup_chain_jumps(cfg, 6, "6", 1);
     tproxy_setup_iface_rules(cfg, 6, "6");
@@ -846,11 +846,11 @@ int tproxy_setup_ipv6(atp_config_t *cfg) {
 
     char rule_buf[256];
     snprintf(rule_buf, sizeof(rule_buf), "-m connmark --mark %d/0xff -j TPROXY --on-port %d --tproxy-mark %d",
-             cfg->mark_value6, cfg->tcp_port, cfg->mark_value6);
+             cfg->network.mark_value6, cfg->network.tcp_port, cfg->network.mark_value6);
     tproxy_rule_add(cfg, 6, "mangle", "PREROUTING", rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-m connmark --mark %d/0xff -j MARK --set-mark %d",
-             cfg->mark_value6, cfg->mark_value6);
+             cfg->network.mark_value6, cfg->network.mark_value6);
     tproxy_rule_add(cfg, 6, "mangle", "OUTPUT", rule_buf);
 
     tproxy_hook_main_chains(cfg, 6, "6");
@@ -870,7 +870,7 @@ int tproxy_setup_redirect_ipv4(atp_config_t *cfg) {
     tproxy_chain_create(cfg, 4, table, chain_name);
     tproxy_chain_flush(cfg, 4, table, chain_name);
 
-    snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d", cfg->tcp_port);
+    snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d", cfg->network.tcp_port);
     tproxy_rule_add(cfg, 4, table, chain_name, rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-j %s", chain_name);
@@ -882,7 +882,7 @@ int tproxy_setup_redirect_ipv4(atp_config_t *cfg) {
 }
 
 int tproxy_setup_redirect_ipv6(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) return 0;
+    if (!cfg->network.proxy_ipv6) return 0;
 
     LOG_INFO("Setting up IPv6 REDIRECT chains");
 
@@ -894,7 +894,7 @@ int tproxy_setup_redirect_ipv6(atp_config_t *cfg) {
     tproxy_chain_create(cfg, 6, table, chain_name);
     tproxy_chain_flush(cfg, 6, table, chain_name);
 
-    snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d", cfg->tcp_port);
+    snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d", cfg->network.tcp_port);
     tproxy_rule_add(cfg, 6, table, chain_name, rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-j %s", chain_name);
@@ -907,21 +907,21 @@ int tproxy_setup_redirect_ipv6(atp_config_t *cfg) {
 
 int tproxy_setup_enhance_ipv4(atp_config_t *cfg) {
     LOG_INFO("Setting up ENHANCE mode for IPv4 (TCP=REDIRECT:%d, UDP=TPROXY:%d)",
-             cfg->redirect_tcp_port, cfg->udp_port);
+             cfg->network.redirect_tcp_port, cfg->network.udp_port);
 
     const char *table_mangle = "mangle";
     const char *table_nat = "nat";
     char rule_buf[256];
     char chain_name[64];
 
-    LOG_INFO("Setting up TCP REDIRECT chain (port %d)", cfg->redirect_tcp_port);
+    LOG_INFO("Setting up TCP REDIRECT chain (port %d)", cfg->network.redirect_tcp_port);
 
     snprintf(chain_name, sizeof(chain_name), "ATP_REDIRECT_TCP");
     tproxy_chain_create(cfg, 4, table_nat, chain_name);
     tproxy_chain_flush(cfg, 4, table_nat, chain_name);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d",
-             cfg->redirect_tcp_port);
+             cfg->network.redirect_tcp_port);
     tproxy_rule_add(cfg, 4, table_nat, chain_name, rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j %s", chain_name);
@@ -929,7 +929,7 @@ int tproxy_setup_enhance_ipv4(atp_config_t *cfg) {
     tproxy_rule_insert(cfg, 4, table_nat, "OUTPUT", 1, rule_buf);
 
     LOG_INFO("Setting up UDP TPROXY chain (port %d, mark %d)",
-             cfg->udp_port, cfg->mark_value);
+             cfg->network.udp_port, cfg->network.mark_value);
 
     snprintf(chain_name, sizeof(chain_name), "ATP_UDP_TPROXY");
     tproxy_chain_create(cfg, 4, table_mangle, chain_name);
@@ -937,21 +937,21 @@ int tproxy_setup_enhance_ipv4(atp_config_t *cfg) {
 
     snprintf(rule_buf, sizeof(rule_buf),
              "-p udp -j TPROXY --on-port %d --tproxy-mark %d",
-             cfg->udp_port, cfg->mark_value);
+             cfg->network.udp_port, cfg->network.mark_value);
     tproxy_rule_add(cfg, 4, table_mangle, chain_name, rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p udp -j %s", chain_name);
     tproxy_rule_insert(cfg, 4, table_mangle, "PREROUTING", 1, rule_buf);
 
-    snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->mark_value);
+    snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->network.mark_value);
     tproxy_rule_insert(cfg, 4, table_mangle, "OUTPUT", 1, rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -m connmark --mark %d/0xff -j REDIRECT --to-ports %d",
-             cfg->mark_value, cfg->redirect_tcp_port);
+             cfg->network.mark_value, cfg->network.redirect_tcp_port);
     tproxy_rule_add(cfg, 4, table_nat, "PREROUTING", rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -m connmark --mark %d/0xff -j REDIRECT --to-ports %d",
-             cfg->mark_value, cfg->redirect_tcp_port);
+             cfg->network.mark_value, cfg->network.redirect_tcp_port);
     tproxy_rule_add(cfg, 4, table_nat, "OUTPUT", rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf),
@@ -964,13 +964,13 @@ int tproxy_setup_enhance_ipv4(atp_config_t *cfg) {
 }
 
 int tproxy_setup_enhance_ipv6(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) {
+    if (!cfg->network.proxy_ipv6) {
         LOG_DEBUG("IPv6 proxy disabled, skipping ENHANCE mode");
         return 0;
     }
 
     LOG_INFO("Setting up ENHANCE mode for IPv6 (TCP=REDIRECT:%d, UDP=TPROXY:%d)",
-             cfg->redirect_tcp_port, cfg->udp_port);
+             cfg->network.redirect_tcp_port, cfg->network.udp_port);
 
     const char *table_mangle = "mangle";
     const char *table_nat = "nat";
@@ -982,14 +982,14 @@ int tproxy_setup_enhance_ipv6(atp_config_t *cfg) {
         return 0;
     }
 
-    LOG_INFO("Setting up IPv6 TCP REDIRECT chain (port %d)", cfg->redirect_tcp_port);
+    LOG_INFO("Setting up IPv6 TCP REDIRECT chain (port %d)", cfg->network.redirect_tcp_port);
 
     snprintf(chain_name, sizeof(chain_name), "ATP6_REDIRECT_TCP");
     tproxy_chain_create(cfg, 6, table_nat, chain_name);
     tproxy_chain_flush(cfg, 6, table_nat, chain_name);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j REDIRECT --to-ports %d",
-             cfg->redirect_tcp_port);
+             cfg->network.redirect_tcp_port);
     tproxy_rule_add(cfg, 6, table_nat, chain_name, rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -j %s", chain_name);
@@ -997,7 +997,7 @@ int tproxy_setup_enhance_ipv6(atp_config_t *cfg) {
     tproxy_rule_insert(cfg, 6, table_nat, "OUTPUT", 1, rule_buf);
 
     LOG_INFO("Setting up IPv6 UDP TPROXY chain (port %d, mark %d)",
-             cfg->udp_port, cfg->mark_value6);
+             cfg->network.udp_port, cfg->network.mark_value6);
 
     snprintf(chain_name, sizeof(chain_name), "ATP6_UDP_TPROXY");
     tproxy_chain_create(cfg, 6, table_mangle, chain_name);
@@ -1005,21 +1005,21 @@ int tproxy_setup_enhance_ipv6(atp_config_t *cfg) {
 
     snprintf(rule_buf, sizeof(rule_buf),
              "-p udp -j TPROXY --on-port %d --tproxy-mark %d",
-             cfg->udp_port, cfg->mark_value6);
+             cfg->network.udp_port, cfg->network.mark_value6);
     tproxy_rule_add(cfg, 6, table_mangle, chain_name, rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p udp -j %s", chain_name);
     tproxy_rule_insert(cfg, 6, table_mangle, "PREROUTING", 1, rule_buf);
 
-    snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->mark_value6);
+    snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->network.mark_value6);
     tproxy_rule_insert(cfg, 6, table_mangle, "OUTPUT", 1, rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -m connmark --mark %d/0xff -j REDIRECT --to-ports %d",
-             cfg->mark_value6, cfg->redirect_tcp_port);
+             cfg->network.mark_value6, cfg->network.redirect_tcp_port);
     tproxy_rule_add(cfg, 6, table_nat, "PREROUTING", rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -m connmark --mark %d/0xff -j REDIRECT --to-ports %d",
-             cfg->mark_value6, cfg->redirect_tcp_port);
+             cfg->network.mark_value6, cfg->network.redirect_tcp_port);
     tproxy_rule_add(cfg, 6, table_nat, "OUTPUT", rule_buf);
 
     LOG_INFO("IPv6 ENHANCE mode setup complete");
@@ -1034,11 +1034,11 @@ int tproxy_cleanup_ipv4(atp_config_t *cfg) {
 
     char rule_buf[256];
     snprintf(rule_buf, sizeof(rule_buf), "-m connmark --mark %d/0xff -j TPROXY --on-port %d --tproxy-mark %d",
-             cfg->mark_value, cfg->tcp_port, cfg->mark_value);
+             cfg->network.mark_value, cfg->network.tcp_port, cfg->network.mark_value);
     tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-m connmark --mark %d/0xff -j MARK --set-mark %d",
-             cfg->mark_value, cfg->mark_value);
+             cfg->network.mark_value, cfg->network.mark_value);
     tproxy_rule_del(cfg, 4, "mangle", "OUTPUT", rule_buf);
 
     const char *chains[] = {
@@ -1066,7 +1066,7 @@ int tproxy_cleanup_ipv4(atp_config_t *cfg) {
 }
 
 int tproxy_cleanup_ipv6(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) return 0;
+    if (!cfg->network.proxy_ipv6) return 0;
 
     LOG_INFO("Cleaning up IPv6 TPROXY chains");
 
@@ -1080,11 +1080,11 @@ int tproxy_cleanup_ipv6(atp_config_t *cfg) {
 
     char rule_buf[256];
     snprintf(rule_buf, sizeof(rule_buf), "-m connmark --mark %d/0xff -j TPROXY --on-port %d --tproxy-mark %d",
-             cfg->mark_value6, cfg->tcp_port, cfg->mark_value6);
+             cfg->network.mark_value6, cfg->network.tcp_port, cfg->network.mark_value6);
     tproxy_rule_del(cfg, 6, "mangle", "PREROUTING", rule_buf);
 
     snprintf(rule_buf, sizeof(rule_buf), "-m connmark --mark %d/0xff -j MARK --set-mark %d",
-             cfg->mark_value6, cfg->mark_value6);
+             cfg->network.mark_value6, cfg->network.mark_value6);
     tproxy_rule_del(cfg, 6, "mangle", "OUTPUT", rule_buf);
 
     const char *chains[] = {
@@ -1119,7 +1119,7 @@ static int tproxy_cleanup_enhance_ipv4(atp_config_t *cfg) {
 
     char rule_buf[256];
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -m connmark --mark %d/0xff -j REDIRECT --to-ports %d",
-             cfg->mark_value, cfg->redirect_tcp_port);
+             cfg->network.mark_value, cfg->network.redirect_tcp_port);
     tproxy_rule_del(cfg, 4, "nat", "PREROUTING", rule_buf);
     tproxy_rule_del(cfg, 4, "nat", "OUTPUT", rule_buf);
 
@@ -1127,7 +1127,7 @@ static int tproxy_cleanup_enhance_ipv4(atp_config_t *cfg) {
     tproxy_chain_destroy(cfg, 4, "nat", "ATP_REDIRECT_TCP");
 
     tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", "-p udp -j ATP_UDP_TPROXY");
-    snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->mark_value);
+    snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->network.mark_value);
     tproxy_rule_del(cfg, 4, "mangle", "OUTPUT", rule_buf);
     tproxy_chain_flush(cfg, 4, "mangle", "ATP_UDP_TPROXY");
     tproxy_chain_destroy(cfg, 4, "mangle", "ATP_UDP_TPROXY");
@@ -1137,7 +1137,7 @@ static int tproxy_cleanup_enhance_ipv4(atp_config_t *cfg) {
 }
 
 static int tproxy_cleanup_enhance_ipv6(atp_config_t *cfg) {
-    if (!cfg->proxy_ipv6) return 0;
+    if (!cfg->network.proxy_ipv6) return 0;
 
     LOG_INFO("Cleaning up IPv6 ENHANCE mode");
 
@@ -1146,7 +1146,7 @@ static int tproxy_cleanup_enhance_ipv6(atp_config_t *cfg) {
 
     char rule_buf[256];
     snprintf(rule_buf, sizeof(rule_buf), "-p tcp -m connmark --mark %d/0xff -j REDIRECT --to-ports %d",
-             cfg->mark_value6, cfg->redirect_tcp_port);
+             cfg->network.mark_value6, cfg->network.redirect_tcp_port);
     tproxy_rule_del(cfg, 6, "nat", "PREROUTING", rule_buf);
     tproxy_rule_del(cfg, 6, "nat", "OUTPUT", rule_buf);
 
@@ -1154,7 +1154,7 @@ static int tproxy_cleanup_enhance_ipv6(atp_config_t *cfg) {
     tproxy_chain_destroy(cfg, 6, "nat", "ATP6_REDIRECT_TCP");
 
     tproxy_rule_del(cfg, 6, "mangle", "PREROUTING", "-p udp -j ATP6_UDP_TPROXY");
-    snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->mark_value6);
+    snprintf(rule_buf, sizeof(rule_buf), "-p udp -j MARK --set-mark %d", cfg->network.mark_value6);
     tproxy_rule_del(cfg, 6, "mangle", "OUTPUT", rule_buf);
     tproxy_chain_flush(cfg, 6, "mangle", "ATP6_UDP_TPROXY");
     tproxy_chain_destroy(cfg, 6, "mangle", "ATP6_UDP_TPROXY");
@@ -1221,19 +1221,19 @@ int tproxy_cleanup_all(atp_config_t *cfg) {
     switch (cfg->proxy_mode) {
         case MODE_ENHANCE:
             tproxy_cleanup_enhance_ipv4(cfg);
-            if (cfg->proxy_ipv6) tproxy_cleanup_enhance_ipv6(cfg);
+            if (cfg->network.proxy_ipv6) tproxy_cleanup_enhance_ipv6(cfg);
             break;
         case MODE_TPROXY:
             tproxy_cleanup_ipv4(cfg);
-            if (cfg->proxy_ipv6) tproxy_cleanup_ipv6(cfg);
+            if (cfg->network.proxy_ipv6) tproxy_cleanup_ipv6(cfg);
             break;
         case MODE_REDIRECT:
             tproxy_cleanup_ipv4(cfg);
-            if (cfg->proxy_ipv6) tproxy_cleanup_ipv6(cfg);
+            if (cfg->network.proxy_ipv6) tproxy_cleanup_ipv6(cfg);
             break;
         default:
             tproxy_cleanup_ipv4(cfg);
-            if (cfg->proxy_ipv6) tproxy_cleanup_ipv6(cfg);
+            if (cfg->network.proxy_ipv6) tproxy_cleanup_ipv6(cfg);
             break;
     }
     return 0;
@@ -1251,7 +1251,7 @@ int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode) {
     if (mode == DNS_HIJACK_TPROXY) {
         snprintf(rule_buf, sizeof(rule_buf),
                  "-p udp --dport 53 -j TPROXY --on-port %d --tproxy-mark %d",
-                 cfg->dns_port, cfg->mark_value);
+                 cfg->dns_port, cfg->network.mark_value);
         dns_rule = rule_buf;
     } else if (mode == DNS_HIJACK_REDIRECT) {
         snprintf(rule_buf, sizeof(rule_buf),
@@ -1332,7 +1332,7 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
         tproxy_rule_add(cfg, 4, "filter", "FORWARD", "-j ATP_QUIC_0");
         tproxy_rule_add(cfg, 4, "filter", "OUTPUT", "-j ATP_QUIC_0");
 
-        if (cfg->proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
+        if (cfg->network.proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
             tproxy_chain_create(cfg, 6, "filter", "ATP6_QUIC_0");
             tproxy_chain_flush(cfg, 6, "filter", "ATP6_QUIC_0");
 
@@ -1360,7 +1360,7 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
         tproxy_chain_flush(cfg, 4, "filter", "ATP_QUIC_0");
         tproxy_chain_destroy(cfg, 4, "filter", "ATP_QUIC_0");
 
-        if (cfg->proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
+        if (cfg->network.proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
             tproxy_rule_del(cfg, 6, "filter", "INPUT", "-j ATP6_QUIC_0");
             tproxy_rule_del(cfg, 6, "filter", "FORWARD", "-j ATP6_QUIC_0");
             tproxy_rule_del(cfg, 6, "filter", "OUTPUT", "-j ATP6_QUIC_0");
@@ -1379,26 +1379,26 @@ int tproxy_block_loopback(atp_config_t *cfg, int enable) {
         LOG_INFO("Enabling loopback protection");
         snprintf(rule_buf, sizeof(rule_buf),
                  "-d 127.0.0.1 -p tcp -m tcp --dport %d -j REJECT",
-                 cfg->tcp_port);
+                 cfg->network.tcp_port);
         tproxy_rule_add(cfg, 4, "filter", "OUTPUT", rule_buf);
 
-        if (cfg->proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
+        if (cfg->network.proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
             snprintf(rule_buf, sizeof(rule_buf),
                      "-d ::1 -p tcp -m tcp --dport %d -j REJECT",
-                     cfg->tcp_port);
+                     cfg->network.tcp_port);
             tproxy_rule_add(cfg, 6, "filter", "OUTPUT", rule_buf);
         }
     } else {
         LOG_INFO("Disabling loopback protection");
         snprintf(rule_buf, sizeof(rule_buf),
                  "-d 127.0.0.1 -p tcp -m tcp --dport %d -j REJECT",
-                 cfg->tcp_port);
+                 cfg->network.tcp_port);
         tproxy_rule_del(cfg, 4, "filter", "OUTPUT", rule_buf);
 
-        if (cfg->proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
+        if (cfg->network.proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
             snprintf(rule_buf, sizeof(rule_buf),
                      "-d ::1 -p tcp -m tcp --dport %d -j REJECT",
-                     cfg->tcp_port);
+                     cfg->network.tcp_port);
             tproxy_rule_del(cfg, 6, "filter", "OUTPUT", rule_buf);
         }
     }
@@ -1408,7 +1408,7 @@ int tproxy_block_loopback(atp_config_t *cfg, int enable) {
 
 int tproxy_prevent_loop(atp_config_t *cfg) {
     char rule_buf[64];
-    snprintf(rule_buf, sizeof(rule_buf), "-m mark --mark %d -j RETURN", cfg->mark_value);
+    snprintf(rule_buf, sizeof(rule_buf), "-m mark --mark %d -j RETURN", cfg->network.mark_value);
 
     tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", rule_buf);
     tproxy_rule_insert(cfg, 4, "mangle", "PREROUTING", 1, rule_buf);
