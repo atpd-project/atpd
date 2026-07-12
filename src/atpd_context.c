@@ -248,9 +248,6 @@ void atpd_error_record(int code, const char *msg) {
     LOG_ERROR("Error recorded: code=%d, msg=%s", code, msg);
 }
 
-const char* atpd_error_get_last(void) {
-    return g_atpd_ctx.last_error.last_error_msg;
-}
 
 uint32_t atpd_error_get_last_code(void) {
     return g_atpd_ctx.last_error.last_error_code;
