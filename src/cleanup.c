@@ -14,7 +14,7 @@ static void atp_cleanup_handler(void) {
 
     LOG_INFO("Cleanup: removing iptables rules and eBPF pins");
 
-    if (g_cleanup_cfg->ebpf_ready) {
+    if (g_cleanup_cfg->ebpf.ready) {
         boxbpf_clear();
         LOG_INFO("Cleanup: eBPF pins removed");
     }
