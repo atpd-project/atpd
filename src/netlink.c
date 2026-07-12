@@ -632,34 +632,34 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
 
 static int ip_rule_audit(atp_config_t *cfg) {
     if (!g_tproxy_initialized) return 0;
-    if (cfg->dry_run) return 0;
+    if (cfg->core.dry_run) return 0;
 
     char cmd[MAX_CMD_LEN];
     int needs_repair = 0;
 
     snprintf(cmd, sizeof(cmd),
              "ip rule show | grep -q 'fwmark %d lookup %d' 2>/dev/null",
-             cfg->mark_value, cfg->table_id);
+             cfg->network.mark_value, cfg->network.table_id);
 
     if (exec_cmd_simple(cmd, 2) != 0) {
         LOG_WARN("IPv4 fwmark rule missing, repairing...");
         snprintf(cmd, sizeof(cmd),
                  "ip rule add fwmark %d table %d 2>/dev/null",
-                 cfg->mark_value, cfg->table_id);
+                 cfg->network.mark_value, cfg->network.table_id);
         exec_cmd_simple(cmd, 2);
         needs_repair = 1;
     }
 
-    if (cfg->proxy_ipv6) {
+    if (cfg->network.proxy_ipv6) {
         snprintf(cmd, sizeof(cmd),
                  "ip -6 rule show | grep -q 'fwmark %d lookup %d' 2>/dev/null",
-                 cfg->mark_value6, cfg->table_id);
+                 cfg->network.mark_value6, cfg->network.table_id);
 
         if (exec_cmd_simple(cmd, 2) != 0) {
             LOG_WARN("IPv6 fwmark rule missing, repairing...");
             snprintf(cmd, sizeof(cmd),
                      "ip -6 rule add fwmark %d table %d 2>/dev/null",
-                     cfg->mark_value6, cfg->table_id);
+                     cfg->network.mark_value6, cfg->network.table_id);
             exec_cmd_simple(cmd, 2);
             needs_repair = 1;
         }
@@ -673,7 +673,7 @@ static int ip_rule_audit(atp_config_t *cfg) {
 
 static int tproxy_refresh_rules(atp_config_t *cfg) {
     if (!g_tproxy_initialized) return 0;
-    if (cfg->dry_run) return 0;
+    if (cfg->core.dry_run) return 0;
 
     char cmd[MAX_CMD_LEN];
     int needs_repair_v4 = 0;
@@ -698,7 +698,7 @@ static int tproxy_refresh_rules(atp_config_t *cfg) {
         tproxy_hook_main_chains(cfg, 4, "");
     }
 
-    if (cfg->proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
+    if (cfg->network.proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
         snprintf(cmd, sizeof(cmd),
                  "%s -t mangle -L PREROUTING 2>/dev/null | head -2 | grep -q ATP6_PRE_0",
                  IP6TABLES_CMD);
