@@ -1,3 +1,4 @@
+#include <pthread.h>
 #ifndef ATPD_ERROR_H
 #define ATPD_ERROR_H
 
