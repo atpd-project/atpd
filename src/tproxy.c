@@ -439,7 +439,7 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family, const char *
         }
     }
 
-    if (cfg->proxy_usb) {
+    if (cfg->interface.proxy_usb) {
         snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.usb_iface);
         tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
     } else {
@@ -518,7 +518,7 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family, const char *suf
     }
 
     if (cfg->filter.bypass_cn_ip) {
-        if (cfg->ebpf_ready) {
+        if (cfg->ebpf.ready) {
             const char *pin_dir = boxbpf_pin_dir();
             const char *pin_out, *pin_pre;
 
@@ -579,7 +579,7 @@ void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *suffix) 
 
     snprintf(hook_rule, sizeof(hook_rule),
              "-m owner --uid-owner %s --gid-owner %s -j RETURN",
-             cfg->core_user, cfg->core_group);
+             cfg->core.core_user, cfg->core.core_group);
     tproxy_rule_del(cfg, family, "mangle", "OUTPUT", hook_rule);
     tproxy_rule_insert(cfg, family, "mangle", "OUTPUT", 1, hook_rule);
 
@@ -670,7 +670,7 @@ int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
 
     offset += snprintf(rules + offset, sizeof(rules) - offset,
         "-A OUTPUT -m owner --uid-owner %s --gid-owner %s -j RETURN\n",
-        cfg->core_user, cfg->core_group
+        cfg->core.core_user, cfg->core.core_group
     );
 
     offset += snprintf(rules + offset, sizeof(rules) - offset,
@@ -767,7 +767,7 @@ int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
 
     offset += snprintf(rules + offset, sizeof(rules) - offset,
         "-A OUTPUT -m owner --uid-owner %s --gid-owner %s -j RETURN\n",
-        cfg->core_user, cfg->core_group
+        cfg->core.core_user, cfg->core.core_group
     );
 
     offset += snprintf(rules + offset, sizeof(rules) - offset,
@@ -956,7 +956,7 @@ int tproxy_setup_enhance_ipv4(atp_config_t *cfg) {
 
     snprintf(rule_buf, sizeof(rule_buf),
              "-p tcp -m owner --uid-owner %s --gid-owner %s -j ACCEPT",
-             cfg->core_user, cfg->core_group);
+             cfg->core.core_user, cfg->core.core_group);
     tproxy_rule_insert(cfg, 4, table_nat, "OUTPUT", 1, rule_buf);
 
     LOG_INFO("IPv4 ENHANCE mode setup complete");
@@ -1218,7 +1218,7 @@ int tproxy_cleanup_xfrm_bypass(atp_config_t *cfg) {
 int tproxy_cleanup_all(atp_config_t *cfg) {
     tproxy_cleanup_xfrm_bypass(cfg);
 
-    switch (cfg->proxy_mode) {
+    switch (cfg->network.proxy_mode) {
         case MODE_ENHANCE:
             tproxy_cleanup_enhance_ipv4(cfg);
             if (cfg->network.proxy_ipv6) tproxy_cleanup_enhance_ipv6(cfg);
@@ -1240,7 +1240,7 @@ int tproxy_cleanup_all(atp_config_t *cfg) {
 }
 
 int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode) {
-    if (cfg->dns_hijack == DNS_HIJACK_OFF) return 0;
+    if (cfg->network.dns_hijack == DNS_HIJACK_OFF) return 0;
     if (mode == DNS_HIJACK_OFF) return 0;
 
     LOG_INFO("Setting up DNS hijack for IPv%d (mode=%d)", family, mode);
@@ -1251,12 +1251,12 @@ int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode) {
     if (mode == DNS_HIJACK_TPROXY) {
         snprintf(rule_buf, sizeof(rule_buf),
                  "-p udp --dport 53 -j TPROXY --on-port %d --tproxy-mark %d",
-                 cfg->dns_port, cfg->network.mark_value);
+                 cfg->network.dns_port, cfg->network.mark_value);
         dns_rule = rule_buf;
     } else if (mode == DNS_HIJACK_REDIRECT) {
         snprintf(rule_buf, sizeof(rule_buf),
                  "-p udp --dport 53 -j REDIRECT --to-ports %d",
-                 cfg->dns_port);
+                 cfg->network.dns_port);
         dns_rule = rule_buf;
     }
 
@@ -1315,7 +1315,7 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
         tproxy_chain_create(cfg, 4, "filter", "ATP_QUIC_0");
         tproxy_chain_flush(cfg, 4, "filter", "ATP_QUIC_0");
 
-        if (cfg->ebpf_ready) {
+        if (cfg->ebpf.ready) {
             const char *pin_dir = boxbpf_pin_dir();
             char bpf_rule[512];
             snprintf(bpf_rule, sizeof(bpf_rule),
@@ -1336,7 +1336,7 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
             tproxy_chain_create(cfg, 6, "filter", "ATP6_QUIC_0");
             tproxy_chain_flush(cfg, 6, "filter", "ATP6_QUIC_0");
 
-            if (cfg->ebpf_ready) {
+            if (cfg->ebpf.ready) {
                 const char *pin_dir = boxbpf_pin_dir();
                 char bpf_rule[512];
                 snprintf(bpf_rule, sizeof(bpf_rule),
