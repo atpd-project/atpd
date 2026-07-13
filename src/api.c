@@ -29,6 +29,20 @@
 #define API_MAX_PENDING_REQUESTS 1024
 #define API_CHUNK_READ_BUFFER 8192
 
+/* Common chunk decoder context - MUST be defined before any function declarations */
+typedef struct chunk_ctx_s {
+    chunk_state_t state;
+    size_t chunk_size;
+    size_t chunk_offset;
+    size_t chunk_parse_offset;
+    size_t trailer_base_offset;
+    size_t trailer_received;
+    char **decoded_body_ptr;
+    size_t *decoded_body_len_ptr;
+    size_t *decoded_body_size_ptr;
+    int is_sync;
+} chunk_ctx_t;
+
 /* Forward declarations */
 static void api_request_cleanup(api_request_t *req);
 static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdata);
