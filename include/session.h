@@ -14,7 +14,7 @@
 #define ATPD_SPLICE_EAGAIN       -2
 #define ATPD_SPLICE_NOTSUP       -3
 #define ATPD_SPLICE_ERROR        -4
-#define ATPD_SPLICE_VPN_NOT_READY -5  /* VPN state not READY */
+#define ATPD_SPLICE_VPN_NOT_READY -5
 
 typedef enum {
     ATPD_SESSION_IDLE,
@@ -33,6 +33,7 @@ typedef struct atpd_session {
     uint64_t bytes_in;
     uint64_t bytes_out;
     uint64_t created_at;
+    int ref_count;  /* Reference counter for UAF prevention */
 } atpd_session_t;
 
 atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out);
@@ -41,10 +42,8 @@ ssize_t atpd_session_splice_pump(atpd_session_t *s, size_t max_len);
 int atpd_session_drain_pipe(atpd_session_t *s);
 int atpd_session_register(reactor_t *r, atpd_session_t *s);
 
-/* VPN state check for splice gating */
 int atpd_session_is_vpn_ready(void);
 
-/* Pipe health and emergency drain */
 ssize_t splice_pump_logic(atpd_session_t *s, size_t max_len);
 void atpd_session_emergency_drain_all(void);
 
