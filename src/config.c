@@ -474,7 +474,7 @@ static int config_apply_deltas(atp_config_t *cfg, const atp_config_t *old) {
                 LOG_INFO("App filter reloaded successfully");
             } else {
                 LOG_ERROR("App filter reload failed");
-                ret = ATP_ERR;
+                ret = ATP_ERR_GENERAL;
             }
         }
     }
