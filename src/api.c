@@ -80,7 +80,34 @@ static void api_build_host_header(char *buf, size_t size, const char *host, int 
         }
     }
 }
+static void *api_memmem(const void *haystack, size_t haystack_len,
+                         const void *needle, size_t needle_len) {
+    if (!haystack || !needle || needle_len == 0 || haystack_len < needle_len) {
+        return NULL;
+    }
 
+    const unsigned char *h = (const unsigned char *)haystack;
+    const unsigned char *n = (const unsigned char *)needle;
+
+    for (size_t i = 0; i <= haystack_len - needle_len; i++) {
+        if (memcmp(h + i, n, needle_len) == 0) {
+            return (void *)(h + i);
+        }
+    }
+
+    return NULL;
+}
+
+static void safe_str_copy(char *dest, size_t dest_size, const char *src, size_t src_len) {
+    if (!dest || dest_size == 0 || !src) return;
+
+    if (src_len >= dest_size) {
+        src_len = dest_size - 1;
+    }
+
+    memcpy(dest, src, src_len);
+    dest[src_len] = '\0';
+}
 static int api_validate_request(api_request_t *req) {
     if (!req) return -1;
 
