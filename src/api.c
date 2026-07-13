@@ -37,7 +37,6 @@ static reactor_t *g_api_reactor = NULL;
 #define API_MAX_PENDING_REQUESTS 1024
 #define API_CHUNK_READ_BUFFER 8192
 
-static reactor_t *g_api_reactor = NULL;
 
 static void *api_memmem(const void *haystack, size_t haystack_len,
                          const void *needle, size_t needle_len);
