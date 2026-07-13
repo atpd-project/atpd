@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <time.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <net/if.h>
@@ -38,20 +39,22 @@
 
 #include "tproxy.h"
 
-static int g_tproxy_initialized = 0;
+static atomic_int g_tproxy_initialized = 0;
 
 void netlink_set_tproxy_ready(void) {
-    g_tproxy_initialized = 1;
+    atomic_store(&g_tproxy_initialized, 1);
 }
 
 /* ========== Network Refresh Debounce ========== */
 
 static reactor_timer_t *g_debounce_timer = NULL;
 static reactor_t *g_debounce_reactor = NULL;
+static pthread_mutex_t g_debounce_lock = PTHREAD_MUTEX_INITIALIZER;
 
 #define NETLINK_DEBOUNCE_MS 500
 
 static pthread_mutex_t g_nl_mutex = PTHREAD_MUTEX_INITIALIZER;
+static atomic_uint g_seq = 1;
 
 #ifndef IPTABLES_CMD
 #define IPTABLES_CMD "/system/bin/iptables"
@@ -68,16 +71,19 @@ static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userda
     (void)timer;
     (void)userdata;
 
-    pthread_mutex_lock(&g_nl_mutex);
-
     ip_rule_audit(&g_config);
     tproxy_refresh_rules(&g_config);
 
-    pthread_mutex_unlock(&g_nl_mutex);
+    pthread_mutex_lock(&g_debounce_lock);
+    g_debounce_timer = NULL;
+    pthread_mutex_unlock(&g_debounce_lock);
 }
 
 static void trigger_network_refresh(reactor_t *r) {
     if (!r) return;
+
+    pthread_mutex_lock(&g_debounce_lock);
+
     g_debounce_reactor = r;
 
     if (g_debounce_timer) {
@@ -88,6 +94,8 @@ static void trigger_network_refresh(reactor_t *r) {
     g_debounce_timer = reactor_add_timer(r, NETLINK_DEBOUNCE_MS, 0,
                                          debounce_flush_cb, NULL);
     LOG_DEBUG("[NET] Debounce timer (re)started: %dms", NETLINK_DEBOUNCE_MS);
+
+    pthread_mutex_unlock(&g_debounce_lock);
 }
 
 /* ========== XFRM Interface Detection ========== */
@@ -105,9 +113,9 @@ static void trigger_network_refresh(reactor_t *r) {
 
 static int g_xfrm_fd = -1;
 static reactor_t *g_xfrm_reactor = NULL;
-static int g_xfrm_registered = 0;
+static atomic_int g_xfrm_registered = 0;
 
-static struct rtattr* atpd_find_rta_nested(struct rtattr *rta, int len, unsigned short type) {
+static const struct rtattr* atpd_find_rta_nested(const struct rtattr *rta, int len, unsigned short type) {
     while (RTA_OK(rta, len)) {
         if (rta->rta_type == type) return rta;
         rta = RTA_NEXT(rta, len);
@@ -116,17 +124,41 @@ static struct rtattr* atpd_find_rta_nested(struct rtattr *rta, int len, unsigned
 }
 
 static int detect_xfrm_interface(struct nlmsghdr *h) {
+    if (h->nlmsg_len < NLMSG_LENGTH(sizeof(struct ifinfomsg))) {
+        return 0;
+    }
+
     struct ifinfomsg *ifi = NLMSG_DATA(h);
     struct rtattr *rta = IFLA_RTA(ifi);
     int len = IFLA_PAYLOAD(h);
 
-    struct rtattr *li = atpd_find_rta_nested(rta, len, IFLA_LINKINFO);
+    const struct rtattr *li = atpd_find_rta_nested(rta, len, IFLA_LINKINFO);
     if (!li) return 0;
 
-    struct rtattr *id = atpd_find_rta_nested(RTA_DATA(li), RTA_PAYLOAD(li), IFLA_INFO_DATA);
+    int li_len = RTA_PAYLOAD(li);
+    if (li_len < (int)sizeof(struct rtattr)) {
+        return 0;
+    }
+
+    const struct rtattr *li_data = (const struct rtattr *)RTA_DATA(li);
+    if (!RTA_OK(li_data, li_len)) {
+        return 0;
+    }
+
+    const struct rtattr *id = atpd_find_rta_nested(li_data, li_len, IFLA_INFO_DATA);
     if (!id) return 0;
 
-    struct rtattr *xfrm_id = atpd_find_rta_nested(RTA_DATA(id), RTA_PAYLOAD(id), IFLA_XFRM_IF_ID);
+    int id_len = RTA_PAYLOAD(id);
+    if (id_len < (int)sizeof(struct rtattr)) {
+        return 0;
+    }
+
+    const struct rtattr *id_data = (const struct rtattr *)RTA_DATA(id);
+    if (!RTA_OK(id_data, id_len)) {
+        return 0;
+    }
+
+    const struct rtattr *xfrm_id = atpd_find_rta_nested(id_data, id_len, IFLA_XFRM_IF_ID);
     return (xfrm_id != NULL);
 }
 
@@ -158,7 +190,6 @@ static int g_sync_fd = -1;
 static int g_async_fd = -1;
 static nl_callback_t g_callback = NULL;
 static void *g_userdata = NULL;
-static uint32_t g_seq = 1;
 
 struct nl_link_info {
     int index;
@@ -200,6 +231,8 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
     struct nl_link_info *info = &pctx->links[pctx->count];
     info->index = ifi->ifi_index;
     info->flags = ifi->ifi_flags;
+    info->rx_bytes = 0;
+    info->tx_bytes = 0;
 
     if (detect_xfrm_interface(h)) {
         info->flags |= IFF_UP;
@@ -209,9 +242,11 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
         if (rta->rta_type == IFLA_IFNAME) {
             snprintf(info->name, IFNAMSIZ, "%s", (char *)RTA_DATA(rta));
         } else if (rta->rta_type == IFLA_STATS64) {
-            struct rtnl_link_stats64 *s = (struct rtnl_link_stats64 *)RTA_DATA(rta);
-            info->rx_bytes = s->rx_bytes;
-            info->tx_bytes = s->tx_bytes;
+            if (RTA_PAYLOAD(rta) >= sizeof(struct rtnl_link_stats64)) {
+                struct rtnl_link_stats64 *s = (struct rtnl_link_stats64 *)RTA_DATA(rta);
+                info->rx_bytes = s->rx_bytes;
+                info->tx_bytes = s->tx_bytes;
+            }
         }
     }
     if (info->name[0]) pctx->count++;
@@ -261,8 +296,16 @@ static int netlink_recv_all_with_timeout(int fd, uint32_t seq,
             break;
         }
 
+        if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
+            LOG_ERROR("netlink: message truncated");
+            status = -EOVERFLOW;
+            break;
+        }
+
+        int multipart = 0;
         struct nlmsghdr *h = (struct nlmsghdr *)buf;
         for (; NLMSG_OK(h, (uint32_t)len); h = NLMSG_NEXT(h, len)) {
+            multipart = (h->nlmsg_flags & NLM_F_MULTI);
             if (h->nlmsg_seq != seq) continue;
             if (h->nlmsg_type == NLMSG_DONE) goto done;
             if (h->nlmsg_type == NLMSG_ERROR) {
@@ -271,7 +314,10 @@ static int netlink_recv_all_with_timeout(int fd, uint32_t seq,
             }
             if (parser && parser(h, ctx) < 0) goto done;
         }
-        if (!(h->nlmsg_flags & NLM_F_MULTI)) break;
+
+        if (!multipart) {
+            break;
+        }
     }
 done:
     free(buf);
@@ -303,9 +349,15 @@ int netlink_init(nl_callback_t callback, void *userdata) {
 
     g_callback = callback;
     g_userdata = userdata;
-    g_seq = (uint32_t)time(NULL);
+    atomic_store(&g_seq, (uint32_t)time(NULL));
 
-    netlink_xfrm_init(NULL);
+    if (netlink_xfrm_init(NULL) != 0) {
+        close(g_sync_fd);
+        close(g_async_fd);
+        g_sync_fd = -1;
+        g_async_fd = -1;
+        return -1;
+    }
 
     LOG_INFO("Netlink: Engine started");
     return 0;
@@ -326,6 +378,11 @@ void netlink_handle_event(int fd, void *data) {
     ssize_t len = recvmsg(fd, &msg, MSG_DONTWAIT);
     if (len <= 0) return;
 
+    if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
+        LOG_WARN("[NET] truncated netlink message");
+        return;
+    }
+
     int should_refresh = 0;
 
     for (struct nlmsghdr *h = (struct nlmsghdr *)buf;
@@ -339,6 +396,10 @@ void netlink_handle_event(int fd, void *data) {
             char ifname[IFNAMSIZ] = {0};
 
             if (h->nlmsg_type == RTM_NEWADDR) {
+                if (h->nlmsg_len < NLMSG_LENGTH(sizeof(struct ifaddrmsg))) {
+                    LOG_WARN("[NET] RTM_NEWADDR message too short");
+                    continue;
+                }
                 struct ifaddrmsg *ifa = NLMSG_DATA(h);
                 if_indextoname(ifa->ifa_index, ifname);
                 LOG_DEBUG("[NET] Address change on %s", ifname[0] ? ifname : "unknown");
@@ -380,7 +441,7 @@ int netlink_xfrm_init(reactor_t *r) {
     if (r) {
         reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
         g_xfrm_reactor = r;
-        g_xfrm_registered = 1;
+        atomic_store(&g_xfrm_registered, 1);
     }
 
     LOG_INFO("XFRM: Listener started (fd=%d)", g_xfrm_fd);
@@ -405,18 +466,39 @@ void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata
     ssize_t len = recvmsg(fd, &msg, MSG_DONTWAIT);
     if (len <= 0) return;
 
+    if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
+        LOG_WARN("[XFRM] truncated netlink message");
+        return;
+    }
+
     for (struct nlmsghdr *h = (struct nlmsghdr *)buf;
          NLMSG_OK(h, (uint32_t)len);
          h = NLMSG_NEXT(h, len)) {
 
         if (h->nlmsg_type == XFRM_MSG_NEWSA) {
-            struct xfrm_usersa_info *sa = NLMSG_DATA(h);
-            struct rtattr *rta = XFRMA_RTA(sa);
+            if (h->nlmsg_len < NLMSG_LENGTH(sizeof(struct xfrm_usersa_info))) {
+                LOG_WARN("[XFRM] XFRM_MSG_NEWSA message too short");
+                continue;
+            }
+
+            struct xfrm_usersa_info *sa_info = NLMSG_DATA(h);
+            struct rtattr *rta = XFRMA_RTA(sa_info);
             int attr_len = XFRM_PAYLOAD(h);
 
             for (; RTA_OK(rta, attr_len); rta = RTA_NEXT(rta, attr_len)) {
                 if (rta->rta_type == XFRMA_IF_ID) {
-                    uint32_t if_id = *(uint32_t *)RTA_DATA(rta);
+                    if (RTA_PAYLOAD(rta) < sizeof(uint32_t)) {
+                        LOG_WARN("[XFRM] IF_ID attribute too short");
+                        continue;
+                    }
+                    uint32_t if_id;
+                    memcpy(&if_id, RTA_DATA(rta), sizeof(if_id));
+
+                    if (if_id == 0) {
+                        LOG_DEBUG("[XFRM] if_id=0, skipping");
+                        continue;
+                    }
+
                     char ifname[IFNAMSIZ] = {0};
                     snprintf(ifname, sizeof(ifname), "ipsec%u", if_id - 1);
 
@@ -446,7 +528,7 @@ int netlink_get_active_vpn(char *output, size_t size) {
             .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
             .nlmsg_type = RTM_GETLINK,
             .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
-            .nlmsg_seq = ++g_seq
+            .nlmsg_seq = atomic_fetch_add(&g_seq, 1)
         },
         .ifi = { .ifi_family = AF_PACKET }
     };
@@ -479,7 +561,7 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
             .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
             .nlmsg_type = RTM_GETLINK,
             .nlmsg_flags = NLM_F_REQUEST,
-            .nlmsg_seq = ++g_seq
+            .nlmsg_seq = atomic_fetch_add(&g_seq, 1)
         },
         .ifi = { .ifi_index = if_nametoindex(iface) }
     };
@@ -501,12 +583,15 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
 }
 
 void netlink_cleanup(void) {
+    pthread_mutex_lock(&g_debounce_lock);
     if (g_debounce_timer && g_debounce_reactor) {
         reactor_cancel_timer(g_debounce_reactor, g_debounce_timer);
         g_debounce_timer = NULL;
     }
     g_debounce_reactor = NULL;
-    g_xfrm_registered = 0;
+    pthread_mutex_unlock(&g_debounce_lock);
+
+    atomic_store(&g_xfrm_registered, 0);
 
     if (g_sync_fd >= 0) {
         close(g_sync_fd);
@@ -534,10 +619,10 @@ int netlink_get_fd(void) {
 void netlink_set_reactor(reactor_t *r) {
     g_debounce_reactor = r;
 
-    if (g_xfrm_fd >= 0 && r && !g_xfrm_registered) {
+    if (g_xfrm_fd >= 0 && r && !atomic_load(&g_xfrm_registered)) {
         reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
         g_xfrm_reactor = r;
-        g_xfrm_registered = 1;
+        atomic_store(&g_xfrm_registered, 1);
     }
 }
 
@@ -554,7 +639,7 @@ int nl_vpn_detect(void) {
             .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
             .nlmsg_type = RTM_GETLINK,
             .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
-            .nlmsg_seq = ++g_seq
+            .nlmsg_seq = atomic_fetch_add(&g_seq, 1)
         },
         .ifi = { .ifi_family = AF_PACKET }
     };
@@ -600,7 +685,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
             .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
             .nlmsg_type = RTM_GETLINK,
             .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
-            .nlmsg_seq = ++g_seq
+            .nlmsg_seq = atomic_fetch_add(&g_seq, 1)
         },
         .ifi = { .ifi_family = AF_PACKET }
     };
@@ -618,8 +703,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
 
     for (int i = 0; i < ctx.count; i++) {
         if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
-            strncpy(iface, links[i].name, size - 1);
-            iface[size - 1] = '\0';
+            snprintf(iface, size, "%s", links[i].name);
             LOG_DEBUG("Found VPN interface via netlink: %s", iface);
             return 0;
         }
@@ -631,7 +715,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
 /* ========== Firewall Self-Healing ========== */
 
 static int ip_rule_audit(atp_config_t *cfg) {
-    if (!g_tproxy_initialized) return 0;
+    if (!atomic_load(&g_tproxy_initialized)) return 0;
     if (cfg->core.dry_run) return 0;
 
     char cmd[MAX_CMD_LEN];
@@ -672,7 +756,7 @@ static int ip_rule_audit(atp_config_t *cfg) {
 }
 
 static int tproxy_refresh_rules(atp_config_t *cfg) {
-    if (!g_tproxy_initialized) return 0;
+    if (!atomic_load(&g_tproxy_initialized)) return 0;
     if (cfg->core.dry_run) return 0;
 
     char cmd[MAX_CMD_LEN];
