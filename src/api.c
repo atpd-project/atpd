@@ -97,12 +97,12 @@ static int validate_host_port(const char *host, int port) {
 static int api_validate_request(api_request_t *req) {
     if (!req) return -1;
 
-    if (!req->method || !*req->method) {
+    if (!req->method[0]) {
         LOG_ERROR("API: empty method");
         return -1;
     }
 
-    if (!req->path || !*req->path) {
+    if (!req->path[0]) {
         LOG_ERROR("API: empty path");
         return -1;
     }
