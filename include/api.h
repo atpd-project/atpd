@@ -95,6 +95,7 @@ typedef struct api_request_s {
     size_t chunk_offset;
     size_t chunk_parse_offset;
     size_t trailer_received;
+    size_t trailer_base_offset;  /* Base offset for trailer size calculation */
 
     api_state_t state;
     time_t start_time;
