@@ -76,6 +76,10 @@ typedef struct api_request_s {
     long content_length;
     long bytes_to_read;
 
+    /* HTTP version */
+    uint8_t http_major;
+    uint8_t http_minor;
+
     int http_code;
     int headers_complete;
     int keepalive_disabled;

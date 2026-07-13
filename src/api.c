@@ -23,20 +23,21 @@
 #include <limits.h>
 #include <sys/socket.h>
 
-#define API_CHUNK_READ_BUFFER 8192
-
-static void api_request_cleanup(api_request_t *req);
-static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdata);
-static void api_process_requests(api_ctx_t *ctx);
-
-static reactor_t *g_api_reactor = NULL;
-
 #define API_MAX_HOST_LEN 255
 #define API_MAX_HEADER_SIZE 32768
 #define API_MAX_RESPONSE_SIZE (8 * 1024 * 1024)
 #define API_MAX_PENDING_REQUESTS 1024
 #define API_CHUNK_READ_BUFFER 8192
 
+/* Forward declarations */
+static void api_request_cleanup(api_request_t *req);
+static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdata);
+static void api_process_requests(api_ctx_t *ctx);
+static int api_decode_chunked(api_request_t *req);
+static const char *api_extract_body(api_request_t *req);
+static int api_parse_status_line(const char *line, int *code, uint8_t *major, uint8_t *minor);
+
+static reactor_t *g_api_reactor = NULL;
 
 static void *api_memmem(const void *haystack, size_t haystack_len,
                          const void *needle, size_t needle_len);
@@ -44,6 +45,9 @@ static void safe_str_copy(char *dest, size_t dest_size, const char *src, size_t 
 static int validate_host_port(const char *host, int port);
 static int api_validate_request(api_request_t *req);
 static int api_socket_alive(int fd);
+static int api_parse_url(const char *base_url, char *host, int *port);
+static int api_parse_full_url(const char *url, char *host, int *port, char *path, size_t path_size);
+static void api_build_host_header(char *buf, size_t size, const char *host, int port);
 
 static void *api_memmem(const void *haystack, size_t haystack_len,
                          const void *needle, size_t needle_len) {
@@ -72,6 +76,16 @@ static void safe_str_copy(char *dest, size_t dest_size, const char *src, size_t 
 
     memcpy(dest, src, src_len);
     dest[src_len] = '\0';
+}
+
+static void api_build_host_header(char *buf, size_t size, const char *host, int port) {
+    if (!buf || size == 0 || !host) return;
+    
+    if (port == 80) {
+        snprintf(buf, size, "%s", host);
+    } else {
+        snprintf(buf, size, "%s:%d", host, port);
+    }
 }
 
 static int api_validate_request(api_request_t *req) {
@@ -120,6 +134,7 @@ static int api_socket_alive(int fd) {
 
     return 0;
 }
+
 static int api_parse_url(const char *base_url, char *host, int *port) {
     const char *start;
 
@@ -202,6 +217,7 @@ static int api_parse_full_url(const char *url, char *host, int *port, char *path
 
     return 0;
 }
+
 int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     memset(ctx, 0, sizeof(api_ctx_t));
 
@@ -257,16 +273,28 @@ static int api_build_http_request(api_request_t *req) {
     int ret;
 
     ret = snprintf(headers + used, remain,
-                   "%s %s HTTP/1.1\r\n"
+                   "%s %s HTTP/1.1\r\n",
+                   req->method, req->path);
+    if (ret < 0) return -1;
+    if ((size_t)ret >= remain) {
+        LOG_ERROR("API: headers too large (method/path)");
+        return -1;
+    }
+    used += ret;
+    remain -= ret;
+
+    char host_header[256];
+    api_build_host_header(host_header, sizeof(host_header), req->host, req->port);
+
+    ret = snprintf(headers + used, remain,
                    "Host: %s\r\n"
                    "User-Agent: ATPd/1.0\r\n"
                    "Accept: application/json\r\n"
                    "Connection: keep-alive\r\n",
-                   req->method, req->path, req->host);
-
+                   host_header);
     if (ret < 0) return -1;
     if ((size_t)ret >= remain) {
-        LOG_ERROR("API: headers too large (host/path too long)");
+        LOG_ERROR("API: headers too large (host header)");
         return -1;
     }
     used += ret;
@@ -352,6 +380,7 @@ static void api_request_cleanup(api_request_t *req) {
 
     free(req);
 }
+
 static int api_socket_connect(api_request_t *req) {
     api_ctx_t *ctx = req->ctx;
 
@@ -488,8 +517,17 @@ static int api_socket_connect(api_request_t *req) {
 
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG;
+
+    if (strcmp(req->host, "localhost") == 0) {
+        hints.ai_family = AF_INET;
+        hints.ai_flags |= AI_NUMERICHOST;
+    } else if (strcmp(req->host, "::1") == 0) {
+        hints.ai_family = AF_INET6;
+        hints.ai_flags |= AI_NUMERICHOST;
+    }
 
     char port_str[16];
     snprintf(port_str, sizeof(port_str), "%d", req->port);
@@ -550,6 +588,7 @@ static int api_socket_connect(api_request_t *req) {
     LOG_ERROR("API: all connection attempts failed for %s:%d", req->host, req->port);
     return -1;
 }
+
 static int api_parse_header_line(const char *line, size_t len, char **name, char **value) {
     if (!line || !name || !value || len == 0) return -1;
 
@@ -588,11 +627,25 @@ static int api_parse_header_line(const char *line, size_t len, char **name, char
     return 0;
 }
 
-static int api_parse_status_line(const char *line, int *code) {
+static int api_parse_status_line(const char *line, int *code, uint8_t *major, uint8_t *minor) {
     if (!line || !code) return -1;
 
-    if (strncmp(line, "HTTP/1.1 ", 9) != 0 &&
-        strncmp(line, "HTTP/1.0 ", 9) != 0) {
+    uint8_t ver_major = 0, ver_minor = 0;
+
+    if (strncmp(line, "HTTP/1.1 ", 9) == 0) {
+        ver_major = 1;
+        ver_minor = 1;
+    } else if (strncmp(line, "HTTP/1.0 ", 9) == 0) {
+        ver_major = 1;
+        ver_minor = 0;
+    } else if (strncmp(line, "HTTP/", 5) == 0) {
+        if (line[5] >= '0' && line[5] <= '9') {
+            ver_major = line[5] - '0';
+        }
+        if (line[6] == '.' && line[7] >= '0' && line[7] <= '9') {
+            ver_minor = line[7] - '0';
+        }
+    } else {
         LOG_ERROR("API: invalid HTTP version in status line");
         return -1;
     }
@@ -612,10 +665,14 @@ static int api_parse_status_line(const char *line, int *code) {
     }
 
     *code = (int)c;
+    if (major) *major = ver_major;
+    if (minor) *minor = ver_minor;
+
     return 0;
 }
 
 static int api_parse_headers(api_request_t *req) {
+    uint8_t http_major = 0, http_minor = 0;
     char *header_end = strstr(req->recv_buf, "\r\n\r\n");
     if (!header_end) return 0;
 
@@ -626,12 +683,22 @@ static int api_parse_headers(api_request_t *req) {
         return -1;
     }
 
-    req->headers_complete = 1;
-
-    if (api_parse_status_line(req->recv_buf, &req->http_code) != 0) {
+    if (api_parse_status_line(req->recv_buf, &req->http_code,
+                               &http_major, &http_minor) != 0) {
         LOG_ERROR("API: invalid status line");
         return -1;
     }
+
+    req->http_major = http_major;
+    req->http_minor = http_minor;
+
+    /* HTTP/1.0 default: keep-alive disabled */
+    if (http_major == 1 && http_minor == 0) {
+        req->keepalive_disabled = 1;
+        LOG_DEBUG("API: HTTP/1.0 response, keep-alive disabled by default");
+    }
+
+    req->headers_complete = 1;
 
     req->content_length = -1;
     req->bytes_to_read = 0;
@@ -665,6 +732,7 @@ static int api_parse_headers(api_request_t *req) {
                     seen_cl = 1;
 
                     char *endptr;
+                    errno = 0;
                     long cl = strtol(value, &endptr, 10);
 
                     while (*endptr == ' ' || *endptr == '\t') {
@@ -673,6 +741,13 @@ static int api_parse_headers(api_request_t *req) {
 
                     if (*endptr != '\0') {
                         LOG_ERROR("API: malformed Content-Length: '%s'", value);
+                        free(name);
+                        free(value);
+                        return -1;
+                    }
+
+                    if (errno == ERANGE) {
+                        LOG_ERROR("API: Content-Length overflow: '%s'", value);
                         free(name);
                         free(value);
                         return -1;
@@ -701,6 +776,8 @@ static int api_parse_headers(api_request_t *req) {
                 } else if (strcasecmp(name, "Connection") == 0) {
                     if (strcasecmp(value, "close") == 0) {
                         req->keepalive_disabled = 1;
+                    } else if (strcasecmp(value, "keep-alive") == 0) {
+                        req->keepalive_disabled = 0;
                     }
                 }
 
@@ -740,6 +817,11 @@ static int api_parse_headers(api_request_t *req) {
         req->parse_state = HTTP_PARSE_BODY_CLOSE;
     }
 
+    /* HTTP/1.0 with Connection: keep-alive overrides default */
+    if (http_major == 1 && http_minor == 0 && !req->keepalive_disabled) {
+        LOG_DEBUG("API: HTTP/1.0 keep-alive enabled via Connection header");
+    }
+
     char *body_start = header_end + 4;
     if (body_start >= req->recv_buf + req->recv_offset) {
         req->raw_body_received = 0;
@@ -767,6 +849,7 @@ static int api_parse_headers(api_request_t *req) {
 
     return 1;
 }
+
 static int api_decode_chunked(api_request_t *req) {
     const char *buf = req->recv_buf + req->chunk_parse_offset;
     size_t avail = req->recv_offset - req->chunk_parse_offset;
@@ -791,6 +874,7 @@ static int api_decode_chunked(api_request_t *req) {
                 size_buf[line_len] = '\0';
 
                 char *endptr;
+                errno = 0;
                 long size = strtol(size_buf, &endptr, 16);
 
                 while (*endptr == ' ' || *endptr == '\t') {
@@ -799,6 +883,11 @@ static int api_decode_chunked(api_request_t *req) {
 
                 if (*endptr != '\0' && *endptr != ';') {
                     LOG_ERROR("API: invalid chunk size or extension: '%s'", size_buf);
+                    return -1;
+                }
+
+                if (errno == ERANGE) {
+                    LOG_ERROR("API: chunk size overflow: '%s'", size_buf);
                     return -1;
                 }
 
@@ -841,8 +930,7 @@ static int api_decode_chunked(api_request_t *req) {
                         req->decoded_body_size = API_CHUNK_READ_BUFFER;
                         req->decoded_body = malloc(req->decoded_body_size + 1);
                         if (!req->decoded_body) {
-                            LOG_ERROR("API: decoded body exceeds max response size (%zu)",
-          (size_t)API_MAX_RESPONSE_SIZE);
+                            LOG_ERROR("API: malloc decoded_body failed");
                             return -1;
                         }
                         req->decoded_body_len = 0;
@@ -850,7 +938,7 @@ static int api_decode_chunked(api_request_t *req) {
 
                     if (req->decoded_body_len + to_read > API_MAX_RESPONSE_SIZE) {
                         LOG_ERROR("API: decoded body exceeds max response size (%d)",
-          API_MAX_RESPONSE_SIZE); 
+                                  API_MAX_RESPONSE_SIZE);
                         return -1;
                     }
 
@@ -918,6 +1006,16 @@ static int api_decode_chunked(api_request_t *req) {
                     req->chunk_state = CHUNK_DONE;
                     req->parse_state = HTTP_PARSE_DONE;
                     req->state = API_STATE_DONE;
+
+                    /* Free recv_buf after chunked decoding complete */
+                    if (req->recv_buf) {
+                        free(req->recv_buf);
+                        req->recv_buf = NULL;
+                        req->recv_size = 0;
+                        req->recv_offset = 0;
+                        LOG_DEBUG("API: freed raw buffer after chunked decode");
+                    }
+
                     LOG_DEBUG("API: chunked transfer complete (empty trailer)");
                     return 1;
                 }
@@ -943,6 +1041,16 @@ static int api_decode_chunked(api_request_t *req) {
                 req->chunk_state = CHUNK_DONE;
                 req->parse_state = HTTP_PARSE_DONE;
                 req->state = API_STATE_DONE;
+
+                /* Free recv_buf after chunked decoding complete */
+                if (req->recv_buf) {
+                    free(req->recv_buf);
+                    req->recv_buf = NULL;
+                    req->recv_size = 0;
+                    req->recv_offset = 0;
+                    LOG_DEBUG("API: freed raw buffer after chunked decode");
+                }
+
                 LOG_DEBUG("API: chunked transfer complete (non-empty trailer)");
                 return 1;
             }
@@ -981,6 +1089,7 @@ static const char *api_extract_body(api_request_t *req) {
 
     return body;
 }
+
 static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdata) {
     (void)r;
     api_request_t *req = userdata;
@@ -1207,9 +1316,10 @@ static void api_process_requests(api_ctx_t *ctx) {
                 req->callback(req->http_code, body, req->userdata);
             }
 
+            /* Allow keepalive for chunked responses when fully decoded */
             if (req->sock_fd >= 0 && !req->keepalive_disabled &&
                 req->http_code >= 200 && req->http_code < 300 &&
-                !req->read_until_close && !req->chunked_encoding) {
+                !req->read_until_close) {
                 if (ctx->keepalive_fd >= 0) {
                     if (g_api_reactor) {
                         reactor_remove_fd(g_api_reactor, ctx->keepalive_fd);
@@ -1277,6 +1387,7 @@ static void api_process_requests(api_ctx_t *ctx) {
         ctx->keepalive_port = 0;
     }
 }
+
 int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r) {
     if (!ctx || !r) return -1;
     g_api_reactor = r;
@@ -1344,6 +1455,8 @@ static int api_request_async(api_ctx_t *ctx, const char *method, const char *pat
     req->decoded_body_len = 0;
     req->raw_body_received = 0;
     req->parse_state = HTTP_PARSE_HEADERS;
+    req->http_major = 0;
+    req->http_minor = 0;
     snprintf(req->method, sizeof(req->method), "%s", method);
     snprintf(req->path, sizeof(req->path), "%s", path);
     req->body = body ? strdup(body) : NULL;
@@ -1418,6 +1531,8 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
     req->decoded_body_len = 0;
     req->raw_body_received = 0;
     req->parse_state = HTTP_PARSE_HEADERS;
+    req->http_major = 0;
+    req->http_minor = 0;
     snprintf(req->method, sizeof(req->method), "%s", method);
     req->body = body ? strdup(body) : NULL;
     req->callback = callback;
@@ -1443,6 +1558,7 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
 
     return 0;
 }
+
 int api_get_sync(const char *url, char *response, size_t response_size) {
     if (!url || !response || response_size == 0) return -1;
 
@@ -1454,11 +1570,18 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
     int sock_fd = -1;
     int result = -1;
     char *recv_buf = NULL;
+    char *decoded_body = NULL;
+    size_t decoded_body_len = 0;
+    size_t decoded_body_size = 0;
+    int chunked_mode = 0;
+    chunk_state_t chunk_state = CHUNK_READ_SIZE;
+    size_t chunk_size = 0;
+    size_t chunk_offset = 0;
+    size_t chunk_parse_offset = 0;
     size_t recv_size = 4096;
     size_t recv_offset = 0;
     int headers_complete = 0;
     int content_length = -1;
-    int chunked = 0;
     int http_code = 0;
     size_t body_received = 0;
     size_t header_offset = 0;
@@ -1511,8 +1634,9 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
 
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG;
 
     char port_str[16];
     snprintf(port_str, sizeof(port_str), "%d", port);
@@ -1522,7 +1646,7 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
         return -1;
     }
 
-    sock_fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+    sock_fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
     if (sock_fd < 0) {
         LOG_ERROR("API sync: socket failed: %s", strerror(errno));
         goto cleanup;
@@ -1595,7 +1719,7 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
                         goto cleanup;
                     }
 
-                    if (api_parse_status_line(recv_buf, &http_code) != 0) {
+                    if (api_parse_status_line(recv_buf, &http_code, NULL, NULL) != 0) {
                         LOG_ERROR("API sync: invalid status line");
                         goto cleanup;
                     }
@@ -1617,13 +1741,14 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
                             if (api_parse_header_line(line_start, line_len, &name, &value) == 0) {
                                 if (strcasecmp(name, "Content-Length") == 0) {
                                     char *endptr;
+                                    errno = 0;
                                     long cl = strtol(value, &endptr, 10);
-                                    if (cl >= 0 && cl <= API_MAX_RESPONSE_SIZE) {
+                                    if (errno != ERANGE && cl >= 0 && cl <= API_MAX_RESPONSE_SIZE) {
                                         content_length = (int)cl;
                                     }
                                 } else if (strcasecmp(name, "Transfer-Encoding") == 0) {
                                     if (strcasecmp(value, "chunked") == 0) {
-                                        chunked = 1;
+                                        chunked_mode = 1;
                                     }
                                 }
                                 free(name);
@@ -1633,23 +1758,126 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
                         line_start = line_end + 1;
                     }
 
-                    if (chunked) {
-                        LOG_ERROR("API sync: chunked encoding not supported in sync API");
-                        goto cleanup;
-                    }
+                    /* Handle chunked encoding in sync API */
+                    if (chunked_mode) {
+                        decoded_body_size = API_CHUNK_READ_BUFFER;
+                        decoded_body = malloc(decoded_body_size + 1);
+                        if (!decoded_body) {
+                            LOG_ERROR("API sync: malloc decoded_body failed");
+                            goto cleanup;
+                        }
+                        decoded_body_len = 0;
 
-                    if (http_code < 200 || http_code >= 300) {
-                        LOG_ERROR("API sync: HTTP %d error", http_code);
-                        goto cleanup;
-                    }
+                        size_t body_start = header_offset;
+                        if (body_start < recv_offset) {
+                            chunk_parse_offset = body_start;
 
-                    if (content_length >= 0) {
-                        body_received = recv_offset - header_offset;
-                        if (body_received >= (size_t)content_length) {
-                            break;
+                            /* Process initial chunk data */
+                            const char *buf = recv_buf + chunk_parse_offset;
+                            size_t avail = recv_offset - chunk_parse_offset;
+
+                            while (avail > 0 && chunk_state != CHUNK_DONE) {
+                                if (chunk_state == CHUNK_READ_SIZE) {
+                                    void *crlf_ptr = memmem(buf, avail, "\r\n", 2);
+                                    if (!crlf_ptr) break;
+
+                                    size_t line_len = (const char *)crlf_ptr - buf;
+                                    if (line_len == 0 || line_len > 64) {
+                                        LOG_ERROR("API sync: invalid chunk size line");
+                                        goto cleanup;
+                                    }
+
+                                    char size_buf[128];
+                                    memcpy(size_buf, buf, line_len);
+                                    size_buf[line_len] = '\0';
+
+                                    char *endptr;
+                                    errno = 0;
+                                    long size = strtol(size_buf, &endptr, 16);
+
+                                    if (errno == ERANGE) {
+                                        LOG_ERROR("API sync: chunk size overflow");
+                                        goto cleanup;
+                                    }
+
+                                    if (endptr == size_buf || size < 0) {
+                                        LOG_ERROR("API sync: invalid chunk size");
+                                        goto cleanup;
+                                    }
+
+                                    chunk_size = (size_t)size;
+                                    chunk_offset = 0;
+
+                                    size_t consumed = (const char *)crlf_ptr - buf + 2;
+                                    chunk_parse_offset += consumed;
+                                    avail -= consumed;
+                                    buf += consumed;
+
+                                    if (chunk_size == 0) {
+                                        chunk_state = CHUNK_DONE;
+                                    } else {
+                                        chunk_state = CHUNK_READ_DATA;
+                                    }
+                                } else if (chunk_state == CHUNK_READ_DATA) {
+                                    size_t to_read = chunk_size - chunk_offset;
+                                    if (to_read > avail) to_read = avail;
+
+                                    if (to_read > 0) {
+                                        if (decoded_body_len + to_read + 1 > decoded_body_size) {
+                                            size_t new_size = decoded_body_size * 2;
+                                            if (new_size > API_MAX_RESPONSE_SIZE) {
+                                                LOG_ERROR("API sync: decoded body exceeds max");
+                                                goto cleanup;
+                                            }
+                                            char *new_buf = realloc(decoded_body, new_size + 1);
+                                            if (!new_buf) goto cleanup;
+                                            decoded_body = new_buf;
+                                            decoded_body_size = new_size;
+                                        }
+
+                                        memcpy(decoded_body + decoded_body_len, buf, to_read);
+                                        decoded_body_len += to_read;
+                                        chunk_offset += to_read;
+
+                                        chunk_parse_offset += to_read;
+                                        avail -= to_read;
+                                        buf += to_read;
+                                    }
+
+                                    if (chunk_offset >= chunk_size) {
+                                        chunk_state = CHUNK_READ_CRLF;
+                                    }
+                                } else if (chunk_state == CHUNK_READ_CRLF) {
+                                    if (avail < 2) break;
+                                    if (buf[0] != '\r' || buf[1] != '\n') {
+                                        LOG_ERROR("API sync: missing CRLF after chunk");
+                                        goto cleanup;
+                                    }
+                                    chunk_parse_offset += 2;
+                                    avail -= 2;
+                                    buf += 2;
+                                    chunk_state = CHUNK_READ_SIZE;
+                                    chunk_size = 0;
+                                    chunk_offset = 0;
+                                } else {
+                                    break;
+                                }
+                            }
                         }
                     } else {
-                        body_received = recv_offset - header_offset;
+                        if (http_code < 200 || http_code >= 300) {
+                            LOG_ERROR("API sync: HTTP %d error", http_code);
+                            goto cleanup;
+                        }
+
+                        if (content_length >= 0) {
+                            body_received = recv_offset - header_offset;
+                            if (body_received >= (size_t)content_length) {
+                                break;
+                            }
+                        } else {
+                            body_received = recv_offset - header_offset;
+                        }
                     }
                 } else {
                     if (recv_offset > API_MAX_HEADER_SIZE) {
@@ -1660,12 +1888,19 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
                 }
             } else {
                 body_received += recvd;
-                if (content_length >= 0 && body_received >= (size_t)content_length) {
+                if (!chunked_mode && content_length >= 0 && body_received >= (size_t)content_length) {
+                    break;
+                }
+                if (chunked_mode && chunk_state == CHUNK_DONE) {
                     break;
                 }
             }
         } else if (recvd == 0) {
             if (headers_complete) {
+                if (chunked_mode && chunk_state != CHUNK_DONE) {
+                    LOG_ERROR("API sync: chunked transfer incomplete");
+                    goto cleanup;
+                }
                 break;
             } else {
                 LOG_ERROR("API sync: connection closed before headers");
@@ -1678,18 +1913,27 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
         }
     }
 
-    if (headers_complete && header_offset > 0 && recv_offset > header_offset) {
-        size_t body_len = recv_offset - header_offset;
-        if (body_len >= response_size) body_len = response_size - 1;
-        memcpy(response, recv_buf + header_offset, body_len);
-        response[body_len] = '\0';
-        result = 0;
+    if (headers_complete && header_offset > 0) {
+        if (chunked_mode && decoded_body) {
+            size_t body_len = decoded_body_len;
+            if (body_len >= response_size) body_len = response_size - 1;
+            memcpy(response, decoded_body, body_len);
+            response[body_len] = '\0';
+            result = 0;
+        } else if (recv_offset > header_offset) {
+            size_t body_len = recv_offset - header_offset;
+            if (body_len >= response_size) body_len = response_size - 1;
+            memcpy(response, recv_buf + header_offset, body_len);
+            response[body_len] = '\0';
+            result = 0;
+        }
     }
 
 cleanup:
     if (ai) freeaddrinfo(ai);
     if (sock_fd >= 0) close(sock_fd);
     free(recv_buf);
+    free(decoded_body);
     return result;
 }
 
