@@ -8,11 +8,55 @@
 #include <string.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <ctype.h>
 
 static int g_tproxy_supported = -1;
+static pthread_mutex_t g_tproxy_support_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_reject_available = -1;
+static pthread_mutex_t g_reject_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int g_restore_available_v4 = -1;
+static int g_restore_available_v6 = -1;
+static pthread_mutex_t g_restore_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define IPTABLES_CMD "/system/bin/iptables"
 #define IP6TABLES_CMD "/system/bin/ip6tables"
+#define IPTABLES_RESTORE_CMD "/system/bin/iptables-restore"
+#define IP6TABLES_RESTORE_CMD "/system/bin/ip6tables-restore"
+
+static int validate_iface_name(const char *name) {
+    if (!name || !*name) return -1;
+    for (const char *p = name; *p; p++) {
+        if (!isalnum(*p) && *p != '.' && *p != '_' && *p != '-' && *p != ':') {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int validate_ip_or_cidr(const char *str) {
+    if (!str || !*str) return -1;
+
+    struct in_addr v4;
+    struct in6_addr v6;
+
+    if (inet_pton(AF_INET, str, &v4) == 1) {
+        return 0;
+    }
+
+    if (inet_pton(AF_INET6, str, &v6) == 1) {
+        return 0;
+    }
+
+    char ip[128];
+    int prefix;
+    if (sscanf(str, "%127[^/]/%d", ip, &prefix) == 2) {
+        if (inet_pton(AF_INET, ip, &v4) == 1 && prefix <= 32) return 0;
+        if (inet_pton(AF_INET6, ip, &v6) == 1 && prefix <= 128) return 0;
+    }
+
+    return -1;
+}
 
 static int exec_iptables(atp_config_t *cfg, const char *table, const char *cmd, const char *chain, const char *rule) {
     if (cfg->core.dry_run) {
@@ -59,6 +103,41 @@ static int exec_ip6tables(atp_config_t *cfg, const char *table, const char *cmd,
     int ret = exec_cmd_simple(command, CMD_TIMEOUT_SEC);
     if (ret != 0) {
         LOG_ERROR("ip6tables failed: -t %s %s %s %s (ret=%d)", table, cmd, chain, rule ? rule : "", ret);
+    }
+    return ret;
+}
+
+static int exec_iptables_restore(const char *rules, int family) {
+    const char *cmd;
+    int *cache;
+
+    if (family == 4) {
+        cmd = IPTABLES_RESTORE_CMD;
+        cache = &g_restore_available_v4;
+    } else {
+        cmd = IP6TABLES_RESTORE_CMD;
+        cache = &g_restore_available_v6;
+    }
+
+    pthread_mutex_lock(&g_restore_mutex);
+    if (*cache == -1) {
+        *cache = (access(cmd, X_OK) == 0) ? 1 : 0;
+    }
+    pthread_mutex_unlock(&g_restore_mutex);
+
+    if (*cache != 1) {
+        return -1;
+    }
+
+    FILE *fp = popen(cmd, "w");
+    if (!fp) {
+        LOG_ERROR("Failed to popen %s", cmd);
+        return -1;
+    }
+    fwrite(rules, 1, strlen(rules), fp);
+    int ret = pclose(fp);
+    if (ret != 0) {
+        LOG_ERROR("%s batch restore failed (ret=%d)", cmd, ret);
     }
     return ret;
 }
@@ -196,10 +275,15 @@ int tproxy_atomic_switch(atp_config_t *cfg, int family, const char *table,
 }
 
 int tproxy_support_check(atp_config_t *cfg) {
-    if (g_tproxy_supported >= 0) return g_tproxy_supported;
+    pthread_mutex_lock(&g_tproxy_support_mutex);
+    if (g_tproxy_supported >= 0) {
+        pthread_mutex_unlock(&g_tproxy_support_mutex);
+        return g_tproxy_supported;
+    }
 
     if (cfg->core.dry_run) {
         g_tproxy_supported = 1;
+        pthread_mutex_unlock(&g_tproxy_support_mutex);
         return 1;
     }
 
@@ -220,6 +304,7 @@ int tproxy_support_check(atp_config_t *cfg) {
 
     g_tproxy_supported = (ret == 0) ? 1 : 0;
     LOG_INFO("TPROXY support: %s", g_tproxy_supported ? "YES" : "NO");
+    pthread_mutex_unlock(&g_tproxy_support_mutex);
     return g_tproxy_supported;
 }
 
@@ -254,6 +339,8 @@ static int tproxy_configure_rp_filter(atp_config_t *cfg) {
             fprintf(fp, "2\n");
             fclose(fp);
             success++;
+        } else {
+            LOG_DEBUG("Failed to set rp_filter for %s", entry->d_name);
         }
     }
 
@@ -263,18 +350,26 @@ static int tproxy_configure_rp_filter(atp_config_t *cfg) {
 }
 
 static int tproxy_reject_available(void) {
+    pthread_mutex_lock(&g_reject_mutex);
+    if (g_reject_available >= 0) {
+        pthread_mutex_unlock(&g_reject_mutex);
+        return g_reject_available;
+    }
+
     char cmd[MAX_CMD_LEN];
+    char output[256] = {0};
 
     snprintf(cmd, sizeof(cmd), "%s -N ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
     int ret = exec_cmd_simple(cmd, 3);
     if (ret != 0) {
         snprintf(cmd, sizeof(cmd), "%s -X ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
         exec_cmd_simple(cmd, 3);
+        g_reject_available = 0;
+        pthread_mutex_unlock(&g_reject_mutex);
         return 0;
     }
 
     snprintf(cmd, sizeof(cmd), "%s -A ATP_TEST_REJECT -j REJECT 2>&1", IPTABLES_CMD);
-    char output[256];
     ret = exec_cmd(cmd, output, sizeof(output), 3);
 
     snprintf(cmd, sizeof(cmd), "%s -F ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
@@ -282,10 +377,14 @@ static int tproxy_reject_available(void) {
     snprintf(cmd, sizeof(cmd), "%s -X ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
     exec_cmd_simple(cmd, 3);
 
-    if (ret != 0 || strstr(output, "No chain/target/match")) {
-        return 0;
+    if (ret != 0 || strstr(output, "No chain/target/match") != NULL) {
+        g_reject_available = 0;
+    } else {
+        g_reject_available = 1;
     }
-    return 1;
+
+    pthread_mutex_unlock(&g_reject_mutex);
+    return g_reject_available;
 }
 
 static void tproxy_create_standard_chains(atp_config_t *cfg, int family, const char *suffix) {
@@ -370,6 +469,7 @@ static void tproxy_setup_chain_jumps(atp_config_t *cfg, int family, const char *
     tproxy_rule_add(cfg, family, "mangle", out_chain, "-j ATP_APP_0");
     tproxy_rule_add(cfg, family, "mangle", out_chain, "-j ATP_DNS_OUT_0");
 }
+
 static void tproxy_setup_iface_rules(atp_config_t *cfg, int family, const char *suffix) {
     char proxy_chain[64], bypass_chain[64];
     char rule[256];
@@ -386,14 +486,16 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family, const char *
 
     tproxy_rule_add(cfg, family, "mangle", proxy_chain, "-i lo -j RETURN");
 
-    if (cfg->interface.proxy_mobile) {
-        snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.mobile_iface);
-        tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-    } else {
-        snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.mobile_iface);
-        tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-        snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.mobile_iface);
-        tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
+    if (validate_iface_name(cfg->interface.mobile_iface) == 0) {
+        if (cfg->interface.proxy_mobile) {
+            snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.mobile_iface);
+            tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
+        } else {
+            snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.mobile_iface);
+            tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
+            snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.mobile_iface);
+            tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
+        }
     }
 
     int hotspot_on_wifi = (strcmp(cfg->interface.hotspot_iface, cfg->interface.wifi_iface) == 0);
@@ -439,10 +541,10 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family, const char *
         }
     }
 
-    if (cfg->interface.proxy_usb) {
+    if (cfg->interface.proxy_usb && validate_iface_name(cfg->interface.usb_iface) == 0) {
         snprintf(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.usb_iface);
         tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-    } else {
+    } else if (validate_iface_name(cfg->interface.usb_iface) == 0) {
         snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.usb_iface);
         tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
         snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.usb_iface);
@@ -450,25 +552,27 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family, const char *
     }
 
     if (cfg->interface.other_proxy[0]) {
-        strncpy(list_buf, cfg->interface.other_proxy, sizeof(list_buf) - 1);
-        list_buf[sizeof(list_buf) - 1] = '\0';
+        snprintf(list_buf, sizeof(list_buf), "%s", cfg->interface.other_proxy);
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
-            snprintf(rule, sizeof(rule), "-i %s -j RETURN", token);
-            tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
+            if (validate_iface_name(token) == 0) {
+                snprintf(rule, sizeof(rule), "-i %s -j RETURN", token);
+                tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
+            }
             token = strtok_r(NULL, " ", &saveptr);
         }
     }
 
     if (cfg->interface.other_bypass[0]) {
-        strncpy(list_buf, cfg->interface.other_bypass, sizeof(list_buf) - 1);
-        list_buf[sizeof(list_buf) - 1] = '\0';
+        snprintf(list_buf, sizeof(list_buf), "%s", cfg->interface.other_bypass);
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
-            snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", token);
-            tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
-            snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", token);
-            tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
+            if (validate_iface_name(token) == 0) {
+                snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", token);
+                tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
+                snprintf(rule, sizeof(rule), "-o %s -j ACCEPT", token);
+                tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
+            }
             token = strtok_r(NULL, " ", &saveptr);
         }
     }
@@ -494,25 +598,27 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family, const char *suf
     }
 
     if (proxy_list && proxy_list[0]) {
-        strncpy(list_buf, proxy_list, sizeof(list_buf) - 1);
-        list_buf[sizeof(list_buf) - 1] = '\0';
+        snprintf(list_buf, sizeof(list_buf), "%s", proxy_list);
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
-            snprintf(rule, sizeof(rule), "-d %s -j RETURN", token);
-            tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
+            if (validate_ip_or_cidr(token) == 0) {
+                snprintf(rule, sizeof(rule), "-d %s -j RETURN", token);
+                tproxy_rule_add(cfg, family, "mangle", proxy_chain, rule);
+            }
             token = strtok_r(NULL, " ", &saveptr);
         }
     }
 
     if (bypass_list && bypass_list[0]) {
-        strncpy(list_buf, bypass_list, sizeof(list_buf) - 1);
-        list_buf[sizeof(list_buf) - 1] = '\0';
+        snprintf(list_buf, sizeof(list_buf), "%s", bypass_list);
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
-            snprintf(rule, sizeof(rule), "-d %s -p udp ! --dport 53 -j ACCEPT", token);
-            tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
-            snprintf(rule, sizeof(rule), "-d %s ! -p udp -j ACCEPT", token);
-            tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
+            if (validate_ip_or_cidr(token) == 0) {
+                snprintf(rule, sizeof(rule), "-d %s -p udp ! --dport 53 -j ACCEPT", token);
+                tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
+                snprintf(rule, sizeof(rule), "-d %s ! -p udp -j ACCEPT", token);
+                tproxy_rule_add(cfg, family, "mangle", bypass_chain, rule);
+            }
             token = strtok_r(NULL, " ", &saveptr);
         }
     }
@@ -591,30 +697,31 @@ void tproxy_hook_main_chains(atp_config_t *cfg, int family, const char *suffix) 
     tproxy_rule_del(cfg, family, "mangle", "OUTPUT", hook_rule);
     tproxy_rule_insert(cfg, family, "mangle", "OUTPUT", 1, hook_rule);
 }
-static int tproxy_restore_batch(const char *rules, int family) {
-    const char *cmd = (family == 4) ? "iptables-restore -n" : "ip6tables-restore -n";
-    FILE *fp = popen(cmd, "w");
-    if (!fp) {
-        LOG_ERROR("Failed to popen %s", cmd);
-        return -1;
-    }
-    fwrite(rules, 1, strlen(rules), fp);
-    int ret = pclose(fp);
-    if (ret != 0) {
-        LOG_ERROR("%s batch restore failed (ret=%d)", cmd, ret);
-    }
-    return ret;
-}
+
+#define APPEND_RULE(buf, offset, maxlen, ...) \
+do { \
+    int ret = snprintf(buf + offset, maxlen - offset, __VA_ARGS__); \
+    if (ret < 0) { \
+        LOG_ERROR("snprintf failed in batch build"); \
+        return -1; \
+    } \
+    if (ret >= (int)(maxlen - offset)) { \
+        LOG_ERROR("Batch rules overflow at offset %zu", offset); \
+        return -1; \
+    } \
+    offset += ret; \
+} while (0)
 
 int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
     LOG_INFO("Setting up IPv4 TPROXY chains (batch mode)");
 
     tproxy_configure_rp_filter(cfg);
 
-    char rules[8192];
-    int offset = 0;
+    char rules[16384];
+    size_t offset = 0;
+    const size_t maxlen = sizeof(rules);
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "*mangle\n"
         ":PREROUTING ACCEPT [0:0]\n"
         ":OUTPUT ACCEPT [0:0]\n"
@@ -642,17 +749,17 @@ int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
         ":ATP_MAC_1 - [0:0]\n"
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A ATP_DIVERT_0 -j MARK --set-mark %d\n"
         "-A ATP_DIVERT_0 -j ACCEPT\n",
         cfg->network.mark_value
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A ATP_PRE_0 -p tcp -m socket --transparent -j ATP_DIVERT_0\n"
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A ATP_PRE_0 -j ATP_PROXY_IP_0\n"
         "-A ATP_PRE_0 -j ATP_BYPASS_IP_0\n"
         "-A ATP_PRE_0 -j ATP_PROXY_IFACE_0\n"
@@ -660,7 +767,7 @@ int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
         "-A ATP_PRE_0 -j ATP_DNS_PRE_0\n"
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A ATP_OUT_0 -j ATP_PROXY_IP_0\n"
         "-A ATP_OUT_0 -j ATP_BYPASS_IP_0\n"
         "-A ATP_OUT_0 -j ATP_BYPASS_IFACE_0\n"
@@ -668,31 +775,25 @@ int tproxy_setup_ipv4_batch(atp_config_t *cfg) {
         "-A ATP_OUT_0 -j ATP_DNS_OUT_0\n"
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A OUTPUT -m owner --uid-owner %s --gid-owner %s -j RETURN\n",
         cfg->core.core_user, cfg->core.core_group
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A PREROUTING -m connmark --mark %d/0xff -j TPROXY --on-port %d --tproxy-mark %d\n"
         "-A OUTPUT -m connmark --mark %d/0xff -j MARK --set-mark %d\n",
         cfg->network.mark_value, cfg->network.tcp_port, cfg->network.mark_value,
         cfg->network.mark_value, cfg->network.mark_value
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A PREROUTING -j ATP_PRE_0\n"
         "-A OUTPUT -j ATP_OUT_0\n"
         "COMMIT\n"
     );
 
-    if (offset >= (int)sizeof(rules)) {
-        LOG_ERROR("Batch rules too large (%d bytes), falling back to sequential mode", offset);
-        return tproxy_setup_ipv4(cfg);
-    }
-
-    LOG_DEBUG("Batch rules: %d bytes", offset);
-    int ret = tproxy_restore_batch(rules, 4);
+    int ret = exec_iptables_restore(rules, 4);
     if (ret != 0) {
         LOG_ERROR("Batch restore failed (ret=%d), falling back to sequential mode", ret);
         return tproxy_setup_ipv4(cfg);
@@ -714,10 +815,11 @@ int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
 
     LOG_INFO("Setting up IPv6 TPROXY chains (batch mode)");
 
-    char rules[8192];
-    int offset = 0;
+    char rules[16384];
+    size_t offset = 0;
+    const size_t maxlen = sizeof(rules);
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "*mangle\n"
         ":PREROUTING ACCEPT [0:0]\n"
         ":OUTPUT ACCEPT [0:0]\n"
@@ -745,13 +847,13 @@ int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
         ":ATP6_MAC_1 - [0:0]\n"
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A ATP6_DIVERT_0 -j MARK --set-mark %d\n"
         "-A ATP6_DIVERT_0 -j ACCEPT\n",
         cfg->network.mark_value6
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A ATP6_PRE_0 -p tcp -m socket --transparent -j ATP6_DIVERT_0\n"
         "-A ATP6_PRE_0 -j ATP6_PROXY_IP_0\n"
         "-A ATP6_PRE_0 -j ATP6_BYPASS_IP_0\n"
@@ -765,31 +867,25 @@ int tproxy_setup_ipv6_batch(atp_config_t *cfg) {
         "-A ATP6_OUT_0 -j ATP6_DNS_OUT_0\n"
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A OUTPUT -m owner --uid-owner %s --gid-owner %s -j RETURN\n",
         cfg->core.core_user, cfg->core.core_group
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A PREROUTING -m connmark --mark %d/0xff -j TPROXY --on-port %d --tproxy-mark %d\n"
         "-A OUTPUT -m connmark --mark %d/0xff -j MARK --set-mark %d\n",
         cfg->network.mark_value6, cfg->network.tcp_port, cfg->network.mark_value6,
         cfg->network.mark_value6, cfg->network.mark_value6
     );
 
-    offset += snprintf(rules + offset, sizeof(rules) - offset,
+    APPEND_RULE(rules, offset, maxlen,
         "-A PREROUTING -j ATP6_PRE_0\n"
         "-A OUTPUT -j ATP6_OUT_0\n"
         "COMMIT\n"
     );
 
-    if (offset >= (int)sizeof(rules)) {
-        LOG_ERROR("Batch rules too large (%d bytes), falling back to sequential mode", offset);
-        return tproxy_setup_ipv6(cfg);
-    }
-
-    LOG_DEBUG("Batch rules: %d bytes", offset);
-    int ret = tproxy_restore_batch(rules, 6);
+    int ret = exec_iptables_restore(rules, 6);
     if (ret != 0) {
         LOG_ERROR("Batch restore failed (ret=%d), falling back to sequential mode", ret);
         return tproxy_setup_ipv6(cfg);
@@ -1278,28 +1374,23 @@ int tproxy_dns_hijack_cleanup(atp_config_t *cfg, int family) {
     if (family == 4) {
         tproxy_chain_flush(cfg, 4, "mangle", "ATP_DNS_PRE_0");
         tproxy_chain_flush(cfg, 4, "mangle", "ATP_DNS_OUT_0");
+        tproxy_chain_destroy(cfg, 4, "mangle", "ATP_DNS_PRE_0");
+        tproxy_chain_destroy(cfg, 4, "mangle", "ATP_DNS_OUT_0");
     } else {
         if (access(IP6TABLES_CMD, X_OK) != 0) return 0;
         tproxy_chain_flush(cfg, 6, "mangle", "ATP6_DNS_PRE_0");
         tproxy_chain_flush(cfg, 6, "mangle", "ATP6_DNS_OUT_0");
+        tproxy_chain_destroy(cfg, 6, "mangle", "ATP6_DNS_PRE_0");
+        tproxy_chain_destroy(cfg, 6, "mangle", "ATP6_DNS_OUT_0");
     }
     return 0;
 }
 
 static int tproxy_reject_or_drop(atp_config_t *cfg, int family, const char *chain, const char *rule) {
-    static int reject_available = -1;
-
-    if (reject_available == -1) {
-        reject_available = tproxy_reject_available();
-        if (reject_available) {
-            LOG_INFO("REJECT target is available");
-        } else {
-            LOG_WARN("REJECT target not available, using DROP fallback");
-        }
-    }
+    int reject_avail = tproxy_reject_available();
 
     char modified_rule[256];
-    if (reject_available) {
+    if (reject_avail) {
         snprintf(modified_rule, sizeof(modified_rule), "%s -j REJECT", rule);
     } else {
         snprintf(modified_rule, sizeof(modified_rule), "%s -j DROP", rule);
