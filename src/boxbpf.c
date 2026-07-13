@@ -12,22 +12,12 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <signal.h>
-#include <setjmp.h>
+#include <stdatomic.h>
 
-static bool g_ebpf_ready = false;
+static atomic_bool g_ebpf_ready = false;
 static char g_pin_dir[256] = "/sys/fs/bpf/box";
 static char g_state_dir[256] = "/data/adb/atp/ebpf";
 static char g_status_file[512] = "/data/adb/atp/ebpf/ebpf.status";
-
-static sigjmp_buf g_bpf_timeout_env;
-static volatile sig_atomic_t g_bpf_timeout = 0;
-
-static void bpf_timeout_handler(int sig) {
-    (void)sig;
-    g_bpf_timeout = 1;
-    siglongjmp(g_bpf_timeout_env, 1);
-}
 
 static void raise_memlock(void) {
     struct rlimit unlimited = {RLIM_INFINITY, RLIM_INFINITY};
@@ -60,7 +50,11 @@ static char *read_file_content(const char *path) {
     FILE *fp = fopen(path, "r");
     if (!fp) return NULL;
 
-    fseek(fp, 0, SEEK_END);
+    if (fseek(fp, 0, SEEK_END) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+
     long size = ftell(fp);
     if (size <= 0) {
         fclose(fp);
@@ -75,7 +69,12 @@ static char *read_file_content(const char *path) {
 
     fseek(fp, 0, SEEK_SET);
     size_t read = fread(buf, 1, size, fp);
-    buf[read] = '\0';
+    if (read != (size_t)size) {
+        free(buf);
+        fclose(fp);
+        return NULL;
+    }
+    buf[size] = '\0';
     fclose(fp);
 
     return buf;
@@ -86,7 +85,10 @@ static int write_ebpf_state_file(const char *state) {
         return ATP_ERR_INVAL;
     }
 
-    mkdir_recursive(g_state_dir, 0755);
+    if (mkdir_recursive(g_state_dir, 0755) != 0) {
+        LOG_ERROR("Failed to create state dir: %s", g_state_dir);
+        return ATP_ERR_IO;
+    }
 
     FILE *fp = fopen(g_status_file, "w");
     if (!fp) {
@@ -131,8 +133,18 @@ static int create_cidr_map(const char *source, const char *pin_path,
         return ATP_ERR_EBPF;
     }
 
-    load_cidr_file(*fd_out, source, ipv6);
+    int loaded = load_cidr_file(*fd_out, source, ipv6);
+    if (loaded < 0) {
+        LOG_ERROR("Failed to load CIDR file: %s", source);
+        close_fd(*fd_out);
+        *fd_out = -1;
+        return ATP_ERR_CONFIG;
+    }
+
     if (pin_replace(*fd_out, pin_path) != 0) {
+        LOG_ERROR("Failed to pin CIDR map: %s", pin_path);
+        close_fd(*fd_out);
+        *fd_out = -1;
         return ATP_ERR_EBPF;
     }
     return ATP_OK;
@@ -148,12 +160,24 @@ static int create_uid_map(const char *source, const char *pin_path,
     }
 
     int loaded = load_uid_file(*fd_out, source);
+    if (loaded < 0) {
+        LOG_ERROR("Failed to load UID file: %s", source ? source : "-");
+        close_fd(*fd_out);
+        *fd_out = -1;
+        return ATP_ERR_CONFIG;
+    }
+
     if (required && loaded <= 0) {
         LOG_ERROR("required UID map is empty: %s", source ? source : "-");
+        close_fd(*fd_out);
+        *fd_out = -1;
         return ATP_ERR_CONFIG;
     }
 
     if (pin_replace(*fd_out, pin_path) != 0) {
+        LOG_ERROR("Failed to pin UID map: %s", pin_path);
+        close_fd(*fd_out);
+        *fd_out = -1;
         return ATP_ERR_EBPF;
     }
     return ATP_OK;
@@ -163,11 +187,17 @@ static int pin_program(const char *section, const char *name,
                        const char *pin_path, const struct fds *fds) {
     int fd = load_program(section, name, fds->cidr4, fds->cidr6,
                           fds->force_uid, fds->app_uid);
-    if (fd < 0) return ATP_ERR_EBPF;
+    if (fd < 0) {
+        LOG_ERROR("load_program(%s) failed", section);
+        return ATP_ERR_EBPF;
+    }
 
     int rc = pin_replace(fd, pin_path);
     close(fd);
-    if (rc != 0) return ATP_ERR_EBPF;
+    if (rc != 0) {
+        LOG_ERROR("pin_replace(%s) failed", pin_path);
+        return ATP_ERR_EBPF;
+    }
     return ATP_OK;
 }
 
@@ -185,8 +215,14 @@ int write_ebpf_config(atp_config_t *cfg) {
     snprintf(force_uids, sizeof(force_uids), "%s/force-uids.txt", state_dir);
     snprintf(app_uids, sizeof(app_uids), "%s/app-uids.txt", state_dir);
 
-    mkdir_recursive(state_dir, 0755);
-    mkdir_recursive(pin_dir, 0755);
+    if (mkdir_recursive(state_dir, 0755) != 0) {
+        LOG_ERROR("Failed to create state dir: %s", state_dir);
+        return ATP_ERR_IO;
+    }
+    if (mkdir_recursive(pin_dir, 0755) != 0) {
+        LOG_ERROR("Failed to create pin dir: %s", pin_dir);
+        return ATP_ERR_IO;
+    }
 
     FILE *f = fopen(empty_v4, "w");
     if (f) fclose(f);
@@ -243,14 +279,12 @@ int write_ebpf_config(atp_config_t *cfg) {
         char cn_path[512];
         snprintf(cn_path, sizeof(cn_path), "%s/%s", cfg->core.data_dir, cfg->filter.cn_ip_file);
         if (file_exists(cn_path)) {
-            strncpy(cidr4, cn_path, sizeof(cidr4) - 1);
-            cidr4[sizeof(cidr4) - 1] = '\0';
+            snprintf(cidr4, sizeof(cidr4), "%s", cn_path);
         }
         if (cfg->network.proxy_ipv6) {
             snprintf(cn_path, sizeof(cn_path), "%s/%s", cfg->core.data_dir, cfg->filter.cn_ipv6_file);
             if (file_exists(cn_path)) {
-                strncpy(cidr6, cn_path, sizeof(cidr6) - 1);
-                cidr6[sizeof(cidr6) - 1] = '\0';
+                snprintf(cidr6, sizeof(cidr6), "%s", cn_path);
             }
         }
     }
@@ -377,52 +411,52 @@ static int apply_config(const char *config_path) {
     if (val) ipv6 = yyjson_is_true(val);
 
     s = yyjson_get_str(yyjson_obj_get(root, "cidr4"));
-    if (s) strncpy(cidr4_file, s, sizeof(cidr4_file) - 1);
+    if (s) snprintf(cidr4_file, sizeof(cidr4_file), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "cidr6"));
-    if (s) strncpy(cidr6_file, s, sizeof(cidr6_file) - 1);
+    if (s) snprintf(cidr6_file, sizeof(cidr6_file), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "forceUids"));
-    if (s) strncpy(force_uid_file, s, sizeof(force_uid_file) - 1);
+    if (s) snprintf(force_uid_file, sizeof(force_uid_file), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "appUids"));
-    if (s) strncpy(app_uid_file, s, sizeof(app_uid_file) - 1);
+    if (s) snprintf(app_uid_file, sizeof(app_uid_file), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "pinCidrOut4"));
-    if (s) strncpy(pin_cidr_out4, s, sizeof(pin_cidr_out4) - 1);
+    if (s) snprintf(pin_cidr_out4, sizeof(pin_cidr_out4), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "pinCidrOut6"));
-    if (s) strncpy(pin_cidr_out6, s, sizeof(pin_cidr_out6) - 1);
+    if (s) snprintf(pin_cidr_out6, sizeof(pin_cidr_out6), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "pinCidrPre4"));
-    if (s) strncpy(pin_cidr_pre4, s, sizeof(pin_cidr_pre4) - 1);
+    if (s) snprintf(pin_cidr_pre4, sizeof(pin_cidr_pre4), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "pinCidrPre6"));
-    if (s) strncpy(pin_cidr_pre6, s, sizeof(pin_cidr_pre6) - 1);
+    if (s) snprintf(pin_cidr_pre6, sizeof(pin_cidr_pre6), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "pinForceOut4"));
-    if (s) strncpy(pin_force_out4, s, sizeof(pin_force_out4) - 1);
+    if (s) snprintf(pin_force_out4, sizeof(pin_force_out4), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "pinForceOut6"));
-    if (s) strncpy(pin_force_out6, s, sizeof(pin_force_out6) - 1);
+    if (s) snprintf(pin_force_out6, sizeof(pin_force_out6), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "pinAppOut4"));
-    if (s) strncpy(pin_app_out4, s, sizeof(pin_app_out4) - 1);
+    if (s) snprintf(pin_app_out4, sizeof(pin_app_out4), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "pinAppOut6"));
-    if (s) strncpy(pin_app_out6, s, sizeof(pin_app_out6) - 1);
+    if (s) snprintf(pin_app_out6, sizeof(pin_app_out6), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "mapCidr4"));
-    if (s) strncpy(map_cidr4, s, sizeof(map_cidr4) - 1);
+    if (s) snprintf(map_cidr4, sizeof(map_cidr4), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "mapCidr6"));
-    if (s) strncpy(map_cidr6, s, sizeof(map_cidr6) - 1);
+    if (s) snprintf(map_cidr6, sizeof(map_cidr6), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "mapForceUid"));
-    if (s) strncpy(map_force_uid, s, sizeof(map_force_uid) - 1);
+    if (s) snprintf(map_force_uid, sizeof(map_force_uid), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "mapAppUid"));
-    if (s) strncpy(map_app_uid, s, sizeof(map_app_uid) - 1);
+    if (s) snprintf(map_app_uid, sizeof(map_app_uid), "%s", s);
 
     yyjson_doc_free(doc);
     free(json_str);
@@ -515,7 +549,9 @@ static int apply_config(const char *config_path) {
     status = ATP_OK;
 
 cleanup:
-    if (status != ATP_OK) remove_known_pins();
+    if (status != ATP_OK) {
+        remove_known_pins();
+    }
     close_fds(&fds);
 
     if (status == ATP_OK) {
@@ -574,28 +610,28 @@ static int update_config(const char *config_path) {
     if (val) ipv6 = yyjson_is_true(val);
 
     s = yyjson_get_str(yyjson_obj_get(root, "cidr4"));
-    if (s) strncpy(cidr4_file, s, sizeof(cidr4_file) - 1);
+    if (s) snprintf(cidr4_file, sizeof(cidr4_file), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "cidr6"));
-    if (s) strncpy(cidr6_file, s, sizeof(cidr6_file) - 1);
+    if (s) snprintf(cidr6_file, sizeof(cidr6_file), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "forceUids"));
-    if (s) strncpy(force_uid_file, s, sizeof(force_uid_file) - 1);
+    if (s) snprintf(force_uid_file, sizeof(force_uid_file), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "appUids"));
-    if (s) strncpy(app_uid_file, s, sizeof(app_uid_file) - 1);
+    if (s) snprintf(app_uid_file, sizeof(app_uid_file), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "mapCidr4"));
-    if (s) strncpy(map_cidr4, s, sizeof(map_cidr4) - 1);
+    if (s) snprintf(map_cidr4, sizeof(map_cidr4), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "mapCidr6"));
-    if (s) strncpy(map_cidr6, s, sizeof(map_cidr6) - 1);
+    if (s) snprintf(map_cidr6, sizeof(map_cidr6), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "mapForceUid"));
-    if (s) strncpy(map_force_uid, s, sizeof(map_force_uid) - 1);
+    if (s) snprintf(map_force_uid, sizeof(map_force_uid), "%s", s);
 
     s = yyjson_get_str(yyjson_obj_get(root, "mapAppUid"));
-    if (s) strncpy(map_app_uid, s, sizeof(map_app_uid) - 1);
+    if (s) snprintf(map_app_uid, sizeof(map_app_uid), "%s", s);
 
     yyjson_doc_free(doc);
     free(json_str);
@@ -645,21 +681,47 @@ static int update_config(const char *config_path) {
     }
 
     int status = ATP_OK;
-    if (clear_map(cidr4, sizeof(struct lpm4_key)) < 0) status = ATP_ERR_EBPF;
-    load_cidr_file(cidr4, cidr4_file, false);
-    if (ipv6) {
-        if (clear_map(cidr6, sizeof(struct lpm6_key)) < 0) status = ATP_ERR_EBPF;
-        load_cidr_file(cidr6, cidr6_file, true);
+
+    if (clear_map(cidr4, sizeof(struct lpm4_key)) < 0) {
+        status = ATP_ERR_EBPF;
     }
-    if (clear_map(force_uid, sizeof(uint32_t)) < 0) status = ATP_ERR_EBPF;
-    load_uid_file(force_uid, force_uid_file);
-    if (clear_map(app_uid, sizeof(uint32_t)) < 0) status = ATP_ERR_EBPF;
-    load_uid_file(app_uid, app_uid_file);
+    if (load_cidr_file(cidr4, cidr4_file, false) < 0) {
+        LOG_ERROR("Failed to reload CIDR4 map");
+        status = ATP_ERR_CONFIG;
+    }
+
+    if (ipv6) {
+        if (clear_map(cidr6, sizeof(struct lpm6_key)) < 0) {
+            status = ATP_ERR_EBPF;
+        }
+        if (load_cidr_file(cidr6, cidr6_file, true) < 0) {
+            LOG_ERROR("Failed to reload CIDR6 map");
+            status = ATP_ERR_CONFIG;
+        }
+    }
+
+    if (clear_map(force_uid, sizeof(uint32_t)) < 0) {
+        status = ATP_ERR_EBPF;
+    }
+    if (load_uid_file(force_uid, force_uid_file) < 0) {
+        LOG_ERROR("Failed to reload force UID map");
+        status = ATP_ERR_CONFIG;
+    }
+
+    if (clear_map(app_uid, sizeof(uint32_t)) < 0) {
+        status = ATP_ERR_EBPF;
+    }
+    if (load_uid_file(app_uid, app_uid_file) < 0) {
+        LOG_ERROR("Failed to reload app UID map");
+        status = ATP_ERR_CONFIG;
+    }
 
     close_fd(cidr4);
     close_fd(cidr6);
     close_fd(force_uid);
     close_fd(app_uid);
+
+    atomic_store(&g_ebpf_ready, status == ATP_OK);
 
     if (status == ATP_OK) {
         write_ebpf_state_file("ready");
@@ -671,23 +733,7 @@ static int update_config(const char *config_path) {
 }
 
 int boxbpf_probe(bool ipv6) {
-    struct sigaction sa, old_sa;
-    int ret = ATP_OK;
-
     raise_memlock();
-
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = bpf_timeout_handler;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGALRM, &sa, &old_sa);
-
-    if (sigsetjmp(g_bpf_timeout_env, 1) != 0) {
-        LOG_WARN("eBPF probe timeout after 10 seconds");
-        sigaction(SIGALRM, &old_sa, NULL);
-        return ATP_ERR_TIMEOUT;
-    }
-
-    alarm(10);
 
     char map_cidr4[128];
     char map_cidr6[128];
@@ -714,32 +760,41 @@ int boxbpf_probe(bool ipv6) {
 
 cleanup:
     close_fds(&fds);
-    unlink(PROBE_PIN4);
-    unlink(PROBE_PIN6);
-    unlink(map_cidr4);
-    unlink(map_cidr6);
-    unlink(map_force_uid);
-    unlink(map_app_uid);
-    rmdir(PIN_DIR);
-
-    g_ebpf_ready = ok;
-
-    alarm(0);
-    sigaction(SIGALRM, &old_sa, NULL);
-
-    if (ok) {
-        ret = ATP_OK;
-    } else {
-        ret = ATP_ERR_EBPF;
+    if (unlink(PROBE_PIN4) != 0 && errno != ENOENT) {
+        LOG_WARN("Failed to unlink %s: %s", PROBE_PIN4, strerror(errno));
+    }
+    if (unlink(PROBE_PIN6) != 0 && errno != ENOENT) {
+        LOG_WARN("Failed to unlink %s: %s", PROBE_PIN6, strerror(errno));
+    }
+    if (unlink(map_cidr4) != 0 && errno != ENOENT) {
+        LOG_WARN("Failed to unlink %s: %s", map_cidr4, strerror(errno));
+    }
+    if (unlink(map_cidr6) != 0 && errno != ENOENT) {
+        LOG_WARN("Failed to unlink %s: %s", map_cidr6, strerror(errno));
+    }
+    if (unlink(map_force_uid) != 0 && errno != ENOENT) {
+        LOG_WARN("Failed to unlink %s: %s", map_force_uid, strerror(errno));
+    }
+    if (unlink(map_app_uid) != 0 && errno != ENOENT) {
+        LOG_WARN("Failed to unlink %s: %s", map_app_uid, strerror(errno));
+    }
+    if (rmdir(PIN_DIR) != 0 && errno != ENOENT && errno != ENOTEMPTY) {
+        LOG_WARN("Failed to rmdir %s: %s", PIN_DIR, strerror(errno));
     }
 
-    return ret;
+    atomic_store(&g_ebpf_ready, ok);
+
+    if (ok) {
+        return ATP_OK;
+    } else {
+        return ATP_ERR_EBPF;
+    }
 }
 
 int boxbpf_apply(const char *config_path) {
     raise_memlock();
     int ret = apply_config(config_path);
-    g_ebpf_ready = (ret == ATP_OK);
+    atomic_store(&g_ebpf_ready, (ret == ATP_OK));
     return ret;
 }
 
@@ -750,13 +805,13 @@ int boxbpf_update(const char *config_path) {
 
 int boxbpf_clear(void) {
     remove_known_pins();
-    g_ebpf_ready = false;
+    atomic_store(&g_ebpf_ready, false);
     write_ebpf_state_file("disabled");
     return ATP_OK;
 }
 
 bool boxbpf_is_ready(void) {
-    return g_ebpf_ready;
+    return atomic_load(&g_ebpf_ready);
 }
 
 const char *boxbpf_pin_dir(void) {
@@ -767,14 +822,12 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
     if (!cfg) return ATP_ERR_INVAL;
 
     if (cfg->ebpf.state_dir[0] != '\0') {
-        strncpy(g_state_dir, cfg->ebpf.state_dir, sizeof(g_state_dir) - 1);
-        g_state_dir[sizeof(g_state_dir) - 1] = '\0';
+        snprintf(g_state_dir, sizeof(g_state_dir), "%s", cfg->ebpf.state_dir);
         snprintf(g_status_file, sizeof(g_status_file), "%s/ebpf.status", g_state_dir);
     }
 
     if (cfg->ebpf.pin_dir[0] != '\0') {
-        strncpy(g_pin_dir, cfg->ebpf.pin_dir, sizeof(g_pin_dir) - 1);
-        g_pin_dir[sizeof(g_pin_dir) - 1] = '\0';
+        snprintf(g_pin_dir, sizeof(g_pin_dir), "%s", cfg->ebpf.pin_dir);
     }
 
     if (!cfg->ebpf.enabled) {
@@ -851,14 +904,12 @@ int boxbpf_reload_from_config(atp_config_t *cfg) {
     }
 
     if (cfg->ebpf.state_dir[0] != '\0') {
-        strncpy(g_state_dir, cfg->ebpf.state_dir, sizeof(g_state_dir) - 1);
-        g_state_dir[sizeof(g_state_dir) - 1] = '\0';
+        snprintf(g_state_dir, sizeof(g_state_dir), "%s", cfg->ebpf.state_dir);
         snprintf(g_status_file, sizeof(g_status_file), "%s/ebpf.status", g_state_dir);
     }
 
     if (cfg->ebpf.pin_dir[0] != '\0') {
-        strncpy(g_pin_dir, cfg->ebpf.pin_dir, sizeof(g_pin_dir) - 1);
-        g_pin_dir[sizeof(g_pin_dir) - 1] = '\0';
+        snprintf(g_pin_dir, sizeof(g_pin_dir), "%s", cfg->ebpf.pin_dir);
     }
 
     if (cfg->ebpf.ready) {
@@ -878,6 +929,10 @@ int boxbpf_reload_from_config(atp_config_t *cfg) {
 }
 
 int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
+    if (!state || size == 0) {
+        return ATP_ERR_INVAL;
+    }
+
     struct stat st;
     char pin_path[256];
     const char *pin_dir;
@@ -905,25 +960,25 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
 
     snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", pin_dir);
     if (stat(pin_path, &st) != 0) {
-        strncpy(state, "uninitialized", size);
+        snprintf(state, size, "%s", "uninitialized");
         return ATP_ERR_EBPF;
     }
 
     snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre4", pin_dir);
     if (stat(pin_path, &st) != 0) {
-        strncpy(state, "partial", size);
+        snprintf(state, size, "%s", "partial");
         return ATP_OK;
     }
 
     if (ipv6_enabled) {
         snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out6", pin_dir);
         if (stat(pin_path, &st) != 0) {
-            strncpy(state, "partial", size);
+            snprintf(state, size, "%s", "partial");
             return ATP_OK;
         }
         snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_pre6", pin_dir);
         if (stat(pin_path, &st) != 0) {
-            strncpy(state, "partial", size);
+            snprintf(state, size, "%s", "partial");
             return ATP_OK;
         }
     }
@@ -958,26 +1013,25 @@ int boxbpf_status(char *state, size_t size, atp_config_t *cfg) {
 
     if (force_configured && app_configured) {
         if (force_loaded && app_loaded) {
-            strncpy(state, "ready", size);
+            snprintf(state, size, "%s", "ready");
         } else {
-            strncpy(state, "partial", size);
+            snprintf(state, size, "%s", "partial");
         }
     } else if (force_configured) {
         if (force_loaded) {
-            strncpy(state, "ready", size);
+            snprintf(state, size, "%s", "ready");
         } else {
-            strncpy(state, "partial", size);
+            snprintf(state, size, "%s", "partial");
         }
     } else if (app_configured) {
         if (app_loaded) {
-            strncpy(state, "ready", size);
+            snprintf(state, size, "%s", "ready");
         } else {
-            strncpy(state, "partial", size);
+            snprintf(state, size, "%s", "partial");
         }
     } else {
-        strncpy(state, "ready_core", size);
+        snprintf(state, size, "%s", "ready_core");
     }
 
     return ATP_OK;
 }
-
