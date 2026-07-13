@@ -29,7 +29,7 @@
 #define API_MAX_PENDING_REQUESTS 1024
 #define API_CHUNK_READ_BUFFER 8192
 
-/* Common chunk decoder context - MUST be defined before any function declarations */
+/* Common chunk decoder context */
 typedef struct chunk_ctx_s {
     chunk_state_t state;
     size_t chunk_size;
@@ -63,52 +63,6 @@ static int api_socket_alive(int fd);
 static int api_parse_url(const char *base_url, char *host, int *port);
 static int api_parse_full_url(const char *url, char *host, int *port, char *path, size_t path_size);
 static void api_build_host_header(char *buf, size_t size, const char *host, int port);
-
-/* Common chunk decoder context */
-typedef struct chunk_ctx_s {
-    chunk_state_t state;
-    size_t chunk_size;
-    size_t chunk_offset;
-    size_t chunk_parse_offset;
-    size_t trailer_base_offset;
-    size_t trailer_received;
-    char **decoded_body_ptr;
-    size_t *decoded_body_len_ptr;
-    size_t *decoded_body_size_ptr;
-    int is_sync;
-} chunk_ctx_t;
-
-static void *api_memmem(const void *haystack, size_t haystack_len,
-                         const void *needle, size_t needle_len) {
-    if (!haystack || !needle || needle_len == 0 || haystack_len < needle_len) {
-        return NULL;
-    }
-
-    const unsigned char *h = (const unsigned char *)haystack;
-    const unsigned char *n = (const unsigned char *)needle;
-
-    for (size_t i = 0; i <= haystack_len - needle_len; i++) {
-        if (memcmp(h + i, n, needle_len) == 0) {
-            return (void *)(h + i);
-        }
-    }
-
-    return NULL;
-}
-
-static void safe_str_copy(char *dest, size_t dest_size, const char *src, size_t src_len) {
-    if (!dest || dest_size == 0 || !src) return;
-
-    if (src_len >= dest_size) {
-        src_len = dest_size - 1;
-    }
-
-    memcpy(dest, src, src_len);
-    dest[src_len] = '\0';
-}
-
-static void api_build_host_header(char *buf, size_t size, const char *host, int port) {
-    if (!buf || size == 0 || !host) return;
     
     /* Check if host is IPv6 address (contains ':') */
     if (strchr(host, ':') != NULL) {
