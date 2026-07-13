@@ -77,16 +77,26 @@ static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
 static int process_is_atpd(pid_t pid) {
     char path[64], exe[PATH_MAX];
     snprintf(path, sizeof(path), "/proc/%d/exe", pid);
-    ssize_t len = readlink(path, exe, sizeof(exe) - 1);
+
+    int retry = 3;
+    ssize_t len;
+
+    while (retry-- > 0) {
+        len = readlink(path, exe, sizeof(exe) - 1);
+        if (len >= 0) break;
+        if (errno != EINTR) return 0;
+    }
+
     if (len <= 0) return 0;
     exe[len] = '\0';
-    return strstr(exe, "atpd") != NULL;
+
+    return strstr(exe, "atpd") != NULL && strstr(exe, "atpd-zig") != NULL;
 }
 
 static int write_pid_file(const char *pid_file) {
     char dir[SAFE_PATH_MAX];
     if (!pid_file || strlen(pid_file) >= PATH_MAX) return -1;
-    
+
     snprintf(dir, sizeof(dir), "%s", pid_file);
     char *slash = strrchr(dir, '/');
     if (slash) {
@@ -133,11 +143,11 @@ static void daemonize(void) {
     if (pid < 0) exit(EXIT_FAILURE);
     if (pid > 0) exit(EXIT_SUCCESS);
     if (setsid() < 0) exit(EXIT_FAILURE);
-    
+
     pid = fork();
     if (pid < 0) exit(EXIT_FAILURE);
     if (pid > 0) exit(EXIT_SUCCESS);
-    
+
     umask(0);
     int fd = open("/dev/null", O_RDWR);
     if (fd >= 0) {
@@ -172,14 +182,12 @@ static void on_signal(reactor_t *r, int sig, void *userdata) {
 
     if (sig == SIGHUP) {
         g_reload = 1;
-        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING);
         LOG_INFO("Reload signal received");
     } else if (sig == SIGUSR1) {
         g_show_status = 1;
         LOG_INFO("Status signal received");
     } else {
         LOG_INFO("Termination signal received");
-        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
         g_running = 0;
     }
 }
@@ -295,7 +303,13 @@ static void run_event_loop(void) {
     api_start_with_reactor(&g_api_ctx, g_reactor);
 
     reactor_add_timer(g_reactor, 1000, 3000, service_monitor_cb, g_svc);
-    service_start_async(g_svc);
+
+    if (g_svc && service_start_async(g_svc) != 0) {
+        LOG_ERROR("Failed to start service");
+        reactor_destroy(g_reactor);
+        g_reactor = NULL;
+        return;
+    }
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
@@ -494,8 +508,8 @@ static int do_reload(atp_options_t *opts) {
     }
     fclose(f);
 
-    if (!process_is_atpd(pid)) {
-        fprintf(stderr, "Process is not ATP daemon\n");
+    if (!process_is_atpd(pid) || kill(pid, 0) < 0) {
+        fprintf(stderr, "Daemon is not running\n");
         return 1;
     }
 
@@ -511,11 +525,11 @@ static int do_reload(atp_options_t *opts) {
 static int do_check(atp_options_t *opts) {
     char cp[SAFE_PATH_MAX];
     const char *config_path = opts->config_file;
-    
+
     if (!config_path || !config_path[0]) {
         config_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
     }
-    
+
     if (access(config_path, R_OK) != 0) {
         fprintf(stderr, "Config file not found: %s\n", config_path);
         return 1;
@@ -566,7 +580,7 @@ static int do_ebpf_probe(atp_options_t *opts) {
 static int do_ebpf_init(atp_options_t *opts) {
     atp_config_t cfg;
     config_set_defaults(&cfg);
-    
+
     const char *config_path = opts->config_file;
     if (config_path && config_path[0]) {
         config_load(config_path, &cfg);
@@ -576,7 +590,7 @@ static int do_ebpf_init(atp_options_t *opts) {
             config_load(default_path, &cfg);
         }
     }
-    
+
     if (opts->ebpf_config[0] != '\0') {
         strncpy(cfg.ebpf.config_path, opts->ebpf_config, sizeof(cfg.ebpf.config_path) - 1);
     }
@@ -602,7 +616,7 @@ static int do_ebpf_status(atp_options_t *opts) {
     char state[64] = {0};
     atp_config_t cfg;
     config_set_defaults(&cfg);
-    
+
     const char *config_path = opts->config_file;
     if (config_path && config_path[0]) {
         config_load(config_path, &cfg);
@@ -612,7 +626,7 @@ static int do_ebpf_status(atp_options_t *opts) {
             config_load(default_path, &cfg);
         }
     }
-    
+
     if (boxbpf_status(state, sizeof(state), &cfg) == ATP_OK) {
         printf("eBPF Status: %s\n", state);
         return ATP_OK;
