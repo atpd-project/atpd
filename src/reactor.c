@@ -1,8 +1,7 @@
-#include <limits.h>
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
- * 
+ *
  * Unified Reactor Scheduler Implementation
  */
 
@@ -15,6 +14,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <time.h>
+#include <limits.h>
 #include <sys/eventfd.h>
 #include <sys/signalfd.h>
 #include <signal.h>
@@ -38,8 +38,10 @@ typedef struct reactor_timer_internal_s {
     void *userdata;
     struct reactor_timer_internal_s *next;
     struct reactor_timer_internal_s *prev;
+    reactor_timer_t *public_timer;
     uint8_t active;
     uint8_t pending_delete;
+    uint8_t linked;
 } reactor_timer_internal_t;
 
 typedef struct {
@@ -64,35 +66,60 @@ static uint64_t get_monotonic_ms(void) {
 }
 
 static void timer_list_insert(reactor_private_t *priv, reactor_timer_internal_t *timer) {
-    reactor_timer_internal_t **pp = &priv->timer_head;
-    while (*pp && (*pp)->expires_ms <= timer->expires_ms) {
-        pp = &(*pp)->next;
+    reactor_timer_internal_t *cur = priv->timer_head;
+    reactor_timer_internal_t *prev = NULL;
+
+    while (cur && cur->expires_ms <= timer->expires_ms) {
+        prev = cur;
+        cur = cur->next;
     }
-    timer->next = *pp;
-    timer->prev = (pp == &priv->timer_head) ? NULL :
-                  (reactor_timer_internal_t *)((char *)pp - offsetof(reactor_timer_internal_t, next));
-    if (*pp) (*pp)->prev = timer;
-    *pp = timer;
+
+    timer->prev = prev;
+    timer->next = cur;
+    timer->linked = 1;
+
+    if (prev) {
+        prev->next = timer;
+    } else {
+        priv->timer_head = timer;
+    }
+
+    if (cur) {
+        cur->prev = timer;
+    }
+
     priv->timer_count++;
 }
 
 static void timer_list_remove(reactor_private_t *priv, reactor_timer_internal_t *timer) {
+    if (!timer || !timer->linked) return;
+
     if (timer->prev) {
         timer->prev->next = timer->next;
     } else {
         priv->timer_head = timer->next;
     }
+
     if (timer->next) {
         timer->next->prev = timer->prev;
     }
-    priv->timer_count--;
+
+    timer->linked = 0;
+
+    if (priv->timer_count > 0) {
+        priv->timer_count--;
+    }
 }
 
 static int64_t next_timer_timeout_ms(reactor_private_t *priv) {
     if (!priv->timer_head) return -1;
+
     uint64_t now = get_monotonic_ms();
+
     if (priv->timer_head->expires_ms <= now) return 0;
+
     int64_t diff = (int64_t)(priv->timer_head->expires_ms - now);
+
     return diff > INT_MAX ? INT_MAX : diff;
 }
 
@@ -105,6 +132,10 @@ static void process_expired_timers(reactor_t *r, reactor_private_t *priv) {
 
         if (timer->pending_delete) {
             timer_list_remove(priv, timer);
+            if (timer->public_timer) {
+                timer->public_timer->internal = NULL;
+                timer->public_timer = NULL;
+            }
             free(timer);
             continue;
         }
@@ -112,21 +143,30 @@ static void process_expired_timers(reactor_t *r, reactor_private_t *priv) {
         timer_list_remove(priv, timer);
 
         if (timer->active && timer->callback) {
-            priv->stats.timers_fired++;
             reactor_timer_t pub_timer = {
                 .expires_ms = timer->expires_ms,
                 .interval_ms = timer->interval_ms,
                 .callback = timer->callback,
                 .userdata = timer->userdata,
-                .active = 1
+                .active = 1,
+                .internal = timer
             };
             timer->callback(r, &pub_timer, timer->userdata);
         }
 
         if (timer->active && !timer->pending_delete && timer->interval_ms > 0) {
-            timer->expires_ms = now + timer->interval_ms;
+            timer->expires_ms += timer->interval_ms;
+
+            while (timer->expires_ms <= now) {
+                timer->expires_ms += timer->interval_ms;
+            }
+
             timer_list_insert(priv, timer);
         } else {
+            if (timer->public_timer) {
+                timer->public_timer->internal = NULL;
+                timer->public_timer = NULL;
+            }
             free(timer);
         }
     }
@@ -219,12 +259,22 @@ reactor_t* reactor_create(void) {
 void reactor_destroy(reactor_t *r) {
     if (!r) return;
 
+    if (r->in_loop) {
+        LOG_ERROR("reactor_destroy called while running");
+        return;
+    }
+
     reactor_private_t *priv = r->private_data;
+
     reactor_stop(r);
 
     reactor_timer_internal_t *timer = priv->timer_head;
     while (timer) {
         reactor_timer_internal_t *next = timer->next;
+        if (timer->public_timer) {
+            timer->public_timer->internal = NULL;
+            timer->public_timer = NULL;
+        }
         free(timer);
         timer = next;
     }
@@ -283,8 +333,6 @@ int reactor_run(reactor_t *r) {
             int fd = events[i].data.fd;
             uint32_t ev = events[i].events;
 
-            priv->stats.events_processed++;
-
             if (fd == r->signal_fd) {
                 reactor_signal_handle(r, priv);
                 continue;
@@ -292,13 +340,21 @@ int reactor_run(reactor_t *r) {
 
             if (fd == r->event_fd) {
                 uint64_t val;
-                read(r->event_fd, &val, sizeof(val));
+                ssize_t n = read(r->event_fd, &val, sizeof(val));
+                if (n != sizeof(val)) {
+                    if (n == 0) {
+                        LOG_WARN("eventfd returned EOF");
+                    } else if (n < 0 && errno != EAGAIN && errno != EINTR) {
+                        LOG_ERROR("eventfd read failed: %s", strerror(errno));
+                    }
+                }
                 continue;
             }
 
             if (fd >= 0 && fd < REACTOR_MAX_FD) {
                 reactor_handler_t *h = priv->handlers[fd];
                 if (h && h->active && !h->pending_delete && h->callback) {
+                    priv->stats.events_processed++;
                     h->callback(r, fd, ev, h->userdata);
                 }
             }
@@ -335,6 +391,8 @@ int reactor_add_fd(reactor_t *r, int fd, uint32_t events, reactor_io_cb cb, void
     if (!r || fd < 0 || fd >= REACTOR_MAX_FD) return -1;
 
     reactor_private_t *priv = r->private_data;
+    reactor_handler_t *old = priv->handlers[fd];
+    int existed = (old != NULL);
 
     reactor_handler_t *h = malloc(sizeof(reactor_handler_t));
     if (!h) return -1;
@@ -352,18 +410,23 @@ int reactor_add_fd(reactor_t *r, int fd, uint32_t events, reactor_io_cb cb, void
         .data = { .fd = fd }
     };
 
-    int op = priv->handlers[fd] ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+    int op = existed ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
 
     if (epoll_ctl(r->epoll_fd, op, fd, &ev) < 0) {
         free(h);
         return -1;
     }
 
-    if (priv->handlers[fd]) {
-        free(priv->handlers[fd]);
-    }
     priv->handlers[fd] = h;
-    priv->stats.active_handlers++;
+
+    if (old) {
+        if (old->free_cb) {
+            old->free_cb(old->userdata);
+        }
+        free(old);
+    } else {
+        priv->stats.active_handlers++;
+    }
 
     return 0;
 }
@@ -407,7 +470,9 @@ int reactor_remove_fd(reactor_t *r, int fd) {
 
     h->pending_delete = 1;
     h->active = 0;
-    priv->stats.active_handlers--;
+    if (priv->stats.active_handlers > 0) {
+        priv->stats.active_handlers--;
+    }
 
     reactor_wakeup(r);
     return 0;
@@ -419,45 +484,67 @@ reactor_timer_t* reactor_add_timer(reactor_t *r, uint64_t timeout_ms, uint64_t i
 
     reactor_private_t *priv = r->private_data;
 
+    reactor_timer_t *pub_timer = malloc(sizeof(reactor_timer_t));
+    if (!pub_timer) {
+        return NULL;
+    }
+
     reactor_timer_internal_t *timer = calloc(1, sizeof(reactor_timer_internal_t));
-    if (!timer) return NULL;
+    if (!timer) {
+        free(pub_timer);
+        return NULL;
+    }
 
     timer->expires_ms = priv->current_time_ms + timeout_ms;
     timer->interval_ms = interval_ms;
     timer->callback = cb;
     timer->userdata = userdata;
     timer->active = 1;
+    timer->pending_delete = 0;
+    timer->public_timer = pub_timer;
+    timer->linked = 0;
 
     timer_list_insert(priv, timer);
-    priv->stats.active_timers++;
 
-    reactor_timer_t *pub_timer = malloc(sizeof(reactor_timer_t));
-    if (pub_timer) {
-        pub_timer->expires_ms = timer->expires_ms;
-        pub_timer->interval_ms = timer->interval_ms;
-        pub_timer->callback = cb;
-        pub_timer->userdata = userdata;
-        pub_timer->internal = timer;
-        pub_timer->active = 1;
-    }
+    pub_timer->expires_ms = timer->expires_ms;
+    pub_timer->interval_ms = timer->interval_ms;
+    pub_timer->callback = cb;
+    pub_timer->userdata = userdata;
+    pub_timer->internal = timer;
+    pub_timer->active = 1;
 
     reactor_wakeup(r);
     return pub_timer;
 }
 
 int reactor_cancel_timer(reactor_t *r, reactor_timer_t *timer) {
-    if (!r || !timer || !timer->internal) return -1;
+    if (!r || !timer) return -1;
 
     reactor_private_t *priv = r->private_data;
     reactor_timer_internal_t *internal = timer->internal;
 
-    internal->pending_delete = 1;
-    internal->active = 0;
-    timer_list_remove(priv, internal);
-    priv->stats.active_timers--;
+    if (!internal) {
+        free(timer);
+        return 0;
+    }
 
-    free(internal);
+    if (internal->linked) {
+        timer_list_remove(priv, internal);
+    }
+
+    internal->active = 0;
+    internal->pending_delete = 1;
+
+    if (internal->public_timer) {
+        internal->public_timer->internal = NULL;
+        internal->public_timer = NULL;
+    }
+
+    timer->internal = NULL;
+
     free(timer);
+
+    reactor_wakeup(r);
 
     return 0;
 }
@@ -486,22 +573,27 @@ int reactor_watch_signal(reactor_t *r, int signo) {
     reactor_private_t *priv = r->private_data;
     sigaddset(&priv->sigmask, signo);
 
-    sigprocmask(SIG_BLOCK, &priv->sigmask, NULL);
-
-    if (r->signal_fd >= 0) {
-        reactor_handler_t *h = priv->handlers[r->signal_fd];
-        if (h) {
-            h->pending_delete = 1;
-            h->active = 0;
-        }
-        epoll_ctl(r->epoll_fd, EPOLL_CTL_DEL, r->signal_fd, NULL);
-        close(r->signal_fd);
+    if (sigprocmask(SIG_BLOCK, &priv->sigmask, NULL) < 0) {
+        LOG_ERROR("sigprocmask failed: %s", strerror(errno));
+        return -1;
     }
 
-    r->signal_fd = signalfd(-1, &priv->sigmask, SFD_NONBLOCK | SFD_CLOEXEC);
-    if (r->signal_fd < 0) return -1;
+    int new_fd = signalfd(r->signal_fd, &priv->sigmask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (new_fd < 0) return -1;
 
-    reactor_add_fd(r, r->signal_fd, REACTOR_EVENT_READ, NULL, r);
+    if (new_fd != r->signal_fd) {
+        if (r->signal_fd >= 0) {
+            reactor_handler_t *h = priv->handlers[r->signal_fd];
+            if (h) {
+                h->pending_delete = 1;
+                h->active = 0;
+            }
+            epoll_ctl(r->epoll_fd, EPOLL_CTL_DEL, r->signal_fd, NULL);
+            close(r->signal_fd);
+        }
+        r->signal_fd = new_fd;
+        reactor_add_fd(r, r->signal_fd, REACTOR_EVENT_READ, NULL, r);
+    }
 
     return 0;
 }
@@ -521,9 +613,17 @@ void reactor_set_error_cb(reactor_t *r, reactor_error_cb cb) {
 }
 
 void reactor_wakeup(reactor_t *r) {
-    if (r && r->event_fd >= 0) {
-        uint64_t val = 1;
-        write(r->event_fd, &val, sizeof(val));
+    if (!r || r->event_fd < 0) return;
+
+    uint64_t val = 1;
+    ssize_t n;
+
+    do {
+        n = write(r->event_fd, &val, sizeof(val));
+    } while (n < 0 && errno == EINTR);
+
+    if (n < 0 && errno != EAGAIN) {
+        LOG_ERROR("eventfd write failed: %s", strerror(errno));
     }
 }
 
@@ -531,12 +631,14 @@ const reactor_stats_t* reactor_get_stats(reactor_t *r) {
     if (!r) return NULL;
 
     reactor_private_t *priv = r->private_data;
+
     priv->stats.active_handlers = 0;
     for (int i = 0; i < REACTOR_MAX_FD; i++) {
         if (priv->handlers[i] && priv->handlers[i]->active) {
             priv->stats.active_handlers++;
         }
     }
+
     priv->stats.active_timers = priv->timer_count;
 
     return &priv->stats;
