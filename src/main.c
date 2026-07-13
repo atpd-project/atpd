@@ -60,6 +60,7 @@ static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static void daemonize(void);
 static void cleanup_ebpf(void);
+static int process_is_atpd(pid_t pid);
 
 /* ========== PID File ========== */
 
@@ -71,6 +72,15 @@ static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     } else {
         snprintf(pp, size, "./atpd.pid");
     }
+}
+
+static int process_is_atpd(pid_t pid) {
+    char path[64], exe[PATH_MAX];
+    snprintf(path, sizeof(path), "/proc/%d/exe", pid);
+    ssize_t len = readlink(path, exe, sizeof(exe) - 1);
+    if (len <= 0) return 0;
+    exe[len] = '\0';
+    return strstr(exe, "atpd") != NULL;
 }
 
 static int write_pid_file(const char *pid_file) {
@@ -179,9 +189,13 @@ static void on_idle(reactor_t *r, void *userdata) {
     (void)userdata;
 
     if (g_reload) {
-        config_reload(&g_config);
-        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
         g_reload = 0;
+        if (config_reload(&g_config) != ATP_OK) {
+            LOG_ERROR("Config reload failed");
+            atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
+        } else {
+            atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+        }
     }
 
     if (g_show_status) {
@@ -235,11 +249,9 @@ static void on_proxies_response(int http_code, const char *body, void *userdata)
     char *mutable_body = strdup(body);
     if (!mutable_body) return;
 
-    proxy_list_t list;
+    proxy_list_t list = {0};
     if (singbox_parse_proxies(mutable_body, strlen(mutable_body), &list) >= 0) {
         process_proxy_list(&list);
-    } else {
-        proxy_list_free(&list);
     }
     free(mutable_body);
 }
@@ -307,8 +319,10 @@ static void run_event_loop(void) {
     tproxy_cleanup_all(&g_config);
     uds_cleanup();
 
-    if (g_svc) {
-        service_stop_async(g_svc, service_stop_done_cb, NULL);
+    service_ctx_t *svc = g_svc;
+    g_svc = NULL;
+    if (svc) {
+        service_stop_async(svc, service_stop_done_cb, NULL);
     }
 
     reactor_destroy(g_reactor);
@@ -334,19 +348,35 @@ static int do_start(atp_options_t *opts) {
 
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    if (file_exists(pp)) {
-        FILE *f = fopen(pp, "r");
-        if (f) {
-            int pid;
-            if (fscanf(f, "%d", &pid) == 1 && kill(pid, 0) == 0) {
-                fprintf(stderr, "Daemon already running (PID: %d)\n", pid);
+    int fd = open(pp, O_RDWR | O_CREAT | O_EXCL, 0644);
+    if (fd < 0) {
+        if (errno == EEXIST) {
+            FILE *f = fopen(pp, "r");
+            if (f) {
+                int pid;
+                if (fscanf(f, "%d", &pid) == 1 && kill(pid, 0) == 0) {
+                    if (process_is_atpd(pid)) {
+                        fprintf(stderr, "Daemon already running (PID: %d)\n", pid);
+                        fclose(f);
+                        return 1;
+                    } else {
+                        LOG_WARN("Stale PID file found, removing");
+                    }
+                }
                 fclose(f);
+            }
+            unlink(pp);
+            fd = open(pp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+            if (fd < 0) {
+                LOG_ERROR("Failed to create PID file: %s", strerror(errno));
                 return 1;
             }
-            fclose(f);
+        } else {
+            LOG_ERROR("Failed to create PID file: %s", strerror(errno));
+            return 1;
         }
-        unlink(pp);
     }
+    close(fd);
 
     if (opts->daemon && !opts->foreground) {
         daemonize();
@@ -398,7 +428,7 @@ static int do_stop(atp_options_t *opts) {
     }
     fclose(f);
 
-    if (kill(pid, 0) < 0) {
+    if (!process_is_atpd(pid) || kill(pid, 0) < 0) {
         fprintf(stderr, "Daemon is not running (stale PID file)\n");
         atp_cleanup_manual(&g_config);
         unlink(pp);
@@ -463,6 +493,11 @@ static int do_reload(atp_options_t *opts) {
         return 1;
     }
     fclose(f);
+
+    if (!process_is_atpd(pid)) {
+        fprintf(stderr, "Process is not ATP daemon\n");
+        return 1;
+    }
 
     if (kill(pid, SIGHUP) == 0) {
         printf("Reload signal sent to daemon (PID: %d)\n", pid);
