@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -26,7 +27,7 @@
 #include <grp.h>
 #include <time.h>
 #include "async_validate.h"
- 
+
 /* Forward declarations */
 void service_schedule_retry(service_ctx_t *ctx);
 
@@ -88,10 +89,36 @@ static void circuit_breaker_record_success(circuit_breaker_t *cb) {
     }
 }
 
+static int wait_connect_result(int sock, int timeout_ms) {
+    struct pollfd pfd = {
+        .fd = sock,
+        .events = POLLOUT
+    };
+
+    int ret = poll(&pfd, 1, timeout_ms);
+    if (ret <= 0) return 0;
+
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+        return 0;
+    }
+
+    if (!(pfd.revents & POLLOUT)) {
+        return 0;
+    }
+
+    int err = 0;
+    socklen_t len = sizeof(err);
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len) < 0) {
+        return 0;
+    }
+
+    return err == 0;
+}
+
 static int validate_process(service_ctx_t *ctx, pid_t pid) {
     char path[256];
     char exe_buf[256];
-    char cmdline_buf[512];
+    char cwd_buf[PATH_MAX];
     ssize_t len;
 
     snprintf(path, sizeof(path), "/proc/%d/exe", pid);
@@ -108,19 +135,15 @@ static int validate_process(service_ctx_t *ctx, pid_t pid) {
         return 0;
     }
 
-    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return 0;
+    snprintf(path, sizeof(path), "/proc/%d/cwd", pid);
+    len = readlink(path, cwd_buf, sizeof(cwd_buf) - 1);
+    if (len < 0) return 0;
+    cwd_buf[len] = '\0';
 
-    len = read(fd, cmdline_buf, sizeof(cmdline_buf) - 1);
-    close(fd);
-
-    if (len > 0) {
-        cmdline_buf[len] = '\0';
-        if (!strstr(cmdline_buf, ctx->work_dir)) {
-            LOG_WARN("Service: PID %d cmdline missing work_dir", pid);
-            return 0;
-        }
+    if (strcmp(cwd_buf, ctx->work_dir) != 0) {
+        LOG_WARN("Service: PID %d cwd mismatch: expected %s, got %s",
+                 pid, ctx->work_dir, cwd_buf);
+        return 0;
     }
 
     LOG_INFO("Service: PID %d validated successfully", pid);
@@ -128,7 +151,7 @@ static int validate_process(service_ctx_t *ctx, pid_t pid) {
 }
 
 static int service_is_alive(service_ctx_t *ctx) {
-    if (ctx->child_pid <= 0) return 0;
+    if (!ctx || ctx->child_pid <= 0) return 0;
     return kill(ctx->child_pid, 0) == 0;
 }
 
@@ -143,10 +166,19 @@ static int service_probe_port(int port) {
     sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
     int ret = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
-    close(sock);
+    if (ret == 0) {
+        close(sock);
+        return 1;
+    }
 
-    if (ret == 0) return 1;
-    return (errno == EINPROGRESS) ? 1 : 0;
+    if (errno == EINPROGRESS) {
+        int ok = wait_connect_result(sock, 3000);
+        close(sock);
+        return ok;
+    }
+
+    close(sock);
+    return 0;
 }
 
 static int service_api_health_check(service_ctx_t *ctx) {
@@ -154,8 +186,14 @@ static int service_api_health_check(service_ctx_t *ctx) {
     if (sock < 0) return 0;
 
     struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        close(sock);
+        return 0;
+    }
+    if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        close(sock);
+        return 0;
+    }
 
     struct sockaddr_in addr = {
         .sin_family = AF_INET,
@@ -164,8 +202,20 @@ static int service_api_health_check(service_ctx_t *ctx) {
     };
 
     int ret = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+
+    if (ret == 0) {
+        close(sock);
+        return 1;
+    }
+
+    if (errno == EINPROGRESS) {
+        int ok = wait_connect_result(sock, 2000);
+        close(sock);
+        return ok;
+    }
+
     close(sock);
-    return ret == 0;
+    return 0;
 }
 
 static int service_binary_exists(service_ctx_t *ctx) {
@@ -200,23 +250,48 @@ void service_rotate_log(service_ctx_t *ctx) {
     }
 }
 
+static void free_service_args(char **args) {
+    if (!args) return;
+    for (int i = 0; args[i]; i++) {
+        free(args[i]);
+    }
+    free(args);
+}
+
 static char** build_service_args(service_ctx_t *ctx) {
-    char **args = malloc(20 * sizeof(char*));
+    char **args = calloc(20, sizeof(char *));
     if (!args) return NULL;
 
     int idx = 0;
-    args[idx++] = ctx->bin_path;
-    args[idx++] = "run";
-    args[idx++] = "-D";
-    args[idx++] = ctx->work_dir;
+
+    char *arg = strdup(ctx->bin_path);
+    if (!arg) { free_service_args(args); return NULL; }
+    args[idx++] = arg;
+
+    arg = strdup("run");
+    if (!arg) { free_service_args(args); return NULL; }
+    args[idx++] = arg;
+
+    arg = strdup("-D");
+    if (!arg) { free_service_args(args); return NULL; }
+    args[idx++] = arg;
+
+    arg = strdup(ctx->work_dir);
+    if (!arg) { free_service_args(args); return NULL; }
+    args[idx++] = arg;
 
     if (ctx->service_args[0]) {
         char args_copy[512];
-        strncpy(args_copy, ctx->service_args, sizeof(args_copy) - 1);
-        char *token = strtok(args_copy, " ");
+        snprintf(args_copy, sizeof(args_copy), "%s", ctx->service_args);
+
+        char *saveptr = NULL;
+        char *token = strtok_r(args_copy, " ", &saveptr);
+
         while (token && idx < 18) {
-            args[idx++] = token;
-            token = strtok(NULL, " ");
+            arg = strdup(token);
+            if (!arg) { free_service_args(args); return NULL; }
+            args[idx++] = arg;
+            token = strtok_r(NULL, " ", &saveptr);
         }
     }
 
@@ -225,14 +300,21 @@ static char** build_service_args(service_ctx_t *ctx) {
 }
 
 static void set_service_environment(service_ctx_t *ctx) {
-    if (ctx->service_env[0]) {
-        char env_copy[512];
-        strncpy(env_copy, ctx->service_env, sizeof(env_copy) - 1);
-        char *token = strtok(env_copy, " ");
-        while (token) {
-            putenv(token);
-            token = strtok(NULL, " ");
+    if (!ctx->service_env[0]) return;
+
+    char env_copy[512];
+    snprintf(env_copy, sizeof(env_copy), "%s", ctx->service_env);
+
+    char *saveptr = NULL;
+    char *token = strtok_r(env_copy, " ", &saveptr);
+
+    while (token) {
+        char *eq = strchr(token, '=');
+        if (eq) {
+            *eq = '\0';
+            setenv(token, eq + 1, 1);
         }
+        token = strtok_r(NULL, " ", &saveptr);
     }
 }
 
@@ -251,9 +333,21 @@ static int service_spawn(service_ctx_t *ctx) {
     }
 
     if (pid == 0) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = SIG_IGN;
+        sigemptyset(&sa.sa_mask);
+        if (sigaction(SIGPIPE, &sa, NULL) != 0) {
+            LOG_ERROR("Service: sigaction(SIGPIPE) failed: %s", strerror(errno));
+            _exit(127);
+        }
+
         umask(027);
-        setsid();
-        signal(SIGPIPE, SIG_IGN);
+
+        if (setsid() < 0) {
+            LOG_ERROR("Service: setsid failed: %s", strerror(errno));
+            _exit(127);
+        }
 
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
@@ -261,8 +355,14 @@ static int service_spawn(service_ctx_t *ctx) {
 
         int log_fd = open(ctx->log_path, O_WRONLY | O_CREAT | O_APPEND, 0640);
         if (log_fd >= 0) {
-            dup2(log_fd, STDOUT_FILENO);
-            dup2(log_fd, STDERR_FILENO);
+            if (dup2(log_fd, STDOUT_FILENO) < 0) {
+                close(log_fd);
+                _exit(127);
+            }
+            if (dup2(log_fd, STDERR_FILENO) < 0) {
+                close(log_fd);
+                _exit(127);
+            }
             close(log_fd);
         } else {
             int null_fd = open("/dev/null", O_RDWR);
@@ -276,8 +376,24 @@ static int service_spawn(service_ctx_t *ctx) {
 
         struct passwd *pwd = getpwnam(ctx->user);
         struct group *grp = getgrnam(ctx->group);
-        if (grp) setgid(grp->gr_gid);
-        if (pwd) setuid(pwd->pw_uid);
+
+        if (!pwd || !grp) {
+            LOG_ERROR("Service: invalid user/group: %s:%s", ctx->user, ctx->group);
+            _exit(127);
+        }
+
+        if (initgroups(ctx->user, grp->gr_gid) != 0) {
+            LOG_ERROR("Service: initgroups failed: %s", strerror(errno));
+            _exit(127);
+        }
+        if (setgid(grp->gr_gid) != 0) {
+            LOG_ERROR("Service: setgid failed: %s", strerror(errno));
+            _exit(127);
+        }
+        if (setuid(pwd->pw_uid) != 0) {
+            LOG_ERROR("Service: setuid failed: %s", strerror(errno));
+            _exit(127);
+        }
 
         set_service_environment(ctx);
 
@@ -285,7 +401,8 @@ static int service_spawn(service_ctx_t *ctx) {
         if (!args) _exit(127);
 
         execv(ctx->bin_path, args);
-        free(args);
+        LOG_ERROR("Service: execv failed: %s", strerror(errno));
+        free_service_args(args);
         _exit(127);
     }
 
@@ -295,37 +412,9 @@ static int service_spawn(service_ctx_t *ctx) {
     return 0;
 }
 
-static int service_wait_ready(service_ctx_t *ctx, int timeout_sec) {
-    int elapsed_ms = 0;
-    int interval_ms = 500;
-    int max_attempts = (timeout_sec * 1000) / interval_ms;
-
-    for (int i = 0; i < max_attempts; i++) {
-        if (!service_is_alive(ctx)) {
-            LOG_WARN("Service: process died during startup");
-            return -1;
-        }
-
-        if (service_probe_port(ctx->api_port)) {
-            if (service_api_health_check(ctx)) {
-                LOG_DEBUG("Service: API health check passed");
-                return 0;
-            }
-        }
-
-        usleep(interval_ms * 1000);
-        elapsed_ms += interval_ms;
-    }
-
-    LOG_WARN("Service: start timeout after %d seconds", timeout_sec);
-    return -1;
-}
-
 static void service_kill_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     kill_state_t *state = userdata;
     service_ctx_t *ctx = state->ctx;
-    int status;
-    pid_t result;
 
     (void)r;
     (void)timer;
@@ -335,23 +424,7 @@ static void service_kill_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *
         return;
     }
 
-    result = waitpid(ctx->child_pid, &status, WNOHANG);
-
-    if (result == ctx->child_pid) {
-        if (WIFEXITED(status)) {
-            LOG_DEBUG("Service: sing-box exited with code %d", WEXITSTATUS(status));
-        } else if (WIFSIGNALED(status)) {
-            LOG_DEBUG("Service: sing-box killed by signal %d", WTERMSIG(status));
-        }
-        ctx->child_pid = -1;
-        ctx->validated_pid = 0;
-        free(state);
-        return;
-    }
-
-    if (kill(ctx->child_pid, 0) != 0) {
-        ctx->child_pid = -1;
-        ctx->validated_pid = 0;
+    if (!service_is_alive(ctx)) {
         free(state);
         return;
     }
@@ -360,9 +433,6 @@ static void service_kill_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *
     if (state->attempts >= state->max_attempts) {
         LOG_WARN("Service: sing-box did not respond to SIGTERM, sending SIGKILL");
         kill(ctx->child_pid, SIGKILL);
-        waitpid(ctx->child_pid, NULL, WNOHANG);
-        ctx->child_pid = -1;
-        ctx->validated_pid = 0;
         free(state);
         return;
     }
@@ -457,8 +527,10 @@ static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void 
     service_ctx_t *ctx = userdata;
     if (!ctx || ctx->state == SERVICE_STOPPED || ctx->state == SERVICE_FAILED) return;
 
-    reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
-    ctx->retry_timer = NULL;
+    if (ctx->retry_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+        ctx->retry_timer = NULL;
+    }
 
     if (!circuit_breaker_should_allow(&ctx->breaker)) {
         LOG_WARN("Circuit breaker: open, delaying retry");
@@ -487,6 +559,7 @@ void service_schedule_retry(service_ctx_t *ctx) {
 
     if (ctx->retry_timer) {
         reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+        ctx->retry_timer = NULL;
     }
     ctx->retry_timer = reactor_add_timer(ctx->reactor, delay, 0,
                                           service_delayed_spawn_cb, ctx);
@@ -593,6 +666,7 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                     if (ctx->reactor && ctx->health_check_interval_ms > 0) {
                         if (ctx->health_timer) {
                             reactor_cancel_timer(ctx->reactor, ctx->health_timer);
+                            ctx->health_timer = NULL;
                         }
                         ctx->health_timer = reactor_add_timer(
                             ctx->reactor, ctx->health_check_interval_ms,
@@ -665,10 +739,10 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     ctx->health_timer = NULL;
 
     if (cfg->service.args[0]) {
-        strncpy(ctx->service_args, cfg->service.args, sizeof(ctx->service_args) - 1);
+        snprintf(ctx->service_args, sizeof(ctx->service_args), "%s", cfg->service.args);
     }
     if (cfg->service.env[0]) {
-        strncpy(ctx->service_env, cfg->service.env, sizeof(ctx->service_env) - 1);
+        snprintf(ctx->service_env, sizeof(ctx->service_env), "%s", cfg->service.env);
     }
 
     backoff_init(&ctx->backoff);
@@ -761,7 +835,7 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
 
     ctx->state = SERVICE_STOPPING;
 
-    if (ctx->health_timer && ctx->reactor) {
+    if (ctx->reactor && ctx->health_timer) {
         reactor_cancel_timer(ctx->reactor, ctx->health_timer);
         ctx->health_timer = NULL;
     }
@@ -772,18 +846,19 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
         ctx->state = SERVICE_STOPPED;
         ctx->fail_count = 0;
         ctx->running_healthy = 0;
-        if (ctx->monitor_timer) {
-            reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
-            ctx->monitor_timer = NULL;
-        }
-        if (ctx->retry_timer) {
-            reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
-            ctx->retry_timer = NULL;
-        }
         if (done_cb) {
             done_cb(ctx, userdata);
         }
         return 0;
+    }
+
+    if (ctx->monitor_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
+        ctx->monitor_timer = NULL;
+    }
+    if (ctx->retry_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+        ctx->retry_timer = NULL;
     }
 
     service_stop_state_t *state = calloc(1, sizeof(service_stop_state_t));
@@ -793,18 +868,10 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
         ctx->state = SERVICE_STOPPED;
         ctx->fail_count = 0;
         ctx->running_healthy = 0;
-        if (ctx->monitor_timer) {
-            reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
-            ctx->monitor_timer = NULL;
-        }
-        if (ctx->retry_timer) {
-            reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
-            ctx->retry_timer = NULL;
-        }
         if (done_cb) {
             done_cb(ctx, userdata);
         }
-        return 0;
+        return -1;
     }
 
     state->ctx = ctx;
@@ -832,9 +899,14 @@ int service_get_pid(service_ctx_t *ctx) {
     if (f) {
         int pid;
         if (fscanf(f, "%d", &pid) == 1 && pid > 0) {
-            fclose(f);
-            ctx->child_pid = pid;
-            return pid;
+            if (validate_process(ctx, pid)) {
+                fclose(f);
+                ctx->child_pid = pid;
+                ctx->validated_pid = 1;
+                return pid;
+            } else {
+                LOG_WARN("Service: stale PID file");
+            }
         }
         fclose(f);
     }
