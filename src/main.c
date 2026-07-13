@@ -38,6 +38,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <libgen.h>
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 
@@ -49,18 +50,18 @@
 #define g_reload g_atpd.reload
 #define g_show_status g_atpd.show_status
 
-
 /* ========== Forward Declarations ========== */
 
 static void run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
 static void on_idle(reactor_t *r, void *userdata);
-static void service_stop_done_cb(service_ctx_t *ctx, void *userdata);
+static void service_stop_sync(service_ctx_t *ctx);
 static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static void daemonize(void);
 static void cleanup_ebpf(void);
 static int process_is_atpd(pid_t pid);
+static int check_existing_daemon(const char *pid_file);
 
 /* ========== PID File ========== */
 
@@ -75,11 +76,14 @@ static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
 }
 
 static int process_is_atpd(pid_t pid) {
-    char path[64], exe[PATH_MAX];
+    char path[64];
+    char exe[PATH_MAX];
+    char exe_copy[PATH_MAX];
+
     snprintf(path, sizeof(path), "/proc/%d/exe", pid);
 
-    int retry = 3;
     ssize_t len;
+    int retry = 3;
 
     while (retry-- > 0) {
         len = readlink(path, exe, sizeof(exe) - 1);
@@ -90,50 +94,64 @@ static int process_is_atpd(pid_t pid) {
     if (len <= 0) return 0;
     exe[len] = '\0';
 
-    return strstr(exe, "atpd") != NULL && strstr(exe, "atpd-zig") != NULL;
+    snprintf(exe_copy, sizeof(exe_copy), "%s", exe);
+    char *base = basename(exe_copy);
+    if (!base) return 0;
+
+    return strcmp(base, "atpd") == 0 ||
+           strcmp(base, "atpd-zig") == 0;
+}
+
+static int check_existing_daemon(const char *pid_file) {
+    FILE *f = fopen(pid_file, "r");
+    if (!f) return 0;
+
+    int pid = 0;
+    if (fscanf(f, "%d", &pid) == 1) {
+        if (kill(pid, 0) == 0 && process_is_atpd(pid)) {
+            fclose(f);
+            return 1;
+        }
+    }
+
+    fclose(f);
+    unlink(pid_file);
+    return 0;
 }
 
 static int write_pid_file(const char *pid_file) {
     char dir[SAFE_PATH_MAX];
-    if (!pid_file || strlen(pid_file) >= PATH_MAX) return -1;
+
+    if (!pid_file) return -1;
 
     snprintf(dir, sizeof(dir), "%s", pid_file);
     char *slash = strrchr(dir, '/');
+
     if (slash) {
         *slash = '\0';
         mkdir_recursive(dir, 0755);
     }
 
-    struct stat st;
-    if (lstat(pid_file, &st) == 0) {
-        if (!S_ISREG(st.st_mode)) {
-            LOG_ERROR("PID file is not a regular file: %s", pid_file);
-            return -1;
-        }
-        if (st.st_uid != getuid()) {
-            LOG_WARN("PID file owned by different user: %s", pid_file);
-        }
-        if (st.st_nlink > 1) {
-            LOG_ERROR("PID file has hard links, refusing to write: %s", pid_file);
-            return -1;
-        }
-    }
-
     int fd = open(pid_file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
-    if (fd < 0) {
-        if (errno == EEXIST) return 0;
-        LOG_ERROR("Failed to create PID file: %s", strerror(errno));
-        return -1;
-    }
+    if (fd < 0) return -1;
 
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%d\n", getpid());
-    if (write(fd, buf, len) != len) {
-        LOG_ERROR("Failed to write PID file: %s", strerror(errno));
-        close(fd);
-        unlink(pid_file);
-        return -1;
+
+    ssize_t written = 0;
+    while (written < len) {
+        ssize_t n = write(fd, buf + written, len - written);
+
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            unlink(pid_file);
+            return -1;
+        }
+
+        written += n;
     }
+
     close(fd);
     return 0;
 }
@@ -162,7 +180,10 @@ static void daemonize(void) {
 static void cleanup_ebpf(void) {
     if (g_config.ebpf.ready) {
         LOG_INFO("Cleaning up eBPF CNIP...");
-        boxbpf_clear();
+        int ret = boxbpf_clear();
+        if (ret != ATP_OK) {
+            LOG_ERROR("Failed to clear eBPF: %d", ret);
+        }
         g_config.ebpf.ready = 0;
         g_atpd_ctx.ebpf_enabled = false;
         atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
@@ -181,13 +202,11 @@ static void on_signal(reactor_t *r, int sig, void *userdata) {
     }
 
     if (sig == SIGHUP) {
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING);
         g_reload = 1;
-        LOG_INFO("Reload signal received");
     } else if (sig == SIGUSR1) {
         g_show_status = 1;
-        LOG_INFO("Status signal received");
     } else {
-        LOG_INFO("Termination signal received");
         g_running = 0;
     }
 }
@@ -198,20 +217,24 @@ static void on_idle(reactor_t *r, void *userdata) {
 
     if (g_reload) {
         g_reload = 0;
+        LOG_INFO("Processing config reload...");
         if (config_reload(&g_config) != ATP_OK) {
             LOG_ERROR("Config reload failed");
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
         } else {
+            LOG_INFO("Config reload completed successfully");
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
         }
     }
 
     if (g_show_status) {
-        status_show(&g_config, g_svc, &g_api_ctx);
         g_show_status = 0;
+        LOG_INFO("Processing status display...");
+        status_show(&g_config, g_svc, &g_api_ctx);
     }
 
     if (!g_running) {
+        LOG_INFO("Stopping reactor...");
         atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPED);
         reactor_stop(r);
     }
@@ -279,21 +302,41 @@ static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
     netlink_handle_event(fd, userdata);
 }
 
-/* ========== Service Callback ========== */
+/* ========== Service Stop Sync ========== */
 
-static void service_stop_done_cb(service_ctx_t *ctx, void *userdata) {
-    (void)userdata;
-    LOG_INFO("Service cleanup complete");
-    free(ctx);
-    g_svc = NULL;
+static void service_stop_sync(service_ctx_t *ctx) {
+    if (!ctx) return;
+
+    LOG_INFO("Stopping service synchronously...");
+
+    if (service_stop_async(ctx, NULL, NULL) != 0) {
+        LOG_ERROR("Failed to stop service");
+        return;
+    }
+
+    int waited = 0;
+    while (waited < 5000) {
+        if (!service_is_running(ctx)) {
+            LOG_INFO("Service stopped");
+            return;
+        }
+        usleep(100 * 1000);
+        waited += 100;
+    }
+
+    LOG_WARN("Service stop timeout, forcing kill");
+    kill(service_get_pid(ctx), SIGKILL);
 }
 
 /* ========== Event Loop ========== */
 
 static void run_event_loop(void) {
+    reactor_timer_t *proxy_timer = NULL;
+
     g_reactor = reactor_create();
     if (!g_reactor) {
         LOG_ERROR("Failed to create reactor");
+        uds_cleanup();
         return;
     }
 
@@ -308,8 +351,11 @@ static void run_event_loop(void) {
         LOG_ERROR("Failed to start service");
         reactor_destroy(g_reactor);
         g_reactor = NULL;
+        uds_cleanup();
         return;
     }
+
+    proxy_timer = reactor_add_timer(g_reactor, 10000, 30000, proxies_timer_cb, NULL);
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
@@ -329,15 +375,23 @@ static void run_event_loop(void) {
     reactor_run(g_reactor);
     LOG_INFO("Reactor event loop stopped");
 
-    cleanup_ebpf();
-    tproxy_cleanup_all(&g_config);
-    uds_cleanup();
+    if (proxy_timer) {
+        reactor_cancel_timer(g_reactor, proxy_timer);
+        proxy_timer = NULL;
+    }
 
     service_ctx_t *svc = g_svc;
     g_svc = NULL;
     if (svc) {
-        service_stop_async(svc, service_stop_done_cb, NULL);
+        service_stop_sync(svc);
+        free(svc);
     }
+
+    cleanup_ebpf();
+    tproxy_cleanup_all(&g_config);
+    netlink_cleanup();
+    uds_cleanup();
+    api_cleanup(&g_api_ctx);
 
     reactor_destroy(g_reactor);
     g_reactor = NULL;
@@ -362,35 +416,10 @@ static int do_start(atp_options_t *opts) {
 
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    int fd = open(pp, O_RDWR | O_CREAT | O_EXCL, 0644);
-    if (fd < 0) {
-        if (errno == EEXIST) {
-            FILE *f = fopen(pp, "r");
-            if (f) {
-                int pid;
-                if (fscanf(f, "%d", &pid) == 1 && kill(pid, 0) == 0) {
-                    if (process_is_atpd(pid)) {
-                        fprintf(stderr, "Daemon already running (PID: %d)\n", pid);
-                        fclose(f);
-                        return 1;
-                    } else {
-                        LOG_WARN("Stale PID file found, removing");
-                    }
-                }
-                fclose(f);
-            }
-            unlink(pp);
-            fd = open(pp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
-            if (fd < 0) {
-                LOG_ERROR("Failed to create PID file: %s", strerror(errno));
-                return 1;
-            }
-        } else {
-            LOG_ERROR("Failed to create PID file: %s", strerror(errno));
-            return 1;
-        }
+    if (check_existing_daemon(pp)) {
+        fprintf(stderr, "Daemon already running\n");
+        return 1;
     }
-    close(fd);
 
     if (opts->daemon && !opts->foreground) {
         daemonize();
@@ -406,6 +435,10 @@ static int do_start(atp_options_t *opts) {
     if (atpd_init_run(&init_ctx) != 0) {
         LOG_ERROR("Initialization failed");
         atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
+        cleanup_ebpf();
+        netlink_cleanup();
+        uds_cleanup();
+        api_cleanup(&g_api_ctx);
         unlink(pp);
         return 1;
     }
@@ -421,11 +454,14 @@ static int do_start(atp_options_t *opts) {
     netlink_set_tproxy_ready();
     run_event_loop();
 
+    unlink(pp);
     return 0;
 }
 
 static int do_stop(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
+    int ret = 0;
+
     resolve_pid_path(opts, pp, sizeof(pp));
 
     FILE *f = fopen(pp, "r");
@@ -442,7 +478,13 @@ static int do_stop(atp_options_t *opts) {
     }
     fclose(f);
 
-    if (!process_is_atpd(pid) || kill(pid, 0) < 0) {
+    if (!process_is_atpd(pid)) {
+        fprintf(stderr, "Process %d is not ATP daemon\n", pid);
+        unlink(pp);
+        return 1;
+    }
+
+    if (kill(pid, 0) < 0) {
         fprintf(stderr, "Daemon is not running (stale PID file)\n");
         atp_cleanup_manual(&g_config);
         unlink(pp);
@@ -463,10 +505,14 @@ static int do_stop(atp_options_t *opts) {
     }
 
     printf("Daemon not responding, forcing kill...\n");
-    kill(pid, SIGKILL);
+    if (kill(pid, SIGKILL) == 0) {
+        ret = 0;
+    } else {
+        ret = 1;
+    }
     unlink(pp);
     boxbpf_clear();
-    return 0;
+    return ret;
 }
 
 static int do_status(atp_options_t *opts) {
@@ -508,7 +554,12 @@ static int do_reload(atp_options_t *opts) {
     }
     fclose(f);
 
-    if (!process_is_atpd(pid) || kill(pid, 0) < 0) {
+    if (!process_is_atpd(pid)) {
+        fprintf(stderr, "Process %d is not ATP daemon\n", pid);
+        return 1;
+    }
+
+    if (kill(pid, 0) < 0) {
         fprintf(stderr, "Daemon is not running\n");
         return 1;
     }
@@ -523,7 +574,6 @@ static int do_reload(atp_options_t *opts) {
 }
 
 static int do_check(atp_options_t *opts) {
-    char cp[SAFE_PATH_MAX];
     const char *config_path = opts->config_file;
 
     if (!config_path || !config_path[0]) {
@@ -592,7 +642,8 @@ static int do_ebpf_init(atp_options_t *opts) {
     }
 
     if (opts->ebpf_config[0] != '\0') {
-        strncpy(cfg.ebpf.config_path, opts->ebpf_config, sizeof(cfg.ebpf.config_path) - 1);
+        snprintf(cfg.ebpf.config_path, sizeof(cfg.ebpf.config_path),
+                 "%s", opts->ebpf_config);
     }
     return boxbpf_init_from_config(&cfg);
 }
