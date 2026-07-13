@@ -5,7 +5,6 @@
  *
  * Clash API client - Reactor-driven async state machine
  * RFC 7230/7231 compliant HTTP/1.1 client
- * Supports: Content-Length, chunked transfer encoding, read-until-close
  */
 
 #include "api.h"
@@ -30,25 +29,14 @@
 #define API_MAX_PENDING_REQUESTS 1024
 #define API_CHUNK_READ_BUFFER 8192
 
-
 static reactor_t *g_api_reactor = NULL;
 
-static int api_parse_url(const char *base_url, char *host, int *port);
-static int api_parse_full_url(const char *url, char *host, int *port, char *path, size_t path_size);
-static int api_build_http_request(api_request_t *req);
-static void api_request_cleanup(api_request_t *req);
-static int api_socket_connect(api_request_t *req);
-static int api_parse_headers(api_request_t *req);
-static int api_decode_chunked(api_request_t *req);
-static const char *api_extract_body(api_request_t *req);
-static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdata);
-static void api_process_requests(api_ctx_t *ctx);
-static int api_validate_request(api_request_t *req);
-static int api_socket_alive(int fd);
-static int api_parse_status_line(const char *line, int *code);
-static int api_parse_header_line(const char *line, size_t len, char **name, char **value);
 static void *api_memmem(const void *haystack, size_t haystack_len,
                          const void *needle, size_t needle_len);
+static void safe_str_copy(char *dest, size_t dest_size, const char *src, size_t src_len);
+static int validate_host_port(const char *host, int port);
+static int api_validate_request(api_request_t *req);
+static int api_socket_alive(int fd);
 
 static void *api_memmem(const void *haystack, size_t haystack_len,
                          const void *needle, size_t needle_len) {
@@ -77,14 +65,6 @@ static void safe_str_copy(char *dest, size_t dest_size, const char *src, size_t 
 
     memcpy(dest, src, src_len);
     dest[src_len] = '\0';
-}
-
-static int validate_host_port(const char *host, int port) {
-    if (!host || !*host) return -1;
-    if (strlen(host) > API_MAX_HOST_LEN) return -1;
-    if (port < 1 || port > 65535) return -1;
-    if (strchr(host, '\r') || strchr(host, '\n')) return -1;
-    return 0;
 }
 
 static int api_validate_request(api_request_t *req) {
@@ -123,6 +103,16 @@ static int api_validate_request(api_request_t *req) {
     return 0;
 }
 
+static int api_socket_alive(int fd) {
+    char ch;
+    ssize_t n = recv(fd, &ch, 1, MSG_PEEK | MSG_DONTWAIT);
+
+    if (n == 0) return 0;
+    if (n > 0) return 1;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) return 1;
+
+    return 0;
+}
 static int api_parse_url(const char *base_url, char *host, int *port) {
     const char *start;
 
@@ -355,26 +345,6 @@ static void api_request_cleanup(api_request_t *req) {
 
     free(req);
 }
-
-static int api_socket_alive(int fd) {
-    char ch;
-    ssize_t n = recv(fd, &ch, 1, MSG_PEEK | MSG_DONTWAIT);
-
-    if (n == 0) {
-        return 0;
-    }
-
-    if (n > 0) {
-        return 1;
-    }
-
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return 1;
-    }
-
-    return 0;
-}
-
 static int api_socket_connect(api_request_t *req) {
     api_ctx_t *ctx = req->ctx;
 
@@ -614,22 +584,23 @@ static int api_parse_header_line(const char *line, size_t len, char **name, char
 static int api_parse_status_line(const char *line, int *code) {
     if (!line || !code) return -1;
 
-    if (strncmp(line, "HTTP/1.0", 8) != 0 &&
-        strncmp(line, "HTTP/1.1", 8) != 0) {
+    if (strncmp(line, "HTTP/1.1 ", 9) != 0 &&
+        strncmp(line, "HTTP/1.0 ", 9) != 0) {
+        LOG_ERROR("API: invalid HTTP version in status line");
         return -1;
     }
 
-    const char *p = strchr(line, ' ');
-    if (!p) return -1;
-    p++;
-
+    const char *p = line + 9;
     char *endptr;
     long c = strtol(p, &endptr, 10);
+
     if (endptr == p || c < 100 || c > 599) {
+        LOG_ERROR("API: invalid status code");
         return -1;
     }
 
     if (*endptr != ' ' && *endptr != '\r' && *endptr != '\0') {
+        LOG_ERROR("API: malformed status line");
         return -1;
     }
 
@@ -700,7 +671,7 @@ static int api_parse_headers(api_request_t *req) {
                         return -1;
                     }
 
-                    if (cl < 0 || cl > (size_t)API_MAX_RESPONSE_SIZE) {
+                    if (cl < 0 || cl > API_MAX_RESPONSE_SIZE) {
                         LOG_ERROR("API: invalid Content-Length: %ld", cl);
                         free(name);
                         free(value);
@@ -745,8 +716,8 @@ static int api_parse_headers(api_request_t *req) {
     }
 
     if (!req->chunked_encoding && req->content_length < 0 &&
-        req->http_code >= 100 && req->http_code < 300 &&
-        req->http_code != 204 && req->http_code != 304) {
+        req->http_code != 204 && req->http_code != 304 &&
+        strncmp(req->method, "HEAD", 4) != 0) {
         req->read_until_close = 1;
         LOG_DEBUG("API: read-until-close mode");
     }
@@ -757,6 +728,7 @@ static int api_parse_headers(api_request_t *req) {
         req->chunk_state = CHUNK_READ_SIZE;
         req->chunk_size = 0;
         req->chunk_offset = 0;
+        req->trailer_received = 0;
     } else if (req->read_until_close) {
         req->parse_state = HTTP_PARSE_BODY_CLOSE;
     }
@@ -802,23 +774,33 @@ static int api_decode_chunked(api_request_t *req) {
                 }
 
                 size_t line_len = (const char *)crlf_ptr - buf;
-                if (line_len == 0 || line_len > 32) {
+                if (line_len == 0 || line_len > 64) {
                     LOG_ERROR("API: invalid chunk size line");
                     return -1;
                 }
 
-                char size_buf[64];
+                char size_buf[128];
                 memcpy(size_buf, buf, line_len);
                 size_buf[line_len] = '\0';
 
                 char *endptr;
                 long size = strtol(size_buf, &endptr, 16);
+
+                while (*endptr == ' ' || *endptr == '\t') {
+                    endptr++;
+                }
+
+                if (*endptr != '\0' && *endptr != ';') {
+                    LOG_ERROR("API: invalid chunk size or extension: '%s'", size_buf);
+                    return -1;
+                }
+
                 if (endptr == size_buf || size < 0) {
                     LOG_ERROR("API: invalid chunk size");
                     return -1;
                 }
 
-                if ((size_t)size > (size_t)API_MAX_RESPONSE_SIZE) {
+                if ((size_t)size > API_MAX_RESPONSE_SIZE) {
                     LOG_ERROR("API: chunk size too large: %ld", size);
                     return -1;
                 }
@@ -833,6 +815,7 @@ static int api_decode_chunked(api_request_t *req) {
 
                 if (req->chunk_size == 0) {
                     req->chunk_state = CHUNK_READ_TRAILER;
+                    req->trailer_received = 0;
                     LOG_DEBUG("API: chunked transfer complete, reading trailer");
                 } else {
                     req->chunk_state = CHUNK_READ_DATA;
@@ -857,15 +840,15 @@ static int api_decode_chunked(api_request_t *req) {
                         req->decoded_body_len = 0;
                     }
 
-                    if (req->decoded_body_len + to_read > (size_t)API_MAX_RESPONSE_SIZE) {
+                    if (req->decoded_body_len + to_read > API_MAX_RESPONSE_SIZE) {
                         LOG_ERROR("API: decoded body exceeds max response size (%zu)",
-                                  (size_t)API_MAX_RESPONSE_SIZE);
+                                  API_MAX_RESPONSE_SIZE);
                         return -1;
                     }
 
                     if (req->decoded_body_len + to_read + 1 > req->decoded_body_size) {
                         size_t new_size = req->decoded_body_size * 2;
-                        if (new_size > (size_t)API_MAX_RESPONSE_SIZE) {
+                        if (new_size > API_MAX_RESPONSE_SIZE) {
                             new_size = API_MAX_RESPONSE_SIZE;
                         }
                         if (req->decoded_body_len + to_read + 1 > new_size) {
@@ -931,9 +914,15 @@ static int api_decode_chunked(api_request_t *req) {
                     return 1;
                 }
 
+                req->trailer_received += avail;
+                if (req->trailer_received > API_MAX_HEADER_SIZE) {
+                    LOG_ERROR("API: trailer headers too large (%zu bytes)", req->trailer_received);
+                    return -1;
+                }
+
                 void *trailer_end = api_memmem(buf, avail, "\r\n\r\n", 4);
                 if (!trailer_end) {
-                    if (avail > 4096) {
+                    if (avail > API_MAX_HEADER_SIZE) {
                         LOG_ERROR("API: trailer headers too large");
                         return -1;
                     }
@@ -1052,7 +1041,7 @@ static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdat
                     }
                 }
 
-                if (req->recv_size >= (size_t)API_MAX_RESPONSE_SIZE) {
+                if (req->recv_size >= API_MAX_RESPONSE_SIZE) {
                     LOG_ERROR("API: response too large");
                     req->state = API_STATE_ERROR;
                     req->keepalive_disabled = 1;
@@ -1071,7 +1060,7 @@ static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdat
 
                 if (req->recv_offset >= req->recv_size - 1) {
                     size_t new_size = req->recv_size * 2;
-                    if (new_size > (size_t)API_MAX_RESPONSE_SIZE) {
+                    if (new_size > API_MAX_RESPONSE_SIZE) {
                         LOG_ERROR("API: response would exceed max size");
                         req->state = API_STATE_ERROR;
                         req->keepalive_disabled = 1;
@@ -1185,6 +1174,7 @@ static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdat
             break;
     }
 }
+
 static void api_process_requests(api_ctx_t *ctx) {
     api_request_t *prev = NULL;
     api_request_t *req = ctx->pending_requests;
@@ -1279,7 +1269,6 @@ static void api_process_requests(api_ctx_t *ctx) {
         ctx->keepalive_port = 0;
     }
 }
-
 int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r) {
     if (!ctx || !r) return -1;
     g_api_reactor = r;
@@ -1341,6 +1330,7 @@ static int api_request_async(api_ctx_t *ctx, const char *method, const char *pat
     req->chunk_size = 0;
     req->chunk_offset = 0;
     req->chunk_parse_offset = 0;
+    req->trailer_received = 0;
     req->decoded_body = NULL;
     req->decoded_body_size = 0;
     req->decoded_body_len = 0;
@@ -1414,6 +1404,7 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
     req->chunk_size = 0;
     req->chunk_offset = 0;
     req->chunk_parse_offset = 0;
+    req->trailer_received = 0;
     req->decoded_body = NULL;
     req->decoded_body_size = 0;
     req->decoded_body_len = 0;
@@ -1444,7 +1435,6 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
 
     return 0;
 }
-
 int api_get_sync(const char *url, char *response, size_t response_size) {
     if (!url || !response || response_size == 0) return -1;
 
@@ -1571,7 +1561,7 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
     while (1) {
         if (recv_offset >= recv_size - 1) {
             size_t new_size = recv_size * 2;
-            if (new_size > (size_t)API_MAX_RESPONSE_SIZE) {
+            if (new_size > API_MAX_RESPONSE_SIZE) {
                 LOG_ERROR("API sync: response too large");
                 goto cleanup;
             }
@@ -1620,7 +1610,7 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
                                 if (strcasecmp(name, "Content-Length") == 0) {
                                     char *endptr;
                                     long cl = strtol(value, &endptr, 10);
-                                    if (cl >= 0 && cl <= (size_t)API_MAX_RESPONSE_SIZE) {
+                                    if (cl >= 0 && cl <= API_MAX_RESPONSE_SIZE) {
                                         content_length = (int)cl;
                                     }
                                 } else if (strcasecmp(name, "Transfer-Encoding") == 0) {
