@@ -36,6 +36,7 @@ static void api_process_requests(api_ctx_t *ctx);
 static int api_decode_chunked(api_request_t *req);
 static const char *api_extract_body(api_request_t *req);
 static int api_parse_status_line(const char *line, int *code, uint8_t *major, uint8_t *minor);
+static int api_decode_chunked_common(chunk_ctx_t *ctx, const char *buf, size_t avail, size_t *bytes_consumed);
 
 static reactor_t *g_api_reactor = NULL;
 
@@ -48,6 +49,20 @@ static int api_socket_alive(int fd);
 static int api_parse_url(const char *base_url, char *host, int *port);
 static int api_parse_full_url(const char *url, char *host, int *port, char *path, size_t path_size);
 static void api_build_host_header(char *buf, size_t size, const char *host, int port);
+
+/* Common chunk decoder context */
+typedef struct chunk_ctx_s {
+    chunk_state_t state;
+    size_t chunk_size;
+    size_t chunk_offset;
+    size_t chunk_parse_offset;
+    size_t trailer_base_offset;
+    size_t trailer_received;
+    char **decoded_body_ptr;
+    size_t *decoded_body_len_ptr;
+    size_t *decoded_body_size_ptr;
+    int is_sync;
+} chunk_ctx_t;
 
 static void *api_memmem(const void *haystack, size_t haystack_len,
                          const void *needle, size_t needle_len) {
@@ -835,28 +850,35 @@ static int api_parse_headers(api_request_t *req) {
 
     return 1;
 }
-
-static int api_decode_chunked(api_request_t *req) {
-    const char *buf = req->recv_buf + req->chunk_parse_offset;
-    size_t avail = req->recv_offset - req->chunk_parse_offset;
-
-    while (avail > 0 && req->chunk_state != CHUNK_DONE) {
-        switch (req->chunk_state) {
+/* Common chunk decoder implementation */
+static int api_decode_chunked_common(chunk_ctx_t *ctx, 
+                                      const char *buf, 
+                                      size_t avail,
+                                      size_t *bytes_consumed) {
+    if (!ctx || !buf || !bytes_consumed) return -1;
+    
+    *bytes_consumed = 0;
+    const char *p = buf;
+    size_t remaining = avail;
+    
+    while (remaining > 0 && ctx->state != CHUNK_DONE) {
+        switch (ctx->state) {
             case CHUNK_READ_SIZE: {
-                void *crlf_ptr = api_memmem(buf, avail, "\r\n", 2);
+                void *crlf_ptr = api_memmem(p, remaining, "\r\n", 2);
                 if (!crlf_ptr) {
-                    req->chunk_parse_offset = req->recv_offset - avail;
+                    ctx->chunk_parse_offset = avail - remaining;
                     return 0;
                 }
 
-                size_t line_len = (const char *)crlf_ptr - buf;
+                size_t line_len = (const char *)crlf_ptr - p;
                 if (line_len == 0 || line_len > 64) {
-                    LOG_ERROR("API: invalid chunk size line");
+                    LOG_ERROR("%s: invalid chunk size line", 
+                              ctx->is_sync ? "API sync" : "API");
                     return -1;
                 }
 
                 char size_buf[128];
-                memcpy(size_buf, buf, line_len);
+                memcpy(size_buf, p, line_len);
                 size_buf[line_len] = '\0';
 
                 char *endptr;
@@ -868,149 +890,159 @@ static int api_decode_chunked(api_request_t *req) {
                 }
 
                 if (*endptr != '\0' && *endptr != ';') {
-                    LOG_ERROR("API: invalid chunk size or extension: '%s'", size_buf);
+                    LOG_ERROR("%s: invalid chunk size or extension: '%s'", 
+                              ctx->is_sync ? "API sync" : "API", size_buf);
                     return -1;
                 }
 
                 if (errno == ERANGE) {
-                    LOG_ERROR("API: chunk size overflow: '%s'", size_buf);
+                    LOG_ERROR("%s: chunk size overflow: '%s'", 
+                              ctx->is_sync ? "API sync" : "API", size_buf);
                     return -1;
                 }
 
                 if (endptr == size_buf || size < 0) {
-                    LOG_ERROR("API: invalid chunk size");
+                    LOG_ERROR("%s: invalid chunk size", 
+                              ctx->is_sync ? "API sync" : "API");
                     return -1;
                 }
 
                 if ((size_t)size > API_MAX_RESPONSE_SIZE) {
-                    LOG_ERROR("API: chunk size too large: %ld", size);
+                    LOG_ERROR("%s: chunk size too large: %ld", 
+                              ctx->is_sync ? "API sync" : "API", size);
                     return -1;
                 }
 
-                req->chunk_size = (size_t)size;
-                req->chunk_offset = 0;
+                ctx->chunk_size = (size_t)size;
+                ctx->chunk_offset = 0;
 
-                size_t consumed = (const char *)crlf_ptr - buf + 2;
-                req->chunk_parse_offset += consumed;
-                avail -= consumed;
-                buf += consumed;
+                size_t consumed = (const char *)crlf_ptr - p + 2;
+                ctx->chunk_parse_offset += consumed;
+                remaining -= consumed;
+                p += consumed;
 
-                if (req->chunk_size == 0) {
-                    req->chunk_state = CHUNK_READ_TRAILER;
-                    req->trailer_base_offset = req->chunk_parse_offset;
-                    req->trailer_received = 0;
-                    LOG_DEBUG("API: chunked transfer complete, reading trailer");
+                if (ctx->chunk_size == 0) {
+                    ctx->state = CHUNK_READ_TRAILER;
+                    ctx->trailer_base_offset = ctx->chunk_parse_offset;
+                    ctx->trailer_received = 0;
+                    LOG_DEBUG("%s: chunked transfer complete, reading trailer",
+                              ctx->is_sync ? "API sync" : "API");
                 } else {
-                    req->chunk_state = CHUNK_READ_DATA;
+                    ctx->state = CHUNK_READ_DATA;
                 }
                 break;
             }
 
             case CHUNK_READ_DATA: {
-                size_t to_read = req->chunk_size - req->chunk_offset;
-                if (to_read > avail) {
-                    to_read = avail;
+                size_t to_read = ctx->chunk_size - ctx->chunk_offset;
+                if (to_read > remaining) {
+                    to_read = remaining;
                 }
 
                 if (to_read > 0) {
-                    if (!req->decoded_body) {
-                        req->decoded_body_size = API_CHUNK_READ_BUFFER;
-                        req->decoded_body = malloc(req->decoded_body_size + 1);
-                        if (!req->decoded_body) {
-                            LOG_ERROR("API: malloc decoded_body failed");
+                    char **body = ctx->decoded_body_ptr;
+                    size_t *body_len = ctx->decoded_body_len_ptr;
+                    size_t *body_size = ctx->decoded_body_size_ptr;
+
+                    if (!*body) {
+                        *body_size = API_CHUNK_READ_BUFFER;
+                        *body = malloc(*body_size + 1);
+                        if (!*body) {
+                            LOG_ERROR("%s: malloc decoded_body failed",
+                                      ctx->is_sync ? "API sync" : "API");
                             return -1;
                         }
-                        req->decoded_body_len = 0;
+                        *body_len = 0;
                     }
 
-                    if (req->decoded_body_len + to_read > API_MAX_RESPONSE_SIZE) {
-                        LOG_ERROR("API: decoded body exceeds max response size (%d)",
-                                  API_MAX_RESPONSE_SIZE);
-                        return -1;
-                    }
-
-                    if (req->decoded_body_len + to_read + 1 > req->decoded_body_size) {
-                        size_t new_size = req->decoded_body_size * 2;
+                    if (*body_len + to_read + 1 > *body_size) {
+                        size_t new_size = *body_size * 2;
                         if (new_size > API_MAX_RESPONSE_SIZE) {
                             new_size = API_MAX_RESPONSE_SIZE;
                         }
-                        if (req->decoded_body_len + to_read + 1 > new_size) {
-                            LOG_ERROR("API: decoded body would exceed max response size");
+                        if (*body_len + to_read + 1 > new_size) {
+                            LOG_ERROR("%s: decoded body would exceed max response size",
+                                      ctx->is_sync ? "API sync" : "API");
                             return -1;
                         }
-                        char *new_buf = realloc(req->decoded_body, new_size + 1);
+                        char *new_buf = realloc(*body, new_size + 1);
                         if (!new_buf) {
-                            LOG_ERROR("API: realloc decoded_body failed");
+                            LOG_ERROR("%s: realloc decoded_body failed",
+                                      ctx->is_sync ? "API sync" : "API");
                             return -1;
                         }
-                        req->decoded_body = new_buf;
-                        req->decoded_body_size = new_size;
+                        *body = new_buf;
+                        *body_size = new_size;
                     }
 
-                    memcpy(req->decoded_body + req->decoded_body_len, buf, to_read);
-                    req->decoded_body_len += to_read;
-                    req->decoded_body[req->decoded_body_len] = '\0';
-                    req->chunk_offset += to_read;
+                    memcpy(*body + *body_len, p, to_read);
+                    *body_len += to_read;
+                    (*body)[*body_len] = '\0';
+                    ctx->chunk_offset += to_read;
 
-                    req->chunk_parse_offset += to_read;
-                    avail -= to_read;
-                    buf += to_read;
+                    ctx->chunk_parse_offset += to_read;
+                    remaining -= to_read;
+                    p += to_read;
                 }
 
-                if (req->chunk_offset >= req->chunk_size) {
-                    req->chunk_state = CHUNK_READ_CRLF;
-                    LOG_DEBUG("API: chunk data read, expecting CRLF");
+                if (ctx->chunk_offset >= ctx->chunk_size) {
+                    ctx->state = CHUNK_READ_CRLF;
+                    LOG_DEBUG("%s: chunk data read, expecting CRLF",
+                              ctx->is_sync ? "API sync" : "API");
                 }
                 break;
             }
 
             case CHUNK_READ_CRLF: {
-                if (avail < 2) {
-                    req->chunk_parse_offset = req->recv_offset - avail;
+                if (remaining < 2) {
+                    ctx->chunk_parse_offset = avail - remaining;
                     return 0;
                 }
 
-                if (buf[0] != '\r' || buf[1] != '\n') {
-                    LOG_ERROR("API: missing CRLF after chunk data");
+                if (p[0] != '\r' || p[1] != '\n') {
+                    LOG_ERROR("%s: missing CRLF after chunk data",
+                              ctx->is_sync ? "API sync" : "API");
                     return -1;
                 }
 
-                req->chunk_parse_offset += 2;
-                avail -= 2;
-                buf += 2;
+                ctx->chunk_parse_offset += 2;
+                remaining -= 2;
+                p += 2;
 
-                req->chunk_state = CHUNK_READ_SIZE;
-                req->chunk_size = 0;
-                req->chunk_offset = 0;
+                ctx->state = CHUNK_READ_SIZE;
+                ctx->chunk_size = 0;
+                ctx->chunk_offset = 0;
 
-                LOG_DEBUG("API: chunk CRLF received");
+                LOG_DEBUG("%s: chunk CRLF received",
+                          ctx->is_sync ? "API sync" : "API");
                 break;
             }
 
             case CHUNK_READ_TRAILER: {
-                size_t trailer_received = req->recv_offset - req->trailer_base_offset;
+                size_t trailer_received = avail - ctx->trailer_base_offset;
                 if (trailer_received > API_MAX_HEADER_SIZE) {
-                    LOG_ERROR("API: trailer headers too large (%zu bytes)", trailer_received);
+                    LOG_ERROR("%s: trailer headers too large (%zu bytes)",
+                              ctx->is_sync ? "API sync" : "API", trailer_received);
                     return -1;
                 }
-                req->trailer_received = trailer_received;
+                ctx->trailer_received = trailer_received;
 
-                if (avail >= 2 && memcmp(buf, "\r\n", 2) == 0) {
-                    req->chunk_parse_offset += 2;
-                    req->chunk_state = CHUNK_DONE;
-                    req->parse_state = HTTP_PARSE_DONE;
-                    req->state = API_STATE_DONE;
-                    LOG_DEBUG("API: chunked transfer complete (empty trailer)");
-                    return 1;
+                if (remaining >= 2 && memcmp(p, "\r\n", 2) == 0) {
+                    ctx->chunk_parse_offset += 2;
+                    ctx->state = CHUNK_DONE;
+                    LOG_DEBUG("%s: chunked transfer complete (empty trailer)",
+                              ctx->is_sync ? "API sync" : "API");
+                    break;
                 }
 
-                void *trailer_end = api_memmem(buf, avail, "\r\n\r\n", 4);
+                void *trailer_end = api_memmem(p, remaining, "\r\n\r\n", 4);
                 if (!trailer_end) {
-                    req->chunk_parse_offset = req->recv_offset - avail;
+                    ctx->chunk_parse_offset = avail - remaining;
                     return 0;
                 }
 
-                const char *line_start = buf;
+                /* RFC7230: validate trailer headers - field-name must not be empty */
+                const char *line_start = p;
                 const char *line_end = memchr(line_start, '\n', 
                                              (const char *)trailer_end - line_start);
                 while (line_start < (const char *)trailer_end) {
@@ -1019,23 +1051,25 @@ static int api_decode_chunked(api_request_t *req) {
                     if (line_len > 0 && line_start[line_len - 1] == '\r') {
                         line_len--;
                     }
-                    if (line_len > 0 && memchr(line_start, ':', line_len) == NULL) {
-                        LOG_ERROR("API: invalid trailer header (no colon)");
-                        return -1;
+                    if (line_len > 0) {
+                        const char *colon = memchr(line_start, ':', line_len);
+                        if (!colon || colon == line_start) {
+                            LOG_ERROR("%s: invalid trailer header (empty field-name)",
+                                      ctx->is_sync ? "API sync" : "API");
+                            return -1;
+                        }
                     }
                     line_start = line_end + 1;
                     line_end = memchr(line_start, '\n', 
                                     (const char *)trailer_end - line_start);
                 }
 
-                size_t trailer_len = (const char *)trailer_end - buf + 4;
-                req->chunk_parse_offset += trailer_len;
-                req->chunk_state = CHUNK_DONE;
-                req->parse_state = HTTP_PARSE_DONE;
-                req->state = API_STATE_DONE;
-
-                LOG_DEBUG("API: chunked transfer complete (non-empty trailer)");
-                return 1;
+                size_t trailer_len = (const char *)trailer_end - p + 4;
+                ctx->chunk_parse_offset += trailer_len;
+                ctx->state = CHUNK_DONE;
+                LOG_DEBUG("%s: chunked transfer complete (non-empty trailer)",
+                          ctx->is_sync ? "API sync" : "API");
+                break;
             }
 
             case CHUNK_DONE:
@@ -1043,16 +1077,55 @@ static int api_decode_chunked(api_request_t *req) {
         }
     }
 
-    if (req->chunk_state == CHUNK_DONE) {
-        req->parse_state = HTTP_PARSE_DONE;
-        req->state = API_STATE_DONE;
-        LOG_DEBUG("API: chunked decoding complete, %zu bytes decoded",
-                  req->decoded_body_len);
+    *bytes_consumed = avail - remaining;
+    
+    if (ctx->state == CHUNK_DONE) {
+        LOG_DEBUG("%s: chunked decoding complete",
+                  ctx->is_sync ? "API sync" : "API");
         return 1;
     }
 
     return 0;
 }
+
+/* Async decoder wrapper */
+static int api_decode_chunked(api_request_t *req) {
+    chunk_ctx_t ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    
+    ctx.state = req->chunk_state;
+    ctx.chunk_size = req->chunk_size;
+    ctx.chunk_offset = req->chunk_offset;
+    ctx.chunk_parse_offset = req->chunk_parse_offset;
+    ctx.trailer_base_offset = req->trailer_base_offset;
+    ctx.trailer_received = req->trailer_received;
+    ctx.decoded_body_ptr = &req->decoded_body;
+    ctx.decoded_body_len_ptr = &req->decoded_body_len;
+    ctx.decoded_body_size_ptr = &req->decoded_body_size;
+    ctx.is_sync = 0;
+    
+    const char *buf = req->recv_buf + req->chunk_parse_offset;
+    size_t avail = req->recv_offset - req->chunk_parse_offset;
+    size_t consumed = 0;
+    
+    int ret = api_decode_chunked_common(&ctx, buf, avail, &consumed);
+    
+    /* Update request state */
+    req->chunk_state = ctx.state;
+    req->chunk_size = ctx.chunk_size;
+    req->chunk_offset = ctx.chunk_offset;
+    req->chunk_parse_offset = ctx.chunk_parse_offset;
+    req->trailer_base_offset = ctx.trailer_base_offset;
+    req->trailer_received = ctx.trailer_received;
+    
+    if (ret == 1) {
+        req->parse_state = HTTP_PARSE_DONE;
+        req->state = API_STATE_DONE;
+    }
+    
+    return ret;
+}
+
 static const char *api_extract_body(api_request_t *req) {
     if (req->chunked_encoding && req->decoded_body) {
         req->decoded_body[req->decoded_body_len] = '\0';
@@ -1073,7 +1146,6 @@ static const char *api_extract_body(api_request_t *req) {
 
     return body;
 }
-
 static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdata) {
     (void)r;
     api_request_t *req = userdata;
@@ -1300,7 +1372,11 @@ static void api_process_requests(api_ctx_t *ctx) {
                 req->callback(req->http_code, body, req->userdata);
             }
 
-            if (req->sock_fd >= 0 && !req->keepalive_disabled && !req->read_until_close) {
+            /* KeepAlive: ensure message fully parsed before saving */
+            if (req->sock_fd >= 0 && 
+                !req->keepalive_disabled && 
+                !req->read_until_close &&
+                req->parse_state == HTTP_PARSE_DONE) {
                 if (ctx->keepalive_fd >= 0) {
                     if (g_api_reactor) {
                         reactor_remove_fd(g_api_reactor, ctx->keepalive_fd);
@@ -1368,6 +1444,7 @@ static void api_process_requests(api_ctx_t *ctx) {
         ctx->keepalive_port = 0;
     }
 }
+
 int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r) {
     if (!ctx || !r) return -1;
     g_api_reactor = r;
@@ -1562,11 +1639,11 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
     struct addrinfo *ai = NULL;
 
     int chunked_mode = 0;
-    chunk_state_t chunk_state = CHUNK_READ_SIZE;
-    size_t chunk_size = 0;
-    size_t chunk_offset = 0;
-    size_t chunk_parse_offset = 0;
-    size_t trailer_base_offset = 0;
+    chunk_ctx_t chunk_ctx;
+    memset(&chunk_ctx, 0, sizeof(chunk_ctx));
+    chunk_ctx.state = CHUNK_READ_SIZE;
+    chunk_ctx.is_sync = 1;
+
     char *decoded_body = NULL;
     size_t decoded_body_len = 0;
     size_t decoded_body_size = 0;
@@ -1796,11 +1873,11 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
                             goto cleanup;
                         }
                         decoded_body_len = 0;
-                        chunk_state = CHUNK_READ_SIZE;
-                        chunk_size = 0;
-                        chunk_offset = 0;
-                        chunk_parse_offset = header_offset;
-                        trailer_base_offset = header_offset;
+                        chunk_ctx.decoded_body_ptr = &decoded_body;
+                        chunk_ctx.decoded_body_len_ptr = &decoded_body_len;
+                        chunk_ctx.decoded_body_size_ptr = &decoded_body_size;
+                        chunk_ctx.chunk_parse_offset = header_offset;
+                        chunk_ctx.trailer_base_offset = header_offset;
                     }
 
                     if (http_code < 200 || http_code >= 300) {
@@ -1817,179 +1894,15 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
             }
 
             if (chunked_mode && headers_complete) {
-                const char *buf = recv_buf + chunk_parse_offset;
-                size_t avail = recv_offset - chunk_parse_offset;
-
-                while (avail > 0 && chunk_state != CHUNK_DONE) {
-                    switch (chunk_state) {
-                        case CHUNK_READ_SIZE: {
-                            void *crlf_ptr = memmem(buf, avail, "\r\n", 2);
-                            if (!crlf_ptr) {
-                                chunk_parse_offset = recv_offset - avail;
-                                break;
-                            }
-
-                            size_t line_len = (const char *)crlf_ptr - buf;
-                            if (line_len == 0 || line_len > 64) {
-                                LOG_ERROR("API sync: invalid chunk size line");
-                                goto cleanup;
-                            }
-
-                            char size_buf[128];
-                            memcpy(size_buf, buf, line_len);
-                            size_buf[line_len] = '\0';
-
-                            char *endptr;
-                            errno = 0;
-                            long size = strtol(size_buf, &endptr, 16);
-
-                            while (*endptr == ' ' || *endptr == '\t') {
-                                endptr++;
-                            }
-
-                            if (*endptr != '\0' && *endptr != ';') {
-                                LOG_ERROR("API sync: invalid chunk size or extension");
-                                goto cleanup;
-                            }
-
-                            if (errno == ERANGE) {
-                                LOG_ERROR("API sync: chunk size overflow");
-                                goto cleanup;
-                            }
-
-                            if (endptr == size_buf || size < 0) {
-                                LOG_ERROR("API sync: invalid chunk size");
-                                goto cleanup;
-                            }
-
-                            if ((size_t)size > API_MAX_RESPONSE_SIZE) {
-                                LOG_ERROR("API sync: chunk size too large");
-                                goto cleanup;
-                            }
-
-                            chunk_size = (size_t)size;
-                            chunk_offset = 0;
-
-                            size_t consumed = (const char *)crlf_ptr - buf + 2;
-                            chunk_parse_offset += consumed;
-                            avail -= consumed;
-                            buf += consumed;
-
-                            if (chunk_size == 0) {
-                                chunk_state = CHUNK_READ_TRAILER;
-                                trailer_base_offset = chunk_parse_offset;
-                                LOG_DEBUG("API sync: chunked complete, reading trailer");
-                            } else {
-                                chunk_state = CHUNK_READ_DATA;
-                            }
-                            break;
-                        }
-
-                        case CHUNK_READ_DATA: {
-                            size_t to_read = chunk_size - chunk_offset;
-                            if (to_read > avail) {
-                                to_read = avail;
-                            }
-
-                            if (to_read > 0) {
-                                if (decoded_body_len + to_read + 1 > decoded_body_size) {
-                                    size_t new_size = decoded_body_size * 2;
-                                    if (new_size > API_MAX_RESPONSE_SIZE) {
-                                        new_size = API_MAX_RESPONSE_SIZE;
-                                    }
-                                    if (decoded_body_len + to_read + 1 > new_size) {
-                                        LOG_ERROR("API sync: decoded body exceeds max");
-                                        goto cleanup;
-                                    }
-                                    char *new_buf = realloc(decoded_body, new_size + 1);
-                                    if (!new_buf) goto cleanup;
-                                    decoded_body = new_buf;
-                                    decoded_body_size = new_size;
-                                }
-
-                                memcpy(decoded_body + decoded_body_len, buf, to_read);
-                                decoded_body_len += to_read;
-                                decoded_body[decoded_body_len] = '\0';
-                                chunk_offset += to_read;
-
-                                chunk_parse_offset += to_read;
-                                avail -= to_read;
-                                buf += to_read;
-                            }
-
-                            if (chunk_offset >= chunk_size) {
-                                chunk_state = CHUNK_READ_CRLF;
-                            }
-                            break;
-                        }
-
-                        case CHUNK_READ_CRLF: {
-                            if (avail < 2) {
-                                chunk_parse_offset = recv_offset - avail;
-                                break;
-                            }
-                            if (buf[0] != '\r' || buf[1] != '\n') {
-                                LOG_ERROR("API sync: missing CRLF after chunk");
-                                goto cleanup;
-                            }
-                            chunk_parse_offset += 2;
-                            avail -= 2;
-                            buf += 2;
-                            chunk_state = CHUNK_READ_SIZE;
-                            chunk_size = 0;
-                            chunk_offset = 0;
-                            break;
-                        }
-
-                        case CHUNK_READ_TRAILER: {
-                            size_t trailer_received = recv_offset - trailer_base_offset;
-                            if (trailer_received > API_MAX_HEADER_SIZE) {
-                                LOG_ERROR("API sync: trailer headers too large (%zu bytes)",
-                                          trailer_received);
-                                goto cleanup;
-                            }
-
-                            if (avail >= 2 && memcmp(buf, "\r\n", 2) == 0) {
-                                chunk_parse_offset += 2;
-                                chunk_state = CHUNK_DONE;
-                                LOG_DEBUG("API sync: chunked complete (empty trailer)");
-                                break;
-                            }
-
-                            void *trailer_end = memmem(buf, avail, "\r\n\r\n", 4);
-                            if (!trailer_end) {
-                                chunk_parse_offset = recv_offset - avail;
-                                break;
-                            }
-
-                            const char *line_start = buf;
-                            const char *line_end = memchr(line_start, '\n', 
-                                                         (const char *)trailer_end - line_start);
-                            while (line_start < (const char *)trailer_end) {
-                                if (!line_end) break;
-                                size_t line_len = line_end - line_start;
-                                if (line_len > 0 && line_start[line_len - 1] == '\r') {
-                                    line_len--;
-                                }
-                                if (line_len > 0 && memchr(line_start, ':', line_len) == NULL) {
-                                    LOG_ERROR("API sync: invalid trailer header (no colon)");
-                                    goto cleanup;
-                                }
-                                line_start = line_end + 1;
-                                line_end = memchr(line_start, '\n', 
-                                                (const char *)trailer_end - line_start);
-                            }
-
-                            size_t trailer_len = (const char *)trailer_end - buf + 4;
-                            chunk_parse_offset += trailer_len;
-                            chunk_state = CHUNK_DONE;
-                            LOG_DEBUG("API sync: chunked complete (non-empty trailer)");
-                            break;
-                        }
-
-                        case CHUNK_DONE:
-                            break;
-                    }
+                const char *buf = recv_buf + chunk_ctx.chunk_parse_offset;
+                size_t avail = recv_offset - chunk_ctx.chunk_parse_offset;
+                size_t consumed = 0;
+                
+                int ret = api_decode_chunked_common(&chunk_ctx, buf, avail, &consumed);
+                if (ret < 0) goto cleanup;
+                
+                if (ret == 1) {
+                    break;
                 }
             } else if (!chunked_mode && content_length >= 0) {
                 body_received = recv_offset - header_offset;
@@ -1999,7 +1912,7 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
             }
         } else if (recvd == 0) {
             if (headers_complete) {
-                if (chunked_mode && chunk_state != CHUNK_DONE) {
+                if (chunked_mode && chunk_ctx.state != CHUNK_DONE) {
                     LOG_ERROR("API sync: chunked transfer incomplete");
                     goto cleanup;
                 }
@@ -2014,7 +1927,7 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
             goto cleanup;
         }
 
-        if (chunked_mode && chunk_state == CHUNK_DONE) {
+        if (chunked_mode && chunk_ctx.state == CHUNK_DONE) {
             break;
         }
     }
