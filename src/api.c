@@ -849,8 +849,8 @@ static int api_decode_chunked(api_request_t *req) {
                     }
 
                     if (req->decoded_body_len + to_read > API_MAX_RESPONSE_SIZE) {
-                        LOG_ERROR("API: decoded body exceeds max response size (%zu)",
-                                  API_MAX_RESPONSE_SIZE);
+                        LOG_ERROR("API: decoded body exceeds max response size (%d)",
+          API_MAX_RESPONSE_SIZE); 
                         return -1;
                     }
 
