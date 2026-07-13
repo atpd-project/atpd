@@ -13,7 +13,7 @@
 #define API_MAX_PENDING_REQUESTS 1024
 #define API_CHUNK_READ_BUFFER 8192
 
-/* HTTP parse states */
+/* HTTP parse states - only define in header */
 typedef enum {
     HTTP_PARSE_HEADERS = 0,
     HTTP_PARSE_BODY_CONTENT_LENGTH,
@@ -22,7 +22,7 @@ typedef enum {
     HTTP_PARSE_DONE
 } http_parse_state_t;
 
-/* Chunk decoder states */
+/* Chunk decoder states - only define in header */
 typedef enum {
     CHUNK_READ_SIZE = 0,
     CHUNK_READ_DATA,
@@ -54,6 +54,8 @@ typedef struct api_request_s {
     char path[256];
     char host[64];
     int port;
+
+    int sock_fd;
 
     char *body;
     char *send_buf;

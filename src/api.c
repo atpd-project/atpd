@@ -30,13 +30,6 @@
 #define API_MAX_PENDING_REQUESTS 1024
 #define API_CHUNK_READ_BUFFER 8192
 
-typedef enum {
-    CHUNK_READ_SIZE = 0,
-    CHUNK_READ_DATA,
-    CHUNK_READ_CRLF,
-    CHUNK_READ_TRAILER,
-    CHUNK_DONE
-} chunk_state_t;
 
 static reactor_t *g_api_reactor = NULL;
 
