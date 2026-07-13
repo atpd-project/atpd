@@ -62,7 +62,8 @@ static int api_validate_request(api_request_t *req);
 static int api_socket_alive(int fd);
 static int api_parse_url(const char *base_url, char *host, int *port);
 static int api_parse_full_url(const char *url, char *host, int *port, char *path, size_t path_size);
-static void api_build_host_header(char *buf, size_t size, const char *host, int port);
+static void api_build_host_header(char *buf, size_t size, const char *host, int port) {
+    if (!buf || size == 0 || !host) return;
     
     /* Check if host is IPv6 address (contains ':') */
     if (strchr(host, ':') != NULL) {
