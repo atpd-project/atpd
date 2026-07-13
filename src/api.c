@@ -700,7 +700,7 @@ static int api_parse_headers(api_request_t *req) {
                         return -1;
                     }
 
-                    if (cl < 0 || cl > API_MAX_RESPONSE_SIZE) {
+                    if (cl < 0 || cl > (size_t)API_MAX_RESPONSE_SIZE) {
                         LOG_ERROR("API: invalid Content-Length: %ld", cl);
                         free(name);
                         free(value);
@@ -781,7 +781,7 @@ static int api_parse_headers(api_request_t *req) {
         req->body_received = req->raw_body_received;
     }
 
-    LOG_DEBUG("API: headers parsed, HTTP %d, CL=%d, TE=%s, read_until=%s",
+    LOG_DEBUG("API: headers parsed, HTTP %d, CL=%ld, TE=%s, read_until=%s",
               req->http_code, req->content_length,
               req->chunked_encoding ? "chunked" : "none",
               req->read_until_close ? "yes" : "no");
@@ -818,7 +818,7 @@ static int api_decode_chunked(api_request_t *req) {
                     return -1;
                 }
 
-                if ((size_t)size > API_MAX_RESPONSE_SIZE) {
+                if ((size_t)size > (size_t)API_MAX_RESPONSE_SIZE) {
                     LOG_ERROR("API: chunk size too large: %ld", size);
                     return -1;
                 }
@@ -857,15 +857,15 @@ static int api_decode_chunked(api_request_t *req) {
                         req->decoded_body_len = 0;
                     }
 
-                    if (req->decoded_body_len + to_read > API_MAX_RESPONSE_SIZE) {
+                    if (req->decoded_body_len + to_read > (size_t)API_MAX_RESPONSE_SIZE) {
                         LOG_ERROR("API: decoded body exceeds max response size (%zu)",
-                                  API_MAX_RESPONSE_SIZE);
+                                  (size_t)API_MAX_RESPONSE_SIZE);
                         return -1;
                     }
 
                     if (req->decoded_body_len + to_read + 1 > req->decoded_body_size) {
                         size_t new_size = req->decoded_body_size * 2;
-                        if (new_size > API_MAX_RESPONSE_SIZE) {
+                        if (new_size > (size_t)API_MAX_RESPONSE_SIZE) {
                             new_size = API_MAX_RESPONSE_SIZE;
                         }
                         if (req->decoded_body_len + to_read + 1 > new_size) {
@@ -1052,7 +1052,7 @@ static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdat
                     }
                 }
 
-                if (req->recv_size >= API_MAX_RESPONSE_SIZE) {
+                if (req->recv_size >= (size_t)API_MAX_RESPONSE_SIZE) {
                     LOG_ERROR("API: response too large");
                     req->state = API_STATE_ERROR;
                     req->keepalive_disabled = 1;
@@ -1071,7 +1071,7 @@ static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdat
 
                 if (req->recv_offset >= req->recv_size - 1) {
                     size_t new_size = req->recv_size * 2;
-                    if (new_size > API_MAX_RESPONSE_SIZE) {
+                    if (new_size > (size_t)API_MAX_RESPONSE_SIZE) {
                         LOG_ERROR("API: response would exceed max size");
                         req->state = API_STATE_ERROR;
                         req->keepalive_disabled = 1;
@@ -1571,7 +1571,7 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
     while (1) {
         if (recv_offset >= recv_size - 1) {
             size_t new_size = recv_size * 2;
-            if (new_size > API_MAX_RESPONSE_SIZE) {
+            if (new_size > (size_t)API_MAX_RESPONSE_SIZE) {
                 LOG_ERROR("API sync: response too large");
                 goto cleanup;
             }
@@ -1620,7 +1620,7 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
                                 if (strcasecmp(name, "Content-Length") == 0) {
                                     char *endptr;
                                     long cl = strtol(value, &endptr, 10);
-                                    if (cl >= 0 && cl <= API_MAX_RESPONSE_SIZE) {
+                                    if (cl >= 0 && cl <= (size_t)API_MAX_RESPONSE_SIZE) {
                                         content_length = (int)cl;
                                     }
                                 } else if (strcasecmp(name, "Transfer-Encoding") == 0) {
