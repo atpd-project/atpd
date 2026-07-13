@@ -52,19 +52,29 @@ static int next_key(int fd, const void *key, void *next) {
 }
 
 int clear_map(int fd, size_t key_size) {
-    uint8_t *key = calloc(key_size, 1U);
-    if (!key) return -1;
+    uint8_t *key = calloc(1, key_size);
+    uint8_t *next = calloc(1, key_size);
+    if (!key || !next) {
+        free(key);
+        free(next);
+        return -1;
+    }
 
     int count = 0;
-    while (next_key(fd, NULL, key) == 0) {
-        if (delete_elem(fd, key) != 0) {
-            free(key);
-            return -1;
-        }
-        ++count;
+    if (next_key(fd, NULL, next) == 0) {
+        do {
+            memcpy(key, next, key_size);
+            if (delete_elem(fd, key) != 0) {
+                free(key);
+                free(next);
+                return -1;
+            }
+            ++count;
+        } while (next_key(fd, key, next) == 0);
     }
 
     free(key);
+    free(next);
     return count;
 }
 
@@ -75,29 +85,45 @@ int get_pinned(const char *path) {
     return (int)bpf_call(BPF_OBJ_GET, &attr);
 }
 
-static void ensure_parent_dir(const char *path) {
+static int ensure_parent_dir(const char *path) {
     char dir[MAX_PATH_LEN];
     snprintf(dir, sizeof(dir), "%s", path);
     char *slash = strrchr(dir, '/');
-    if (!slash) return;
+    if (!slash) return 0;
     *slash = '\0';
-    mkdir(dir, 0700);
+    return mkdir_recursive(dir, 0700);
 }
 
 int pin_replace(int fd, const char *path) {
-    ensure_parent_dir(path);
-    unlink(path);
+    char tmp[MAX_PATH_LEN];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+    if (ensure_parent_dir(path) != 0) {
+        fprintf(stderr, "pin_replace: failed to create parent dir for %s\n", path);
+        return -1;
+    }
+
+    unlink(tmp);
 
     union bpf_attr attr;
     memset(&attr, 0, sizeof(attr));
-    attr.pathname = (uint64_t)(uintptr_t)path;
+    attr.pathname = (uint64_t)(uintptr_t)tmp;
     attr.bpf_fd = (uint32_t)fd;
     int rc = (int)bpf_call(BPF_OBJ_PIN, &attr);
     if (rc != 0) {
         fprintf(stderr, "pin BPF object failed: %s errno=%d (%s)\n",
-                path, errno, strerror(errno));
+                tmp, errno, strerror(errno));
+        return rc;
     }
-    return rc;
+
+    if (rename(tmp, path) != 0) {
+        fprintf(stderr, "rename %s -> %s failed: %d (%s)\n",
+                tmp, path, errno, strerror(errno));
+        unlink(tmp);
+        return -1;
+    }
+
+    return 0;
 }
 
 void close_fd(int fd) {
@@ -407,6 +433,40 @@ int load_program(const char *section_name, const char *program_name,
     return -1;
 }
 
+static int parse_cidr_line(char *line, uint8_t *address, uint32_t *prefix_len,
+                           int *family, bool ipv6) {
+    char *trimmed = line;
+    while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
+    if (*trimmed == '#' || *trimmed == '\0') return 0;
+
+    size_t len = strlen(trimmed);
+    while (len > 0 && (trimmed[len-1] == '\n' || trimmed[len-1] == '\r' ||
+                       trimmed[len-1] == ' ' || trimmed[len-1] == '\t')) {
+        trimmed[--len] = '\0';
+    }
+    if (len == 0) return 0;
+
+    char *slash = strchr(trimmed, '/');
+    if (!slash) return 0;
+    *slash = '\0';
+
+    char *end = NULL;
+    unsigned long prefix = strtoul(slash + 1, &end, 10);
+    if (end == slash + 1 || *end != '\0') return 0;
+
+    if (strchr(trimmed, ':')) {
+        if (prefix > 128UL || inet_pton(AF_INET6, trimmed, address) != 1) return 0;
+        *family = AF_INET6;
+        *prefix_len = (uint32_t)prefix;
+        return ipv6 ? 1 : 0;
+    } else {
+        if (prefix > 32UL || inet_pton(AF_INET, trimmed, address) != 1) return 0;
+        *family = AF_INET;
+        *prefix_len = (uint32_t)prefix;
+        return !ipv6 ? 1 : 0;
+    }
+}
+
 int load_cidr_file(int map_fd, const char *path, bool ipv6) {
     FILE *file = fopen(path, "r");
     if (!file) {
@@ -418,37 +478,13 @@ int load_cidr_file(int map_fd, const char *path, bool ipv6) {
     int failed = 0;
     char line[256];
     while (fgets(line, sizeof(line), file)) {
-        char *trimmed = line;
-        while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
-        if (*trimmed == '#' || *trimmed == '\0') continue;
-        size_t len = strlen(trimmed);
-        while (len > 0 && (trimmed[len-1] == '\n' || trimmed[len-1] == '\r' ||
-                           trimmed[len-1] == ' ' || trimmed[len-1] == '\t')) {
-            trimmed[--len] = '\0';
-        }
-        if (len == 0) continue;
-
         uint8_t address[16] = {0};
         uint32_t prefix_len = 0;
         int family = 0;
-        char *slash = strchr(trimmed, '/');
-        if (!slash) continue;
-        *slash = '\0';
-        char *end = NULL;
-        unsigned long prefix = strtoul(slash + 1, &end, 10);
-        if (end == slash + 1) continue;
 
-        if (strchr(trimmed, ':')) {
-            if (prefix > 128UL || inet_pton(AF_INET6, trimmed, address) != 1) continue;
-            family = AF_INET6;
-        } else {
-            if (prefix > 32UL || inet_pton(AF_INET, trimmed, address) != 1) continue;
-            family = AF_INET;
+        if (parse_cidr_line(line, address, &prefix_len, &family, ipv6) != 1) {
+            continue;
         }
-        prefix_len = (uint32_t)prefix;
-
-        if (ipv6 && family != AF_INET6) continue;
-        if (!ipv6 && family != AF_INET) continue;
 
         uint8_t value = 1;
         int rc;
@@ -475,6 +511,26 @@ int load_cidr_file(int map_fd, const char *path, bool ipv6) {
     return loaded;
 }
 
+static int parse_uid_line(char *line, uint32_t *uid_out) {
+    char *trimmed = line;
+    while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
+    if (*trimmed == '#' || *trimmed == '\0') return 0;
+
+    size_t len = strlen(trimmed);
+    while (len > 0 && (trimmed[len-1] == '\n' || trimmed[len-1] == '\r' ||
+                       trimmed[len-1] == ' ' || trimmed[len-1] == '\t')) {
+        trimmed[--len] = '\0';
+    }
+    if (len == 0) return 0;
+
+    char *end = NULL;
+    unsigned long uid = strtoul(trimmed, &end, 10);
+    if (end == trimmed || *end != '\0' || uid > UINT32_MAX) return 0;
+
+    *uid_out = (uint32_t)uid;
+    return 1;
+}
+
 int load_uid_file(int map_fd, const char *path) {
     if (!path || path[0] == '\0') return 0;
 
@@ -489,21 +545,16 @@ int load_uid_file(int map_fd, const char *path) {
     int failed = 0;
     char line[128];
     while (fgets(line, sizeof(line), file)) {
-        char *trimmed = line;
-        while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
-        if (*trimmed == '#' || *trimmed == '\0') continue;
-        size_t len = strlen(trimmed);
-        while (len > 0 && (trimmed[len-1] == '\n' || trimmed[len-1] == '\r' ||
-                           trimmed[len-1] == ' ' || trimmed[len-1] == '\t')) {
-            trimmed[--len] = '\0';
+        uint32_t uid32;
+        if (parse_uid_line(line, &uid32) != 1) {
+            continue;
         }
-        if (len == 0) continue;
 
-        char *end = NULL;
-        unsigned long uid = strtoul(trimmed, &end, 10);
-        if (end == trimmed || uid > UINT32_MAX) continue;
-
-        if (update_elem(map_fd, &uid, &value) == 0) ++loaded; else ++failed;
+        if (update_elem(map_fd, &uid32, &value) == 0) {
+            ++loaded;
+        } else {
+            ++failed;
+        }
     }
 
     fclose(file);
@@ -521,19 +572,8 @@ bool uid_file_has_entries(const char *path) {
 
     char line[128];
     while (fgets(line, sizeof(line), file)) {
-        char *trimmed = line;
-        while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
-        if (*trimmed == '#' || *trimmed == '\0') continue;
-        size_t len = strlen(trimmed);
-        while (len > 0 && (trimmed[len-1] == '\n' || trimmed[len-1] == '\r' ||
-                           trimmed[len-1] == ' ' || trimmed[len-1] == '\t')) {
-            trimmed[--len] = '\0';
-        }
-        if (len == 0) continue;
-
-        char *end = NULL;
-        unsigned long uid = strtoul(trimmed, &end, 10);
-        if (end != trimmed && uid <= UINT32_MAX) {
+        uint32_t uid32;
+        if (parse_uid_line(line, &uid32) == 1) {
             fclose(file);
             return true;
         }
