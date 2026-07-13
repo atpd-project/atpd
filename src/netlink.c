@@ -406,7 +406,9 @@ done:
 
 /* ========== Core Netlink API ========== */
 
-int netlink_init(void) {
+int netlink_init(nl_callback_t callback, void *userdata) {
+    (void)callback;
+    (void)userdata;
     g_sync_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     g_async_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
     if (g_sync_fd < 0 || g_async_fd < 0) {
