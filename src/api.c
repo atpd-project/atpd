@@ -23,6 +23,14 @@
 #include <limits.h>
 #include <sys/socket.h>
 
+#define API_CHUNK_READ_BUFFER 8192
+
+static void api_request_cleanup(api_request_t *req);
+static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdata);
+static void api_process_requests(api_ctx_t *ctx);
+
+static reactor_t *g_api_reactor = NULL;
+
 #define API_MAX_HOST_LEN 255
 #define API_MAX_HEADER_SIZE 32768
 #define API_MAX_RESPONSE_SIZE (8 * 1024 * 1024)
@@ -834,7 +842,8 @@ static int api_decode_chunked(api_request_t *req) {
                         req->decoded_body_size = API_CHUNK_READ_BUFFER;
                         req->decoded_body = malloc(req->decoded_body_size + 1);
                         if (!req->decoded_body) {
-                            LOG_ERROR("API: malloc decoded_body failed");
+                            LOG_ERROR("API: decoded body exceeds max response size (%zu)",
+          (size_t)API_MAX_RESPONSE_SIZE);
                             return -1;
                         }
                         req->decoded_body_len = 0;
