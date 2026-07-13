@@ -66,6 +66,12 @@ static atomic_uint g_seq = 1;
 static int ip_rule_audit(atp_config_t *cfg);
 static int tproxy_refresh_rules(atp_config_t *cfg);
 
+static uint64_t get_monotonic_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
 static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     (void)r;
     (void)timer;
@@ -123,6 +129,35 @@ static const struct rtattr* atpd_find_rta_nested(const struct rtattr *rta, int l
     return NULL;
 }
 
+static const struct rtattr* atpd_find_attr(const struct rtattr *parent, unsigned short type) {
+    if (!parent) return NULL;
+
+    int len = RTA_PAYLOAD(parent);
+    if (len < (int)sizeof(struct rtattr)) {
+        return NULL;
+    }
+
+    const struct rtattr *rta = (const struct rtattr *)RTA_DATA(parent);
+    return atpd_find_rta_nested(rta, len, type);
+}
+
+static const struct rtattr* atpd_find_nested_attr(const struct rtattr *parent, unsigned short type) {
+    const struct rtattr *attr = atpd_find_attr(parent, type);
+    if (!attr) return NULL;
+
+    int len = RTA_PAYLOAD(attr);
+    if (len < (int)sizeof(struct rtattr)) {
+        return NULL;
+    }
+
+    const struct rtattr *nested = (const struct rtattr *)RTA_DATA(attr);
+    if (!RTA_OK(nested, len)) {
+        return NULL;
+    }
+
+    return attr;
+}
+
 static int detect_xfrm_interface(struct nlmsghdr *h) {
     if (h->nlmsg_len < NLMSG_LENGTH(sizeof(struct ifinfomsg))) {
         return 0;
@@ -132,33 +167,13 @@ static int detect_xfrm_interface(struct nlmsghdr *h) {
     struct rtattr *rta = IFLA_RTA(ifi);
     int len = IFLA_PAYLOAD(h);
 
-    const struct rtattr *li = atpd_find_rta_nested(rta, len, IFLA_LINKINFO);
-    if (!li) return 0;
+    const struct rtattr *linkinfo = atpd_find_rta_nested(rta, len, IFLA_LINKINFO);
+    if (!linkinfo) return 0;
 
-    int li_len = RTA_PAYLOAD(li);
-    if (li_len < (int)sizeof(struct rtattr)) {
-        return 0;
-    }
+    const struct rtattr *info_data = atpd_find_nested_attr(linkinfo, IFLA_INFO_DATA);
+    if (!info_data) return 0;
 
-    const struct rtattr *li_data = (const struct rtattr *)RTA_DATA(li);
-    if (!RTA_OK(li_data, li_len)) {
-        return 0;
-    }
-
-    const struct rtattr *id = atpd_find_rta_nested(li_data, li_len, IFLA_INFO_DATA);
-    if (!id) return 0;
-
-    int id_len = RTA_PAYLOAD(id);
-    if (id_len < (int)sizeof(struct rtattr)) {
-        return 0;
-    }
-
-    const struct rtattr *id_data = (const struct rtattr *)RTA_DATA(id);
-    if (!RTA_OK(id_data, id_len)) {
-        return 0;
-    }
-
-    const struct rtattr *xfrm_id = atpd_find_rta_nested(id_data, id_len, IFLA_XFRM_IF_ID);
+    const struct rtattr *xfrm_id = atpd_find_attr(info_data, IFLA_XFRM_IF_ID);
     return (xfrm_id != NULL);
 }
 
@@ -188,8 +203,6 @@ static int getifaddrs_find_vpn(char *output, size_t size) {
 
 static int g_sync_fd = -1;
 static int g_async_fd = -1;
-static nl_callback_t g_callback = NULL;
-static void *g_userdata = NULL;
 
 struct nl_link_info {
     int index;
@@ -221,7 +234,25 @@ static int is_proxy_interface(const char *ifname) {
     return 0;
 }
 
+static void safe_copy_ifname(char *dest, const void *src, size_t src_len) {
+    if (src_len == 0) {
+        dest[0] = '\0';
+        return;
+    }
+
+    size_t name_len = strnlen((const char *)src, src_len);
+    size_t copy_len = (name_len < IFNAMSIZ - 1) ? name_len : IFNAMSIZ - 1;
+
+    memcpy(dest, src, copy_len);
+    dest[copy_len] = '\0';
+}
+
 static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
+    if (h->nlmsg_len < NLMSG_LENGTH(sizeof(struct ifinfomsg))) {
+        LOG_WARN("netlink: short RTM_GETLINK message");
+        return -1;
+    }
+
     struct nl_parse_ctx *pctx = (struct nl_parse_ctx *)ctx;
     struct ifinfomsg *ifi = (struct ifinfomsg *)NLMSG_DATA(h);
     struct rtattr *rta = IFLA_RTA(ifi);
@@ -240,7 +271,7 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
 
     for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
         if (rta->rta_type == IFLA_IFNAME) {
-            snprintf(info->name, IFNAMSIZ, "%s", (char *)RTA_DATA(rta));
+            safe_copy_ifname(info->name, RTA_DATA(rta), RTA_PAYLOAD(rta));
         } else if (rta->rta_type == IFLA_STATS64) {
             if (RTA_PAYLOAD(rta) >= sizeof(struct rtnl_link_stats64)) {
                 struct rtnl_link_stats64 *s = (struct rtnl_link_stats64 *)RTA_DATA(rta);
@@ -250,6 +281,30 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
         }
     }
     if (info->name[0]) pctx->count++;
+    return 0;
+}
+
+static int netlink_send_request(int fd, const void *buf, size_t len) {
+    struct sockaddr_nl addr = {
+        .nl_family = AF_NETLINK
+    };
+    struct iovec iov = {
+        .iov_base = (void *)buf,
+        .iov_len = len
+    };
+    struct msghdr msg = {
+        .msg_name = &addr,
+        .msg_namelen = sizeof(addr),
+        .msg_iov = &iov,
+        .msg_iovlen = 1
+    };
+
+    ssize_t n = sendmsg(fd, &msg, 0);
+    if (n != (ssize_t)len) {
+        LOG_ERROR("netlink: short send (%zd/%zu)", n, len);
+        return -1;
+    }
+
     return 0;
 }
 
@@ -268,14 +323,24 @@ static int netlink_recv_all_with_timeout(int fd, uint32_t seq,
         .msg_iovlen = 1
     };
     int status = 0;
+    uint64_t start_ms = get_monotonic_ms();
 
     while (1) {
+        uint64_t elapsed = get_monotonic_ms() - start_ms;
+        if (elapsed >= (uint64_t)timeout_ms) {
+            LOG_WARN("netlink: overall timeout after %dms", timeout_ms);
+            status = -ETIMEDOUT;
+            break;
+        }
+
+        uint64_t remain = (uint64_t)timeout_ms - elapsed;
+
         fd_set fds;
         struct timeval tv;
         FD_ZERO(&fds);
         FD_SET(fd, &fds);
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        tv.tv_sec = remain / 1000;
+        tv.tv_usec = (remain % 1000) * 1000;
 
         int ret = select(fd + 1, &fds, NULL, NULL, &tv);
         if (ret < 0) {
@@ -284,8 +349,8 @@ static int netlink_recv_all_with_timeout(int fd, uint32_t seq,
             break;
         }
         if (ret == 0) {
+            LOG_WARN("netlink: select timeout, remaining %llums", (unsigned long long)remain);
             status = -ETIMEDOUT;
-            LOG_WARN("netlink: recv timeout after %dms", timeout_ms);
             break;
         }
 
@@ -302,16 +367,31 @@ static int netlink_recv_all_with_timeout(int fd, uint32_t seq,
             break;
         }
 
+        if (nladdr.nl_pid != 0) {
+            LOG_WARN("netlink: unexpected sender pid=%u", nladdr.nl_pid);
+            continue;
+        }
+
         int multipart = 0;
         struct nlmsghdr *h = (struct nlmsghdr *)buf;
         for (; NLMSG_OK(h, (uint32_t)len); h = NLMSG_NEXT(h, len)) {
             multipart = (h->nlmsg_flags & NLM_F_MULTI);
             if (h->nlmsg_seq != seq) continue;
-            if (h->nlmsg_type == NLMSG_DONE) goto done;
+
+            if (h->nlmsg_type == NLMSG_DONE) {
+                goto done;
+            }
+
             if (h->nlmsg_type == NLMSG_ERROR) {
+                if (h->nlmsg_len < NLMSG_LENGTH(sizeof(struct nlmsgerr))) {
+                    LOG_ERROR("netlink: malformed NLMSG_ERROR");
+                    status = -EINVAL;
+                    goto done;
+                }
                 status = ((struct nlmsgerr *)NLMSG_DATA(h))->error;
                 goto done;
             }
+
             if (parser && parser(h, ctx) < 0) goto done;
         }
 
@@ -326,7 +406,7 @@ done:
 
 /* ========== Core Netlink API ========== */
 
-int netlink_init(nl_callback_t callback, void *userdata) {
+int netlink_init(void) {
     g_sync_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     g_async_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
     if (g_sync_fd < 0 || g_async_fd < 0) {
@@ -347,8 +427,6 @@ int netlink_init(nl_callback_t callback, void *userdata) {
         return -1;
     }
 
-    g_callback = callback;
-    g_userdata = userdata;
     atomic_store(&g_seq, (uint32_t)time(NULL));
 
     if (netlink_xfrm_init(NULL) != 0) {
@@ -366,11 +444,11 @@ int netlink_init(nl_callback_t callback, void *userdata) {
 void netlink_handle_event(int fd, void *data) {
     (void)data;
     uint8_t buf[NL_BUF_SIZE];
-    struct sockaddr_nl sa;
+    struct sockaddr_nl nladdr;
     struct iovec iov = { buf, sizeof(buf) };
     struct msghdr msg = {
-        .msg_name = &sa,
-        .msg_namelen = sizeof(sa),
+        .msg_name = &nladdr,
+        .msg_namelen = sizeof(nladdr),
         .msg_iov = &iov,
         .msg_iovlen = 1
     };
@@ -380,6 +458,11 @@ void netlink_handle_event(int fd, void *data) {
 
     if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
         LOG_WARN("[NET] truncated netlink message");
+        return;
+    }
+
+    if (nladdr.nl_pid != 0) {
+        LOG_WARN("[NET] unexpected sender pid=%u", nladdr.nl_pid);
         return;
     }
 
@@ -454,11 +537,11 @@ void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata
     (void)userdata;
 
     uint8_t buf[NL_BUF_SIZE];
-    struct sockaddr_nl sa;
+    struct sockaddr_nl nladdr;
     struct iovec iov = { buf, sizeof(buf) };
     struct msghdr msg = {
-        .msg_name = &sa,
-        .msg_namelen = sizeof(sa),
+        .msg_name = &nladdr,
+        .msg_namelen = sizeof(nladdr),
         .msg_iov = &iov,
         .msg_iovlen = 1
     };
@@ -468,6 +551,11 @@ void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata
 
     if (msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) {
         LOG_WARN("[XFRM] truncated netlink message");
+        return;
+    }
+
+    if (nladdr.nl_pid != 0) {
+        LOG_WARN("[XFRM] unexpected sender pid=%u", nladdr.nl_pid);
         return;
     }
 
@@ -534,10 +622,14 @@ int netlink_get_active_vpn(char *output, size_t size) {
     };
 
     pthread_mutex_lock(&g_nl_mutex);
-    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) >= 0) {
-        netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                      parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
+
+    if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
+        pthread_mutex_unlock(&g_nl_mutex);
+        return -1;
     }
+
+    netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                  parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
     pthread_mutex_unlock(&g_nl_mutex);
 
     for (int i = 0; i < ctx.count; i++) {
@@ -567,11 +659,16 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
     };
 
     if (req.ifi.ifi_index == 0) return -1;
+
     pthread_mutex_lock(&g_nl_mutex);
-    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) >= 0) {
-        netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                      parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
+
+    if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
+        pthread_mutex_unlock(&g_nl_mutex);
+        return -1;
     }
+
+    netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                  parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
     pthread_mutex_unlock(&g_nl_mutex);
 
     if (ctx.count > 0) {
@@ -591,7 +688,16 @@ void netlink_cleanup(void) {
     g_debounce_reactor = NULL;
     pthread_mutex_unlock(&g_debounce_lock);
 
+    if (g_xfrm_fd >= 0) {
+        if (g_xfrm_reactor) {
+            reactor_remove_fd(g_xfrm_reactor, g_xfrm_fd);
+        }
+        close(g_xfrm_fd);
+        g_xfrm_fd = -1;
+    }
+
     atomic_store(&g_xfrm_registered, 0);
+    g_xfrm_reactor = NULL;
 
     if (g_sync_fd >= 0) {
         close(g_sync_fd);
@@ -601,15 +707,6 @@ void netlink_cleanup(void) {
         close(g_async_fd);
         g_async_fd = -1;
     }
-    if (g_xfrm_fd >= 0) {
-        if (g_xfrm_reactor) {
-            reactor_remove_fd(g_xfrm_reactor, g_xfrm_fd);
-        }
-        close(g_xfrm_fd);
-        g_xfrm_fd = -1;
-    }
-    g_callback = NULL;
-    g_xfrm_reactor = NULL;
 }
 
 int netlink_get_fd(void) {
@@ -645,11 +742,12 @@ int nl_vpn_detect(void) {
     };
 
     pthread_mutex_lock(&g_nl_mutex);
-    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) < 0) {
+
+    if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
         pthread_mutex_unlock(&g_nl_mutex);
-        LOG_ERROR("nl_vpn_detect: netlink send failed: %s", strerror(errno));
         return -1;
     }
+
     netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
                                   parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
     pthread_mutex_unlock(&g_nl_mutex);
@@ -691,12 +789,13 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     };
 
     pthread_mutex_lock(&g_nl_mutex);
-    if (send(g_sync_fd, &req, req.nlh.nlmsg_len, 0) < 0) {
+
+    if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
         pthread_mutex_unlock(&g_nl_mutex);
-        LOG_ERROR("nl_link_get_vpn_interface: netlink send failed: %s", strerror(errno));
         iface[0] = '\0';
         return -1;
     }
+
     netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
                                   parser_link_sync, &ctx, NL_RECV_TIMEOUT_MS);
     pthread_mutex_unlock(&g_nl_mutex);
