@@ -86,6 +86,7 @@ atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out);
 void atpd_session_get(atpd_session_t *s);
 void atpd_session_put(atpd_session_t *s);
 void atpd_session_mark_closing(atpd_session_t *s);
+void atpd_session_destroy(atpd_session_t *s);
 
 ssize_t atpd_session_splice_pump(atpd_session_t *s, size_t max_len);
 int atpd_session_drain_pipe(atpd_session_t *s);

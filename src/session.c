@@ -710,3 +710,9 @@ void atpd_session_emergency_drain_all(void) {
     
     LOG_WARN("session: emergency drain completed for %d sessions", drained);
 }
+/* ========== Destroy Wrapper ========== */
+
+void atpd_session_destroy(atpd_session_t *s) {
+    if (!s) return;
+    atpd_session_mark_closing(s);
+}
