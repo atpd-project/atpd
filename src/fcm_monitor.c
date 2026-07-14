@@ -99,6 +99,7 @@ typedef struct {
 typedef struct {
     atomic_int running;
     atomic_int initialized;
+    atomic_flag dns_refreshing;
     pthread_t thread;
     pthread_mutex_t callback_mutex;
     pthread_mutex_t cache_mutex;
@@ -117,7 +118,12 @@ typedef struct {
 
 static fcm_monitor_ctx_t g_ctx;
 static pthread_once_t g_init_once = PTHREAD_ONCE_INIT;
-static atomic_int g_destroyed = ATOMIC_VAR_INIT(0);
+static atomic_int g_destroyed;
+
+/* Initialize g_destroyed at startup (avoid ATOMIC_VAR_INIT deprecated) */
+static void init_destroyed(void) {
+    atomic_init(&g_destroyed, 0);
+}
 
 static uint64_t monotonic_seconds(void) {
     struct timespec ts;
@@ -470,9 +476,9 @@ static int is_connection_tracked_v6(const struct in6_addr *src_ip,
 
     for (int i = 0; i < g_ctx.tracked_count; i++) {
         if (g_ctx.tracked[i].family == AF_INET6 &&
-            memcmp(&g_ctx.tracked[i].src.v6, src_ip, sizeof(struct in6_addr)) == 0 &&
+            memcmp(&g_ctx.tracked[i].src.v6.s6_addr, src_ip->s6_addr, 16) == 0 &&
             g_ctx.tracked[i].src_port == src_port &&
-            memcmp(&g_ctx.tracked[i].dst.v6, dst_ip, sizeof(struct in6_addr)) == 0 &&
+            memcmp(&g_ctx.tracked[i].dst.v6.s6_addr, dst_ip->s6_addr, 16) == 0 &&
             g_ctx.tracked[i].dst_port == dst_port) {
             found = 1;
             break;
@@ -588,9 +594,9 @@ static void add_tracked_connection_v6(const struct in6_addr *src_ip,
 
     for (int i = 0; i < g_ctx.tracked_count; i++) {
         if (g_ctx.tracked[i].family == AF_INET6 &&
-            memcmp(&g_ctx.tracked[i].src.v6, src_ip, sizeof(struct in6_addr)) == 0 &&
+            memcmp(&g_ctx.tracked[i].src.v6.s6_addr, src_ip->s6_addr, 16) == 0 &&
             g_ctx.tracked[i].src_port == src_port &&
-            memcmp(&g_ctx.tracked[i].dst.v6, dst_ip, sizeof(struct in6_addr)) == 0 &&
+            memcmp(&g_ctx.tracked[i].dst.v6.s6_addr, dst_ip->s6_addr, 16) == 0 &&
             g_ctx.tracked[i].dst_port == dst_port) {
             g_ctx.tracked[i].timestamp = now;
             if (inode != 0 && !g_ctx.tracked[i].has_inode) {
@@ -604,11 +610,11 @@ static void add_tracked_connection_v6(const struct in6_addr *src_ip,
 
     if (g_ctx.tracked_count < MAX_TRACKED_CONNS) {
         g_ctx.tracked[g_ctx.tracked_count].family = AF_INET6;
-        memcpy(&g_ctx.tracked[g_ctx.tracked_count].src.v6,
-               src_ip, sizeof(struct in6_addr));
+        memcpy(&g_ctx.tracked[g_ctx.tracked_count].src.v6.s6_addr,
+               src_ip->s6_addr, 16);
         g_ctx.tracked[g_ctx.tracked_count].src_port = src_port;
-        memcpy(&g_ctx.tracked[g_ctx.tracked_count].dst.v6,
-               dst_ip, sizeof(struct in6_addr));
+        memcpy(&g_ctx.tracked[g_ctx.tracked_count].dst.v6.s6_addr,
+               dst_ip->s6_addr, 16);
         g_ctx.tracked[g_ctx.tracked_count].dst_port = dst_port;
         g_ctx.tracked[g_ctx.tracked_count].timestamp = now;
         g_ctx.tracked[g_ctx.tracked_count].inode = inode;
@@ -631,11 +637,11 @@ static void add_tracked_connection_v6(const struct in6_addr *src_ip,
             }
         }
         g_ctx.tracked[oldest_idx].family = AF_INET6;
-        memcpy(&g_ctx.tracked[oldest_idx].src.v6,
-               src_ip, sizeof(struct in6_addr));
+        memcpy(&g_ctx.tracked[oldest_idx].src.v6.s6_addr,
+               src_ip->s6_addr, 16);
         g_ctx.tracked[oldest_idx].src_port = src_port;
-        memcpy(&g_ctx.tracked[oldest_idx].dst.v6,
-               dst_ip, sizeof(struct in6_addr));
+        memcpy(&g_ctx.tracked[oldest_idx].dst.v6.s6_addr,
+               dst_ip->s6_addr, 16);
         g_ctx.tracked[oldest_idx].dst_port = dst_port;
         g_ctx.tracked[oldest_idx].timestamp = now;
         g_ctx.tracked[oldest_idx].inode = inode;
@@ -728,9 +734,9 @@ static void* fcm_monitor_loop(void *arg) {
                             if (is_connection_tracked_by_inode(inode, AF_INET6)) {
                                 continue;
                             }
-                        } else if (is_connection_tracked_v6(&conns[i].src.v6.ip,
+                        } else if (is_connection_tracked_v6(&conns[i].src.v6,
                                                              conns[i].src_port,
-                                                             &conns[i].dst.v6.ip,
+                                                             &conns[i].dst.v6,
                                                              conns[i].dst_port)) {
                             continue;
                         }
@@ -740,9 +746,9 @@ static void* fcm_monitor_loop(void *arg) {
                                  conns[i].dst_ip_str, conns[i].dst_port,
                                  (unsigned long)inode);
 
-                        add_tracked_connection_v6(&conns[i].src.v6.ip,
+                        add_tracked_connection_v6(&conns[i].src.v6,
                                                   conns[i].src_port,
-                                                  &conns[i].dst.v6.ip,
+                                                  &conns[i].dst.v6,
                                                   conns[i].dst_port,
                                                   inode);
 
@@ -784,9 +790,9 @@ static void* fcm_monitor_loop(void *arg) {
 /* ========== Initialization ========== */
 
 static void fcm_monitor_do_init(void) {
-    memset(&g_ctx, 0, sizeof(g_ctx));
     atomic_init(&g_ctx.running, 0);
     atomic_init(&g_ctx.initialized, 1);
+    atomic_flag_clear(&g_ctx.dns_refreshing);
 
     pthread_mutex_init(&g_ctx.callback_mutex, NULL);
     pthread_mutex_init(&g_ctx.cache_mutex, NULL);
@@ -829,6 +835,8 @@ static void fcm_monitor_do_init(void) {
 
 int fcm_monitor_init(atp_config_t *cfg) {
     (void)cfg;
+
+    init_destroyed();
 
     if (atomic_load(&g_destroyed)) {
         LOG_ERROR("FCM: monitor already destroyed, cannot reinit");
