@@ -93,12 +93,8 @@ runs:
         ATPD_VER=$(qemu-aarch64-static ./atpd-zig -v 2>/dev/null | head -1 || echo "N/A")
         echo "atpd_version_string=$ATPD_VER" >> $GITHUB_OUTPUT
 
-    - name: Upload Artifact
-<<<<<<< HEAD
+    - name: Upload Artifacts
       uses: actions/upload-artifact@v7.0.1
-=======
-      uses: actions/upload-artifact@v7
->>>>>>> staging
       with:
         name: atpd-zig${{ inputs.artifact-suffix }}
         path: ./atpd-zig
