@@ -121,7 +121,3 @@ jobs:
         run: |
           chmod +x .github/scripts/notify.sh
           .github/scripts/notify.sh all
-<<<<<<< HEAD
-=======
-
->>>>>>> staging
