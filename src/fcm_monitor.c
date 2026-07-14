@@ -728,23 +728,21 @@ static void* fcm_monitor_loop(void *arg) {
                             if (is_connection_tracked_by_inode(inode, AF_INET6)) {
                                 continue;
                             }
-                        } else if (is_connection_tracked_v6(&conns[i].src.v6,conns[i].src.v6.ipconns[i].src.v6.ip,
-                                                             conns[i].src_port,
-                                                             &conns[i].dst.v6,conns[i].dst.v6.ipconns[i].dst.v6.ip,
-                                                             conns[i].dst_port)) {
-                            continue;
-                        }
+                       } else if (is_connection_tracked_v6(&conns[i].src.v6,conns[i].src.v6.ip,
+                                     conns[i].src_port,
+                                     &conns[i].dst.v6,conns[i].dst.v6.ip,
+                                     conns[i].dst_port)) {
 
                         LOG_INFO("FCM: IPv6 connection detected: %s:%d -> %s:%d (inode=%lu)",
                                  conns[i].src_ip_str, conns[i].src_port,
                                  conns[i].dst_ip_str, conns[i].dst_port,
                                  (unsigned long)inode);
 
-                        add_tracked_connection_v6(&conns[i].src.v6,conns[i].src.v6.ipconns[i].src.v6.ip,
-                                                  conns[i].src_port,
-                                                  &conns[i].dst.v6,conns[i].dst.v6.ipconns[i].dst.v6.ip,
-                                                  conns[i].dst_port,
-                                                  inode);
+                        add_tracked_connection_v6(&conns[i].src.v6.ip,
+                          conns[i].src_port,
+                          &conns[i].dst.v6.ip,
+                          conns[i].dst_port,
+                          inode);
 
                         atomic_store(&g_ctx.stats.last_detection_monotonic, now);
                         atomic_store(&g_ctx.stats.last_detection_wallclock, time(NULL));
