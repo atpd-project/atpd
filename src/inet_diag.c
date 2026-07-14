@@ -37,10 +37,20 @@ static int g_diag_initialized = 0;
 static atomic_int g_diag_destroyed = 0;
 static atomic_int g_diag_shutting_down = 0;
 static pthread_mutex_t g_diag_mutex = PTHREAD_MUTEX_INITIALIZER;
-static atomic_uint g_nl_seq = ATOMIC_VAR_INIT(1);
+static atomic_uint g_nl_seq;
 
 static pthread_key_t g_tls_sock_key;
 static pthread_once_t g_tls_key_once = PTHREAD_ONCE_INIT;
+
+/* ========== Forward Declarations ========== */
+
+int inet_diag_get_uid_fallback_v4(int protocol,
+                                   uint32_t src_ip, uint16_t src_port,
+                                   uint32_t dst_ip, uint16_t dst_port);
+
+int inet_diag_get_uid_fallback_v6(int protocol,
+                                   const uint8_t *src_ip, uint16_t src_port,
+                                   const uint8_t *dst_ip, uint16_t dst_port);
 
 /* ========== TLS Socket Destructor ========== */
 
@@ -48,7 +58,7 @@ static void tls_socket_destructor(void *ptr) {
     int sock = (int)(intptr_t)ptr;
     if (sock >= 0) {
         close(sock);
-        LOG_DEBUG("[INET_DIAG] TLS socket %d destroyed for thread %lu", sock, pthread_self());
+        LOG_DEBUG("[INET_DIAG] TLS socket %d destroyed", sock);
     }
 }
 
@@ -87,7 +97,7 @@ static int get_tls_socket(void) {
     }
     
     pthread_setspecific(g_tls_sock_key, (void*)(intptr_t)sock);
-    LOG_DEBUG("[INET_DIAG] TLS socket %d created for thread %lu", sock, pthread_self());
+    LOG_DEBUG("[INET_DIAG] TLS socket %d created", sock);
     return sock;
 }
 
@@ -98,6 +108,8 @@ static int inet_diag_do_init(void) {
         LOG_ERROR("[INET_DIAG] module destroyed, cannot reinit (process restart required)");
         return -1;
     }
+    
+    atomic_init(&g_nl_seq, 1);
     
     g_diag_sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_INET_DIAG);
     if (g_diag_sock < 0) {
