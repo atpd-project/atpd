@@ -728,9 +728,9 @@ static void* fcm_monitor_loop(void *arg) {
                             if (is_connection_tracked_by_inode(inode, AF_INET6)) {
                                 continue;
                             }
-                        } else if (is_connection_tracked_v6(&conns[i].src.v6,conns[i].src.v6.ip,
+                        } else if (is_connection_tracked_v6(&conns[i].src.v6,conns[i].src.v6.ipconns[i].src.v6.ip,
                                                              conns[i].src_port,
-                                                             &conns[i].dst.v6,conns[i].dst.v6.ip,
+                                                             &conns[i].dst.v6,conns[i].dst.v6.ipconns[i].dst.v6.ip,
                                                              conns[i].dst_port)) {
                             continue;
                         }
@@ -740,9 +740,9 @@ static void* fcm_monitor_loop(void *arg) {
                                  conns[i].dst_ip_str, conns[i].dst_port,
                                  (unsigned long)inode);
 
-                        add_tracked_connection_v6(&conns[i].src.v6,conns[i].src.v6.ip,
+                        add_tracked_connection_v6(&conns[i].src.v6,conns[i].src.v6.ipconns[i].src.v6.ip,
                                                   conns[i].src_port,
-                                                  &conns[i].dst.v6,conns[i].dst.v6.ip,
+                                                  &conns[i].dst.v6,conns[i].dst.v6.ipconns[i].dst.v6.ip,
                                                   conns[i].dst_port,
                                                   inode);
 
