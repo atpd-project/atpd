@@ -91,11 +91,7 @@ runs:
         echo "atp_version=$VER" >> $GITHUB_OUTPUT
 
     - name: Upload Artifact
-<<<<<<< HEAD
       uses: actions/upload-artifact@v7.0.1
-=======
-      uses: actions/upload-artifact@v7
->>>>>>> staging
       with:
         name: atpd-clang${{ inputs.artifact-suffix }}
         path: ./atpd-clang
