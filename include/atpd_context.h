@@ -5,6 +5,7 @@
 #include <time.h>
 #include <sys/types.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 
 typedef enum {
     VPN_STATE_IDLE = 0,
@@ -36,7 +37,7 @@ struct atpd_session_list;
 
 typedef struct {
     /* === VPN State === */
-    vpn_state_t vpn_state;
+    atomic_int vpn_state;           /* Changed to atomic */
     uint32_t xfrm_if_id;
     char vpn_iface[32];
     struct timespec vpn_state_since;

@@ -13,6 +13,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 atpd_context_t g_atpd_ctx;
 
@@ -58,8 +59,8 @@ void atpd_context_init(void) {
     atpd_error_init();
     memset(&g_atpd_ctx, 0, sizeof(g_atpd_ctx));
     
-    /* VPN State */
-    g_atpd_ctx.vpn_state = VPN_STATE_IDLE;
+    /* VPN State - atomic init */
+    atomic_init(&g_atpd_ctx.vpn_state, VPN_STATE_IDLE);
     g_atpd_ctx.xfrm_fd = -1;
     clock_gettime(CLOCK_MONOTONIC, &g_atpd_ctx.vpn_state_since);
     g_atpd_ctx.vpn_teardown_cb = atpd_vpn_killswitch;
@@ -101,13 +102,14 @@ void atpd_context_init(void) {
     g_atpd_ctx.last_error.last_error_time = 0;
     
     LOG_INFO("ATPd Context: initialized (VPN=%s, eBPF=%s, Runtime=%s)",
-             vpn_state_string(g_atpd_ctx.vpn_state),
+             vpn_state_string(atomic_load(&g_atpd_ctx.vpn_state)),
              ebpf_state_string(g_atpd_ctx.ebpf_state),
              atpd_runtime_state_string(g_atpd_ctx.runtime_state));
 }
 
 void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char *iface) {
-    vpn_state_t old_state = g_atpd_ctx.vpn_state;
+    int old_int = atomic_exchange_explicit(&g_atpd_ctx.vpn_state, (int)new_state, memory_order_acq_rel);
+    vpn_state_t old_state = (vpn_state_t)old_int;
 
     if (old_state == new_state) return;
 
@@ -121,7 +123,6 @@ void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char
              vpn_state_string(old_state), vpn_state_string(new_state),
              if_id, elapsed_us);
 
-    g_atpd_ctx.vpn_state = new_state;
     g_atpd_ctx.xfrm_if_id = if_id;
     g_atpd_ctx.vpn_state_since = now;
     g_atpd_ctx.vpn_transitions++;
