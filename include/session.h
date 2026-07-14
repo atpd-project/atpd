@@ -30,6 +30,9 @@ typedef enum {
     ATPD_SESSION_DESTROYED
 } atpd_session_state_t;
 
+/* Forward declaration */
+typedef struct atpd_session atpd_session_t;
+
 /* ========== GC Node ========== */
 
 struct session_gc_node {
@@ -39,7 +42,7 @@ struct session_gc_node {
 
 /* ========== Main Session Structure ========== */
 
-typedef struct atpd_session {
+struct atpd_session {
     /* === Identity === */
     uint64_t session_id;
     
@@ -61,10 +64,10 @@ typedef struct atpd_session {
     atomic_size_t pipe_pending;
     
     /* === Statistics === */
-    atomic_uint64_t bytes_in;
-    atomic_uint64_t bytes_out;
+    atomic_ullong bytes_in;
+    atomic_ullong bytes_out;
     uint64_t created_at;
-    atomic_uint_fast64_t last_active_at;
+    atomic_ullong last_active_at;
     
     /* === Reactor === */
     reactor_t *reactor;
@@ -75,7 +78,7 @@ typedef struct atpd_session {
     /* === Linked List === */
     struct atpd_session *next;
     struct atpd_session *prev;
-} atpd_session_t;
+};
 
 /* ========== Public API ========== */
 
