@@ -463,9 +463,9 @@ static int is_connection_tracked_v4(uint32_t src_ip, uint16_t src_port,
     return found;
 }
 
-static int is_connection_tracked_v6(const struct in6_addr *src_ip,
+static int is_connection_tracked_v6(const uint8_t *src_ip,
                                      uint16_t src_port,
-                                     const struct in6_addr *dst_ip,
+                                     const uint8_t *dst_ip,
                                      uint16_t dst_port) {
     int found = 0;
 
@@ -473,9 +473,9 @@ static int is_connection_tracked_v6(const struct in6_addr *src_ip,
 
     for (int i = 0; i < g_ctx.tracked_count; i++) {
         if (g_ctx.tracked[i].family == AF_INET6 &&
-            memcmp(&g_ctx.tracked[i].src.v6.s6_addr, src_ip->s6_addr, 16) == 0 &&
+            memcmp(&g_ctx.tracked[i].src.v6.s6_addr, src_ip, 16) == 0 &&
             g_ctx.tracked[i].src_port == src_port &&
-            memcmp(&g_ctx.tracked[i].dst.v6.s6_addr, dst_ip->s6_addr, 16) == 0 &&
+            memcmp(&g_ctx.tracked[i].dst.v6.s6_addr, dst_ip, 16) == 0 &&
             g_ctx.tracked[i].dst_port == dst_port) {
             found = 1;
             break;
@@ -564,9 +564,9 @@ static void add_tracked_connection_v4(uint32_t src_ip, uint16_t src_port,
     pthread_mutex_unlock(&g_ctx.tracked_mutex);
 }
 
-static void add_tracked_connection_v6(const struct in6_addr *src_ip,
+static void add_tracked_connection_v6(const uint8_t *src_ip,
                                        uint16_t src_port,
-                                       const struct in6_addr *dst_ip,
+                                       const uint8_t *dst_ip,
                                        uint16_t dst_port,
                                        uint64_t inode) {
     uint64_t now = monotonic_seconds();
@@ -591,9 +591,9 @@ static void add_tracked_connection_v6(const struct in6_addr *src_ip,
 
     for (int i = 0; i < g_ctx.tracked_count; i++) {
         if (g_ctx.tracked[i].family == AF_INET6 &&
-            memcmp(&g_ctx.tracked[i].src.v6.s6_addr, src_ip->s6_addr, 16) == 0 &&
+            memcmp(&g_ctx.tracked[i].src.v6.s6_addr, src_ip, 16) == 0 &&
             g_ctx.tracked[i].src_port == src_port &&
-            memcmp(&g_ctx.tracked[i].dst.v6.s6_addr, dst_ip->s6_addr, 16) == 0 &&
+            memcmp(&g_ctx.tracked[i].dst.v6.s6_addr, dst_ip, 16) == 0 &&
             g_ctx.tracked[i].dst_port == dst_port) {
             g_ctx.tracked[i].timestamp = now;
             if (inode != 0 && !g_ctx.tracked[i].has_inode) {
@@ -607,11 +607,9 @@ static void add_tracked_connection_v6(const struct in6_addr *src_ip,
 
     if (g_ctx.tracked_count < MAX_TRACKED_CONNS) {
         g_ctx.tracked[g_ctx.tracked_count].family = AF_INET6;
-        memcpy(&g_ctx.tracked[g_ctx.tracked_count].src.v6.s6_addr,
-               src_ip->s6_addr, 16);
+        memcpy(&g_ctx.tracked[g_ctx.tracked_count].src.v6.s6_addr, src_ip, 16);
         g_ctx.tracked[g_ctx.tracked_count].src_port = src_port;
-        memcpy(&g_ctx.tracked[g_ctx.tracked_count].dst.v6.s6_addr,
-               dst_ip->s6_addr, 16);
+        memcpy(&g_ctx.tracked[g_ctx.tracked_count].dst.v6.s6_addr, dst_ip, 16);
         g_ctx.tracked[g_ctx.tracked_count].dst_port = dst_port;
         g_ctx.tracked[g_ctx.tracked_count].timestamp = now;
         g_ctx.tracked[g_ctx.tracked_count].inode = inode;
@@ -634,11 +632,9 @@ static void add_tracked_connection_v6(const struct in6_addr *src_ip,
             }
         }
         g_ctx.tracked[oldest_idx].family = AF_INET6;
-        memcpy(&g_ctx.tracked[oldest_idx].src.v6.s6_addr,
-               src_ip->s6_addr, 16);
+        memcpy(&g_ctx.tracked[oldest_idx].src.v6.s6_addr, src_ip, 16);
         g_ctx.tracked[oldest_idx].src_port = src_port;
-        memcpy(&g_ctx.tracked[oldest_idx].dst.v6.s6_addr,
-               dst_ip->s6_addr, 16);
+        memcpy(&g_ctx.tracked[oldest_idx].dst.v6.s6_addr, dst_ip, 16);
         g_ctx.tracked[oldest_idx].dst_port = dst_port;
         g_ctx.tracked[oldest_idx].timestamp = now;
         g_ctx.tracked[oldest_idx].inode = inode;
@@ -728,20 +724,23 @@ static void* fcm_monitor_loop(void *arg) {
                             if (is_connection_tracked_by_inode(inode, AF_INET6)) {
                                 continue;
                             }
-                       } else if (is_connection_tracked_v6(&conns[i].src.v6,conns[i].src.v6.ip,
-                                     conns[i].src_port,
-                                     &conns[i].dst.v6,conns[i].dst.v6.ip,
-                                     conns[i].dst_port)) {
+                        } else if (is_connection_tracked_v6(conns[i].src.v6.ip,
+                                                             conns[i].src_port,
+                                                             conns[i].dst.v6.ip,
+                                                             conns[i].dst_port)) {
+                            continue;
+                        }
 
                         LOG_INFO("FCM: IPv6 connection detected: %s:%d -> %s:%d (inode=%lu)",
                                  conns[i].src_ip_str, conns[i].src_port,
                                  conns[i].dst_ip_str, conns[i].dst_port,
                                  (unsigned long)inode);
 
-                        } else if (is_connection_tracked_v6(&conns[i].src.v6.ip,
-                                     conns[i].src_port,
-                                     &conns[i].dst.v6.ip,
-                                     conns[i].dst_port)) {
+                        add_tracked_connection_v6(conns[i].src.v6.ip,
+                                                  conns[i].src_port,
+                                                  conns[i].dst.v6.ip,
+                                                  conns[i].dst_port,
+                                                  inode);
 
                         atomic_store(&g_ctx.stats.last_detection_monotonic, now);
                         atomic_store(&g_ctx.stats.last_detection_wallclock, time(NULL));
