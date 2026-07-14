@@ -302,7 +302,7 @@ void atpd_vpn_killswitch(void) {
     }
 
     for (int i = 0; i < count; i++) {
-        atpd_session_destroy(session_ptrs[i]);
+        atpd_session_mark_closing(session_ptrs[i]);
         closed++;
     }
 
@@ -310,7 +310,7 @@ void atpd_vpn_killswitch(void) {
     while (node) {
         struct atpd_session_list *next = node->next;
         if (node->session) {
-            atpd_session_destroy(node->session);
+            atpd_session_mark_closing(node->session);
             closed++;
         }
         free(node);
