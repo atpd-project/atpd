@@ -95,8 +95,8 @@ void mac_filter_free_list(mac_addr_t *macs) {
 }
 
 static int mac_filter_get_hotspot_interface(atp_config_t *cfg, char *iface, size_t size) {
-    if (cfg->hotspot_iface[0] && strcmp(cfg->hotspot_iface, cfg->wifi_iface) != 0) {
-        strncpy(iface, cfg->hotspot_iface, size - 1);
+    if (cfg->interface.hotspot_iface[0] && strcmp(cfg->interface.hotspot_iface, cfg->interface.wifi_iface) != 0) {
+        strncpy(iface, cfg->interface.hotspot_iface, size - 1);
         iface[size - 1] = '\0';
         return 0;
     }
@@ -113,7 +113,7 @@ static int mac_filter_configure_chain(atp_config_t *cfg, int family,
     for (int i = 0; i < mac_count; i++) {
         char rule[256];
         
-        if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
+        if (strcmp(cfg->filter.mac_proxy_mode, "blacklist") == 0) {
             snprintf(rule, sizeof(rule), 
                      "-i %s -m mac --mac-source %s -j ACCEPT",
                      hotspot_iface, macs[i].addr_str);
@@ -129,7 +129,7 @@ static int mac_filter_configure_chain(atp_config_t *cfg, int family,
     }
     
     char rule[256];
-    if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
+    if (strcmp(cfg->filter.mac_proxy_mode, "blacklist") == 0) {
         snprintf(rule, sizeof(rule), "-i %s -j RETURN", hotspot_iface);
     } else {
         snprintf(rule, sizeof(rule), "-i %s -j ACCEPT", hotspot_iface);
@@ -143,7 +143,7 @@ static int mac_filter_configure_chain(atp_config_t *cfg, int family,
 }
 
 int mac_filter_setup(atp_config_t *cfg) {
-    if (!cfg->mac_filter_enable) {
+    if (!cfg->filter.mac_filter_enable) {
         LOG_DEBUG("MAC filter disabled");
         return 0;
     }
@@ -154,7 +154,7 @@ int mac_filter_setup(atp_config_t *cfg) {
         return 0;
     }
     
-    if (!cfg->proxy_hotspot) {
+    if (!cfg->interface.proxy_hotspot) {
         LOG_DEBUG("Hotspot proxy disabled, MAC filter skipped");
         return 0;
     }
@@ -163,10 +163,10 @@ int mac_filter_setup(atp_config_t *cfg) {
     int mac_count;
     const char *macs_list = NULL;
     
-    if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
-        macs_list = cfg->bypass_macs_list;
+    if (strcmp(cfg->filter.mac_proxy_mode, "blacklist") == 0) {
+        macs_list = cfg->filter.bypass_macs_list;
     } else {
-        macs_list = cfg->proxy_macs_list;
+        macs_list = cfg->filter.proxy_macs_list;
     }
     
     if (mac_filter_parse_list(macs_list, &macs, &mac_count) < 0) {
@@ -174,7 +174,7 @@ int mac_filter_setup(atp_config_t *cfg) {
         return -1;
     }
     
-    if (strcmp(cfg->mac_proxy_mode, "blacklist") == 0) {
+    if (strcmp(cfg->filter.mac_proxy_mode, "blacklist") == 0) {
         LOG_INFO("Blacklist mode: bypassing %d MAC addresses", mac_count);
     } else {
         LOG_INFO("Whitelist mode: proxying %d MAC addresses", mac_count);
@@ -182,25 +182,25 @@ int mac_filter_setup(atp_config_t *cfg) {
     
     mac_filter_configure_chain(cfg, 4, "ATP_MAC_0", hotspot_iface, macs, mac_count);
     
-    if (cfg->proxy_ipv6) {
+    if (cfg->network.proxy_ipv6) {
         mac_filter_configure_chain(cfg, 6, "ATP6_MAC_0", hotspot_iface, macs, mac_count);
     }
     
     LOG_INFO("MAC filter configured on %s (IPv6: %s)", 
-             hotspot_iface, cfg->proxy_ipv6 ? "enabled" : "disabled");
+             hotspot_iface, cfg->network.proxy_ipv6 ? "enabled" : "disabled");
     
     mac_filter_free_list(macs);
     return 0;
 }
 
 int mac_filter_cleanup(atp_config_t *cfg) {
-    if (!cfg->mac_filter_enable) {
+    if (!cfg->filter.mac_filter_enable) {
         return 0;
     }
     
     tproxy_chain_flush(cfg, 4, "mangle", "ATP_MAC_0");
     
-    if (cfg->proxy_ipv6) {
+    if (cfg->network.proxy_ipv6) {
         tproxy_chain_flush(cfg, 6, "mangle", "ATP6_MAC_0");
     }
     

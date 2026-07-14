@@ -11,6 +11,7 @@
 #include "atp.h"
 #include "ipset.h"
 #include "api.h"
+#include "boxbpf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +43,7 @@ static const char *default_cn_cidrs[] = {
 };
 
 static int geoip_create_default_ipset(atp_config_t *cfg) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would create default ipset cnip with %d entries",
                   (int)(sizeof(default_cn_cidrs) / sizeof(default_cn_cidrs[0]) - 1));
         return 0;
@@ -55,12 +56,12 @@ static int geoip_create_default_ipset(atp_config_t *cfg) {
 }
 
 int geoip_init(atp_config_t *cfg) {
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would initialize GeoIP rules directory");
         return 0;
     }
     char rules_dir[SAFE_PATH_MAX];
-    if (snprintf(rules_dir, sizeof(rules_dir), "%s/rules", cfg->data_dir) < (int)sizeof(rules_dir)) {
+    if (snprintf(rules_dir, sizeof(rules_dir), "%s/rules", cfg->core.data_dir) < (int)sizeof(rules_dir)) {
         mkdir_recursive(rules_dir, 0755);
     }
     LOG_DEBUG("GeoIP initialized");
@@ -95,15 +96,15 @@ int geoip_download_url(const char *url, const char *output_path, int timeout_sec
 }
 
 int geoip_download(atp_config_t *cfg) {
-    if (!cfg->bypass_cn_ip) return 0;
-    if (cfg->dry_run) {
-        LOG_DEBUG("[DRY_RUN] Would download GeoIP from %s", cfg->cn_ip_url);
+    if (!cfg->filter.bypass_cn_ip) return 0;
+    if (cfg->core.dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would download GeoIP from %s", cfg->filter.cn_ip_url);
         return 0;
     }
     char v4_p[SAFE_PATH_MAX], v4_t[SAFE_PATH_MAX];
-    snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
-    snprintf(v4_t, sizeof(v4_t), "%s/rules/%.255s.tmp", cfg->data_dir, cfg->cn_ip_file);
-    if (geoip_download_url(cfg->cn_ip_url, v4_t, GEOIP_TIMEOUT_SEC) == 0) {
+    snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->core.data_dir, cfg->filter.cn_ip_file);
+    snprintf(v4_t, sizeof(v4_t), "%s/rules/%.255s.tmp", cfg->core.data_dir, cfg->filter.cn_ip_file);
+    if (geoip_download_url(cfg->filter.cn_ip_url, v4_t, GEOIP_TIMEOUT_SEC) == 0) {
         rename(v4_t, v4_p); return 0;
     }
     return -1;
@@ -111,13 +112,13 @@ int geoip_download(atp_config_t *cfg) {
 
 static void* geoip_async_update_thread(void *arg) {
     atp_config_t *cfg = (atp_config_t*)arg;
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         geoip_async_running = 0; geoip_async_complete = 1;
         return NULL;
     }
     char v4_p[SAFE_PATH_MAX], v4_r[SAFE_PATH_MAX];
-    snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
-    snprintf(v4_r, sizeof(v4_r), "%s/rules/%.255s.parsed", cfg->data_dir, cfg->cn_ip_file);
+    snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->core.data_dir, cfg->filter.cn_ip_file);
+    snprintf(v4_r, sizeof(v4_r), "%s/rules/%.255s.parsed", cfg->core.data_dir, cfg->filter.cn_ip_file);
     if (geoip_download(cfg) == 0 && file_exists(v4_p)) {
         ipset_parse_cidr_file(v4_p, v4_r, 4);
         ipset_create("cnip_temp", 4, 8192, 65536);
@@ -130,9 +131,9 @@ static void* geoip_async_update_thread(void *arg) {
 }
 
 int geoip_setup_ipset_async(atp_config_t *cfg) {
-    if (!cfg->bypass_cn_ip) return 0;
+    if (!cfg->filter.bypass_cn_ip) return 0;
     geoip_create_default_ipset(cfg);
-    if (cfg->dry_run) {
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would start async GeoIP update");
         return 0;
     }
@@ -149,8 +150,8 @@ int geoip_async_is_complete(void) { return geoip_async_complete; }
 int geoip_setup_ipset(atp_config_t *cfg) { return geoip_setup_ipset_async(cfg); }
 
 int geoip_cleanup_ipset(atp_config_t *cfg) {
-    if (!cfg->bypass_cn_ip) return 0;
-    if (cfg->dry_run) {
+    if (!cfg->filter.bypass_cn_ip) return 0;
+    if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would destroy ipset cnip and cnip6");
         return 0;
     }
@@ -159,30 +160,125 @@ int geoip_cleanup_ipset(atp_config_t *cfg) {
 }
 
 int geoip_atomic_update(atp_config_t *cfg) {
-    if (!cfg->bypass_cn_ip) return 0;
-    if (cfg->dry_run) {
-        LOG_DEBUG("[DRY_RUN] Would atomically update GeoIP ipset from %s", cfg->cn_ip_url);
+    if (!cfg->filter.bypass_cn_ip) return 0;
+    if (cfg->core.dry_run) {
+        LOG_DEBUG("[DRY_RUN] Would atomically update GeoIP ipset from %s", cfg->filter.cn_ip_url);
         return 0;
     }
+
     char v4_p[SAFE_PATH_MAX], v4_t[SAFE_PATH_MAX], v4_r[SAFE_PATH_MAX], v4_rt[SAFE_PATH_MAX];
-    snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
-    snprintf(v4_t, sizeof(v4_t), "%s/rules/%.255s.tmp", cfg->data_dir, cfg->cn_ip_file);
-    snprintf(v4_r, sizeof(v4_r), "%s/rules/%.255s.parsed", cfg->data_dir, cfg->cn_ip_file);
-    snprintf(v4_rt, sizeof(v4_rt), "%s/rules/%.255s.parsed.tmp", cfg->data_dir, cfg->cn_ip_file);
-    if (geoip_download_url(cfg->cn_ip_url, v4_t, GEOIP_TIMEOUT_SEC) != 0) return -1;
+    char v6_p[SAFE_PATH_MAX], v6_t[SAFE_PATH_MAX], v6_r[SAFE_PATH_MAX], v6_rt[SAFE_PATH_MAX];
+    int ret = 0;
+    int ipset_v4_updated = 0;
+    int ipset_v6_updated = 0;
+    int has_backup = 0;
+
+    snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->core.data_dir, cfg->filter.cn_ip_file);
+    snprintf(v4_t, sizeof(v4_t), "%s/rules/%.255s.tmp", cfg->core.data_dir, cfg->filter.cn_ip_file);
+    snprintf(v4_r, sizeof(v4_r), "%s/rules/%.255s.parsed", cfg->core.data_dir, cfg->filter.cn_ip_file);
+    snprintf(v4_rt, sizeof(v4_rt), "%s/rules/%.255s.parsed.tmp", cfg->core.data_dir, cfg->filter.cn_ip_file);
+
+    /* 备份现有的 ipset */
+    if (ipset_exists("cnip")) {
+        ipset_create("cnip_backup", 4, 8192, 65536);
+        ipset_swap("cnip", "cnip_backup");
+        has_backup = 1;
+        LOG_DEBUG("GeoIP: Created backup of cnip ipset");
+    }
+
+    if (geoip_download_url(cfg->filter.cn_ip_url, v4_t, GEOIP_TIMEOUT_SEC) != 0) {
+        LOG_ERROR("GeoIP: failed to download IPv4 list");
+        /* 恢复备份 */
+        if (has_backup && ipset_exists("cnip_backup")) {
+            ipset_swap("cnip_backup", "cnip");
+            ipset_destroy("cnip_backup");
+            LOG_INFO("GeoIP: Restored cnip from backup");
+        }
+        return -1;
+    }
     ipset_parse_cidr_file(v4_t, v4_rt, 4);
     ipset_create("cnip_temp", 4, 8192, 65536);
     ipset_restore_file("cnip_temp", v4_rt);
     ipset_swap("cnip_temp", "cnip");
+    ipset_v4_updated = 1;
     ipset_destroy("cnip_temp");
-    rename(v4_t, v4_p); rename(v4_rt, v4_r);
-    return 0;
+    rename(v4_t, v4_p);
+    rename(v4_rt, v4_r);
+
+    if (cfg->network.proxy_ipv6) {
+        /* 备份 IPv6 ipset */
+        if (ipset_exists("cnip6")) {
+            ipset_create("cnip6_backup", 6, 8192, 65536);
+            ipset_swap("cnip6", "cnip6_backup");
+            LOG_DEBUG("GeoIP: Created backup of cnip6 ipset");
+        }
+
+        snprintf(v6_p, sizeof(v6_p), "%s/rules/%.255s", cfg->core.data_dir, cfg->filter.cn_ipv6_file);
+        snprintf(v6_t, sizeof(v6_t), "%s/rules/%.255s.tmp", cfg->core.data_dir, cfg->filter.cn_ipv6_file);
+        snprintf(v6_r, sizeof(v6_r), "%s/rules/%.255s.parsed", cfg->core.data_dir, cfg->filter.cn_ipv6_file);
+        snprintf(v6_rt, sizeof(v6_rt), "%s/rules/%.255s.parsed.tmp", cfg->core.data_dir, cfg->filter.cn_ipv6_file);
+
+        if (geoip_download_url(cfg->filter.cn_ipv6_url, v6_t, GEOIP_TIMEOUT_SEC) != 0) {
+            LOG_WARN("GeoIP: failed to download IPv6 list, skipping");
+        } else {
+            ipset_parse_cidr_file(v6_t, v6_rt, 6);
+            ipset_create("cnip6_temp", 6, 8192, 65536);
+            ipset_restore_file("cnip6_temp", v6_rt);
+            ipset_swap("cnip6_temp", "cnip6");
+            ipset_v6_updated = 1;
+            ipset_destroy("cnip6_temp");
+            rename(v6_t, v6_p);
+            rename(v6_rt, v6_r);
+        }
+    }
+
+    /* 更新 eBPF */
+    if (cfg->ebpf.ready && cfg->ebpf.enabled && cfg->filter.cnip_mode == 1) {
+        LOG_INFO("GeoIP: updating eBPF CNIP maps...");
+        if (boxbpf_update(cfg->ebpf.config_path) != 0) {
+            LOG_ERROR("GeoIP: eBPF CNIP maps update failed! Rolling back ipset...");
+
+            /* 回滚 IPv4 ipset */
+            if (has_backup && ipset_exists("cnip_backup")) {
+                ipset_swap("cnip_backup", "cnip");
+                ipset_destroy("cnip_backup");
+                LOG_INFO("GeoIP: cnip rolled back to previous version");
+            } else {
+                LOG_WARN("GeoIP: No cnip backup available, ipset may be inconsistent");
+                ret = -1;
+            }
+
+            /* 回滚 IPv6 ipset */
+            if (cfg->network.proxy_ipv6 && ipset_exists("cnip6_backup")) {
+                ipset_swap("cnip6_backup", "cnip6");
+                ipset_destroy("cnip6_backup");
+                LOG_INFO("GeoIP: cnip6 rolled back to previous version");
+            }
+
+            return -1;
+        } else {
+            LOG_INFO("GeoIP: eBPF CNIP maps updated");
+        }
+    }
+
+    /* 清理备份 */
+    if (ipset_exists("cnip_backup")) {
+        ipset_destroy("cnip_backup");
+    }
+    if (cfg->network.proxy_ipv6 && ipset_exists("cnip6_backup")) {
+        ipset_destroy("cnip6_backup");
+    }
+
+    LOG_INFO("GeoIP: atomic update completed (ipset_v4=%d, ipset_v6=%d, ebpf_updated=%d)",
+             ipset_v4_updated, ipset_v6_updated,
+             cfg->ebpf.ready && cfg->ebpf.enabled && cfg->filter.cnip_mode == 1);
+    return ret;
 }
 
 int geoip_check_update_needed(atp_config_t *cfg, int max_age_days) {
-    if (cfg->dry_run) return 0;
+    if (cfg->core.dry_run) return 0;
     char v4_p[SAFE_PATH_MAX];
-    snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->data_dir, cfg->cn_ip_file);
+    snprintf(v4_p, sizeof(v4_p), "%s/rules/%.255s", cfg->core.data_dir, cfg->filter.cn_ip_file);
     struct stat st;
     if (stat(v4_p, &st) != 0) return 1;
     return ((int)((time(NULL) - st.st_mtime) / 86400) >= max_age_days);

@@ -18,7 +18,7 @@
 #define PROC_IPV6_CONF "/proc/sys/net/ipv6/conf"
 
 static int ipv6_write_sysctl(atp_config_t *cfg, const char *path, int value) {
-    if (cfg && cfg->dry_run) {
+    if (cfg && cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would write %d to %s", value, path);
         return 0;
     }
@@ -48,7 +48,7 @@ static int ipv6_read_sysctl(const char *path, int *value) {
 int ipv6_manager_backup(atp_config_t *cfg, ipv6_backup_t *backup) {
     memset(backup, 0, sizeof(ipv6_backup_t));
 
-    if (cfg && cfg->dry_run) {
+    if (cfg && cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would backup IPv6 sysctl settings");
         backup->backup_exists = 1;
         return 0;
@@ -72,7 +72,7 @@ int ipv6_manager_restore(atp_config_t *cfg, ipv6_backup_t *backup) {
         return 0;
     }
 
-    if (cfg && cfg->dry_run) {
+    if (cfg && cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would restore IPv6 sysctl settings");
         backup->backup_exists = 0;
         return 0;
@@ -96,7 +96,7 @@ int ipv6_manager_disable_all(atp_config_t *cfg) {
     char path[PATH_MAX];
     int disabled_count = 0;
 
-    if (cfg && cfg->dry_run) {
+    if (cfg && cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would disable IPv6 on all interfaces");
         return 0;
     }
@@ -133,7 +133,7 @@ int ipv6_manager_enable_all(atp_config_t *cfg) {
     char path[PATH_MAX];
     int enabled_count = 0;
 
-    if (cfg && cfg->dry_run) {
+    if (cfg && cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would enable IPv6 on all interfaces");
         return 0;
     }
@@ -193,9 +193,9 @@ int ipv6_manager_set_mode(atp_config_t *cfg, int mode) {
 
 int ipv6_manager_init(atp_config_t *cfg) {
     int mode;
-    if (cfg->proxy_ipv6 == -1) {
+    if (cfg->network.proxy_ipv6 == -1) {
         mode = IPV6_MODE_DISABLED;
-    } else if (cfg->proxy_ipv6 == 1) {
+    } else if (cfg->network.proxy_ipv6 == 1) {
         mode = IPV6_MODE_PROXY;
     } else {
         mode = IPV6_MODE_DEFAULT;

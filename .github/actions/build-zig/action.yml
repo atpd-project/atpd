@@ -61,6 +61,8 @@ runs:
           -s -Oz -flto -ffunction-sections -fdata-sections -static \
           -Iinclude \
           -D_GNU_SOURCE \
+          -DNDEBUG \
+          -DLOG_LOCATION_ENABLED=0 \
           -o atpd-zig \
           $(find src -name "*.c" ! -path "src/cjson/*" ! -name "epoll.c") \
           -Wl,--gc-sections -Wl,--strip-all
@@ -92,7 +94,11 @@ runs:
         echo "atpd_version_string=$ATPD_VER" >> $GITHUB_OUTPUT
 
     - name: Upload Artifact
+<<<<<<< HEAD
       uses: actions/upload-artifact@v7.0.1
+=======
+      uses: actions/upload-artifact@v7
+>>>>>>> staging
       with:
         name: atpd-zig${{ inputs.artifact-suffix }}
         path: ./atpd-zig
