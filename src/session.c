@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <inttypes.h>
 #include <stdatomic.h>
+#include <pthread.h>
 
 /* ========== Forward Declarations ========== */
 
@@ -18,13 +19,14 @@ static void atpd_session_destroy_internal(atpd_session_t *s);
 static inline void safe_close(int *fd);
 static void emergency_drain(atpd_session_t *s);
 
-/* ========== Global GC Queue ========== */
+/* ========== Global GC Queue with Mutex ========== */
+
+static pthread_mutex_t g_gc_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static struct {
     struct session_gc_node *head;
     struct session_gc_node *tail;
-    atomic_uint count;
-} g_gc_queue = { NULL, NULL, 0 };
+} g_gc_queue = { NULL, NULL };
 
 /* ========== Session Lifecycle ========== */
 
@@ -92,25 +94,27 @@ static inline void safe_close(int *fd) {
 static void atpd_session_destroy_internal(atpd_session_t *s) {
     if (!s) return;
     
+    /* Cache session_id before free */
+    uint64_t sid = s->session_id;
+    
     /* Atomic CAS: only one thread can destroy */
     bool expected = false;
     if (!atomic_compare_exchange_strong(&s->destroy_started, &expected, true)) {
-        LOG_DEBUG("SESSION[%lu]: destroy already started", s->session_id);
+        LOG_DEBUG("SESSION[%lu]: destroy already started", sid);
         return;
     }
     
+    int fd_in = s->fd_in;
+    int fd_out = s->fd_out;
+    uint64_t bytes_in = atomic_load(&s->bytes_in);
+    uint64_t bytes_out = atomic_load(&s->bytes_out);
+    
     LOG_DEBUG("SESSION[%lu]: destroying fd_in=%d fd_out=%d bytes_in=%" PRIu64 " bytes_out=%" PRIu64 "",
-              s->session_id, s->fd_in, s->fd_out,
-              atomic_load(&s->bytes_in), atomic_load(&s->bytes_out));
+              sid, fd_in, fd_out, bytes_in, bytes_out);
     
     atomic_store(&s->state, ATPD_SESSION_DESTROYED);
     
     atpd_session_unregister_from_ctx(s);
-    
-    if (s->reactor) {
-        reactor_remove_fd(s->reactor, s->fd_in);
-        reactor_remove_fd(s->reactor, s->fd_out);
-    }
     
     safe_close(&s->pipe_fds[0]);
     safe_close(&s->pipe_fds[1]);
@@ -120,7 +124,7 @@ static void atpd_session_destroy_internal(atpd_session_t *s) {
     s->reactor = NULL;
     free(s);
     
-    LOG_DEBUG("SESSION[%lu]: destroyed", s->session_id);
+    LOG_DEBUG("SESSION[%lu]: destroyed", sid);
 }
 
 /* ========== Session Registration ========== */
@@ -444,6 +448,9 @@ static void session_free_cb(void *userdata) {
     if (!s) return;
     
     LOG_DEBUG("SESSION[%lu]: free_cb called", s->session_id);
+    
+    /* Release reactor-held reference */
+    /* This is the only place that releases the reactor reference */
     atpd_session_put(s);
 }
 
@@ -459,7 +466,6 @@ void atpd_session_mark_closing(atpd_session_t *s) {
         if (!atomic_compare_exchange_strong(&s->state, &expected, ATPD_SESSION_CLOSING)) {
             expected = ATPD_SESSION_DRAINING;
             if (!atomic_compare_exchange_strong(&s->state, &expected, ATPD_SESSION_CLOSING)) {
-                /* Already closing or destroyed */
                 LOG_DEBUG("SESSION[%lu]: already closing or destroyed", s->session_id);
                 return;
             }
@@ -468,18 +474,16 @@ void atpd_session_mark_closing(atpd_session_t *s) {
     
     LOG_DEBUG("SESSION[%lu]: marking closing", s->session_id);
     
-    /* Remove from reactor */
+    /* Remove from reactor - this will trigger free_cb for each fd */
     if (s->reactor) {
         reactor_remove_fd(s->reactor, s->fd_in);
         reactor_remove_fd(s->reactor, s->fd_out);
     }
     
-    /* Release reactor-held references */
-    /* fd_in and fd_out each hold a reference */
-    atpd_session_put(s);  /* Release fd_in */
-    atpd_session_put(s);  /* Release fd_out */
+    /* DO NOT put here - free_cb will release the reactor references */
+    /* The reactor holds references that will be released via free_cb */
     
-    /* Enqueue for GC */
+    /* Enqueue for GC - GC takes its own reference */
     atpd_session_gc_enqueue(s);
 }
 
@@ -495,56 +499,52 @@ void atpd_session_gc_enqueue(atpd_session_t *s) {
         return;
     }
     
+    /* GC takes a reference */
+    atpd_session_get(s);
+    
     atomic_store(&s->state, ATPD_SESSION_DESTROY_PENDING);
     s->gc_node.session = s;
     s->gc_node.next = NULL;
     
-    /* Enqueue with CAS for thread safety */
-    struct session_gc_node *old_tail;
-    struct session_gc_node *new_node = &s->gc_node;
+    pthread_mutex_lock(&g_gc_lock);
     
-    do {
-        old_tail = g_gc_queue.tail;
-        new_node->next = NULL;
-    } while (!atomic_compare_exchange_weak((void**)&g_gc_queue.tail, 
-                                           (void**)&old_tail, new_node));
-    
-    if (old_tail == NULL) {
-        g_gc_queue.head = new_node;
+    if (g_gc_queue.tail == NULL) {
+        g_gc_queue.head = &s->gc_node;
+        g_gc_queue.tail = &s->gc_node;
     } else {
-        old_tail->next = new_node;
+        g_gc_queue.tail->next = &s->gc_node;
+        g_gc_queue.tail = &s->gc_node;
     }
     
-    atomic_fetch_add(&g_gc_queue.count, 1);
+    pthread_mutex_unlock(&g_gc_lock);
     
-    LOG_DEBUG("SESSION[%lu]: enqueued for GC, queue size=%u", 
-              s->session_id, atomic_load(&g_gc_queue.count));
+    LOG_DEBUG("SESSION[%lu]: enqueued for GC", s->session_id);
 }
 
 void atpd_session_gc_process(reactor_t *r) {
     (void)r;
     
-    /* Must be called from reactor thread only */
-    /* Assumes single-threaded reactor model */
+    pthread_mutex_lock(&g_gc_lock);
     
     struct session_gc_node *node = g_gc_queue.head;
     g_gc_queue.head = NULL;
     g_gc_queue.tail = NULL;
-    struct session_gc_node *next;
     
+    pthread_mutex_unlock(&g_gc_lock);
+    
+    struct session_gc_node *next;
     while (node) {
         next = node->next;
         atpd_session_t *s = node->session;
         
         if (s) {
-            /* Drop the GC reference */
+            /* Release GC reference */
             atpd_session_put(s);
         }
         
         node = next;
     }
     
-    atomic_store(&g_gc_queue.count, 0);
     LOG_DEBUG("GC: processed all pending sessions");
 }
 
