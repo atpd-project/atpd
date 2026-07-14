@@ -302,15 +302,17 @@ void atpd_vpn_killswitch(void) {
     }
 
     for (int i = 0; i < count; i++) {
-        atpd_session_mark_closing(session_ptrs[i]);
-        closed++;
+        if (session_ptrs[i]) {
+            atpd_session_destroy(session_ptrs[i]);
+            closed++;
+        }
     }
 
     node = g_atpd_ctx.sessions;
     while (node) {
         struct atpd_session_list *next = node->next;
         if (node->session) {
-            atpd_session_mark_closing(node->session);
+            atpd_session_destroy(node->session);
             closed++;
         }
         free(node);
@@ -318,5 +320,5 @@ void atpd_vpn_killswitch(void) {
     }
     g_atpd_ctx.sessions = NULL;
 
-    LOG_WARN("ATPd Context: Kill-switch closed %d sessions", closed);
+    LOG_WARN("ATPd Context: Kill-switch destroyed %d sessions", closed);
 }
