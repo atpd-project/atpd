@@ -7,367 +7,221 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <stdatomic.h>
+
+/* ========== Forward Declarations ========== */
 
 static void session_in_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
 static void session_out_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
 static void session_free_cb(void *userdata);
+static void atpd_session_destroy_internal(atpd_session_t *s);
+static inline void safe_close(int *fd);
+static void emergency_drain(atpd_session_t *s);
+
+/* ========== Global GC Queue ========== */
+
+static struct {
+    struct session_gc_node *head;
+    struct session_gc_node *tail;
+    atomic_uint count;
+} g_gc_queue = { NULL, NULL, 0 };
 
 /* ========== Session Lifecycle ========== */
 
 atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out) {
+    static atomic_uint_fast64_t next_session_id = 1;
+    
     atpd_session_t *s = calloc(1, sizeof(atpd_session_t));
     if (!s) return NULL;
-
+    
+    s->session_id = atomic_fetch_add_explicit(&next_session_id, 1, memory_order_relaxed);
     s->fd_in = fd_in;
     s->fd_out = fd_out;
-    s->state = ATPD_SESSION_IDLE;
     s->reactor = r;
     s->created_at = reactor_now_ms();
-    s->ref_count = 1;  /* Initial reference */
-
+    
+    atomic_init(&s->state, ATPD_SESSION_IDLE);
+    atomic_init(&s->destroy_started, false);
+    atomic_init(&s->gc_enqueued, false);
+    atomic_init(&s->emergency_drained, false);
+    atomic_init(&s->ref_count, 1);
+    atomic_init(&s->pipe_pending, 0);
+    atomic_init(&s->bytes_in, 0);
+    atomic_init(&s->bytes_out, 0);
+    atomic_init(&s->last_active_at, s->created_at);
+    
     if (pipe2(s->pipe_fds, O_NONBLOCK | O_CLOEXEC) < 0) {
-        LOG_ERROR("session: pipe2 failed: %s", strerror(errno));
+        LOG_ERROR("SESSION[%lu]: pipe2 failed: %s", s->session_id, strerror(errno));
         free(s);
         return NULL;
     }
-
+    
     fcntl(s->pipe_fds[0], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE);
     fcntl(s->pipe_fds[1], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE);
-
+    
     atpd_session_register_to_ctx(s);
-
-    LOG_DEBUG("session: created fd_in=%d fd_out=%d ref=1", fd_in, fd_out);
+    
+    LOG_DEBUG("SESSION[%lu]: created fd_in=%d fd_out=%d ref=1", 
+              s->session_id, fd_in, fd_out);
     return s;
 }
 
-static void session_ref(atpd_session_t *s) {
-    if (s) {
-        s->ref_count++;
-        LOG_DEBUG("session: ref++ fd_in=%d ref=%d", s->fd_in, s->ref_count);
+void atpd_session_get(atpd_session_t *s) {
+    if (!s) return;
+    unsigned int old = atomic_fetch_add_explicit(&s->ref_count, 1, memory_order_acquire);
+    LOG_DEBUG("SESSION[%lu]: get ref=%u", s->session_id, old + 1);
+}
+
+void atpd_session_put(atpd_session_t *s) {
+    if (!s) return;
+    unsigned int old = atomic_fetch_sub_explicit(&s->ref_count, 1, memory_order_release);
+    LOG_DEBUG("SESSION[%lu]: put ref=%u", s->session_id, old - 1);
+    if (old == 1) {
+        /* Last reference dropped */
+        atpd_session_destroy_internal(s);
     }
 }
 
-static void session_unref(atpd_session_t *s) {
-    if (!s) return;
-    s->ref_count--;
-    LOG_DEBUG("session: ref-- fd_in=%d ref=%d", s->fd_in, s->ref_count);
-    if (s->ref_count == 0) {
-        LOG_DEBUG("session: refcount zero, destroying fd_in=%d", s->fd_in);
-        atpd_session_destroy(s);
+static inline void safe_close(int *fd) {
+    if (fd && *fd >= 0) {
+        close(*fd);
+        *fd = -1;
     }
 }
 
-void atpd_session_destroy(atpd_session_t *s) {
+static void atpd_session_destroy_internal(atpd_session_t *s) {
     if (!s) return;
-
-    /* Prevent double destroy */
-    if (s->state == ATPD_SESSION_CLOSING) {
-        LOG_DEBUG("session: already closing fd_in=%d", s->fd_in);
+    
+    /* Atomic CAS: only one thread can destroy */
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&s->destroy_started, &expected, true)) {
+        LOG_DEBUG("SESSION[%lu]: destroy already started", s->session_id);
         return;
     }
-
-    LOG_DEBUG("session: destroying fd_in=%d fd_out=%d bytes_in=%" PRIu64 " bytes_out=%" PRIu64 "",
-              s->fd_in, s->fd_out, s->bytes_in, s->bytes_out);
-
-    s->state = ATPD_SESSION_CLOSING;
-
+    
+    LOG_DEBUG("SESSION[%lu]: destroying fd_in=%d fd_out=%d bytes_in=%" PRIu64 " bytes_out=%" PRIu64 "",
+              s->session_id, s->fd_in, s->fd_out,
+              atomic_load(&s->bytes_in), atomic_load(&s->bytes_out));
+    
+    atomic_store(&s->state, ATPD_SESSION_DESTROYED);
+    
     atpd_session_unregister_from_ctx(s);
-
-    if (s->pipe_fds[0] > 0) {
-        close(s->pipe_fds[0]);
-        s->pipe_fds[0] = -1;
-    }
-    if (s->pipe_fds[1] > 0) {
-        close(s->pipe_fds[1]);
-        s->pipe_fds[1] = -1;
-    }
-
+    
     if (s->reactor) {
         reactor_remove_fd(s->reactor, s->fd_in);
         reactor_remove_fd(s->reactor, s->fd_out);
     }
-
-    if (s->fd_in > 0) {
-        close(s->fd_in);
-        s->fd_in = -1;
-    }
-    if (s->fd_out > 0) {
-        close(s->fd_out);
-        s->fd_out = -1;
-    }
-
+    
+    safe_close(&s->pipe_fds[0]);
+    safe_close(&s->pipe_fds[1]);
+    safe_close(&s->fd_in);
+    safe_close(&s->fd_out);
+    
     s->reactor = NULL;
     free(s);
-}
-
-/* ========== VPN State ========== */
-
-int atpd_session_is_vpn_ready(void) {
-    return g_atpd_ctx.vpn_state == VPN_STATE_READY;
-}
-
-/* ========== Splice Pump ========== */
-
-ssize_t atpd_session_splice_pump(atpd_session_t *s, size_t max_len) {
-    if (!s) return ATPD_SPLICE_ERROR;
-
-    if (!atpd_session_is_vpn_ready()) {
-        LOG_DEBUG("session: splice blocked, VPN not ready (state=%s)",
-                  vpn_state_string(g_atpd_ctx.vpn_state));
-        return ATPD_SPLICE_VPN_NOT_READY;
-    }
-
-    ssize_t total_moved = 0;
-
-    while (total_moved < (ssize_t)max_len) {
-        ssize_t moved = splice(s->fd_in, NULL, s->pipe_fds[1], NULL,
-                               max_len - total_moved,
-                               SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-
-        if (moved < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
-            if (errno == EINTR) continue;
-            return ATPD_SPLICE_ERROR;
-        }
-        if (moved == 0) break;
-
-        ssize_t sent = 0;
-        while (sent < moved) {
-            ssize_t ret = splice(s->pipe_fds[0], NULL, s->fd_out, NULL,
-                                 moved - sent,
-                                 SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-
-            if (ret < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    s->pipe_pending = moved - sent;
-                    s->state = ATPD_SESSION_PIPE_DIRTY;
-                    s->bytes_in += (uint64_t)sent;
-                    s->bytes_out += (uint64_t)total_moved + sent;
-                    return total_moved + sent;
-                }
-                if (errno == EINTR) continue;
-                return ATPD_SPLICE_ERROR;
-            }
-            if (ret == 0) break;
-            sent += ret;
-        }
-        total_moved += sent;
-    }
-
-    s->bytes_in += (uint64_t)total_moved;
-    s->bytes_out += (uint64_t)total_moved;
-    return total_moved;
-}
-
-/* ========== Pipe Drain ========== */
-
-int atpd_session_drain_pipe(atpd_session_t *s) {
-    if (!s) return -1;
-    if (s->state != ATPD_SESSION_PIPE_DIRTY || s->pipe_pending == 0) return 0;
-
-    ssize_t sent = 0;
-    while (sent < (ssize_t)s->pipe_pending) {
-        ssize_t ret = splice(s->pipe_fds[0], NULL, s->fd_out, NULL,
-                             s->pipe_pending - sent,
-                             SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-
-        if (ret < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                s->pipe_pending -= sent;
-                return 1;
-            }
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (ret == 0) break;
-        sent += ret;
-    }
-
-    s->pipe_pending = 0;
-    s->state = ATPD_SESSION_SPLICING;
-    return 0;
+    
+    LOG_DEBUG("SESSION[%lu]: destroyed", s->session_id);
 }
 
 /* ========== Session Registration ========== */
 
 int atpd_session_register(reactor_t *r, atpd_session_t *s) {
     if (!s) return -1;
-
+    
     /* Hold reference for each callback */
-    session_ref(s);
+    atpd_session_get(s);
     reactor_add_fd_ex(r, s->fd_in, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
                       session_in_cb, session_free_cb, s);
-
-    session_ref(s);
+    
+    atpd_session_get(s);
     reactor_add_fd_ex(r, s->fd_out, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
-                      session_out_cb, NULL, s);
-
-    s->state = ATPD_SESSION_SPLICING;
+                      session_out_cb, session_free_cb, s);
+    
+    atomic_store(&s->state, ATPD_SESSION_ACTIVE);
+    LOG_DEBUG("SESSION[%lu]: registered, ref=%u", s->session_id, atomic_load(&s->ref_count));
     return 0;
 }
 
-/* ========== IN Callback ========== */
+/* ========== VPN State ========== */
 
-static void session_in_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
-    (void)r;
-    atpd_session_t *s = userdata;
+int atpd_session_is_vpn_ready(void) {
+    return atomic_load_explicit(&g_atpd_ctx.vpn_state, memory_order_acquire) == VPN_STATE_READY;
+}
 
-    if (!s) return;
+/* ========== Pipe Drain ========== */
 
-    /* Take reference for this callback */
-    session_ref(s);
-
-    if (events & (REACTOR_EVENT_ERROR | REACTOR_EVENT_HANGUP)) {
-        s->state = ATPD_SESSION_CLOSING;
-        session_unref(s);
-        return;
+int atpd_session_drain_pipe(atpd_session_t *s) {
+    if (!s) return -1;
+    
+    size_t pending = atomic_load(&s->pipe_pending);
+    if (pending == 0) return 0;
+    
+    int state = atomic_load(&s->state);
+    if (state != ATPD_SESSION_PIPE_DIRTY) {
+        return 0;
     }
-
-    if (s->state == ATPD_SESSION_PIPE_DIRTY) {
-        atpd_session_drain_pipe(s);
-        if (s->state == ATPD_SESSION_PIPE_DIRTY) {
-            session_unref(s);
-            return;
+    
+    atomic_store(&s->state, ATPD_SESSION_DRAINING);
+    
+    ssize_t sent = 0;
+    while (sent < (ssize_t)pending) {
+        ssize_t ret = splice(s->pipe_fds[0], NULL, s->fd_out, NULL,
+                             pending - sent,
+                             SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+        
+        if (ret < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                atomic_store(&s->pipe_pending, pending - sent);
+                atomic_store(&s->state, ATPD_SESSION_PIPE_DIRTY);
+                return 1;  /* Still dirty */
+            }
+            if (errno == EINTR) continue;
+            LOG_ERROR("SESSION[%lu]: drain pipe failed: %s", s->session_id, strerror(errno));
+            atomic_store(&s->state, ATPD_SESSION_PIPE_DIRTY);
+            return -1;
         }
+        if (ret == 0) break;
+        sent += ret;
+        atomic_fetch_add(&s->bytes_out, (uint64_t)ret);
     }
-
-    ssize_t ret = atpd_session_splice_pump(s, ATPD_SESSION_PIPE_SIZE);
-    if (ret == ATPD_SPLICE_VPN_NOT_READY) {
-        session_unref(s);
-        return;
+    
+    atomic_store(&s->pipe_pending, 0);
+    atomic_store(&s->state, ATPD_SESSION_ACTIVE);
+    
+    /* Remove WRITE event after drain complete */
+    if (s->reactor) {
+        reactor_modify_fd(s->reactor, s->fd_out, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE);
     }
-    if (ret < 0) {
-        LOG_ERROR("session: splice pump failed, closing");
-        s->state = ATPD_SESSION_CLOSING;
-        session_unref(s);
-        return;
-    }
-
-    session_unref(s);
+    
+    LOG_DEBUG("SESSION[%lu]: pipe drained, sent=%zd", s->session_id, sent);
+    return 0;
 }
 
-/* ========== OUT Callback ========== */
+/* ========== Splice Pump ========== */
 
-static void session_out_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
-    (void)r;
-    atpd_session_t *s = userdata;
-
-    if (!s) return;
-
-    /* Take reference for this callback */
-    session_ref(s);
-
-    if (events & (REACTOR_EVENT_ERROR | REACTOR_EVENT_HANGUP)) {
-        s->state = ATPD_SESSION_CLOSING;
-        session_unref(s);
-        return;
-    }
-
-    if (s->state == ATPD_SESSION_PIPE_DIRTY) {
-        atpd_session_drain_pipe(s);
-        if (s->state == ATPD_SESSION_PIPE_DIRTY) {
-            session_unref(s);
-            return;
-        }
-
-        reactor_modify_fd(r, s->fd_in, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE);
-    }
-
-    session_unref(s);
-}
-
-/* ========== Free Callback ========== */
-
-static void session_free_cb(void *userdata) {
-    atpd_session_t *s = userdata;
-    if (!s) return;
-
-    LOG_DEBUG("session: free_cb called fd_in=%d", s->fd_in);
-    session_unref(s);
-}
-
-/* ========== Pipe Health Monitor ========== */
-
-static int check_pipe_health(atpd_session_t *s) {
-    if (!s || s->pipe_fds[0] < 0) return -1;
-
-    int cur_size = fcntl(s->pipe_fds[0], F_GETPIPE_SZ);
-    if (cur_size < 0) {
-        LOG_WARN("session: F_GETPIPE_SZ failed for fd=%d: %s", s->pipe_fds[0], strerror(errno));
-        return -1;
-    }
-
-    if (cur_size < (ATPD_SESSION_PIPE_SIZE * 3 / 4)) {
-        int new_size = fcntl(s->pipe_fds[0], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE);
-        if (new_size < 0) {
-            LOG_WARN("session: F_SETPIPE_SZ failed for fd=%d (current=%d, target=%d): %s",
-                     s->pipe_fds[0], cur_size, ATPD_SESSION_PIPE_SIZE, strerror(errno));
-            return cur_size;
-        }
-        LOG_INFO("session: pipe buffer resized %d -> %d bytes", cur_size, new_size);
-        fcntl(s->pipe_fds[1], F_SETPIPE_SZ, new_size);
-        return new_size;
-    }
-
-    return cur_size;
-}
-
-/* ========== Emergency Drain ========== */
-
-static void emergency_drain(atpd_session_t *s) {
-    if (!s) return;
-
-    size_t drained = 0;
-    char discard[4096];
-
-    if (s->pipe_fds[0] > 0) {
-        ssize_t n;
-        while ((n = read(s->pipe_fds[0], discard, sizeof(discard))) > 0) {
-            drained += (size_t)n;
-        }
-    }
-
-    if (s->pipe_fds[1] > 0 && s->pipe_pending > 0) {
-        s->pipe_pending = 0;
-    }
-
-    if (s->pipe_fds[0] > 0) {
-        close(s->pipe_fds[0]);
-        s->pipe_fds[0] = -1;
-    }
-    if (s->pipe_fds[1] > 0) {
-        close(s->pipe_fds[1]);
-        s->pipe_fds[1] = -1;
-    }
-
-    s->state = ATPD_SESSION_CLOSING;
-
-    LOG_WARN("session: emergency drain completed (fd_in=%d, fd_out=%d, "
-             "discarded=%zu bytes, pipe_pending=%zu)",
-             s->fd_in, s->fd_out, drained, s->pipe_pending);
-}
-
-/* ========== Splice Pump Logic ========== */
-
-ssize_t splice_pump_logic(atpd_session_t *s, size_t max_len) {
+ssize_t atpd_session_splice_pump(atpd_session_t *s, size_t max_len) {
     if (!s) return ATPD_SPLICE_ERROR;
-
-    if (g_atpd_ctx.vpn_state != VPN_STATE_READY) {
+    
+    /* Check VPN state */
+    if (!atpd_session_is_vpn_ready()) {
         return ATPD_SPLICE_VPN_NOT_READY;
     }
-
-    static size_t health_check_counter = 0;
-    if ((++health_check_counter & 0x3F) == 0) {
-        check_pipe_health(s);
+    
+    int state = atomic_load(&s->state);
+    if (state >= ATPD_SESSION_CLOSING) {
+        return ATPD_SPLICE_ERROR;
     }
-
+    
     ssize_t total_moved = 0;
     size_t remaining = max_len;
-
+    uint64_t bytes_in_total = 0;
+    uint64_t bytes_out_total = 0;
+    
     while (remaining > 0) {
+        /* Read: fd_in -> pipe */
         ssize_t moved = splice(s->fd_in, NULL, s->pipe_fds[1], NULL,
                                remaining, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-
+        
         if (moved < 0) {
             switch (errno) {
                 case EAGAIN:
@@ -375,98 +229,370 @@ ssize_t splice_pump_logic(atpd_session_t *s, size_t max_len) {
                 case EWOULDBLOCK:
 #endif
                     goto done;
-
                 case EINTR:
                     continue;
-
                 case EPIPE:
                 case ECONNRESET:
                     if (total_moved > 0) goto done;
                     return ATPD_SPLICE_EOF;
-
                 case EINVAL:
-                    LOG_ERROR("session: splice not supported for fd_in=%d", s->fd_in);
+                    LOG_ERROR("SESSION[%lu]: splice not supported for fd_in", s->session_id);
                     return ATPD_SPLICE_NOTSUP;
-
                 default:
-                    LOG_ERROR("session: splice read error fd_in=%d: %s", s->fd_in, strerror(errno));
+                    LOG_ERROR("SESSION[%lu]: splice read error: %s", 
+                              s->session_id, strerror(errno));
                     return ATPD_SPLICE_ERROR;
             }
         }
-
+        
         if (moved == 0) {
             if (total_moved > 0) goto done;
             return ATPD_SPLICE_EOF;
         }
-
+        
+        /* bytes_in += moved (data entered pipe) */
+        bytes_in_total += (uint64_t)moved;
+        
+        /* Write: pipe -> fd_out */
         ssize_t sent = 0;
         size_t to_send = (size_t)moved;
-
+        
         while (sent < (ssize_t)to_send) {
+            /* Double-check VPN state */
+            if (!atpd_session_is_vpn_ready()) {
+                LOG_WARN("SESSION[%lu]: VPN became not ready during splice", s->session_id);
+                atpd_session_mark_closing(s);
+                emergency_drain(s);
+                if (total_moved > 0) {
+                    atomic_fetch_add(&s->bytes_in, bytes_in_total);
+                    atomic_fetch_add(&s->bytes_out, bytes_out_total);
+                    return total_moved;
+                }
+                return ATPD_SPLICE_VPN_NOT_READY;
+            }
+            
             ssize_t ret = splice(s->pipe_fds[0], NULL, s->fd_out, NULL,
                                  to_send - (size_t)sent,
                                  SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
-
+            
             if (ret < 0) {
                 switch (errno) {
                     case EAGAIN:
 #if EAGAIN != EWOULDBLOCK
                     case EWOULDBLOCK:
 #endif
-                        s->pipe_pending = to_send - (size_t)sent;
-                        s->state = ATPD_SESSION_PIPE_DIRTY;
-                        s->bytes_in += (uint64_t)sent;
-                        s->bytes_out += (uint64_t)total_moved + (uint64_t)sent;
+                        atomic_store(&s->pipe_pending, to_send - (size_t)sent);
+                        atomic_store(&s->state, ATPD_SESSION_PIPE_DIRTY);
+                        bytes_out_total += (uint64_t)sent;
+                        atomic_fetch_add(&s->bytes_in, bytes_in_total);
+                        atomic_fetch_add(&s->bytes_out, bytes_out_total);
+                        /* Enable WRITE event */
+                        if (s->reactor) {
+                            reactor_modify_fd(s->reactor, s->fd_out, 
+                                              REACTOR_EVENT_READ | REACTOR_EVENT_WRITE | REACTOR_EVENT_EDGE);
+                        }
+                        LOG_DEBUG("SESSION[%lu]: pipe dirty, pending=%zu", 
+                                  s->session_id, atomic_load(&s->pipe_pending));
                         return total_moved + sent;
-
                     case EINTR:
                         continue;
-
                     case EPIPE:
                     case ECONNRESET:
-                        s->pipe_pending = to_send - (size_t)sent;
-                        s->state = ATPD_SESSION_PIPE_DIRTY;
-                        if (total_moved + sent > 0) return total_moved + sent;
+                        atomic_store(&s->pipe_pending, to_send - (size_t)sent);
+                        atomic_store(&s->state, ATPD_SESSION_PIPE_DIRTY);
+                        bytes_out_total += (uint64_t)sent;
+                        if (total_moved + sent > 0) {
+                            atomic_fetch_add(&s->bytes_in, bytes_in_total);
+                            atomic_fetch_add(&s->bytes_out, bytes_out_total);
+                            return total_moved + sent;
+                        }
                         return ATPD_SPLICE_EOF;
-
                     default:
-                        LOG_ERROR("session: splice write error fd_out=%d: %s", s->fd_out, strerror(errno));
+                        LOG_ERROR("SESSION[%lu]: splice write error: %s", 
+                                  s->session_id, strerror(errno));
                         return ATPD_SPLICE_ERROR;
                 }
             }
-
+            
             if (ret == 0) {
-                if (total_moved + sent > 0) return total_moved + sent;
+                if (total_moved + sent > 0) {
+                    bytes_out_total += (uint64_t)sent;
+                    atomic_fetch_add(&s->bytes_in, bytes_in_total);
+                    atomic_fetch_add(&s->bytes_out, bytes_out_total);
+                    return total_moved + sent;
+                }
                 return ATPD_SPLICE_EOF;
             }
-
+            
             sent += ret;
+            bytes_out_total += (uint64_t)ret;
         }
-
+        
         total_moved += sent;
         remaining -= (size_t)sent;
     }
-
+    
 done:
-    s->bytes_in += (uint64_t)total_moved;
-    s->bytes_out += (uint64_t)total_moved;
+    if (total_moved > 0) {
+        atomic_fetch_add(&s->bytes_in, bytes_in_total);
+        atomic_fetch_add(&s->bytes_out, bytes_out_total);
+        atomic_store(&s->last_active_at, reactor_now_ms());
+    }
     return total_moved > 0 ? total_moved : ATPD_SPLICE_OK;
 }
 
-/* ========== Emergency Drain All ========== */
+/* ========== IN Callback ========== */
+
+static void session_in_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
+    (void)r;
+    (void)fd;
+    atpd_session_t *s = userdata;
+    
+    if (!s) return;
+    
+    /* Get reference for this callback */
+    atpd_session_get(s);
+    
+    int state = atomic_load(&s->state);
+    if (state >= ATPD_SESSION_CLOSING) {
+        atpd_session_put(s);
+        return;
+    }
+    
+    if (events & (REACTOR_EVENT_ERROR | REACTOR_EVENT_HANGUP)) {
+        LOG_DEBUG("SESSION[%lu]: IN error/hangup", s->session_id);
+        atpd_session_mark_closing(s);
+        atpd_session_put(s);
+        return;
+    }
+    
+    if (state == ATPD_SESSION_PIPE_DIRTY) {
+        atpd_session_drain_pipe(s);
+        state = atomic_load(&s->state);
+        if (state == ATPD_SESSION_PIPE_DIRTY) {
+            atpd_session_put(s);
+            return;
+        }
+    }
+    
+    ssize_t ret = atpd_session_splice_pump(s, ATPD_SESSION_PIPE_SIZE);
+    if (ret == ATPD_SPLICE_VPN_NOT_READY) {
+        LOG_DEBUG("SESSION[%lu]: VPN not ready, marking closing", s->session_id);
+        atpd_session_mark_closing(s);
+        atpd_session_put(s);
+        return;
+    }
+    if (ret < 0) {
+        LOG_ERROR("SESSION[%lu]: splice pump failed: %zd", s->session_id, ret);
+        atpd_session_mark_closing(s);
+        atpd_session_put(s);
+        return;
+    }
+    
+    atpd_session_put(s);
+}
+
+/* ========== OUT Callback ========== */
+
+static void session_out_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
+    (void)r;
+    (void)fd;
+    atpd_session_t *s = userdata;
+    
+    if (!s) return;
+    
+    /* Get reference for this callback */
+    atpd_session_get(s);
+    
+    int state = atomic_load(&s->state);
+    if (state >= ATPD_SESSION_CLOSING) {
+        atpd_session_put(s);
+        return;
+    }
+    
+    if (events & (REACTOR_EVENT_ERROR | REACTOR_EVENT_HANGUP)) {
+        LOG_DEBUG("SESSION[%lu]: OUT error/hangup", s->session_id);
+        atpd_session_mark_closing(s);
+        atpd_session_put(s);
+        return;
+    }
+    
+    if (state == ATPD_SESSION_PIPE_DIRTY) {
+        int ret = atpd_session_drain_pipe(s);
+        if (ret > 0) {
+            /* Still dirty, keep WRITE event */
+            atpd_session_put(s);
+            return;
+        }
+        if (ret < 0) {
+            LOG_ERROR("SESSION[%lu]: drain pipe failed", s->session_id);
+            atpd_session_mark_closing(s);
+            atpd_session_put(s);
+            return;
+        }
+        /* Drained successfully */
+        LOG_DEBUG("SESSION[%lu]: pipe drained via OUT callback", s->session_id);
+    }
+    
+    atpd_session_put(s);
+}
+
+/* ========== Free Callback ========== */
+
+static void session_free_cb(void *userdata) {
+    atpd_session_t *s = userdata;
+    if (!s) return;
+    
+    LOG_DEBUG("SESSION[%lu]: free_cb called", s->session_id);
+    atpd_session_put(s);
+}
+
+/* ========== Mark Closing ========== */
+
+void atpd_session_mark_closing(atpd_session_t *s) {
+    if (!s) return;
+    
+    /* Atomic state check: only mark if not already closing or beyond */
+    int expected = ATPD_SESSION_ACTIVE;
+    if (!atomic_compare_exchange_strong(&s->state, &expected, ATPD_SESSION_CLOSING)) {
+        expected = ATPD_SESSION_PIPE_DIRTY;
+        if (!atomic_compare_exchange_strong(&s->state, &expected, ATPD_SESSION_CLOSING)) {
+            expected = ATPD_SESSION_DRAINING;
+            if (!atomic_compare_exchange_strong(&s->state, &expected, ATPD_SESSION_CLOSING)) {
+                /* Already closing or destroyed */
+                LOG_DEBUG("SESSION[%lu]: already closing or destroyed", s->session_id);
+                return;
+            }
+        }
+    }
+    
+    LOG_DEBUG("SESSION[%lu]: marking closing", s->session_id);
+    
+    /* Remove from reactor */
+    if (s->reactor) {
+        reactor_remove_fd(s->reactor, s->fd_in);
+        reactor_remove_fd(s->reactor, s->fd_out);
+    }
+    
+    /* Release reactor-held references */
+    /* fd_in and fd_out each hold a reference */
+    atpd_session_put(s);  /* Release fd_in */
+    atpd_session_put(s);  /* Release fd_out */
+    
+    /* Enqueue for GC */
+    atpd_session_gc_enqueue(s);
+}
+
+/* ========== GC Queue ========== */
+
+void atpd_session_gc_enqueue(atpd_session_t *s) {
+    if (!s) return;
+    
+    /* Prevent double enqueue */
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&s->gc_enqueued, &expected, true)) {
+        LOG_DEBUG("SESSION[%lu]: already enqueued", s->session_id);
+        return;
+    }
+    
+    atomic_store(&s->state, ATPD_SESSION_DESTROY_PENDING);
+    s->gc_node.session = s;
+    s->gc_node.next = NULL;
+    
+    /* Enqueue with CAS for thread safety */
+    struct session_gc_node *old_tail;
+    struct session_gc_node *new_node = &s->gc_node;
+    
+    do {
+        old_tail = g_gc_queue.tail;
+        new_node->next = NULL;
+    } while (!atomic_compare_exchange_weak((void**)&g_gc_queue.tail, 
+                                           (void**)&old_tail, new_node));
+    
+    if (old_tail == NULL) {
+        g_gc_queue.head = new_node;
+    } else {
+        old_tail->next = new_node;
+    }
+    
+    atomic_fetch_add(&g_gc_queue.count, 1);
+    
+    LOG_DEBUG("SESSION[%lu]: enqueued for GC, queue size=%u", 
+              s->session_id, atomic_load(&g_gc_queue.count));
+}
+
+void atpd_session_gc_process(reactor_t *r) {
+    (void)r;
+    
+    /* Must be called from reactor thread only */
+    /* Assumes single-threaded reactor model */
+    
+    struct session_gc_node *node = g_gc_queue.head;
+    g_gc_queue.head = NULL;
+    g_gc_queue.tail = NULL;
+    struct session_gc_node *next;
+    
+    while (node) {
+        next = node->next;
+        atpd_session_t *s = node->session;
+        
+        if (s) {
+            /* Drop the GC reference */
+            atpd_session_put(s);
+        }
+        
+        node = next;
+    }
+    
+    atomic_store(&g_gc_queue.count, 0);
+    LOG_DEBUG("GC: processed all pending sessions");
+}
+
+/* ========== Emergency Drain ========== */
+
+static void emergency_drain(atpd_session_t *s) {
+    if (!s) return;
+    
+    /* Prevent double drain */
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&s->emergency_drained, &expected, true)) {
+        LOG_DEBUG("SESSION[%lu]: already emergency drained", s->session_id);
+        return;
+    }
+    
+    LOG_WARN("SESSION[%lu]: emergency drain started", s->session_id);
+    
+    /* Close pipes - kernel discards data */
+    safe_close(&s->pipe_fds[0]);
+    safe_close(&s->pipe_fds[1]);
+    atomic_store(&s->pipe_pending, 0);
+    
+    /* Mark for closure if not already */
+    int state = atomic_load(&s->state);
+    if (state < ATPD_SESSION_CLOSING) {
+        atpd_session_mark_closing(s);
+    }
+    
+    LOG_WARN("SESSION[%lu]: emergency drain completed", s->session_id);
+}
 
 void atpd_session_emergency_drain_all(void) {
     struct atpd_session_list *node = g_atpd_ctx.sessions;
+    struct atpd_session_list *next;
     int drained = 0;
-
+    
     while (node) {
-        struct atpd_session *s = node->session;
-        if (s && s->state != ATPD_SESSION_CLOSING) {
-            emergency_drain(s);
-            drained++;
+        next = node->next;  /* Safe traversal */
+        atpd_session_t *s = node->session;
+        if (s) {
+            int state = atomic_load(&s->state);
+            if (state < ATPD_SESSION_CLOSING) {
+                emergency_drain(s);
+                drained++;
+            }
         }
-        node = node->next;
+        node = next;
     }
-
+    
     LOG_WARN("session: emergency drain completed for %d sessions", drained);
 }
