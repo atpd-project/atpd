@@ -10,6 +10,105 @@
 #include <stdatomic.h>
 #include <pthread.h>
 
+/*
+ * ============================================================================
+ * Reactor Ownership Contract
+ * ============================================================================
+ *
+ * This module manages session lifecycle with explicit reference counting.
+ * The reactor integration follows a strict ownership model:
+ *
+ * 1. Reference Counting Rules:
+ *
+ *    atpd_session_create()      -> +1 (initial reference)
+ *    reactor_add_fd_ex(fd_in)   -> +1 (reactor holds for IN callback)
+ *    reactor_add_fd_ex(fd_out)  -> +1 (reactor holds for OUT callback)
+ *    atpd_session_gc_enqueue()  -> +1 (GC queue holds during cleanup)
+ *
+ *    session_free_cb(fd_in)     -> -1 (reactor releases IN reference)
+ *    session_free_cb(fd_out)    -> -1 (reactor releases OUT reference)
+ *    atpd_session_gc_process()  -> -1 (GC releases its reference)
+ *
+ * 2. Critical Invariants:
+ *
+ *    - reactor_remove_fd() MUST trigger free_cb() exactly once per fd
+ *    - free_cb() is the ONLY place that releases reactor-held references
+ *    - mark_closing() does NOT release reactor references
+ *    - GC enqueue takes its own reference, process releases it
+ *
+ * 3. Destroy Path:
+ *
+ *    mark_closing()
+ *      -> reactor_remove_fd(fd_in)  -> free_cb(fd_in)  -> put()
+ *      -> reactor_remove_fd(fd_out) -> free_cb(fd_out) -> put()
+ *      -> gc_enqueue()              -> get()
+ *      -> gc_process()              -> put() -> ref=0 -> destroy()
+ *
+ * ============================================================================
+ */
+
+/*
+ * ============================================================================
+ * Session State Machine
+ * ============================================================================
+ *
+ *   ┌─────────────────────────────────────────────────────────────┐
+ *   │                                                             │
+ *   │                     IDLE                                    │
+ *   │                      │                                      │
+ *   │                      │ atpd_session_register()             │
+ *   │                      ▼                                      │
+ *   │                    ACTIVE                                   │
+ *   │                      │                                      │
+ *   │                      │ splice returns EAGAIN               │
+ *   │                      ▼                                      │
+ *   │               ┌────────────┐     ┌─────────────┐          │
+ *   │               │ PIPE_DIRTY │────▶│  DRAINING   │          │
+ *   │               └────────────┘     └─────────────┘          │
+ *   │                      │                      │              │
+ *   │                      │ drain complete       │              │
+ *   │                      └──────────────────────┘              │
+ *   │                              │                             │
+ *   │                              │ error / shutdown            │
+ *   │                              ▼                             │
+ *   │                         ┌──────────┐                      │
+ *   │                         │ CLOSING  │                      │
+ *   │                         └──────────┘                      │
+ *   │                              │                             │
+ *   │                              │ atpd_session_gc_enqueue()  │
+ *   │                              ▼                             │
+ *   │                    ┌──────────────────┐                   │
+ *   │                    │ DESTROY_PENDING  │                   │
+ *   │                    └──────────────────┘                   │
+ *   │                              │                             │
+ *   │                              │ gc_process()               │
+ *   │                              ▼                             │
+ *   │                    ┌──────────────────┐                   │
+ *   │                    │   DESTROYED      │                   │
+ *   │                    └──────────────────┘                   │
+ *   │                                                             │
+ *   └─────────────────────────────────────────────────────────────┘
+ *
+ * Valid Transitions:
+ *   IDLE         -> ACTIVE       (register)
+ *   IDLE         -> CLOSING      (register fail)
+ *   ACTIVE       -> PIPE_DIRTY   (write blocked)
+ *   PIPE_DIRTY   -> DRAINING     (drain started)
+ *   DRAINING     -> ACTIVE       (drain complete)
+ *   DRAINING     -> PIPE_DIRTY   (drain blocked again)
+ *   ACTIVE       -> CLOSING      (error/shutdown)
+ *   PIPE_DIRTY   -> CLOSING      (error/shutdown)
+ *   DRAINING     -> CLOSING      (error/shutdown)
+ *   CLOSING      -> DESTROY_PENDING (gc enqueue)
+ *   DESTROY_PENDING -> DESTROYED    (gc process)
+ *
+ * Invalid Transitions (rejected by CAS):
+ *   DESTROYED    -> any
+ *   DESTROY_PENDING -> any except DESTROYED
+ *
+ * ============================================================================
+ */
+
 /* ========== Forward Declarations ========== */
 
 static void session_in_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
@@ -70,16 +169,18 @@ atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out) {
 
 void atpd_session_get(atpd_session_t *s) {
     if (!s) return;
-    unsigned int old = atomic_fetch_add_explicit(&s->ref_count, 1, memory_order_acquire);
+    unsigned int old = atomic_fetch_add_explicit(&s->ref_count, 1, memory_order_relaxed);
     LOG_DEBUG("SESSION[%lu]: get ref=%u", s->session_id, old + 1);
 }
 
 void atpd_session_put(atpd_session_t *s) {
     if (!s) return;
-    unsigned int old = atomic_fetch_sub_explicit(&s->ref_count, 1, memory_order_release);
+    unsigned int old = atomic_fetch_sub_explicit(&s->ref_count, 1, memory_order_acq_rel);
     LOG_DEBUG("SESSION[%lu]: put ref=%u", s->session_id, old - 1);
     if (old == 1) {
         /* Last reference dropped */
+        /* Acquire memory fence to ensure all previous operations are visible */
+        atomic_thread_fence(memory_order_acquire);
         atpd_session_destroy_internal(s);
     }
 }
@@ -94,7 +195,7 @@ static inline void safe_close(int *fd) {
 static void atpd_session_destroy_internal(atpd_session_t *s) {
     if (!s) return;
     
-    /* Cache session_id before free */
+    /* Cache session data before CAS */
     uint64_t sid = s->session_id;
     
     /* Atomic CAS: only one thread can destroy */
@@ -108,9 +209,17 @@ static void atpd_session_destroy_internal(atpd_session_t *s) {
     int fd_out = s->fd_out;
     uint64_t bytes_in = atomic_load(&s->bytes_in);
     uint64_t bytes_out = atomic_load(&s->bytes_out);
+    unsigned int refs = atomic_load(&s->ref_count);
+    int state = atomic_load(&s->state);
     
-    LOG_DEBUG("SESSION[%lu]: destroying fd_in=%d fd_out=%d bytes_in=%" PRIu64 " bytes_out=%" PRIu64 "",
-              sid, fd_in, fd_out, bytes_in, bytes_out);
+    /* Assert: no references should remain */
+    if (refs != 0) {
+        LOG_WARN("SESSION[%lu]: destroy with non-zero ref=%u - potential leak!", 
+                 sid, refs);
+    }
+    
+    LOG_DEBUG("SESSION[%lu]: destroying fd_in=%d fd_out=%d bytes_in=%" PRIu64 " bytes_out=%" PRIu64 " final_ref=%u state=%d",
+              sid, fd_in, fd_out, bytes_in, bytes_out, refs, state);
     
     atomic_store(&s->state, ATPD_SESSION_DESTROYED);
     
@@ -459,17 +568,22 @@ static void session_free_cb(void *userdata) {
 void atpd_session_mark_closing(atpd_session_t *s) {
     if (!s) return;
     
-    /* Atomic state check: only mark if not already closing or beyond */
-    int expected = ATPD_SESSION_ACTIVE;
-    if (!atomic_compare_exchange_strong(&s->state, &expected, ATPD_SESSION_CLOSING)) {
-        expected = ATPD_SESSION_PIPE_DIRTY;
-        if (!atomic_compare_exchange_strong(&s->state, &expected, ATPD_SESSION_CLOSING)) {
-            expected = ATPD_SESSION_DRAINING;
-            if (!atomic_compare_exchange_strong(&s->state, &expected, ATPD_SESSION_CLOSING)) {
-                LOG_DEBUG("SESSION[%lu]: already closing or destroyed", s->session_id);
-                return;
-            }
+    /* Loop CAS: allow transition from any state to CLOSING */
+    for (;;) {
+        int state = atomic_load(&s->state);
+        
+        /* Already closing or beyond */
+        if (state >= ATPD_SESSION_CLOSING) {
+            LOG_DEBUG("SESSION[%lu]: already closing or destroyed (state=%d)", 
+                      s->session_id, state);
+            return;
         }
+        
+        /* Try to atomically transition to CLOSING */
+        if (atomic_compare_exchange_weak(&s->state, &state, ATPD_SESSION_CLOSING)) {
+            break;
+        }
+        /* CAS failed, retry with updated state value */
     }
     
     LOG_DEBUG("SESSION[%lu]: marking closing", s->session_id);
