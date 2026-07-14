@@ -24,9 +24,8 @@ make clean
 # 4. 创建输出目录
 mkdir -p build/bin
 
-# 5. 执行手动编译链接
-SRC_FILES=$(find src -name "*.c" ! -path "src/yyjson/*" ! -name "epoll.c")
-SRC_FILES="$SRC_FILES src/yyjson/yyjson.c"
+# 5. 执行手动编译链接 (yyjson.c now directly in src/)
+SRC_FILES=$(find src -name "*.c" ! -name "epoll.c")
 
 echo "Compiling..."
 $CC -Wall -Wextra -Os -flto -D_GNU_SOURCE \
