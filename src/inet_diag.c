@@ -15,6 +15,7 @@
 #include <pthread.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <stdatomic.h>
 
 #define INET_DIAG_SOCKET_TIMEOUT_MS 3000
 #define NLMSG_TAIL(nmsg) ((struct rtattr*)(((char*)(nmsg)) + NLMSG_ALIGN((nmsg)->nlmsg_len)))
@@ -32,6 +33,7 @@
 static int g_diag_sock = -1;
 static int g_diag_available = -1;
 static pthread_mutex_t g_diag_mutex = PTHREAD_MUTEX_INITIALIZER;
+static atomic_uint g_nl_seq = ATOMIC_VAR_INIT(1);
 
 int inet_diag_init(void) {
     pthread_mutex_lock(&g_diag_mutex);
@@ -50,7 +52,9 @@ int inet_diag_init(void) {
     }
     
     struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
-    setsockopt(g_diag_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (setsockopt(g_diag_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+        LOG_WARN("INET_DIAG: setsockopt(SO_RCVTIMEO) failed: %s", strerror(errno));
+    }
     
     struct inet_diag_req_v2 test_req;
     memset(&test_req, 0, sizeof(test_req));
@@ -64,7 +68,7 @@ int inet_diag_init(void) {
     nlh->nlmsg_len = NLMSG_LENGTH(sizeof(test_req));
     nlh->nlmsg_type = SOCK_DIAG_BY_FAMILY;
     nlh->nlmsg_flags = NLM_F_REQUEST;
-    nlh->nlmsg_seq = 1;
+    nlh->nlmsg_seq = atomic_fetch_add(&g_nl_seq, 1);
     nlh->nlmsg_pid = getpid();
     memcpy(NLMSG_DATA(nlh), &test_req, sizeof(test_req));
     
@@ -117,13 +121,15 @@ void inet_diag_cleanup(void) {
     LOG_DEBUG("INET_DIAG module cleaned up");
 }
 
-static void add_attr(struct nlmsghdr *nlh, int maxlen, int type, const void *data, int alen) {
+static int add_attr(struct nlmsghdr *nlh, int maxlen, int type, const void *data, int alen) {
     int len = RTA_LENGTH(alen);
     struct rtattr *rta;
     int new_len = NLMSG_ALIGN(nlh->nlmsg_len) + len;
     
     if (new_len > maxlen) {
-        return;
+        LOG_ERROR("INET_DIAG: add_attr failed: buffer too small (new_len=%d, maxlen=%d)",
+                  new_len, maxlen);
+        return -1;
     }
     
     rta = (struct rtattr*)NLMSG_TAIL(nlh);
@@ -135,6 +141,7 @@ static void add_attr(struct nlmsghdr *nlh, int maxlen, int type, const void *dat
     }
     
     nlh->nlmsg_len = new_len;
+    return 0;
 }
 
 static int build_uid_filter(struct nlmsghdr *nlh, int maxlen, int uid) {
@@ -145,7 +152,10 @@ static int build_uid_filter(struct nlmsghdr *nlh, int maxlen, int uid) {
         BPF_STMT(BPF_RET | BPF_K, 0),
     };
 
-    add_attr(nlh, maxlen, INET_DIAG_REQ_BYTECODE, code, sizeof(code));
+    if (add_attr(nlh, maxlen, INET_DIAG_REQ_BYTECODE, code, sizeof(code)) != 0) {
+        LOG_ERROR("INET_DIAG: build_uid_filter failed");
+        return -1;
+    }
     return 0;
 }
 
@@ -163,13 +173,15 @@ static int send_diag_request(struct inet_diag_req_v2 *req, char **response, size
     nlh->nlmsg_len = NLMSG_LENGTH(sizeof(*req));
     nlh->nlmsg_type = SOCK_DIAG_BY_FAMILY;
     nlh->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-    nlh->nlmsg_seq = time(NULL);
+    nlh->nlmsg_seq = atomic_fetch_add(&g_nl_seq, 1);
     nlh->nlmsg_pid = getpid();
     
     memcpy(NLMSG_DATA(nlh), req, sizeof(*req));
     
     if (uid > 0) {
-        build_uid_filter(nlh, (int)sizeof(buf), uid);
+        if (build_uid_filter(nlh, (int)sizeof(buf), uid) != 0) {
+            return -1;
+        }
     }
     
     memset(&addr, 0, sizeof(addr));
@@ -211,7 +223,8 @@ static int send_diag_request(struct inet_diag_req_v2 *req, char **response, size
         }
         
         struct nlmsghdr *nh;
-        for (nh = (struct nlmsghdr*)recv_buf; NLMSG_OK(nh, len); nh = NLMSG_NEXT(nh, len)) {
+        size_t remaining = (size_t)len;
+        for (nh = (struct nlmsghdr*)recv_buf; NLMSG_OK(nh, remaining); nh = NLMSG_NEXT(nh, remaining)) {
             if (nh->nlmsg_type == NLMSG_DONE) {
                 goto done;
             }
@@ -312,7 +325,8 @@ int inet_diag_get_uid_v4(int protocol,
     
     if (send_diag_request(&req, &response, &resp_len, -1) == 0 && response) {
         struct nlmsghdr *nh;
-        for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, resp_len); nh = NLMSG_NEXT(nh, resp_len)) {
+        size_t remaining = resp_len;
+        for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, remaining); nh = NLMSG_NEXT(nh, remaining)) {
             if (nh->nlmsg_type == NLMSG_DONE) break;
             if (nh->nlmsg_type == NLMSG_ERROR) break;
             
@@ -353,7 +367,8 @@ int inet_diag_get_uid_v6(int protocol,
     
     if (send_diag_request(&req, &response, &resp_len, -1) == 0 && response) {
         struct nlmsghdr *nh;
-        for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, resp_len); nh = NLMSG_NEXT(nh, resp_len)) {
+        size_t remaining = resp_len;
+        for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, remaining); nh = NLMSG_NEXT(nh, remaining)) {
             if (nh->nlmsg_type == NLMSG_DONE) break;
             if (nh->nlmsg_type == NLMSG_ERROR) break;
             
@@ -374,7 +389,6 @@ int inet_diag_get_uid_fallback(int family, int protocol,
     const char *proc_path = (family == AF_INET) ? "/proc/net/tcp" : "/proc/net/tcp6";
     FILE *fp = fopen(proc_path, "r");
     char line[512];
-    char src_hex[32], dst_hex[32];
     int found_uid = -1;
     
     (void)protocol;
@@ -384,20 +398,43 @@ int inet_diag_get_uid_fallback(int family, int protocol,
         return -1;
     }
     
-    snprintf(src_hex, sizeof(src_hex), "%08X:%04X", ntohl(src_ip), src_port);
-    snprintf(dst_hex, sizeof(dst_hex), "%08X:%04X", ntohl(dst_ip), dst_port);
+    /* Convert to network byte order for comparison with /proc */
+    uint32_t src_ip_net = htonl(src_ip);
+    uint32_t dst_ip_net = htonl(dst_ip);
     
+    /* Skip header line */
     fgets(line, sizeof(line), fp);
     
     while (fgets(line, sizeof(line), fp)) {
-        char local[32], remote[32];
-        int uid;
+        char tokens[16][64];
+        int token_count = 0;
+        char *saveptr;
+        char *tok = strtok_r(line, " \t\r\n", &saveptr);
         
-        if (sscanf(line, "%*d: %31s %31s %*X %*X %*d %d", local, remote, &uid) >= 3) {
-            if (strcmp(local, src_hex) == 0 && strcmp(remote, dst_hex) == 0) {
-                found_uid = uid;
-                break;
-            }
+        while (tok && token_count < 16) {
+            strncpy(tokens[token_count], tok, sizeof(tokens[0]) - 1);
+            tokens[token_count][sizeof(tokens[0]) - 1] = '\0';
+            token_count++;
+            tok = strtok_r(NULL, " \t\r\n", &saveptr);
+        }
+        
+        if (token_count < 8) continue;
+        
+        char *local = tokens[1];
+        char *remote = tokens[2];
+        char *uid_str = tokens[7];
+        
+        uint32_t l_ip, r_ip;
+        uint16_t l_port, r_port;
+        
+        if (sscanf(local, "%x:%hx", &l_ip, &l_port) != 2) continue;
+        if (sscanf(remote, "%x:%hx", &r_ip, &r_port) != 2) continue;
+        
+        /* Compare in network byte order */
+        if (l_ip == src_ip_net && l_port == src_port &&
+            r_ip == dst_ip_net && r_port == dst_port) {
+            found_uid = atoi(uid_str);
+            break;
         }
     }
     
@@ -440,7 +477,8 @@ int inet_diag_get_connections_filtered(connection_info_t **conns, int *count,
         
         if (send_diag_request(&req, &response, &resp_len, filter_uid) == 0 && response) {
             struct nlmsghdr *nh;
-            for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, resp_len); nh = NLMSG_NEXT(nh, resp_len)) {
+            size_t remaining = resp_len;
+            for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, remaining); nh = NLMSG_NEXT(nh, remaining)) {
                 if (nh->nlmsg_type == NLMSG_DONE) break;
                 if (nh->nlmsg_type == NLMSG_ERROR) break;
                 
@@ -551,7 +589,8 @@ uint32_t inet_diag_get_socket_inode(int family, int protocol,
     
     if (send_diag_request(&req, &response, &resp_len, -1) == 0 && response) {
         struct nlmsghdr *nh;
-        for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, resp_len); nh = NLMSG_NEXT(nh, resp_len)) {
+        size_t remaining = resp_len;
+        for (nh = (struct nlmsghdr*)response; NLMSG_OK(nh, remaining); nh = NLMSG_NEXT(nh, remaining)) {
             if (nh->nlmsg_type == NLMSG_DONE) break;
             if (nh->nlmsg_type == NLMSG_ERROR) break;
             
