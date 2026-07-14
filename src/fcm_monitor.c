@@ -120,7 +120,6 @@ static fcm_monitor_ctx_t g_ctx;
 static pthread_once_t g_init_once = PTHREAD_ONCE_INIT;
 static atomic_int g_destroyed;
 
-/* Initialize g_destroyed at startup (avoid ATOMIC_VAR_INIT deprecated) */
 static void init_destroyed(void) {
     atomic_init(&g_destroyed, 0);
 }
@@ -395,7 +394,6 @@ static void cleanup_tracked_connections(const uint64_t *active_inodes, size_t ac
     pthread_mutex_lock(&g_ctx.tracked_mutex);
 
     for (int i = 0; i < g_ctx.tracked_count; i++) {
-        /* Inode-tracked connections: only keep if inode still exists */
         if (g_ctx.tracked[i].has_inode) {
             if (inode_still_exists(g_ctx.tracked[i].inode, active_inodes, active_count)) {
                 if (write_idx != i) {
@@ -406,7 +404,6 @@ static void cleanup_tracked_connections(const uint64_t *active_inodes, size_t ac
             continue;
         }
 
-        /* Non-inode connections expire after TRACKED_TTL */
         if (now - g_ctx.tracked[i].timestamp < TRACKED_TTL) {
             if (write_idx != i) {
                 g_ctx.tracked[write_idx] = g_ctx.tracked[i];
@@ -668,12 +665,10 @@ static void* fcm_monitor_loop(void *arg) {
             last_dns_refresh = now;
         }
 
-        /* Get active connections and build active inode set */
         connection_info_t *conns = NULL;
         int count = 0;
 
         if (inet_diag_get_connections(&conns, &count, IPPROTO_TCP, 0) == 0) {
-            /* Build active inode set with deduplication */
             for (int i = 0; i < count; i++) {
                 if (conns[i].dst_port == FCM_PORT) {
                     uint64_t inode = CONN_INODE(&conns[i]);
@@ -683,7 +678,6 @@ static void* fcm_monitor_loop(void *arg) {
                 }
             }
 
-            /* Process connections */
             for (int i = 0; i < count; i++) {
                 if (conns[i].dst_port != FCM_PORT) continue;
 
@@ -772,7 +766,6 @@ static void* fcm_monitor_loop(void *arg) {
             inet_diag_free_connections(conns);
         }
 
-        /* Cleanup tracked connections using active inode set */
         if (now - last_tracked_cleanup > TRACKED_CLEANUP_INTERVAL) {
             cleanup_tracked_connections(active_inodes, active_count);
             last_tracked_cleanup = now;
