@@ -19,6 +19,10 @@ static pthread_mutex_t g_reject_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define IPTABLES_CMD "/system/bin/iptables"
 #define IP6TABLES_CMD "/system/bin/ip6tables"
+#define IPTABLES_SAVE_CMD "/system/bin/iptables-save"
+#define IP6TABLES_SAVE_CMD "/system/bin/ip6tables-save"
+
+#define MAX_ORPHAN_CHAINS 128
 
 static const char *chain_suffixes[] = {
     "PRE_0", "PRE_1",
@@ -35,9 +39,28 @@ static const char *chain_suffixes[] = {
     NULL
 };
 
+static const char *extra_chains_v4[] = {
+    "ATP_QUIC_0",
+    "ATP_REDIRECT",
+    "ATP_REDIRECT_TCP",
+    "ATP_UDP_TPROXY",
+    "XFRM_BYPASS",
+    "XFRM_BYPASS_NAT",
+    NULL
+};
+
+static const char *extra_chains_v6[] = {
+    "ATP6_QUIC_0",
+    "ATP6_REDIRECT",
+    "ATP6_REDIRECT_TCP",
+    "ATP6_UDP_TPROXY",
+    NULL
+};
+
 typedef struct {
     int family;
     const char *cmd;
+    const char *save_cmd;
     const char *prefix;
     int (*enabled)(atp_config_t *cfg);
     int (*mark)(atp_config_t *cfg);
@@ -69,6 +92,7 @@ static const char *family_ipset_6(atp_config_t *cfg) { (void)cfg; return "cnip6"
 static const tproxy_family_ctx_t family4 = {
     .family = 4,
     .cmd = IPTABLES_CMD,
+    .save_cmd = IPTABLES_SAVE_CMD,
     .prefix = "ATP",
     .enabled = family_enabled_4,
     .mark = family_mark_4,
@@ -83,6 +107,7 @@ static const tproxy_family_ctx_t family4 = {
 static const tproxy_family_ctx_t family6 = {
     .family = 6,
     .cmd = IP6TABLES_CMD,
+    .save_cmd = IP6TABLES_SAVE_CMD,
     .prefix = "ATP6",
     .enabled = family_enabled_6,
     .mark = family_mark_6,
@@ -151,6 +176,31 @@ static void build_chain_name(int family, const char *suffix, char *buf, size_t l
     }
 
     SAFE_SNPRINTF(buf, len, "%s_%s", ctx->prefix, suffix);
+}
+
+static int is_known_atp_chain(int family, const char *chain) {
+    char expected[64];
+
+    for (int i = 0; chain_suffixes[i] != NULL; i++) {
+        build_chain_name(family, chain_suffixes[i], expected, sizeof(expected));
+        if (expected[0] == '\0') continue;
+        if (strcmp(expected, chain) == 0) return 1;
+    }
+
+    const char **extras;
+    if (family == 4) {
+        extras = extra_chains_v4;
+    } else if (family == 6) {
+        extras = extra_chains_v6;
+    } else {
+        return 0;
+    }
+
+    for (int i = 0; extras[i] != NULL; i++) {
+        if (strcmp(extras[i], chain) == 0) return 1;
+    }
+
+    return 0;
 }
 
 static int exec_ipt(atp_config_t *cfg, int family, const char *table,
@@ -1132,71 +1182,132 @@ int tproxy_cleanup_xfrm_bypass(atp_config_t *cfg) {
     return 0;
 }
 
-int tproxy_cleanup_orphan_chains(atp_config_t *cfg) {
-    LOG_INFO("Cleaning up orphan ATP chains");
+static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
+    const tproxy_family_ctx_t *ctx = get_ctx(family);
+    if (!ctx) return -1;
 
-    const char *tables[] = {"mangle", "nat", "filter"};
+    if (cfg->core.dry_run) {
+        LOG_DEBUG("[DRY_RUN] skipping orphan cleanup");
+        return 0;
+    }
+
+    if (!family_available(family)) return 0;
+
     char cmd[MAX_CMD_LEN];
+    int n = snprintf(cmd, sizeof(cmd), "%s 2>/dev/null", ctx->save_cmd);
+    if (n < 0 || n >= (int)sizeof(cmd)) {
+        LOG_ERROR("Command truncated");
+        return -1;
+    }
 
-    for (int family = 4; family <= 6; family += 2) {
-        if (!family_available(family)) continue;
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        LOG_ERROR("Failed to execute %s", ctx->save_cmd);
+        return -1;
+    }
 
-        for (int t = 0; t < 3; t++) {
-            int retry_count = 5;
-            while (retry_count-- > 0) {
-                int found = 0;
+    char line[1024];
+    char current_table[64] = {0};
+    char chains_to_delete[MAX_ORPHAN_CHAINS][64];
+    int chain_count = 0;
 
-                int n = snprintf(cmd, sizeof(cmd),
-                        "%s -t %s -S 2>/dev/null | grep -E '^-N (ATP_|ATP6_|XFRM_BYPASS)' | awk '{print $2}'",
-                        (family == 4) ? IPTABLES_CMD : IP6TABLES_CMD, tables[t]);
-                if (n < 0 || n >= (int)sizeof(cmd)) {
-                    LOG_ERROR("Command truncated");
-                    continue;
-                }
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') {
+            line[len - 1] = '\0';
+        }
 
-                FILE *fp = popen(cmd, "r");
-                if (!fp) continue;
+        if (line[0] == '*') {
+            snprintf(current_table, sizeof(current_table), "%s", line + 1);
+            continue;
+        }
 
-                char chain_name[256];
-                while (fgets(chain_name, sizeof(chain_name), fp)) {
-                    chain_name[strcspn(chain_name, "\n")] = 0;
-                    found = 1;
+        if (line[0] == ':' &&
+            (strncmp(line + 1, "ATP", 3) == 0 ||
+             strncmp(line + 1, "ATP6", 4) == 0 ||
+             strncmp(line + 1, "XFRM", 4) == 0)) {
 
-                    int retry = 20;
-                    while (tproxy_chain_exists(cfg, family, tables[t], chain_name) && retry-- > 0) {
-                        n = snprintf(cmd, sizeof(cmd),
-                                "%s -t %s -F %s 2>/dev/null",
-                                (family == 4) ? IPTABLES_CMD : IP6TABLES_CMD, tables[t], chain_name);
-                        if (n < 0 || n >= (int)sizeof(cmd)) {
-                            LOG_ERROR("Command truncated");
-                            continue;
-                        }
-                        exec_cmd_simple(cmd, CMD_TIMEOUT_SEC);
+            char *space = strchr(line, ' ');
+            if (space) {
+                *space = '\0';
+                char chain_name[64];
+                SAFE_SNPRINTF(chain_name, sizeof(chain_name), "%s", line + 1);
 
-                        n = snprintf(cmd, sizeof(cmd),
-                                "%s -t %s -X %s 2>/dev/null",
-                                (family == 4) ? IPTABLES_CMD : IP6TABLES_CMD, tables[t], chain_name);
-                        if (n < 0 || n >= (int)sizeof(cmd)) {
-                            LOG_ERROR("Command truncated");
-                            continue;
-                        }
-                        exec_cmd_simple(cmd, CMD_TIMEOUT_SEC);
-                    }
-
-                    if (retry <= 0) {
-                        LOG_WARN("Failed to destroy chain %s after 20 attempts", chain_name);
+                if (is_known_atp_chain(family, chain_name)) {
+                    if (chain_count < MAX_ORPHAN_CHAINS) {
+                        SAFE_SNPRINTF(chains_to_delete[chain_count], sizeof(chains_to_delete[0]),
+                                "%s", chain_name);
+                        chain_count++;
                     } else {
-                        LOG_DEBUG("Removed orphan chain: %s from table %s", chain_name, tables[t]);
+                        LOG_WARN("Too many orphan chains, max %d", MAX_ORPHAN_CHAINS);
                     }
                 }
-                pclose(fp);
-
-                if (!found) break;
             }
+            continue;
+        }
+
+        if (strcmp(line, "COMMIT") == 0) {
+            if (chain_count == 0) {
+                current_table[0] = '\0';
+                continue;
+            }
+
+            /* Stage 1: Remove builtin references */
+            for (int i = 0; i < chain_count; i++) {
+                char *chain = chains_to_delete[i];
+                if (chain[0] == '\0') continue;
+
+                char rule_buf[256];
+                SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-j %s", chain);
+
+                delete_all_rules(cfg, family, current_table, "PREROUTING", rule_buf);
+                delete_all_rules(cfg, family, current_table, "OUTPUT", rule_buf);
+                delete_all_rules(cfg, family, current_table, "INPUT", rule_buf);
+                delete_all_rules(cfg, family, current_table, "FORWARD", rule_buf);
+            }
+
+            /* Stage 2: Flush all ATP chains */
+            for (int i = 0; i < chain_count; i++) {
+                char *chain = chains_to_delete[i];
+                if (chain[0] == '\0') continue;
+                tproxy_chain_flush(cfg, family, current_table, chain);
+            }
+
+            /* Stage 3: Destroy all ATP chains */
+            for (int i = 0; i < chain_count; i++) {
+                char *chain = chains_to_delete[i];
+                if (chain[0] == '\0') continue;
+                tproxy_chain_destroy(cfg, family, current_table, chain);
+                LOG_DEBUG("Removed orphan chain: %s from table %s", chain, current_table);
+            }
+
+            chain_count = 0;
+            current_table[0] = '\0';
         }
     }
 
-    return 0;
+    int ret = pclose(fp);
+    int exit_status = 0;
+    if (WIFEXITED(ret)) {
+        exit_status = WEXITSTATUS(ret);
+    } else if (WIFSIGNALED(ret)) {
+        LOG_ERROR("%s killed by signal %d", ctx->save_cmd, WTERMSIG(ret));
+        exit_status = -1;
+    }
+
+    return exit_status;
+}
+
+int tproxy_cleanup_orphan_chains(atp_config_t *cfg) {
+    LOG_INFO("Cleaning up orphan ATP chains");
+
+    int ret = 0;
+    ret |= parse_iptables_save_for_orphans(cfg, 4);
+    if (cfg->network.proxy_ipv6 && family_available(6)) {
+        ret |= parse_iptables_save_for_orphans(cfg, 6);
+    }
+
+    return ret;
 }
 
 int tproxy_cleanup_all(atp_config_t *cfg) {
@@ -1229,7 +1340,9 @@ int tproxy_cleanup_all(atp_config_t *cfg) {
             break;
     }
 
-    tproxy_cleanup_orphan_chains(cfg);
+    if (cfg->core.deep_cleanup) {
+        tproxy_cleanup_orphan_chains(cfg);
+    }
 
     LOG_INFO("Full cleanup completed");
     return 0;
