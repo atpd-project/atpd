@@ -50,6 +50,7 @@ static const char *extra_chains_v4[] = {
     "XFRM_BYPASS",
     "XFRM_BYPASS_NAT",
     NULL
+};   
 
 static const char *extra_chains_v6[] = {
     "ATP6_QUIC_0",
@@ -57,6 +58,7 @@ static const char *extra_chains_v6[] = {
     "ATP6_REDIRECT_TCP",
     "ATP6_UDP_TPROXY",
     NULL
+};   
 
 typedef struct {
     int family;
@@ -1465,3 +1467,4 @@ int tproxy_prevent_loop(atp_config_t *cfg) {
 int tproxy_sound_bypass(atp_config_t *cfg) {
     (void)cfg;
     return 0;
+}
