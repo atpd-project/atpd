@@ -1,32 +1,38 @@
 #ifndef ATP_FCM_MONITOR_H
 #define ATP_FCM_MONITOR_H
 
-#include "atp.h"
+#include "atp_config.h"
 #include <stdint.h>
 #include <time.h>
+#include <stdatomic.h>
 
-/* Callback when FCM connection is detected */
-typedef void (*fcm_callback_t)(const char *remote_ip, uint16_t remote_port, void *userdata);
+#define FCM_DEFAULT_PORT 5228
 
-/* Start FCM monitor thread */
-int fcm_monitor_start(fcm_callback_t callback, void *userdata);
+typedef void (*fcm_callback_t)(const char *dst_ip, uint16_t dst_port, void *userdata);
 
-/* Stop FCM monitor thread */
-void fcm_monitor_stop(void);
-
-/* Check if monitor is running */
-int fcm_monitor_is_running(void);
-
-/* Get last detection time (0 if never) */
-time_t fcm_monitor_get_last_detection(void);
-
-/* Force refresh of FCM IP cache (for testing) */
-void fcm_monitor_refresh_cache(void);
+typedef struct {
+    uint64_t dns_refresh_success;
+    uint64_t dns_refresh_failed;
+    uint64_t tracked_table_full;
+    uint64_t cache_full;
+    uint64_t cache_entries;
+    uint64_t tracked_entries;
+    uint64_t resolved_domain_total;
+    uint64_t failed_domain_total;
+    uint64_t dns_duration_ms;
+    time_t   last_detection;
+} fcm_monitor_stats_t;
 
 int fcm_monitor_init(atp_config_t *cfg);
+int fcm_monitor_start(fcm_callback_t callback, void *userdata);
+void fcm_monitor_stop(void);
+int fcm_monitor_is_running(void);
 void fcm_monitor_poll(void);
-void fcm_monitor_cleanup(void);
-#endif
-
+time_t fcm_monitor_get_last_detection(void);
+void fcm_monitor_refresh_cache(void);
 int fcm_monitor_get_fd(void);
 void fcm_monitor_handle(void);
+void fcm_monitor_cleanup(void);
+int fcm_monitor_get_stats(fcm_monitor_stats_t *stats);
+
+#endif

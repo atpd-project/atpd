@@ -3,44 +3,291 @@
  * Copyright (C) 2024-2026 ATP Project
  *
  * Unix Domain Socket - Runtime CLI command interface
+ * Production Ready
  */
 
 #include "reactor.h"
 #include "logger.h"
 #include "atpd_context.h"
 #include "session.h"
+#include "version.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <inttypes.h>
+#include <stdarg.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <pwd.h>
 
-#define UDS_BUFFER_SIZE 256
-#define UDS_RESPONSE_SIZE 1024
+#define UDS_BUFFER_SIZE 4096
+#define UDS_RESPONSE_SIZE 8192
+#define UDS_BACKLOG 16
+#define UDS_PATH_MAX 108
 
 static int g_uds_fd = -1;
+static char g_uds_path[UDS_PATH_MAX] = {0};
+static reactor_t *g_uds_reactor = NULL;
+static int g_uds_stop_requested = 0;
+
+/* ========== Safe Response Builder ========== */
+
+static size_t append_response(char *buf, size_t size, size_t offset, const char *fmt, ...) {
+    va_list args;
+    int ret;
+
+    if (offset >= size) {
+        return size;
+    }
+
+    va_start(args, fmt);
+    ret = vsnprintf(buf + offset, size - offset, fmt, args);
+    va_end(args);
+
+    if (ret < 0) {
+        return offset;
+    }
+
+    if ((size_t)ret >= size - offset) {
+        return size;
+    }
+
+    return offset + (size_t)ret;
+}
 
 /* ========== Response Helpers ========== */
 
-static void get_stage_name(char *buf, size_t size) {
-    const char *stage = "unknown";
-    if (g_atpd_ctx.vpn_state == VPN_STATE_READY) stage = "READY";
-    else if (g_atpd_ctx.vpn_state == VPN_STATE_PREDICTING) stage = "PREDICTING";
-    else if (g_atpd_ctx.vpn_state == VPN_STATE_TEARDOWN) stage = "TEARDOWN";
-    else stage = "IDLE";
-    snprintf(buf, size, "%s", stage);
+static int send_response_all(int fd, const char *resp, size_t len) {
+    if (!resp || len == 0) return 0;
+
+    while (len > 0) {
+        ssize_t n = send(fd, resp, len, MSG_NOSIGNAL);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                LOG_DEBUG("UDS: send would block, partial response");
+                return -1;
+            }
+            if (errno == EPIPE || errno == ECONNRESET) {
+                LOG_DEBUG("UDS: client disconnected during send");
+                return 0;
+            }
+            LOG_DEBUG("UDS: send failed: %s", strerror(errno));
+            return 0;
+        }
+        if (n == 0) {
+            return 0;
+        }
+        resp += n;
+        len -= (size_t)n;
+    }
+    return 1;
 }
 
-static uint64_t get_total_spliced(void) {
-    return g_atpd_ctx.splice_bytes_total;
+static void send_string_all(int fd, const char *str) {
+    if (str) {
+        send_response_all(fd, str, strlen(str));
+    }
 }
 
-static const char* get_vpn_sync_status(void) {
-    return vpn_state_string(g_atpd_ctx.vpn_state);
+static int check_client_uid(int fd) {
+    struct ucred cred;
+    socklen_t len = sizeof(cred);
+
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) < 0) {
+        LOG_DEBUG("UDS: getsockopt SO_PEERCRED failed: %s", strerror(errno));
+        return 0;
+    }
+
+    if (cred.uid != 0 && cred.uid != getuid()) {
+        LOG_WARN("UDS: rejected connection from uid=%d", cred.uid);
+        return 0;
+    }
+
+    LOG_DEBUG("UDS: accepted connection from uid=%d, pid=%d", cred.uid, cred.pid);
+    return 1;
+}
+
+static void handle_status(int fd) {
+    char response[UDS_RESPONSE_SIZE];
+    size_t off = 0;
+
+    off = append_response(response, sizeof(response), off,
+                          "=== ATPd Status ===\n");
+    off = append_response(response, sizeof(response), off,
+                          "Runtime State: %s\n",
+                          atpd_runtime_state_string(g_atpd_ctx.runtime_state));
+    off = append_response(response, sizeof(response), off,
+                          "VPN State: %s\n",
+                          vpn_state_string(g_atpd_ctx.vpn_state));
+    off = append_response(response, sizeof(response), off,
+                          "eBPF State: %s\n",
+                          ebpf_state_string(g_atpd_ctx.ebpf_state));
+    off = append_response(response, sizeof(response), off,
+                          "VPN Interface: %s\n",
+                          g_atpd_ctx.vpn_iface[0] ? g_atpd_ctx.vpn_iface : "none");
+    off = append_response(response, sizeof(response), off,
+                          "XFRM IF ID: %u\n",
+                          g_atpd_ctx.xfrm_if_id);
+    off = append_response(response, sizeof(response), off,
+                          "VPN Transitions: %" PRIu64 "\n",
+                          g_atpd_ctx.vpn_transitions);
+    off = append_response(response, sizeof(response), off,
+                          "Splice Bytes: %" PRIu64 "\n",
+                          g_atpd_ctx.splice_bytes_total);
+    off = append_response(response, sizeof(response), off,
+                          "Uptime: %" PRIu64 " seconds\n",
+                          atpd_runtime_get_uptime());
+
+    if (off >= sizeof(response)) {
+        send_string_all(fd, "ERROR: response too large\n");
+        return;
+    }
+
+    send_response_all(fd, response, off);
+}
+
+static void handle_stop(int fd) {
+    send_string_all(fd, "Stopping ATPd...\n");
+
+    LOG_INFO("UDS: received stop command, initiating shutdown");
+    atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
+    atpd_session_emergency_drain_all();
+
+    g_uds_stop_requested = 1;
+}
+
+static void handle_ping(int fd) {
+    send_string_all(fd, "pong\n");
+}
+
+static void handle_sessions(int fd) {
+    char response[UDS_RESPONSE_SIZE];
+    size_t off = 0;
+
+    off = append_response(response, sizeof(response), off,
+                          "Active Sessions: %d\n",
+                          g_atpd_ctx.sessions ? 1 : 0);
+
+    if (off >= sizeof(response)) {
+        send_string_all(fd, "ERROR: response too large\n");
+        return;
+    }
+
+    send_response_all(fd, response, off);
+}
+
+static void handle_version(int fd) {
+    char response[UDS_RESPONSE_SIZE];
+    size_t off = 0;
+
+    off = append_response(response, sizeof(response), off,
+                          "ATPd Version: %s\n", ATP_VERSION_STRING);
+    off = append_response(response, sizeof(response), off,
+                          "Git Commit: %s\n", ATP_COMMIT);
+
+    if (off >= sizeof(response)) {
+        send_string_all(fd, "ERROR: response too large\n");
+        return;
+    }
+
+    send_response_all(fd, response, off);
+}
+
+static void handle_stats(int fd) {
+    char response[UDS_RESPONSE_SIZE];
+    size_t off = 0;
+
+    off = append_response(response, sizeof(response), off,
+                          "=== Statistics ===\n");
+    off = append_response(response, sizeof(response), off,
+                          "Events Processed: %" PRIu64 "\n",
+                          g_atpd_ctx.stats.events_processed);
+    off = append_response(response, sizeof(response), off,
+                          "Timers Fired: %" PRIu64 "\n",
+                          g_atpd_ctx.stats.timers_fired);
+    off = append_response(response, sizeof(response), off,
+                          "Signals Received: %" PRIu64 "\n",
+                          g_atpd_ctx.stats.signals_received);
+    off = append_response(response, sizeof(response), off,
+                          "Errors: %" PRIu64 "\n",
+                          g_atpd_ctx.stats.errors_total);
+
+    if (off >= sizeof(response)) {
+        send_string_all(fd, "ERROR: response too large\n");
+        return;
+    }
+
+    send_response_all(fd, response, off);
+}
+
+static void handle_help(int fd) {
+    const char *help =
+        "Available commands:\n"
+        "  status    - Show runtime status\n"
+        "  stop      - Shutdown ATPd\n"
+        "  ping      - Check if ATPd is alive\n"
+        "  sessions  - Show active sessions\n"
+        "  version   - Show version information\n"
+        "  stats     - Show statistics\n"
+        "  help      - Show this help\n";
+    send_string_all(fd, help);
+}
+
+/* ========== Command Processing ========== */
+
+static void process_command(int fd, const char *cmd, size_t cmd_len) {
+    char buf[UDS_BUFFER_SIZE];
+
+    if (cmd_len == 0) {
+        return;
+    }
+
+    if (cmd_len >= sizeof(buf) - 1) {
+        send_string_all(fd, "ERROR: command too long\n");
+        return;
+    }
+
+    memcpy(buf, cmd, cmd_len);
+    buf[cmd_len] = '\0';
+
+    char *newline = strchr(buf, '\n');
+    if (newline) *newline = '\0';
+
+    char *cr = strchr(buf, '\r');
+    if (cr) *cr = '\0';
+
+    char *end = buf + strlen(buf) - 1;
+    while (end >= buf && (*end == ' ' || *end == '\t')) {
+        *end = '\0';
+        end--;
+    }
+
+    if (buf[0] == '\0') {
+        return;
+    }
+
+    if (strcmp(buf, "status") == 0) {
+        handle_status(fd);
+    } else if (strcmp(buf, "stop") == 0) {
+        handle_stop(fd);
+    } else if (strcmp(buf, "ping") == 0) {
+        handle_ping(fd);
+    } else if (strcmp(buf, "sessions") == 0) {
+        handle_sessions(fd);
+    } else if (strcmp(buf, "version") == 0) {
+        handle_version(fd);
+    } else if (strcmp(buf, "stats") == 0) {
+        handle_stats(fd);
+    } else if (strcmp(buf, "help") == 0 || strcmp(buf, "?") == 0) {
+        handle_help(fd);
+    } else if (strlen(buf) > 0) {
+        send_string_all(fd, "Unknown command. Type 'help' for available commands.\n");
+    }
 }
 
 /* ========== UDS Client Callback ========== */
@@ -58,79 +305,112 @@ static void uds_client_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
 
     if (!(events & REACTOR_EVENT_READ)) return;
 
-    char buf[UDS_BUFFER_SIZE];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    if (n <= 0) {
-        LOG_DEBUG("UDS: client closed connection (fd=%d)", fd);
+    if (!check_client_uid(fd)) {
         reactor_remove_fd(r, fd);
         close(fd);
         return;
     }
 
-    buf[n] = '\0';
+    char buf[UDS_BUFFER_SIZE];
+    size_t total_read = 0;
 
-    /* Remove trailing newline */
-    char *nl = strchr(buf, '\n');
-    if (nl) *nl = '\0';
-
-    char response[UDS_RESPONSE_SIZE];
-    int response_len = 0;
-
-    if (strncmp(buf, "status", 6) == 0) {
-        char stage[32];
-        get_stage_name(stage, sizeof(stage));
-        response_len = snprintf(response, sizeof(response),
-            "STAGE: %s\n"
-            "PUMP: %llu bytes\n"
-            "XFRM_STATE: %s\n"
-            "VPN_IFACE: %s\n"
-            "TRANSITIONS: %llu\n",
-            stage,
-            (unsigned long long)get_total_spliced(),
-            get_vpn_sync_status(),
-            g_atpd_ctx.vpn_iface[0] ? g_atpd_ctx.vpn_iface : "none",
-            (unsigned long long)g_atpd_ctx.vpn_transitions);
-    }
-    else if (strncmp(buf, "stop", 4) == 0) {
-        atpd_session_emergency_drain_all();
-        response_len = snprintf(response, sizeof(response), "OK: Kill-Switch activated\n");
-    }
-    else if (strncmp(buf, "ping", 4) == 0) {
-        response_len = snprintf(response, sizeof(response), "PONG\n");
-    }
-    else {
-        response_len = snprintf(response, sizeof(response),
-            "ERROR: unknown command '%s'\n"
-            "Available: status, stop, ping\n", buf);
+    while (total_read < sizeof(buf) - 1) {
+        ssize_t n = read(fd, buf + total_read, sizeof(buf) - 1 - total_read);
+        if (n > 0) {
+            total_read += (size_t)n;
+        } else if (n == 0) {
+            LOG_DEBUG("UDS: client closed connection (fd=%d)", fd);
+            reactor_remove_fd(r, fd);
+            close(fd);
+            return;
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+            LOG_ERROR("UDS: read error: %s", strerror(errno));
+            reactor_remove_fd(r, fd);
+            close(fd);
+            return;
+        }
     }
 
-    if (response_len > 0 && response_len < UDS_RESPONSE_SIZE) {
-        write(fd, response, (size_t)response_len);
+    if (total_read == 0) {
+        return;
+    }
+
+    if (total_read >= sizeof(buf) - 1) {
+        LOG_WARN("UDS: oversized request, closing connection");
+        reactor_remove_fd(r, fd);
+        close(fd);
+        return;
+    }
+
+    buf[total_read] = '\0';
+
+    char *cmd_start = buf;
+    char *cmd_end;
+
+    while (*cmd_start) {
+        cmd_end = strchr(cmd_start, '\n');
+        if (cmd_end) {
+            *cmd_end = '\0';
+            process_command(fd, cmd_start, (size_t)(cmd_end - cmd_start));
+            cmd_start = cmd_end + 1;
+        } else {
+            process_command(fd, cmd_start, strlen(cmd_start));
+            break;
+        }
     }
 }
 
 /* ========== UDS Accept Callback ========== */
 
 static void uds_accept_cb(reactor_t *r, int listen_fd, uint32_t events, void *userdata) {
-    (void)events;
+    (void)r;
     (void)userdata;
 
-    int client_fd = accept4(listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
-    if (client_fd < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            LOG_ERROR("UDS: accept failed: %s", strerror(errno));
-        }
-        return;
-    }
+    if (!(events & REACTOR_EVENT_READ)) return;
 
-    reactor_add_fd(r, client_fd, REACTOR_EVENT_READ, uds_client_cb, NULL);
-    LOG_DEBUG("UDS: client connected (fd=%d)", client_fd);
+    while (1) {
+        int client_fd = accept4(listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (client_fd < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            }
+            LOG_ERROR("UDS: accept failed: %s", strerror(errno));
+            break;
+        }
+
+        LOG_DEBUG("UDS: client connected (fd=%d)", client_fd);
+        reactor_add_fd(r, client_fd, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
+                       uds_client_cb, NULL);
+    }
 }
 
-/* ========== Init ========== */
+/* ========== Init/Cleanup ========== */
 
 int uds_init(reactor_t *r, const char *path) {
     struct sockaddr_un addr;
+    size_t path_len;
+
+    if (!r || !path) {
+        return -1;
+    }
+
+    path_len = strlen(path);
+    if (path_len >= sizeof(addr.sun_path)) {
+        LOG_ERROR("UDS: socket path too long: %zu (max %zu)",
+                  path_len, sizeof(addr.sun_path) - 1);
+        return -1;
+    }
+
+    g_uds_reactor = r;
+    g_uds_stop_requested = 0;
+
+    strncpy(g_uds_path, path, UDS_PATH_MAX - 1);
+    g_uds_path[UDS_PATH_MAX - 1] = '\0';
+
+    unlink(path);
 
     g_uds_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (g_uds_fd < 0) {
@@ -141,36 +421,63 @@ int uds_init(reactor_t *r, const char *path) {
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-    unlink(path);
+    addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
 
     if (bind(g_uds_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         LOG_ERROR("UDS: bind to %s failed: %s", path, strerror(errno));
         close(g_uds_fd);
+        g_uds_fd = -1;
         return -1;
     }
 
-    chmod(path, 0666);
+    if (chmod(path, 0600) < 0) {
+        LOG_WARN("UDS: chmod 0600 failed: %s", strerror(errno));
+    }
 
-    if (listen(g_uds_fd, 8) < 0) {
+    if (listen(g_uds_fd, UDS_BACKLOG) < 0) {
         LOG_ERROR("UDS: listen failed: %s", strerror(errno));
         close(g_uds_fd);
         unlink(path);
+        g_uds_fd = -1;
         return -1;
     }
 
-    reactor_add_fd(r, g_uds_fd, REACTOR_EVENT_READ, uds_accept_cb, NULL);
-    LOG_INFO("UDS: listening on %s", path);
+    if (reactor_add_fd(r, g_uds_fd, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
+                       uds_accept_cb, NULL) != 0) {
+        LOG_ERROR("UDS: reactor add failed");
+        close(g_uds_fd);
+        unlink(path);
+        g_uds_fd = -1;
+        return -1;
+    }
 
+    LOG_INFO("UDS: control socket created at %s (0600)", path);
     return 0;
 }
 
 void uds_cleanup(void) {
     if (g_uds_fd >= 0) {
+        if (g_uds_reactor) {
+            reactor_remove_fd(g_uds_reactor, g_uds_fd);
+        }
         close(g_uds_fd);
         g_uds_fd = -1;
     }
+
+    if (g_uds_path[0] != '\0') {
+        unlink(g_uds_path);
+        LOG_DEBUG("UDS: socket file removed: %s", g_uds_path);
+        g_uds_path[0] = '\0';
+    }
+
+    g_uds_reactor = NULL;
+    g_uds_stop_requested = 0;
 }
 
 int uds_get_fd(void) {
     return g_uds_fd;
+}
+
+int uds_stop_requested(void) {
+    return g_uds_stop_requested;
 }
