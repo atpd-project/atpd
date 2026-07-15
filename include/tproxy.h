@@ -112,7 +112,6 @@ void tproxy_hook_main_chains(atp_config_t *cfg, int family);
     int _n = snprintf(buf, size, __VA_ARGS__); \
     if (_n < 0 || _n >= (int)size) { \
         LOG_ERROR("snprintf truncation in %s:%d", __FILE__, __LINE__); \
-        return -1; \
     } \
 } while(0)
 
