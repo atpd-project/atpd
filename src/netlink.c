@@ -880,7 +880,7 @@ static int tproxy_refresh_rules(atp_config_t *cfg) {
 
     if (needs_repair_v4) {
         LOG_INFO("TPROXY audit: repairing IPv4 hooks...");
-        tproxy_hook_main_chains(cfg, 4, "");
+        tproxy_hook_main_chains(cfg, 4);
     }
 
     if (cfg->network.proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
@@ -899,7 +899,7 @@ static int tproxy_refresh_rules(atp_config_t *cfg) {
         }
 
         if (needs_repair_v6) {
-            tproxy_hook_main_chains(cfg, 6, "6");
+            tproxy_hook_main_chains(cfg, 6);
         }
     }
 
