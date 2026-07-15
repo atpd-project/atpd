@@ -41,7 +41,6 @@ static const char *chain_suffixes[] = {
     "APP_0", "APP_1",
     "MAC_0", "MAC_1",
     NULL
-};
 
 static const char *extra_chains_v4[] = {
     "ATP_QUIC_0",
@@ -51,7 +50,6 @@ static const char *extra_chains_v4[] = {
     "XFRM_BYPASS",
     "XFRM_BYPASS_NAT",
     NULL
-};
 
 static const char *extra_chains_v6[] = {
     "ATP6_QUIC_0",
@@ -59,7 +57,6 @@ static const char *extra_chains_v6[] = {
     "ATP6_REDIRECT_TCP",
     "ATP6_UDP_TPROXY",
     NULL
-};
 
 typedef struct {
     int family;
@@ -74,7 +71,6 @@ typedef struct {
     const char *(*pin_out)(atp_config_t *cfg);
     const char *(*pin_pre)(atp_config_t *cfg);
     const char *(*ipset)(atp_config_t *cfg);
-} tproxy_family_ctx_t;
 
 static int family_enabled_4(atp_config_t *cfg) { (void)cfg; return 1; }
 static int family_enabled_6(atp_config_t *cfg) { return cfg->network.proxy_ipv6; }
@@ -106,7 +102,6 @@ static const tproxy_family_ctx_t family4 = {
     .pin_out = family_pin_out_4,
     .pin_pre = family_pin_pre_4,
     .ipset = family_ipset_4,
-};
 
 static const tproxy_family_ctx_t family6 = {
     .family = 6,
@@ -121,25 +116,19 @@ static const tproxy_family_ctx_t family6 = {
     .pin_out = family_pin_out_6,
     .pin_pre = family_pin_pre_6,
     .ipset = family_ipset_6,
-};
 
 static const tproxy_family_ctx_t *get_ctx(int family) {
     switch (family) {
         case 4: return &family4;
         case 6: return &family6;
         default: return NULL;
-    }
-}
 
 static int validate_iface_name(const char *name) {
     if (!name || !*name) return -1;
     for (const char *p = name; *p; p++) {
         if (!isalnum((unsigned char)*p) && *p != '.' && *p != '_' && *p != '-' && *p != ':') {
             return -1;
-        }
-    }
     return 0;
-}
 
 static int validate_ip_or_cidr(const char *str) {
     if (!str || !*str) return -1;
@@ -155,10 +144,8 @@ static int validate_ip_or_cidr(const char *str) {
     if (sscanf(str, "%127[^/]/%d", ip, &prefix) == 2) {
         if (inet_pton(AF_INET, ip, &v4) == 1 && prefix >= 0 && prefix <= 32) return 0;
         if (inet_pton(AF_INET6, ip, &v6) == 1 && prefix >= 0 && prefix <= 128) return 0;
-    }
 
     return -1;
-}
 
 static int family_available(int family) {
     int *cache;
@@ -169,21 +156,16 @@ static int family_available(int family) {
     if (family == 4) {
         cache = &g_ipv4_available;
         path = IPTABLES_CMD;
-    } else if (family == 6) {
         cache = &g_ipv6_available;
         path = IP6TABLES_CMD;
-    } else {
         pthread_mutex_unlock(&g_avail_mutex);
         return 0;
-    }
 
     if (*cache < 0) {
         *cache = (access(path, X_OK) == 0) ? 1 : 0;
-    }
 
     pthread_mutex_unlock(&g_avail_mutex);
     return *cache;
-}
 
 static void build_chain_name(int family, const char *suffix, char *buf, size_t len) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
@@ -192,10 +174,8 @@ static void build_chain_name(int family, const char *suffix, char *buf, size_t l
         if (len > 0) buf[0] = '\0';
         LOG_ERROR("Invalid family: %d", family);
         return;
-    }
 
     SAFE_SNPRINTF(buf, len, "%s_%s", ctx->prefix, suffix);
-}
 
 static int is_known_atp_chain(int family, const char *chain) {
     char expected[64];
@@ -204,23 +184,17 @@ static int is_known_atp_chain(int family, const char *chain) {
         build_chain_name(family, chain_suffixes[i], expected, sizeof(expected));
         if (expected[0] == '\0') continue;
         if (strcmp(expected, chain) == 0) return 1;
-    }
 
     const char **extras;
     if (family == 4) {
         extras = extra_chains_v4;
-    } else if (family == 6) {
         extras = extra_chains_v6;
-    } else {
         return 0;
-    }
 
     for (int i = 0; extras[i] != NULL; i++) {
         if (strcmp(extras[i], chain) == 0) return 1;
-    }
 
     return 0;
-}
 
 static int exec_ipt(atp_config_t *cfg, int family, const char *table,
                     const char *cmd, const char *chain, const char *rule) {
@@ -231,7 +205,6 @@ static int exec_ipt(atp_config_t *cfg, int family, const char *table,
         LOG_DEBUG("[DRY_RUN] %s -t %s %s %s %s",
                   ctx->cmd, table, cmd, chain, rule ? rule : "");
         return 0;
-    }
 
     if (!family_available(family)) return -1;
 
@@ -240,22 +213,17 @@ static int exec_ipt(atp_config_t *cfg, int family, const char *table,
     if (rule) {
         n = snprintf(command, sizeof(command), "%s -t %s %s %s %s 2>/dev/null",
                      ctx->cmd, table, cmd, chain, rule);
-    } else {
         n = snprintf(command, sizeof(command), "%s -t %s %s %s 2>/dev/null",
                      ctx->cmd, table, cmd, chain);
-    }
     if (n < 0 || n >= (int)sizeof(command)) {
         LOG_ERROR("Command truncated");
         return -1;
-    }
 
     int ret = exec_cmd_simple(command, CMD_TIMEOUT_SEC);
     if (ret != 0) {
         LOG_DEBUG("%s failed: -t %s %s %s %s (ret=%d)",
                   ctx->cmd, table, cmd, chain, rule ? rule : "", ret);
-    }
     return ret;
-}
 
 static int exec_ipt_del_all(atp_config_t *cfg, int family, const char *table,
                             const char *chain, const char *rule) {
@@ -275,19 +243,15 @@ static int exec_ipt_del_all(atp_config_t *cfg, int family, const char *table,
         if (n < 0 || n >= (int)sizeof(command)) {
             LOG_ERROR("Command truncated");
             return -1;
-        }
 
         int ret = exec_cmd_simple(command, CMD_TIMEOUT_SEC);
         if (ret != 0) break;
-    }
 
     return 0;
-}
 
 static void delete_all_rules(atp_config_t *cfg, int family, const char *table,
                              const char *chain, const char *rule) {
     exec_ipt_del_all(cfg, family, table, chain, rule);
-}
 
 static int exec_ipt_flush_fast(atp_config_t *cfg, int family, const char *table, const char *chain) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
@@ -302,10 +266,8 @@ static int exec_ipt_flush_fast(atp_config_t *cfg, int family, const char *table,
     if (n < 0 || n >= (int)sizeof(command)) {
         LOG_ERROR("Command truncated");
         return -1;
-    }
 
     return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
-}
 
 static int exec_ipt_destroy_fast(atp_config_t *cfg, int family, const char *table, const char *chain) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
@@ -320,10 +282,8 @@ static int exec_ipt_destroy_fast(atp_config_t *cfg, int family, const char *tabl
     if (n < 0 || n >= (int)sizeof(command)) {
         LOG_ERROR("Command truncated");
         return -1;
-    }
 
     return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
-}
 
 int tproxy_chain_exists(atp_config_t *cfg, int family, const char *table, const char *chain) {
     if (cfg->core.dry_run) return 1;
@@ -332,7 +292,6 @@ int tproxy_chain_exists(atp_config_t *cfg, int family, const char *table, const 
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return 0;
-    }
 
     if (!family_available(family)) return 0;
 
@@ -343,27 +302,22 @@ int tproxy_chain_exists(atp_config_t *cfg, int family, const char *table, const 
     if (n < 0 || n >= (int)sizeof(cmd)) {
         LOG_ERROR("Command truncated");
         return 0;
-    }
 
     int ret = exec_cmd(cmd, output, sizeof(output), CMD_TIMEOUT_SEC);
     if (ret != 0) return 0;
     return (strstr(output, "Chain") != NULL) ? 1 : 0;
-}
 
 int tproxy_chain_create(atp_config_t *cfg, int family, const char *table, const char *chain) {
     if (tproxy_chain_exists(cfg, family, table, chain)) return 0;
     return exec_ipt(cfg, family, table, "-N", chain, NULL);
-}
 
 int tproxy_chain_flush(atp_config_t *cfg, int family, const char *table, const char *chain) {
     if (!tproxy_chain_exists(cfg, family, table, chain)) return 0;
     return exec_ipt_flush_fast(cfg, family, table, chain);
-}
 
 int tproxy_chain_destroy(atp_config_t *cfg, int family, const char *table, const char *chain) {
     if (!tproxy_chain_exists(cfg, family, table, chain)) return 0;
     return exec_ipt_destroy_fast(cfg, family, table, chain);
-}
 
 int tproxy_rule_exists(atp_config_t *cfg, int family, const char *table,
                        const char *chain, const char *rule) {
@@ -373,7 +327,6 @@ int tproxy_rule_exists(atp_config_t *cfg, int family, const char *table,
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return 0;
-    }
 
     if (!family_available(family)) return 0;
 
@@ -383,32 +336,26 @@ int tproxy_rule_exists(atp_config_t *cfg, int family, const char *table,
     if (n < 0 || n >= (int)sizeof(cmd)) {
         LOG_ERROR("Command truncated");
         return 0;
-    }
     return (exec_cmd_simple(cmd, CMD_TIMEOUT_SEC) == 0) ? 1 : 0;
-}
 
 int tproxy_rule_ensure_single(atp_config_t *cfg, int family, const char *table,
                               const char *chain, const char *rule) {
     delete_all_rules(cfg, family, table, chain, rule);
     return exec_ipt(cfg, family, table, "-A", chain, rule);
-}
 
 int tproxy_rule_ensure_single_insert(atp_config_t *cfg, int family, const char *table,
                                      const char *chain, int position, const char *rule) {
     delete_all_rules(cfg, family, table, chain, rule);
     return tproxy_rule_insert(cfg, family, table, chain, position, rule);
-}
 
 int tproxy_rule_add(atp_config_t *cfg, int family, const char *table,
                     const char *chain, const char *rule) {
     if (tproxy_rule_exists(cfg, family, table, chain, rule)) return 0;
     return exec_ipt(cfg, family, table, "-A", chain, rule);
-}
 
 int tproxy_rule_del(atp_config_t *cfg, int family, const char *table,
                     const char *chain, const char *rule) {
     return exec_ipt_del_all(cfg, family, table, chain, rule);
-}
 
 int tproxy_rule_insert(atp_config_t *cfg, int family, const char *table,
                        const char *chain, int position, const char *rule) {
@@ -418,7 +365,6 @@ int tproxy_rule_insert(atp_config_t *cfg, int family, const char *table,
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     if (!family_available(family)) return 0;
 
@@ -428,27 +374,22 @@ int tproxy_rule_insert(atp_config_t *cfg, int family, const char *table,
     if (n < 0 || n >= (int)sizeof(cmd)) {
         LOG_ERROR("Command truncated");
         return -1;
-    }
     int ret = exec_cmd_simple(cmd, CMD_TIMEOUT_SEC);
     if (ret != 0) {
         LOG_ERROR("%s insert failed: -t %s -I %s %d %s (ret=%d)",
                   ctx->cmd, table, chain, position, rule, ret);
-    }
     return ret;
-}
 
 int tproxy_support_check(atp_config_t *cfg) {
     pthread_mutex_lock(&g_tproxy_support_mutex);
     if (g_tproxy_supported >= 0) {
         pthread_mutex_unlock(&g_tproxy_support_mutex);
         return g_tproxy_supported;
-    }
 
     if (cfg->core.dry_run) {
         g_tproxy_supported = 1;
         pthread_mutex_unlock(&g_tproxy_support_mutex);
         return 1;
-    }
 
     LOG_INFO("Running TPROXY support check...");
 
@@ -459,7 +400,6 @@ int tproxy_support_check(atp_config_t *cfg) {
         g_tproxy_supported = 0;
         pthread_mutex_unlock(&g_tproxy_support_mutex);
         return 0;
-    }
     exec_cmd_simple(cmd, 5);
 
     n = snprintf(cmd, sizeof(cmd), "%s -t mangle -A ATP_TEST -p tcp -j TPROXY --on-port 1536 --tproxy-mark 20 2>/dev/null",
@@ -469,7 +409,6 @@ int tproxy_support_check(atp_config_t *cfg) {
         g_tproxy_supported = 0;
         pthread_mutex_unlock(&g_tproxy_support_mutex);
         return 0;
-    }
     int ret = exec_cmd_simple(cmd, 5);
 
     n = snprintf(cmd, sizeof(cmd), "%s -t mangle -F ATP_TEST 2>/dev/null", IPTABLES_CMD);
@@ -478,7 +417,6 @@ int tproxy_support_check(atp_config_t *cfg) {
         g_tproxy_supported = 0;
         pthread_mutex_unlock(&g_tproxy_support_mutex);
         return 0;
-    }
     exec_cmd_simple(cmd, 5);
     n = snprintf(cmd, sizeof(cmd), "%s -t mangle -X ATP_TEST 2>/dev/null", IPTABLES_CMD);
     if (n < 0 || n >= (int)sizeof(cmd)) {
@@ -486,14 +424,12 @@ int tproxy_support_check(atp_config_t *cfg) {
         g_tproxy_supported = 0;
         pthread_mutex_unlock(&g_tproxy_support_mutex);
         return 0;
-    }
     exec_cmd_simple(cmd, 5);
 
     g_tproxy_supported = (ret == 0) ? 1 : 0;
     LOG_INFO("TPROXY support: %s", g_tproxy_supported ? "YES" : "NO");
     pthread_mutex_unlock(&g_tproxy_support_mutex);
     return g_tproxy_supported;
-}
 
 static int tproxy_configure_rp_filter(atp_config_t *cfg) {
     DIR *dir;
@@ -504,7 +440,6 @@ static int tproxy_configure_rp_filter(atp_config_t *cfg) {
     if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] Would set rp_filter=2 for all interfaces");
         return 0;
-    }
 
     LOG_INFO("Configuring rp_filter=2 for TPROXY compatibility");
 
@@ -515,7 +450,6 @@ static int tproxy_configure_rp_filter(atp_config_t *cfg) {
     if (!dir) {
         LOG_WARN("Failed to open /proc/sys/net/ipv4/conf");
         return -1;
-    }
 
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_name[0] == '.') continue;
@@ -524,26 +458,21 @@ static int tproxy_configure_rp_filter(atp_config_t *cfg) {
         if (n < 0 || n >= (int)sizeof(path)) {
             LOG_ERROR("Path truncated");
             continue;
-        }
         FILE *fp = fopen(path, "w");
         if (fp) {
             fprintf(fp, "2\n");
             fclose(fp);
             success++;
-        }
-    }
 
     closedir(dir);
     LOG_INFO("rp_filter set to 2 for %d interfaces", success);
     return 0;
-}
 
 static int tproxy_reject_available(void) {
     pthread_mutex_lock(&g_reject_mutex);
     if (g_reject_available >= 0) {
         pthread_mutex_unlock(&g_reject_mutex);
         return g_reject_available;
-    }
 
     char cmd[MAX_CMD_LEN];
     char output[256] = {0};
@@ -554,7 +483,6 @@ static int tproxy_reject_available(void) {
         g_reject_available = 0;
         pthread_mutex_unlock(&g_reject_mutex);
         return 0;
-    }
     int ret = exec_cmd_simple(cmd, 3);
     if (ret != 0) {
         n = snprintf(cmd, sizeof(cmd), "%s -X ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
@@ -563,12 +491,10 @@ static int tproxy_reject_available(void) {
             g_reject_available = 0;
             pthread_mutex_unlock(&g_reject_mutex);
             return 0;
-        }
         exec_cmd_simple(cmd, 3);
         g_reject_available = 0;
         pthread_mutex_unlock(&g_reject_mutex);
         return 0;
-    }
 
     n = snprintf(cmd, sizeof(cmd), "%s -A ATP_TEST_REJECT -j REJECT 2>&1", IPTABLES_CMD);
     if (n < 0 || n >= (int)sizeof(cmd)) {
@@ -576,7 +502,6 @@ static int tproxy_reject_available(void) {
         g_reject_available = 0;
         pthread_mutex_unlock(&g_reject_mutex);
         return 0;
-    }
     ret = exec_cmd(cmd, output, sizeof(output), 3);
 
     n = snprintf(cmd, sizeof(cmd), "%s -F ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
@@ -585,7 +510,6 @@ static int tproxy_reject_available(void) {
         g_reject_available = 0;
         pthread_mutex_unlock(&g_reject_mutex);
         return 0;
-    }
     exec_cmd_simple(cmd, 3);
     n = snprintf(cmd, sizeof(cmd), "%s -X ATP_TEST_REJECT 2>/dev/null", IPTABLES_CMD);
     if (n < 0 || n >= (int)sizeof(cmd)) {
@@ -593,18 +517,14 @@ static int tproxy_reject_available(void) {
         g_reject_available = 0;
         pthread_mutex_unlock(&g_reject_mutex);
         return 0;
-    }
     exec_cmd_simple(cmd, 3);
 
     if (ret != 0 || strstr(output, "No chain/target/match") != NULL) {
         g_reject_available = 0;
-    } else {
         g_reject_available = 1;
-    }
 
     pthread_mutex_unlock(&g_reject_mutex);
     return g_reject_available;
-}
 
 static void tproxy_create_standard_chains(atp_config_t *cfg, int family) {
     for (int i = 0; chain_suffixes[i] != NULL; i++) {
@@ -613,8 +533,6 @@ static void tproxy_create_standard_chains(atp_config_t *cfg, int family) {
         if (chain_name[0] == '\0') continue;
         tproxy_chain_create(cfg, family, "mangle", chain_name);
         tproxy_chain_flush(cfg, family, "mangle", chain_name);
-    }
-}
 
 static void tproxy_setup_divert_chain(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
@@ -628,7 +546,6 @@ static void tproxy_setup_divert_chain(atp_config_t *cfg, int family) {
     SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-j MARK --set-mark %d", ctx->mark(cfg));
     tproxy_rule_ensure_single(cfg, family, "mangle", chain, rule_buf);
     tproxy_rule_ensure_single(cfg, family, "mangle", chain, "-j ACCEPT");
-}
 
 static void tproxy_setup_socket_match(atp_config_t *cfg, int family) {
     char pre_chain[64], divert_chain[64];
@@ -639,7 +556,6 @@ static void tproxy_setup_socket_match(atp_config_t *cfg, int family) {
     char rule_buf[256];
     SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-p tcp -m socket --transparent -j %s", divert_chain);
     tproxy_rule_ensure_single(cfg, family, "mangle", pre_chain, rule_buf);
-}
 
 static void tproxy_setup_chain_jumps(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
@@ -653,7 +569,6 @@ static void tproxy_setup_chain_jumps(atp_config_t *cfg, int family) {
     for (int i = 0; i < 10; i++) {
         build_chain_name(family, names[i], chains[i], sizeof(chains[i]));
         if (chains[i][0] == '\0') return;
-    }
 
     struct { const char *chain; const char *target; } jumps[] = {
         {chains[0], chains[2]}, {chains[0], chains[3]},
@@ -662,14 +577,11 @@ static void tproxy_setup_chain_jumps(atp_config_t *cfg, int family) {
         {chains[1], chains[2]}, {chains[1], chains[3]},
         {chains[1], chains[5]}, {chains[1], chains[9]},
         {chains[1], chains[8]}, {NULL, NULL}
-    };
 
     char rule_buf[256];
     for (int i = 0; jumps[i].chain != NULL; i++) {
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-j %s", jumps[i].target);
         tproxy_rule_ensure_single(cfg, family, "mangle", jumps[i].chain, rule_buf);
-    }
-}
 
 static void tproxy_setup_iface_rules(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
@@ -688,13 +600,10 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family) {
         if (cfg->interface.proxy_mobile) {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.mobile_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-        } else {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.mobile_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
             SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.mobile_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-        }
-    }
 
     int hotspot_on_wifi = (strcmp(cfg->interface.hotspot_iface, cfg->interface.wifi_iface) == 0);
     const char *hotspot_subnet = ctx->hotspot_subnet(cfg);
@@ -703,74 +612,57 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family) {
         if (cfg->interface.proxy_hotspot) {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -s %s -j RETURN", cfg->interface.hotspot_iface, hotspot_subnet);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-        } else {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -s %s -j ACCEPT", cfg->interface.hotspot_iface, hotspot_subnet);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-        }
 
         if (cfg->interface.proxy_wifi) {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s ! -s %s -j RETURN", cfg->interface.wifi_iface, hotspot_subnet);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-        } else {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s ! -s %s -j ACCEPT", cfg->interface.wifi_iface, hotspot_subnet);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
             SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.wifi_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-        }
-    } else {
         if (cfg->interface.proxy_wifi) {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.wifi_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-        } else {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.wifi_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
             SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.wifi_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-        }
 
         if (cfg->interface.proxy_hotspot) {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.hotspot_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-        } else {
             SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.hotspot_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
             SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.hotspot_iface);
             tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-        }
-    }
 
     if (cfg->interface.proxy_usb && validate_iface_name(cfg->interface.usb_iface) == 0) {
         SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.usb_iface);
         tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-    } else if (validate_iface_name(cfg->interface.usb_iface) == 0) {
         SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.usb_iface);
         tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
         SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.usb_iface);
         tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-    }
 
     if (cfg->interface.other_proxy[0]) {
         int len = snprintf(list_buf, sizeof(list_buf), "%s", cfg->interface.other_proxy);
         if (len < 0 || len >= (int)sizeof(list_buf)) {
             LOG_ERROR("list_buf truncated");
             return;
-        }
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
             if (validate_iface_name(token) == 0) {
                 SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", token);
                 tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-            }
             token = strtok_r(NULL, " ", &saveptr);
-        }
-    }
 
     if (cfg->interface.other_bypass[0]) {
         int len = snprintf(list_buf, sizeof(list_buf), "%s", cfg->interface.other_bypass);
         if (len < 0 || len >= (int)sizeof(list_buf)) {
             LOG_ERROR("list_buf truncated");
             return;
-        }
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
             if (validate_iface_name(token) == 0) {
@@ -778,11 +670,7 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family) {
                 tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
                 SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", token);
                 tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-            }
             token = strtok_r(NULL, " ", &saveptr);
-        }
-    }
-}
 
 static void tproxy_setup_ip_rules(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
@@ -802,23 +690,18 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family) {
         if (len < 0 || len >= (int)sizeof(list_buf)) {
             LOG_ERROR("list_buf truncated");
             return;
-        }
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
             if (validate_ip_or_cidr(token) == 0) {
                 SAFE_SNPRINTF(rule, sizeof(rule), "-d %s -j RETURN", token);
                 tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-            }
             token = strtok_r(NULL, " ", &saveptr);
-        }
-    }
 
     if (bypass_list && bypass_list[0]) {
         int len = snprintf(list_buf, sizeof(list_buf), "%s", bypass_list);
         if (len < 0 || len >= (int)sizeof(list_buf)) {
             LOG_ERROR("list_buf truncated");
             return;
-        }
         char *token = strtok_r(list_buf, " ", &saveptr);
         while (token) {
             if (validate_ip_or_cidr(token) == 0) {
@@ -826,10 +709,7 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family) {
                 tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
                 SAFE_SNPRINTF(rule, sizeof(rule), "-d %s ! -p udp -j ACCEPT", token);
                 tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-            }
             token = strtok_r(NULL, " ", &saveptr);
-        }
-    }
 
     if (cfg->filter.bypass_cn_ip) {
         if (cfg->ebpf.ready) {
@@ -859,16 +739,12 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family) {
             tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, bpf_rule);
 
             LOG_DEBUG("CNIP bypass: eBPF");
-        } else {
             const char *ipset = ctx->ipset(cfg);
             SAFE_SNPRINTF(rule, sizeof(rule), "-m set --match-set %s dst -p udp ! --dport 53 -j ACCEPT", ipset);
             tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
             SAFE_SNPRINTF(rule, sizeof(rule), "-m set --match-set %s dst ! -p udp -j ACCEPT", ipset);
             tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
             LOG_DEBUG("CNIP bypass: ipset (%s)", ipset);
-        }
-    }
-}
 
 void tproxy_hook_main_chains(atp_config_t *cfg, int family) {
     char pre_chain[64], out_chain[64];
@@ -887,28 +763,23 @@ void tproxy_hook_main_chains(atp_config_t *cfg, int family) {
 
     SAFE_SNPRINTF(hook_rule, sizeof(hook_rule), "-j %s", out_chain);
     tproxy_rule_ensure_single_insert(cfg, family, "mangle", "OUTPUT", 1, hook_rule);
-}
 
 static int tproxy_setup_family(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     if (!ctx->enabled(cfg)) {
         LOG_DEBUG("Family %d proxy disabled, skipping", family);
         return 0;
-    }
 
     if (!family_available(family)) {
         if (family == 6) {
             LOG_WARN("ip6tables not found, IPv6 setup skipped");
             cfg->network.proxy_ipv6 = 0;
             return 0;
-        }
         return -1;
-    }
 
     LOG_INFO("Setting up TPROXY chains for family %d", family);
 
@@ -936,37 +807,30 @@ static int tproxy_setup_family(atp_config_t *cfg, int family) {
 
     LOG_INFO("TPROXY setup complete for family %d", family);
     return 0;
-}
 
 int tproxy_setup_ipv4(atp_config_t *cfg) {
     tproxy_configure_rp_filter(cfg);
     return tproxy_setup_family(cfg, 4);
-}
 
 int tproxy_setup_ipv6(atp_config_t *cfg) {
     return tproxy_setup_family(cfg, 6);
-}
 
 static int tproxy_setup_redirect_family(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     if (!ctx->enabled(cfg)) {
         LOG_DEBUG("Family %d proxy disabled, skipping REDIRECT", family);
         return 0;
-    }
 
     if (!family_available(family)) {
         if (family == 6) {
             LOG_WARN("ip6tables not found, IPv6 REDIRECT skipped");
             cfg->network.proxy_ipv6 = 0;
             return 0;
-        }
         return -1;
-    }
 
     LOG_INFO("Setting up REDIRECT chains for family %d", family);
 
@@ -988,36 +852,29 @@ static int tproxy_setup_redirect_family(atp_config_t *cfg, int family) {
 
     LOG_INFO("REDIRECT setup complete for family %d", family);
     return 0;
-}
 
 int tproxy_setup_redirect_ipv4(atp_config_t *cfg) {
     return tproxy_setup_redirect_family(cfg, 4);
-}
 
 int tproxy_setup_redirect_ipv6(atp_config_t *cfg) {
     return tproxy_setup_redirect_family(cfg, 6);
-}
 
 static int tproxy_setup_enhance_family(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     if (!ctx->enabled(cfg)) {
         LOG_DEBUG("Family %d proxy disabled, skipping ENHANCE", family);
         return 0;
-    }
 
     if (!family_available(family)) {
         if (family == 6) {
             LOG_WARN("ip6tables not found, IPv6 ENHANCE skipped");
             cfg->network.proxy_ipv6 = 0;
             return 0;
-        }
         return -1;
-    }
 
     LOG_INFO("Setting up ENHANCE mode for family %d", family);
 
@@ -1067,15 +924,12 @@ static int tproxy_setup_enhance_family(atp_config_t *cfg, int family) {
 
     LOG_INFO("ENHANCE setup complete for family %d", family);
     return 0;
-}
 
 int tproxy_setup_enhance_ipv4(atp_config_t *cfg) {
     return tproxy_setup_enhance_family(cfg, 4);
-}
 
 int tproxy_setup_enhance_ipv6(atp_config_t *cfg) {
     return tproxy_setup_enhance_family(cfg, 6);
-}
 
 static int tproxy_cleanup_owner_rule(atp_config_t *cfg, int family) {
     char hook_rule[128];
@@ -1084,21 +938,18 @@ static int tproxy_cleanup_owner_rule(atp_config_t *cfg, int family) {
              cfg->core.core_user, cfg->core.core_group);
     delete_all_rules(cfg, family, "mangle", "OUTPUT", hook_rule);
     return 0;
-}
 
 static int tproxy_cleanup_family(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     if (!ctx->enabled(cfg)) return 0;
 
     if (!family_available(family)) {
         LOG_DEBUG("Family %d not available, skipping cleanup", family);
         return 0;
-    }
 
     LOG_INFO("Cleaning up TPROXY chains for family %d", family);
 
@@ -1134,26 +985,21 @@ static int tproxy_cleanup_family(atp_config_t *cfg, int family) {
         if (chain_name_buf[0] == '\0') continue;
         tproxy_chain_flush(cfg, family, "mangle", chain_name_buf);
         tproxy_chain_destroy(cfg, family, "mangle", chain_name_buf);
-    }
 
     LOG_INFO("TPROXY cleanup complete for family %d", family);
     return 0;
-}
 
 int tproxy_cleanup_ipv4(atp_config_t *cfg) {
     return tproxy_cleanup_family(cfg, 4);
-}
 
 int tproxy_cleanup_ipv6(atp_config_t *cfg) {
     return tproxy_cleanup_family(cfg, 6);
-}
 
 static int tproxy_cleanup_redirect_family(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     if (!ctx->enabled(cfg)) return 0;
 
@@ -1174,22 +1020,18 @@ static int tproxy_cleanup_redirect_family(atp_config_t *cfg, int family) {
 
     LOG_INFO("REDIRECT cleanup complete for family %d", family);
     return 0;
-}
 
 int tproxy_cleanup_redirect_ipv4(atp_config_t *cfg) {
     return tproxy_cleanup_redirect_family(cfg, 4);
-}
 
 int tproxy_cleanup_redirect_ipv6(atp_config_t *cfg) {
     return tproxy_cleanup_redirect_family(cfg, 6);
-}
 
 static int tproxy_cleanup_enhance_family(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     if (!ctx->enabled(cfg)) return 0;
 
@@ -1234,15 +1076,12 @@ static int tproxy_cleanup_enhance_family(atp_config_t *cfg, int family) {
 
     LOG_INFO("ENHANCE cleanup complete for family %d", family);
     return 0;
-}
 
 int tproxy_cleanup_enhance_ipv4(atp_config_t *cfg) {
     return tproxy_cleanup_enhance_family(cfg, 4);
-}
 
 int tproxy_cleanup_enhance_ipv6(atp_config_t *cfg) {
     return tproxy_cleanup_enhance_family(cfg, 6);
-}
 
 int tproxy_cleanup_xfrm_bypass(atp_config_t *cfg) {
     LOG_INFO("Cleaning up XFRM bypass chains");
@@ -1259,12 +1098,10 @@ int tproxy_cleanup_xfrm_bypass(atp_config_t *cfg) {
 
     LOG_INFO("XFRM bypass chains cleaned up");
     return 0;
-}
 
 typedef struct {
     char table[32];
     char chain[64];
-} orphan_chain_t;
 
 static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
@@ -1273,7 +1110,6 @@ static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
     if (cfg->core.dry_run) {
         LOG_DEBUG("[DRY_RUN] skipping orphan cleanup");
         return 0;
-    }
 
     if (!family_available(family)) return 0;
 
@@ -1282,13 +1118,11 @@ static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
     if (n < 0 || n >= (int)sizeof(cmd)) {
         LOG_ERROR("Command truncated");
         return -1;
-    }
 
     FILE *fp = popen(cmd, "r");
     if (!fp) {
         LOG_ERROR("Failed to execute %s", ctx->save_cmd);
         return -1;
-    }
 
     char line[1024];
     char current_table[64] = {0};
@@ -1299,12 +1133,10 @@ static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') {
             line[len - 1] = '\0';
-        }
 
         if (line[0] == '*') {
             snprintf(current_table, sizeof(current_table), "%s", line + 1);
             continue;
-        }
 
         if (line[0] == ':' &&
             (strncmp(line + 1, "ATP", 3) == 0 ||
@@ -1323,31 +1155,21 @@ static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
                         SAFE_SNPRINTF(chains[chain_count].chain, sizeof(chains[0].chain),
                                 "%s", chain_name);
                         chain_count++;
-                    } else {
                         LOG_WARN("Too many orphan chains, max %d", MAX_ORPHAN_CHAINS);
-                    }
-                }
-            }
             continue;
-        }
 
         if (strcmp(line, "COMMIT") == 0) {
             current_table[0] = '\0';
-        }
-    }
 
     int ret = pclose(fp);
     int exit_status = 0;
     if (WIFEXITED(ret)) {
         exit_status = WEXITSTATUS(ret);
-    } else if (WIFSIGNALED(ret)) {
         LOG_ERROR("%s killed by signal %d", ctx->save_cmd, WTERMSIG(ret));
         exit_status = -1;
-    }
 
     if (chain_count == 0) {
         return exit_status;
-    }
 
     /* Stage 1: Remove builtin references */
     for (int i = 0; i < chain_count; i++) {
@@ -1358,21 +1180,17 @@ static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
         delete_all_rules(cfg, family, chains[i].table, "OUTPUT", rule_buf);
         delete_all_rules(cfg, family, chains[i].table, "INPUT", rule_buf);
         delete_all_rules(cfg, family, chains[i].table, "FORWARD", rule_buf);
-    }
 
     /* Stage 2: Flush all ATP chains */
     for (int i = 0; i < chain_count; i++) {
         exec_ipt_flush_fast(cfg, family, chains[i].table, chains[i].chain);
-    }
 
     /* Stage 3: Destroy all ATP chains */
     for (int i = 0; i < chain_count; i++) {
         exec_ipt_destroy_fast(cfg, family, chains[i].table, chains[i].chain);
         LOG_DEBUG("Removed orphan chain: %s from table %s", chains[i].chain, chains[i].table);
-    }
 
     return exit_status;
-}
 
 int tproxy_cleanup_orphan_chains(atp_config_t *cfg) {
     LOG_INFO("Cleaning up orphan ATP chains");
@@ -1381,10 +1199,8 @@ int tproxy_cleanup_orphan_chains(atp_config_t *cfg) {
     ret |= parse_iptables_save_for_orphans(cfg, 4);
     if (cfg->network.proxy_ipv6 && family_available(6)) {
         ret |= parse_iptables_save_for_orphans(cfg, 6);
-    }
 
     return ret;
-}
 
 int tproxy_cleanup_all(atp_config_t *cfg) {
     LOG_INFO("Starting full cleanup of all ATP rules");
@@ -1414,15 +1230,13 @@ int tproxy_cleanup_all(atp_config_t *cfg) {
             tproxy_cleanup_ipv4(cfg);
             if (cfg->network.proxy_ipv6) tproxy_cleanup_ipv6(cfg);
             break;
-    }
 
-    if (cfg->core.deep_cleanup) {
+    // Deep cleanup always enabled
+    tproxy_cleanup_orphan_chains(cfg);
         tproxy_cleanup_orphan_chains(cfg);
-    }
 
     LOG_INFO("Full cleanup completed");
     return 0;
-}
 
 int tproxy_restart(atp_config_t *cfg) {
     LOG_INFO("Starting TPROXY restart (stop + start)");
@@ -1432,7 +1246,6 @@ int tproxy_restart(atp_config_t *cfg) {
     if (!tproxy_support_check(cfg)) {
         LOG_ERROR("TPROXY not supported on this kernel");
         return -1;
-    }
 
     int ret = 0;
     switch (cfg->network.proxy_mode) {
@@ -1448,17 +1261,14 @@ int tproxy_restart(atp_config_t *cfg) {
             ret = tproxy_setup_enhance_ipv4(cfg);
             if (ret == 0 && cfg->network.proxy_ipv6) ret = tproxy_setup_enhance_ipv6(cfg);
             break;
-    }
 
     if (ret != 0) {
         LOG_ERROR("Failed to setup TPROXY rules");
         return ret;
-    }
 
     if (cfg->network.dns_hijack != DNS_HIJACK_OFF) {
         tproxy_dns_hijack_setup(cfg, 4, cfg->network.dns_hijack);
         if (cfg->network.proxy_ipv6) tproxy_dns_hijack_setup(cfg, 6, cfg->network.dns_hijack);
-    }
 
     if (cfg->core.block_quic) tproxy_block_quic(cfg, 1);
     if (cfg->network.loopback_protect) tproxy_block_loopback(cfg, 1);
@@ -1468,7 +1278,6 @@ int tproxy_restart(atp_config_t *cfg) {
 
     LOG_INFO("TPROXY restart completed successfully");
     return 0;
-}
 
 int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode) {
     if (cfg->network.dns_hijack == DNS_HIJACK_OFF || mode == DNS_HIJACK_OFF) return 0;
@@ -1477,7 +1286,6 @@ int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode) {
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     char dns_pre[64], dns_out[64];
     build_chain_name(family, "DNS_PRE_0", dns_pre, sizeof(dns_pre));
@@ -1491,26 +1299,21 @@ int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode) {
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
                  "-p udp --dport 53 -j TPROXY --on-port %d --tproxy-mark %d",
                  cfg->network.dns_port, mark);
-    } else if (mode == DNS_HIJACK_REDIRECT) {
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
                  "-p udp --dport 53 -j REDIRECT --to-ports %d",
                  cfg->network.dns_port);
-    } else {
         return 0;
-    }
 
     tproxy_rule_ensure_single(cfg, family, "mangle", dns_pre, rule_buf);
     tproxy_rule_ensure_single(cfg, family, "mangle", dns_out, rule_buf);
 
     return 0;
-}
 
 int tproxy_dns_hijack_cleanup(atp_config_t *cfg, int family) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
     if (!ctx) {
         LOG_ERROR("Invalid family: %d", family);
         return -1;
-    }
 
     char dns_pre[64], dns_out[64];
     build_chain_name(family, "DNS_PRE_0", dns_pre, sizeof(dns_pre));
@@ -1533,17 +1336,13 @@ int tproxy_dns_hijack_cleanup(atp_config_t *cfg, int family) {
     delete_all_rules(cfg, family, "mangle", dns_out, rule_buf);
 
     return 0;
-}
 
 static int tproxy_reject_or_drop(atp_config_t *cfg, int family, const char *chain, const char *rule) {
     char modified_rule[256];
     if (tproxy_reject_available()) {
         SAFE_SNPRINTF(modified_rule, sizeof(modified_rule), "%s -j REJECT", rule);
-    } else {
         SAFE_SNPRINTF(modified_rule, sizeof(modified_rule), "%s -j DROP", rule);
-    }
     return tproxy_rule_ensure_single(cfg, family, "filter", chain, modified_rule);
-}
 
 int tproxy_block_quic(atp_config_t *cfg, int enable) {
     if (enable) {
@@ -1559,10 +1358,8 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
                      "-m bpf --object-pinned %s/box_cidr_out4 -p udp --dport 443 -j REJECT", pin_dir);
             tproxy_rule_ensure_single(cfg, 4, "filter", "ATP_QUIC_0", bpf_rule);
             LOG_DEBUG("QUIC blocking: eBPF");
-        } else {
             tproxy_reject_or_drop(cfg, 4, "ATP_QUIC_0", "-p udp --dport 443");
             LOG_DEBUG("QUIC blocking: ipset fallback");
-        }
 
         tproxy_rule_ensure_single(cfg, 4, "filter", "INPUT", "-j ATP_QUIC_0");
         tproxy_rule_ensure_single(cfg, 4, "filter", "FORWARD", "-j ATP_QUIC_0");
@@ -1578,15 +1375,11 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
                 SAFE_SNPRINTF(bpf_rule, sizeof(bpf_rule),
                          "-m bpf --object-pinned %s/box_cidr_out6 -p udp --dport 443 -j REJECT", pin_dir);
                 tproxy_rule_ensure_single(cfg, 6, "filter", "ATP6_QUIC_0", bpf_rule);
-            } else {
                 tproxy_reject_or_drop(cfg, 6, "ATP6_QUIC_0", "-p udp --dport 443");
-            }
 
             tproxy_rule_ensure_single(cfg, 6, "filter", "INPUT", "-j ATP6_QUIC_0");
             tproxy_rule_ensure_single(cfg, 6, "filter", "FORWARD", "-j ATP6_QUIC_0");
             tproxy_rule_ensure_single(cfg, 6, "filter", "OUTPUT", "-j ATP6_QUIC_0");
-        }
-    } else {
         LOG_INFO("Disabling QUIC blocking");
 
         delete_all_rules(cfg, 4, "filter", "INPUT", "-j ATP_QUIC_0");
@@ -1601,11 +1394,8 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
             delete_all_rules(cfg, 6, "filter", "OUTPUT", "-j ATP6_QUIC_0");
             tproxy_chain_flush(cfg, 6, "filter", "ATP6_QUIC_0");
             tproxy_chain_destroy(cfg, 6, "filter", "ATP6_QUIC_0");
-        }
-    }
 
     return 0;
-}
 
 int tproxy_block_loopback(atp_config_t *cfg, int enable) {
     char rule_buf[256];
@@ -1620,8 +1410,6 @@ int tproxy_block_loopback(atp_config_t *cfg, int enable) {
             SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
                      "-d ::1 -p tcp -m tcp --dport %d -j REJECT", cfg->network.tcp_port);
             tproxy_rule_ensure_single(cfg, 6, "filter", "OUTPUT", rule_buf);
-        }
-    } else {
         LOG_INFO("Disabling loopback protection");
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
                  "-d 127.0.0.1 -p tcp -m tcp --dport %d -j REJECT", cfg->network.tcp_port);
@@ -1631,11 +1419,8 @@ int tproxy_block_loopback(atp_config_t *cfg, int enable) {
             SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
                      "-d ::1 -p tcp -m tcp --dport %d -j REJECT", cfg->network.tcp_port);
             delete_all_rules(cfg, 6, "filter", "OUTPUT", rule_buf);
-        }
-    }
 
     return 0;
-}
 
 int tproxy_xfrm_bypass(atp_config_t *cfg) {
     LOG_INFO("Setting up XFRM bypass for VPN traffic");
@@ -1662,7 +1447,6 @@ int tproxy_xfrm_bypass(atp_config_t *cfg) {
 
     LOG_INFO("XFRM bypass configured");
     return 0;
-}
 
 int tproxy_prevent_loop(atp_config_t *cfg) {
     char rule_buf[64];
@@ -1675,12 +1459,9 @@ int tproxy_prevent_loop(atp_config_t *cfg) {
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-m mark --mark %d -j RETURN", cfg->network.mark_value6);
         delete_all_rules(cfg, 6, "mangle", "PREROUTING", rule_buf);
         tproxy_rule_insert(cfg, 6, "mangle", "PREROUTING", 1, rule_buf);
-    }
 
     return 0;
-}
 
 int tproxy_sound_bypass(atp_config_t *cfg) {
     (void)cfg;
     return 0;
-}
