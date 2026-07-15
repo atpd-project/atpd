@@ -73,6 +73,7 @@ typedef struct {
     const char *(*pin_out)(atp_config_t *cfg);
     const char *(*pin_pre)(atp_config_t *cfg);
     const char *(*ipset)(atp_config_t *cfg);
+} tproxy_family_ctx_t;
 
 static int family_enabled_4(atp_config_t *cfg) { (void)cfg; return 1; }
 static int family_enabled_6(atp_config_t *cfg) { return cfg->network.proxy_ipv6; }
@@ -104,7 +105,7 @@ static const tproxy_family_ctx_t family4 = {
     .pin_out = family_pin_out_4,
     .pin_pre = family_pin_pre_4,
     .ipset = family_ipset_4,
-
+};
 static const tproxy_family_ctx_t family6 = {
     .family = 6,
     .cmd = IP6TABLES_CMD,
@@ -118,7 +119,7 @@ static const tproxy_family_ctx_t family6 = {
     .pin_out = family_pin_out_6,
     .pin_pre = family_pin_pre_6,
     .ipset = family_ipset_6,
-
+};
 static const tproxy_family_ctx_t *get_ctx(int family) {
     switch (family) {
         case 4: return &family4;
@@ -1461,9 +1462,9 @@ int tproxy_prevent_loop(atp_config_t *cfg) {
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-m mark --mark %d -j RETURN", cfg->network.mark_value6);
         delete_all_rules(cfg, 6, "mangle", "PREROUTING", rule_buf);
         tproxy_rule_insert(cfg, 6, "mangle", "PREROUTING", 1, rule_buf);
-
+};
     return 0;
-
+}
 int tproxy_sound_bypass(atp_config_t *cfg) {
     (void)cfg;
     return 0;
