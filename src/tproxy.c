@@ -1267,6 +1267,8 @@ int tproxy_cleanup_redirect_ipv6(atp_config_t *cfg) {
 int tproxy_cleanup_enhance_ipv4(atp_config_t *cfg) {
     LOG_INFO("Cleaning up IPv4 ENHANCE mode");
 
+    char rule_buf[256];
+
     while (tproxy_rule_exists(cfg, 4, "nat", "PREROUTING", "-p tcp -j ATP_REDIRECT_TCP")) {
         tproxy_rule_del(cfg, 4, "nat", "PREROUTING", "-p tcp -j ATP_REDIRECT_TCP");
     }
@@ -1274,12 +1276,18 @@ int tproxy_cleanup_enhance_ipv4(atp_config_t *cfg) {
         tproxy_rule_del(cfg, 4, "nat", "OUTPUT", "-p tcp -j ATP_REDIRECT_TCP");
     }
 
-    char rule_buf[256];
     SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-p tcp -m connmark --mark %d/0xff -j REDIRECT --to-ports %d",
              cfg->network.mark_value, cfg->network.redirect_tcp_port);
     while (tproxy_rule_exists(cfg, 4, "nat", "PREROUTING", rule_buf)) {
         tproxy_rule_del(cfg, 4, "nat", "PREROUTING", rule_buf);
     }
+    while (tproxy_rule_exists(cfg, 4, "nat", "OUTPUT", rule_buf)) {
+        tproxy_rule_del(cfg, 4, "nat", "OUTPUT", rule_buf);
+    }
+
+    SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
+             "-p tcp -m owner --uid-owner %s --gid-owner %s -j ACCEPT",
+             cfg->core.core_user, cfg->core.core_group);
     while (tproxy_rule_exists(cfg, 4, "nat", "OUTPUT", rule_buf)) {
         tproxy_rule_del(cfg, 4, "nat", "OUTPUT", rule_buf);
     }
@@ -1306,6 +1314,8 @@ int tproxy_cleanup_enhance_ipv6(atp_config_t *cfg) {
 
     LOG_INFO("Cleaning up IPv6 ENHANCE mode");
 
+    char rule_buf[256];
+
     while (tproxy_rule_exists(cfg, 6, "nat", "PREROUTING", "-p tcp -j ATP6_REDIRECT_TCP")) {
         tproxy_rule_del(cfg, 6, "nat", "PREROUTING", "-p tcp -j ATP6_REDIRECT_TCP");
     }
@@ -1313,7 +1323,6 @@ int tproxy_cleanup_enhance_ipv6(atp_config_t *cfg) {
         tproxy_rule_del(cfg, 6, "nat", "OUTPUT", "-p tcp -j ATP6_REDIRECT_TCP");
     }
 
-    char rule_buf[256];
     SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-p tcp -m connmark --mark %d/0xff -j REDIRECT --to-ports %d",
              cfg->network.mark_value6, cfg->network.redirect_tcp_port);
     while (tproxy_rule_exists(cfg, 6, "nat", "PREROUTING", rule_buf)) {
@@ -1321,6 +1330,15 @@ int tproxy_cleanup_enhance_ipv6(atp_config_t *cfg) {
     }
     while (tproxy_rule_exists(cfg, 6, "nat", "OUTPUT", rule_buf)) {
         tproxy_rule_del(cfg, 6, "nat", "OUTPUT", rule_buf);
+    }
+
+    if (access(IP6TABLES_CMD, X_OK) == 0) {
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
+                 "-p tcp -m owner --uid-owner %s --gid-owner %s -j ACCEPT",
+                 cfg->core.core_user, cfg->core.core_group);
+        while (tproxy_rule_exists(cfg, 6, "nat", "OUTPUT", rule_buf)) {
+            tproxy_rule_del(cfg, 6, "nat", "OUTPUT", rule_buf);
+        }
     }
 
     tproxy_chain_flush(cfg, 6, "nat", "ATP6_REDIRECT_TCP");
@@ -1880,13 +1898,23 @@ int tproxy_xfrm_bypass(atp_config_t *cfg) {
 
 int tproxy_prevent_loop(atp_config_t *cfg) {
     char rule_buf[64];
+    
     SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-m mark --mark %d -j RETURN", cfg->network.mark_value);
-
+    
     while (tproxy_rule_exists(cfg, 4, "mangle", "PREROUTING", rule_buf)) {
         tproxy_rule_del(cfg, 4, "mangle", "PREROUTING", rule_buf);
     }
     tproxy_rule_insert(cfg, 4, "mangle", "PREROUTING", 1, rule_buf);
-
+    
+    if (cfg->network.proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-m mark --mark %d -j RETURN", cfg->network.mark_value6);
+        
+        while (tproxy_rule_exists(cfg, 6, "mangle", "PREROUTING", rule_buf)) {
+            tproxy_rule_del(cfg, 6, "mangle", "PREROUTING", rule_buf);
+        }
+        tproxy_rule_insert(cfg, 6, "mangle", "PREROUTING", 1, rule_buf);
+    }
+    
     return 0;
 }
 
