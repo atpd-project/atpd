@@ -1383,89 +1383,6 @@ int tproxy_cleanup_xfrm_bypass(atp_config_t *cfg) {
     return 0;
 }
 
-int tproxy_remove_all_hooks(atp_config_t *cfg) {
-    const char *tables[] = {"mangle", "nat", "filter"};
-    const char *hooks[] = {"PREROUTING", "OUTPUT", "INPUT", "FORWARD"};
-    char cmd[MAX_CMD_LEN];
-    
-    LOG_INFO("Removing all ATP hooks");
-    
-    for (int family = 4; family <= 6; family += 2) {
-        for (int t = 0; t < 3; t++) {
-            for (int h = 0; h < 4; h++) {
-                int deleted = 1;
-                int max_attempts = 100;
-                while (deleted && max_attempts-- > 0) {
-                    deleted = 0;
-                    
-                    if (family == 4) {
-                        int n = snprintf(cmd, sizeof(cmd), 
-                                "%s -t %s -L %s --line-numbers 2>/dev/null | grep -E '\\-j (ATP_|ATP6_|XFRM_BYPASS)' | head -1",
-                                IPTABLES_CMD, tables[t], hooks[h]);
-                        if (n < 0 || n >= (int)sizeof(cmd)) {
-                            LOG_ERROR("Command truncated");
-                            break;
-                        }
-                    } else {
-                        if (access(IP6TABLES_CMD, X_OK) != 0) break;
-                        int n = snprintf(cmd, sizeof(cmd),
-                                "%s -t %s -L %s --line-numbers 2>/dev/null | grep -E '\\-j (ATP_|ATP6_|XFRM_BYPASS)' | head -1",
-                                IP6TABLES_CMD, tables[t], hooks[h]);
-                        if (n < 0 || n >= (int)sizeof(cmd)) {
-                            LOG_ERROR("Command truncated");
-                            break;
-                        }
-                    }
-                    
-                    FILE *fp = popen(cmd, "r");
-                    if (!fp) break;
-                    
-                    char line[1024];
-                    if (fgets(line, sizeof(line), fp)) {
-                        int rule_num;
-                        char chain[64];
-                        char rest[512];
-                        
-                        if (sscanf(line, "%d %s %[^\n]", &rule_num, chain, rest) == 3) {
-                            char del_cmd[MAX_CMD_LEN];
-                            if (family == 4) {
-                                int n = snprintf(del_cmd, sizeof(del_cmd),
-                                        "%s -t %s -D %s %d 2>/dev/null",
-                                        IPTABLES_CMD, tables[t], hooks[h], rule_num);
-                                if (n < 0 || n >= (int)sizeof(del_cmd)) {
-                                    LOG_ERROR("Command truncated");
-                                    pclose(fp);
-                                    break;
-                                }
-                            } else {
-                                int n = snprintf(del_cmd, sizeof(del_cmd),
-                                        "%s -t %s -D %s %d 2>/dev/null",
-                                        IP6TABLES_CMD, tables[t], hooks[h], rule_num);
-                                if (n < 0 || n >= (int)sizeof(del_cmd)) {
-                                    LOG_ERROR("Command truncated");
-                                    pclose(fp);
-                                    break;
-                                }
-                            }
-                            
-                            if (exec_cmd_simple(del_cmd, CMD_TIMEOUT_SEC) == 0) {
-                                deleted = 1;
-                                LOG_DEBUG("Removed hook by rule number %d from %s", rule_num, hooks[h]);
-                            }
-                        }
-                    }
-                    pclose(fp);
-                }
-                if (max_attempts <= 0) {
-                    LOG_WARN("Max attempts reached for hook cleanup in %s %s", tables[t], hooks[h]);
-                }
-            }
-        }
-    }
-    
-    return 0;
-}
-
 int tproxy_cleanup_orphan_chains(atp_config_t *cfg) {
     LOG_INFO("Cleaning up orphan ATP chains");
     
@@ -1572,9 +1489,6 @@ int tproxy_cleanup_all(atp_config_t *cfg) {
     
     tproxy_block_loopback(cfg, 0);
     tproxy_block_quic(cfg, 0);
-    
-    tproxy_remove_all_hooks(cfg);
-    
     tproxy_cleanup_xfrm_bypass(cfg);
     
     switch (cfg->network.proxy_mode) {
