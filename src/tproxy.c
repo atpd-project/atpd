@@ -1646,7 +1646,7 @@ int tproxy_restart(atp_config_t *cfg) {
         }
     }
     
-    if (cfg->filter.block_quic) {
+    if (cfg->core.block_quic) {
         tproxy_block_quic(cfg, 1);
     }
     

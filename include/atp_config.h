@@ -41,6 +41,7 @@ typedef struct {
     int proxy_ipv6;
     int dns_hijack;
     int dns_port;
+    int loopback_protect;
 } network_config_t;
 
 /* Interface */
