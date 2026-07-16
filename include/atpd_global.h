@@ -1,6 +1,7 @@
 #ifndef ATPD_GLOBAL_H
 #define ATPD_GLOBAL_H
 
+#include <signal.h>
 #include "atp.h"
 #include "api.h"
 #include "reactor.h"

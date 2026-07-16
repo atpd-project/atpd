@@ -61,9 +61,11 @@ static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static void daemonize(void);
 static void cleanup_ebpf(void);
 static int process_is_atpd(pid_t pid);
-static int check_existing_daemon(const char *pid_file);
 
-/* ========== PID File ========== */
+/* Global PID file descriptor for fcntl lock */
+static int g_pid_fd = -1;
+
+/* ========== PID File & Process Checks ========== */
 
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
@@ -102,71 +104,84 @@ static int process_is_atpd(pid_t pid) {
            strcmp(base, "atpd-zig") == 0;
 }
 
-static int check_existing_daemon(const char *pid_file) {
-    FILE *f = fopen(pid_file, "r");
-    if (!f) return 0;
-
-    int pid = 0;
-    if (fscanf(f, "%d", &pid) == 1) {
-        if (kill(pid, 0) == 0 && process_is_atpd(pid)) {
-            fclose(f);
-            return 1;
-        }
-    }
-
-    fclose(f);
-    unlink(pid_file);
-    return 0;
-}
-
 static int write_pid_file(const char *pid_file) {
     char dir[SAFE_PATH_MAX];
 
     if (!pid_file) return -1;
 
-    snprintf(dir, sizeof(dir), "%s", pid_file);
-    char *slash = strrchr(dir, '/');
+    int len = snprintf(dir, sizeof(dir), "%s", pid_file);
+    if (len < 0 || (size_t)len >= sizeof(dir)) {
+        fprintf(stderr, "Error: PID file path too long\n");
+        return -1;
+    }
 
+    char *slash = strrchr(dir, '/');
     if (slash) {
         *slash = '\0';
-        mkdir_recursive(dir, 0755);
-    }
-
-    int fd = open(pid_file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
-    if (fd < 0) return -1;
-
-    char buf[32];
-    int len = snprintf(buf, sizeof(buf), "%d\n", getpid());
-
-    ssize_t written = 0;
-    while (written < len) {
-        ssize_t n = write(fd, buf + written, len - written);
-
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            close(fd);
-            unlink(pid_file);
+        if (mkdir_recursive(dir, 0755) != 0 && errno != EEXIST) {
+            fprintf(stderr, "Error: Failed to create PID directory: %s\n", strerror(errno));
             return -1;
         }
-
-        written += n;
     }
 
-    close(fd);
+    g_pid_fd = open(pid_file, O_RDWR | O_CREAT | O_NOFOLLOW, 0644);
+    if (g_pid_fd < 0) {
+        fprintf(stderr, "Error: Failed to open PID file: %s\n", strerror(errno));
+        return -1;
+    }
+
+    struct flock fl = {
+        .l_type = F_WRLCK,
+        .l_whence = SEEK_SET,
+        .l_start = 0,
+        .l_len = 0 
+    };
+
+    if (fcntl(g_pid_fd, F_SETLK, &fl) < 0) {
+        if (errno == EACCES || errno == EAGAIN) {
+            fprintf(stderr, "Daemon is already running (PID file locked by another instance)\n");
+        } else {
+            fprintf(stderr, "Error: Failed to lock PID file: %s\n", strerror(errno));
+        }
+        close(g_pid_fd);
+        return -1;
+    }
+
+    if (ftruncate(g_pid_fd, 0) < 0) return -1;
+    
+    char buf[32];
+    int buf_len = snprintf(buf, sizeof(buf), "%d\n", getpid());
+    
+    if (write(g_pid_fd, buf, buf_len) != buf_len) {
+        fprintf(stderr, "Error: Failed to write PID to file\n");
+        return -1;
+    }
+
     return 0;
 }
 
 static void daemonize(void) {
     pid_t pid = fork();
-    if (pid < 0) exit(EXIT_FAILURE);
+    if (pid < 0) {
+        fprintf(stderr, "Error: First fork failed: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
     if (pid > 0) exit(EXIT_SUCCESS);
-    if (setsid() < 0) exit(EXIT_FAILURE);
+    
+    if (setsid() < 0) {
+        fprintf(stderr, "Error: setsid failed: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
 
     pid = fork();
-    if (pid < 0) exit(EXIT_FAILURE);
+    if (pid < 0) {
+        fprintf(stderr, "Error: Second fork failed: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
     if (pid > 0) exit(EXIT_SUCCESS);
 
     umask(0);
+    
     int fd = open("/dev/null", O_RDWR);
     if (fd >= 0) {
         dup2(fd, STDIN_FILENO);
@@ -349,10 +364,7 @@ static void run_event_loop(void) {
 
     if (g_svc && service_start_async(g_svc) != 0) {
         LOG_ERROR("Failed to start service");
-        reactor_destroy(g_reactor);
-        g_reactor = NULL;
-        uds_cleanup();
-        return;
+        goto cleanup;
     }
 
     proxy_timer = reactor_add_timer(g_reactor, 10000, 30000, proxies_timer_cb, NULL);
@@ -375,6 +387,7 @@ static void run_event_loop(void) {
     reactor_run(g_reactor);
     LOG_INFO("Reactor event loop stopped");
 
+cleanup:
     if (proxy_timer) {
         reactor_cancel_timer(g_reactor, proxy_timer);
         proxy_timer = NULL;
@@ -393,8 +406,10 @@ static void run_event_loop(void) {
     uds_cleanup();
     api_cleanup(&g_api_ctx);
 
-    reactor_destroy(g_reactor);
-    g_reactor = NULL;
+    if (g_reactor) {
+        reactor_destroy(g_reactor);
+        g_reactor = NULL;
+    }
 }
 
 /* ========== Commands ========== */
@@ -416,18 +431,12 @@ static int do_start(atp_options_t *opts) {
 
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    if (check_existing_daemon(pp)) {
-        fprintf(stderr, "Daemon already running\n");
-        return 1;
-    }
-
     if (opts->daemon && !opts->foreground) {
         daemonize();
     }
 
     if (write_pid_file(pp) < 0) {
-        fprintf(stderr, "Failed to write PID file\n");
-        return 1;
+        return 1; 
     }
 
     atpd_context_init();
@@ -435,10 +444,12 @@ static int do_start(atp_options_t *opts) {
     if (atpd_init_run(&init_ctx) != 0) {
         LOG_ERROR("Initialization failed");
         atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
+        
         cleanup_ebpf();
         netlink_cleanup();
         uds_cleanup();
         api_cleanup(&g_api_ctx);
+        
         unlink(pp);
         return 1;
     }
