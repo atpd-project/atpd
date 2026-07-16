@@ -147,13 +147,19 @@ static int write_pid_file(const char *pid_file) {
         return -1;
     }
 
-    if (ftruncate(g_pid_fd, 0) < 0) return -1;
+    if (ftruncate(g_pid_fd, 0) < 0) {
+        close(g_pid_fd);
+        g_pid_fd = -1;
+        return -1;
+    }
     
     char buf[32];
     int buf_len = snprintf(buf, sizeof(buf), "%d\n", getpid());
     
     if (write(g_pid_fd, buf, buf_len) != buf_len) {
         fprintf(stderr, "Error: Failed to write PID to file\n");
+        close(g_pid_fd);
+        g_pid_fd = -1;
         return -1;
     }
 
@@ -463,6 +469,20 @@ static int do_start(atp_options_t *opts) {
     }
 
     netlink_set_tproxy_ready();
+    if (tproxy_restart(&g_config) != 0) {
+        LOG_ERROR("Failed to initialize transparent proxy rules");
+        cleanup_ebpf();
+        netlink_cleanup();
+        uds_cleanup();
+        api_cleanup(&g_api_ctx);
+        if (g_svc) {
+            service_stop_sync(g_svc);
+            free(g_svc);
+            g_svc = NULL;
+        }
+        unlink(pp);
+        return 1;
+    }
     run_event_loop();
 
     unlink(pp);

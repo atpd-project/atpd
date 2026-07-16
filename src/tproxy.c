@@ -1505,26 +1505,50 @@ int tproxy_dns_hijack_setup(atp_config_t *cfg, int family, int mode) {
         return -1;
     }
 
-    char dns_pre[64], dns_out[64];
-    build_chain_name(family, "DNS_PRE_0", dns_pre, sizeof(dns_pre));
-    build_chain_name(family, "DNS_OUT_0", dns_out, sizeof(dns_out));
-    if (dns_pre[0] == '\0' || dns_out[0] == '\0') return -1;
-
     int mark = ctx->mark(cfg);
     char rule_buf[128];
 
     if (mode == DNS_HIJACK_TPROXY) {
+        char dns_pre[64], dns_out[64];
+        build_chain_name(family, "DNS_PRE_0", dns_pre, sizeof(dns_pre));
+        build_chain_name(family, "DNS_OUT_0", dns_out, sizeof(dns_out));
+        if (dns_pre[0] == '\0' || dns_out[0] == '\0') return -1;
+
+        // PREROUTING mangle: redirect port 53 to DNS proxy via TPROXY
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
                  "-p udp --dport 53 -j TPROXY --on-port %d --tproxy-mark %d",
                  cfg->network.dns_port, mark);
         tproxy_rule_ensure_single(cfg, family, "mangle", dns_pre, rule_buf);
+
+        // OUTPUT mangle: mark local DNS packets to trigger loopback rerouting
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
+                 "-p udp --dport 53 -j MARK --set-mark %d", mark);
         tproxy_rule_ensure_single(cfg, family, "mangle", dns_out, rule_buf);
+
     } else if (mode == DNS_HIJACK_REDIRECT) {
+        char dns_pre_nat[64], dns_out_nat[64];
+        build_chain_name(family, "DNS_PRE_NAT", dns_pre_nat, sizeof(dns_pre_nat));
+        build_chain_name(family, "DNS_OUT_NAT", dns_out_nat, sizeof(dns_out_nat));
+        if (dns_pre_nat[0] == '\0' || dns_out_nat[0] == '\0') return -1;
+
+        tproxy_chain_create(cfg, family, "nat", dns_pre_nat);
+        tproxy_chain_flush(cfg, family, "nat", dns_pre_nat);
+        tproxy_chain_create(cfg, family, "nat", dns_out_nat);
+        tproxy_chain_flush(cfg, family, "nat", dns_out_nat);
+
+        // PREROUTING / OUTPUT NAT: redirect to local DNS port
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
                  "-p udp --dport 53 -j REDIRECT --to-ports %d",
                  cfg->network.dns_port);
-        tproxy_rule_ensure_single(cfg, family, "mangle", dns_pre, rule_buf);
-        tproxy_rule_ensure_single(cfg, family, "mangle", dns_out, rule_buf);
+        tproxy_rule_ensure_single(cfg, family, "nat", dns_pre_nat, rule_buf);
+        tproxy_rule_ensure_single(cfg, family, "nat", dns_out_nat, rule_buf);
+
+        // Jumps from PREROUTING and OUTPUT nat tables
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-j %s", dns_pre_nat);
+        tproxy_rule_ensure_single_insert(cfg, family, "nat", "PREROUTING", 1, rule_buf);
+
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-j %s", dns_out_nat);
+        tproxy_rule_ensure_single_insert(cfg, family, "nat", "OUTPUT", 1, rule_buf);
     }
 
     return 0;
@@ -1540,22 +1564,40 @@ int tproxy_dns_hijack_cleanup(atp_config_t *cfg, int family) {
     char dns_pre[64], dns_out[64];
     build_chain_name(family, "DNS_PRE_0", dns_pre, sizeof(dns_pre));
     build_chain_name(family, "DNS_OUT_0", dns_out, sizeof(dns_out));
-    if (dns_pre[0] == '\0' || dns_out[0] == '\0') return -1;
 
     int mark = ctx->mark(cfg);
     char rule_buf[128];
 
-    SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
-             "-p udp --dport 53 -j TPROXY --on-port %d --tproxy-mark %d",
-             cfg->network.dns_port, mark);
-    delete_all_rules(cfg, family, "mangle", dns_pre, rule_buf);
-    delete_all_rules(cfg, family, "mangle", dns_out, rule_buf);
+    // Clean up TPROXY mode rules
+    if (dns_pre[0] && dns_out[0]) {
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
+                 "-p udp --dport 53 -j TPROXY --on-port %d --tproxy-mark %d",
+                 cfg->network.dns_port, mark);
+        delete_all_rules(cfg, family, "mangle", dns_pre, rule_buf);
 
-    SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
-             "-p udp --dport 53 -j REDIRECT --to-ports %d",
-             cfg->network.dns_port);
-    delete_all_rules(cfg, family, "mangle", dns_pre, rule_buf);
-    delete_all_rules(cfg, family, "mangle", dns_out, rule_buf);
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf),
+                 "-p udp --dport 53 -j MARK --set-mark %d", mark);
+        delete_all_rules(cfg, family, "mangle", dns_out, rule_buf);
+    }
+
+    // Clean up REDIRECT mode NAT rules and chains
+    char dns_pre_nat[64], dns_out_nat[64];
+    build_chain_name(family, "DNS_PRE_NAT", dns_pre_nat, sizeof(dns_pre_nat));
+    build_chain_name(family, "DNS_OUT_NAT", dns_out_nat, sizeof(dns_out_nat));
+
+    if (dns_pre_nat[0] && dns_out_nat[0]) {
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-j %s", dns_pre_nat);
+        delete_all_rules(cfg, family, "nat", "PREROUTING", rule_buf);
+
+        SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-j %s", dns_out_nat);
+        delete_all_rules(cfg, family, "nat", "OUTPUT", rule_buf);
+
+        tproxy_chain_flush(cfg, family, "nat", dns_pre_nat);
+        tproxy_chain_destroy(cfg, family, "nat", dns_pre_nat);
+
+        tproxy_chain_flush(cfg, family, "nat", dns_out_nat);
+        tproxy_chain_destroy(cfg, family, "nat", dns_out_nat);
+    }
 
     return 0;
 }
