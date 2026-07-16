@@ -125,14 +125,16 @@ static const tproxy_family_ctx_t *get_ctx(int family) {
         case 4: return &family4;
         case 6: return &family6;
         default: return NULL;
-
+};
 static int validate_iface_name(const char *name) {
     if (!name || !*name) return -1;
     for (const char *p = name; *p; p++) {
         if (!isalnum((unsigned char)*p) && *p != '.' && *p != '_' && *p != '-' && *p != ':') {
             return -1;
+          }
+        }
     return 0;
-
+}
 static int validate_ip_or_cidr(const char *str) {
     if (!str || !*str) return -1;
 
