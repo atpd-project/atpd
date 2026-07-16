@@ -69,47 +69,31 @@ static int app_filter_load_package_cache(void);
 static int app_filter_uid_in_list(int uid, int *uid_list, int count);
 static int parse_user_id_from_line(const char *line);
 static int app_filter_cache_stale(void);
+static int app_filter_check_connection_cached_v4(uint32_t s_ip, uint16_t s_pt, uint32_t d_ip, uint16_t d_pt);
+static int app_filter_check_connection_cached_v6(const uint8_t *s_ip, uint16_t s_pt, const uint8_t *d_ip, uint16_t d_pt);
 
 int app_filter_init(atp_config_t *cfg) {
-    (void)cfg;
-    if (!g_package_cache_loaded) {
-        if (app_filter_load_package_cache() < 0) {
-            LOG_WARN("Failed to load package cache");
-        }
-    }
+    if (!g_package_cache_loaded) app_filter_load_package_cache();
     if (!cfg->core.dry_run) {
         char cmd[MAX_CMD_LEN];
         snprintf(cmd, sizeof(cmd), "ipset create %s bitmap:port range 0-65535 -exist 2>/dev/null", APP_IPSET_NAME);
         exec_cmd_simple(cmd, 5);
     }
-    if (inet_diag_init() != 0) {
-        LOG_WARN("INET_DIAG initialization failed");
-    }
+    if (inet_diag_init() != 0) LOG_WARN("INET_DIAG init failed");
     return 0;
 }
 
 static int parse_user_id_from_line(const char *line) {
-    char *line_copy = strdup(line);
-    if (!line_copy) return 0;
-    char *saveptr, *token;
-    int field_count = 0;
-    token = strtok_r(line_copy, " ", &saveptr);
-    while (token) { field_count++; token = strtok_r(NULL, " ", &saveptr); }
-    int user_id = 0;
-    if (field_count >= 11) {
-        free(line_copy);
-        line_copy = strdup(line);
-        saveptr = NULL;
-        token = strtok_r(line_copy, " ", &saveptr);
-        for (int i = 1; i < 11 && token; i++) token = strtok_r(NULL, " ", &saveptr);
-        if (token) {
-            char *endptr;
-            long parsed = strtol(token, &endptr, 10);
-            if (endptr != token && *endptr == '\0') user_id = (int)parsed;
-        }
+    char *dup = strdup(line), *s = NULL, *t = strtok_r(dup, " ", &s);
+    int cnt = 0;
+    while (t) { cnt++; t = strtok_r(NULL, " ", &s); }
+    int res = 0;
+    if (cnt >= 11) {
+        free(dup); dup = strdup(line); s = NULL; t = strtok_r(dup, " ", &s);
+        for (int i = 1; i < 11 && t; i++) t = strtok_r(NULL, " ", &s);
+        if (t) res = atoi(t);
     }
-    free(line_copy);
-    return user_id;
+    free(dup); return res;
 }
 
 static int app_filter_load_package_cache(void) {
@@ -117,32 +101,23 @@ static int app_filter_load_package_cache(void) {
     if (!fp) return -1;
     struct stat st;
     if (fstat(fileno(fp), &st) == 0) g_package_cache_mtime = st.st_mtime;
-    int cache_capacity = 1000;
-    package_cache_t *cache = malloc(sizeof(package_cache_t) * cache_capacity);
-    if (!cache) { fclose(fp); return -1; }
-    int cache_count = 0;
-    char line[1024];
-    while (fgets(line, sizeof(line), fp)) {
-        char pkg_name[256];
-        int uid;
-        if (sscanf(line, "%255s %d", pkg_name, &uid) == 2) {
-            if (cache_count >= cache_capacity) {
-                cache_capacity *= 2;
-                cache = realloc(cache, sizeof(package_cache_t) * cache_capacity);
-            }
-            snprintf(cache[cache_count].package_name, 256, "%s", pkg_name);
-            cache[cache_count].uid = uid;
-            cache[cache_count].user_id = parse_user_id_from_line(line);
-            cache_count++;
+    int cap = 1000, cnt = 0;
+    package_cache_t *c = malloc(sizeof(package_cache_t) * cap);
+    char buf[1024];
+    while (fgets(buf, 1024, fp)) {
+        char name[256]; int uid;
+        if (sscanf(buf, "%255s %d", name, &uid) == 2) {
+            if (cnt >= cap) c = realloc(c, sizeof(package_cache_t) * (cap *= 2));
+            snprintf(c[cnt].package_name, 256, "%s", name);
+            c[cnt].uid = uid;
+            c[cnt].user_id = parse_user_id_from_line(buf);
+            cnt++;
         }
     }
     fclose(fp);
     pthread_rwlock_wrlock(&g_package_cache_lock);
     package_cache_t *old = g_package_cache;
-    g_package_cache = cache;
-    g_package_cache_count = cache_count;
-    g_package_cache_loaded = 1;
-    g_package_cache_version++;
+    g_package_cache = c; g_package_cache_count = cnt; g_package_cache_loaded = 1;
     pthread_rwlock_unlock(&g_package_cache_lock);
     free(old);
     return 0;
@@ -150,148 +125,160 @@ static int app_filter_load_package_cache(void) {
 
 static int app_filter_cache_stale(void) {
     struct stat st;
-    if (stat(PACKAGES_LIST_PATH, &st) != 0) return 1;
-    return st.st_mtime != g_package_cache_mtime;
+    return (stat(PACKAGES_LIST_PATH, &st) == 0 && st.st_mtime != g_package_cache_mtime);
 }
 
 int app_filter_refresh_cache(void) { return app_filter_load_package_cache(); }
 
-static int app_filter_find_package_uid(const char *package_name, int user_id) {
-    int result = -1;
-    pthread_rwlock_rdlock(&g_package_cache_lock);
-    for (int i = 0; i < g_package_cache_count; i++) {
-        if (strcmp(g_package_cache[i].package_name, package_name) == 0 &&
-            (user_id == -1 || g_package_cache[i].user_id == user_id)) {
-            result = g_package_cache[i].uid;
-            break;
-        }
-    }
-    pthread_rwlock_unlock(&g_package_cache_lock);
-    return result;
-}
-
-int app_filter_get_uid_by_package(const char *package_name, int user_id) {
+int app_filter_get_uid_by_package(const char *name, int uid_req) {
     pthread_mutex_lock(&g_package_reload_mutex);
     if (!g_package_cache_loaded || app_filter_cache_stale()) app_filter_load_package_cache();
     pthread_mutex_unlock(&g_package_reload_mutex);
-    return app_filter_find_package_uid(package_name, user_id);
-}
-
-static int app_filter_uid_in_list(int uid, int *uid_list, int count) {
-    for (int i = 0; i < count; i++) if (uid_list[i] == uid) return 1;
-    return 0;
-}
-
-static int app_filter_parse_package_list_string(const char *list_str, char ***packages, int *count) {
-    if (!list_str || !list_str[0]) { *packages = NULL; *count = 0; return 0; }
-    char *str_copy = strdup(list_str), **pkg_list = NULL;
-    int pkg_count = 0;
-    char *token = strtok(str_copy, " ");
-    while (token) {
-        pkg_list = realloc(pkg_list, sizeof(char*) * (pkg_count + 1));
-        pkg_list[pkg_count++] = strdup(token);
-        token = strtok(NULL, " ");
+    int res = -1;
+    pthread_rwlock_rdlock(&g_package_cache_lock);
+    for (int i = 0; i < g_package_cache_count; i++) {
+        if (strcmp(g_package_cache[i].package_name, name) == 0 && (uid_req == -1 || g_package_cache[i].user_id == uid_req)) {
+            res = g_package_cache[i].uid; break;
+        }
     }
-    free(str_copy);
-    *packages = pkg_list; *count = pkg_count;
+    pthread_rwlock_unlock(&g_package_cache_lock);
+    return res;
+}
+
+static int app_filter_uid_in_list(int uid, int *list, int count) {
+    for (int i = 0; i < count; i++) if (list[i] == uid) return 1;
     return 0;
 }
 
-static void app_filter_free_package_list(char **packages, int count) {
-    for (int i = 0; i < count; i++) free(packages[i]);
-    free(packages);
+static int app_filter_parse_package_list_string(const char *str, char ***out, int *cnt) {
+    if (!str || !*str) { *out = NULL; *cnt = 0; return 0; }
+    char *dup = strdup(str), **l = NULL; int n = 0;
+    char *t = strtok(dup, " ");
+    while (t) {
+        l = realloc(l, sizeof(char*) * (n + 1));
+        l[n++] = strdup(t);
+        t = strtok(NULL, " ");
+    }
+    free(dup); *out = l; *cnt = n; return 0;
+}
+
+static void app_filter_free_package_list(char **l, int n) {
+    for (int i = 0; i < n; i++) free(l[i]);
+    free(l);
 }
 
 static int app_filter_add_uids_to_ipset(atp_config_t *cfg, int *uids, int count, const char *mode) {
     (void)cfg; (void)mode;
-    char tmp_path[] = "/tmp/atp_uids.XXXXXX";
-    int fd = mkstemp(tmp_path);
+    char path[] = "/tmp/atp_uids.XXXXXX";
+    int fd = mkstemp(path);
     if (fd < 0) return -1;
     dprintf(fd, "flush %s\n", APP_IPSET_NAME);
     for (int i = 0; i < count; i++) dprintf(fd, "add %s %d\n", APP_IPSET_NAME, uids[i]);
     close(fd);
     char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "ipset restore < %s 2>/dev/null", tmp_path);
+    snprintf(cmd, sizeof(cmd), "ipset restore < %s 2>/dev/null", path);
     int ret = exec_cmd_simple(cmd, 10);
-    unlink(tmp_path);
-    return ret;
+    unlink(path); return ret;
 }
 
 int app_filter_resolve_packages(const char *list, int **uids, int *count) {
     if (!list) { *uids = NULL; *count = 0; return 0; }
-    char **packages; int pkg_count;
-    if (app_filter_parse_package_list_string(list, &packages, &pkg_count) < 0) return -1;
-    int *uid_list = malloc(sizeof(int) * pkg_count), uid_count = 0;
-    for (int i = 0; i < pkg_count; i++) {
-        char *pkg = packages[i]; int user_id = 0, *colon = strchr(pkg, ':');
-        if (colon) { *colon = '\0'; user_id = atoi(pkg); pkg = colon + 1; }
-        int uid = app_filter_get_uid_by_package(pkg, user_id);
-        if (uid > 0 && !app_filter_uid_in_list(uid, uid_list, uid_count)) uid_list[uid_count++] = uid;
+    char **p; int n;
+    app_filter_parse_package_list_string(list, &p, &n);
+    int *l = malloc(sizeof(int) * n), c = 0;
+    for (int i = 0; i < n; i++) {
+        char *pkg = p[i], *col = strchr(pkg, ':');
+        int uid_r = 0;
+        if (col) { *col = '\0'; uid_r = atoi(pkg); pkg = col + 1; }
+        int uid = app_filter_get_uid_by_package(pkg, uid_r);
+        if (uid > 0 && !app_filter_uid_in_list(uid, l, c)) l[c++] = uid;
     }
-    app_filter_free_package_list(packages, pkg_count);
-    *uids = uid_list; *count = uid_count;
-    return 0;
+    app_filter_free_package_list(p, n);
+    *uids = l; *count = c; return 0;
 }
 
 void app_filter_free_uids(int *uids) { free(uids); }
 
-static int app_filter_check_connection_cached_v4(uint32_t src_ip, uint16_t src_port, uint32_t dst_ip, uint16_t dst_port) {
+static int app_filter_check_connection_cached_v4(uint32_t s_ip, uint16_t s_pt, uint32_t d_ip, uint16_t d_pt) {
     time_t now = time(NULL);
     pthread_mutex_lock(&g_conn_cache_mutex);
     for (int i = 0; i < g_conn_cache_count; i++) {
         int idx = (g_conn_cache_head + i) % CONN_CACHE_SIZE;
-        if (g_conn_cache[idx].src_ip == src_ip && g_conn_cache[idx].src_port == src_port &&
-            g_conn_cache[idx].dst_ip == dst_ip && g_conn_cache[idx].dst_port == dst_port &&
+        if (g_conn_cache[idx].src_ip == s_ip && g_conn_cache[idx].src_port == s_pt &&
+            g_conn_cache[idx].dst_ip == d_ip && g_conn_cache[idx].dst_port == d_pt &&
             (now - g_conn_cache[idx].timestamp) < CONN_CACHE_TTL) {
             int uid = g_conn_cache[idx].uid;
-            pthread_mutex_unlock(&g_conn_cache_mutex);
-            return uid;
+            pthread_mutex_unlock(&g_conn_cache_mutex); return uid;
         }
     }
     pthread_mutex_unlock(&g_conn_cache_mutex);
-    int uid = inet_diag_get_uid_v4(IPPROTO_TCP, src_ip, src_port, dst_ip, dst_port);
+    int uid = inet_diag_get_uid_v4(IPPROTO_TCP, s_ip, s_pt, d_ip, d_pt);
     pthread_mutex_lock(&g_conn_cache_mutex);
     int idx = (g_conn_cache_head + g_conn_cache_count) % CONN_CACHE_SIZE;
     if (g_conn_cache_count >= CONN_CACHE_SIZE) g_conn_cache_head = (g_conn_cache_head + 1) % CONN_CACHE_SIZE;
     else g_conn_cache_count++;
-    g_conn_cache[idx] = (conn_cache_t){src_ip, src_port, dst_ip, dst_port, uid, now};
-    pthread_mutex_unlock(&g_conn_cache_mutex);
-    return uid;
+    g_conn_cache[idx] = (conn_cache_t){s_ip, s_pt, d_ip, d_pt, uid, now};
+    pthread_mutex_unlock(&g_conn_cache_mutex); return uid;
 }
 
-int app_filter_should_proxy(int family, int protocol, void *src_ip, uint16_t src_port, void *dst_ip, uint16_t dst_port) {
+static int app_filter_check_connection_cached_v6(const uint8_t *s_ip, uint16_t s_pt, const uint8_t *d_ip, uint16_t d_pt) {
+    time_t now = time(NULL);
+    pthread_mutex_lock(&g_conn_cache_mutex);
+    for (int i = 0; i < g_conn_cache_v6_count; i++) {
+        int idx = (g_conn_cache_v6_head + i) % CONN_CACHE_SIZE;
+        if (memcmp(g_conn_cache_v6[idx].src_ip, s_ip, 16) == 0 && g_conn_cache_v6[idx].src_port == s_pt &&
+            memcmp(g_conn_cache_v6[idx].dst_ip, d_ip, 16) == 0 && g_conn_cache_v6[idx].dst_port == d_pt &&
+            (now - g_conn_cache_v6[idx].timestamp) < CONN_CACHE_TTL) {
+            int uid = g_conn_cache_v6[idx].uid;
+            pthread_mutex_unlock(&g_conn_cache_mutex); return uid;
+        }
+    }
+    pthread_mutex_unlock(&g_conn_cache_mutex);
+    int uid = inet_diag_get_uid_v6(IPPROTO_TCP, s_ip, s_pt, d_ip, d_pt);
+    pthread_mutex_lock(&g_conn_cache_mutex);
+    int idx = (g_conn_cache_v6_head + g_conn_cache_v6_count) % CONN_CACHE_SIZE;
+    if (g_conn_cache_v6_count >= CONN_CACHE_SIZE) g_conn_cache_v6_head = (g_conn_cache_v6_head + 1) % CONN_CACHE_SIZE;
+    else g_conn_cache_v6_count++;
+    memcpy(g_conn_cache_v6[idx].src_ip, s_ip, 16);
+    g_conn_cache_v6[idx].src_port = s_pt;
+    memcpy(g_conn_cache_v6[idx].dst_ip, d_ip, 16);
+    g_conn_cache_v6[idx].dst_port = d_pt;
+    g_conn_cache_v6[idx].uid = uid;
+    g_conn_cache_v6[idx].timestamp = now;
+    pthread_mutex_unlock(&g_conn_cache_mutex); return uid;
+}
+
+int app_filter_should_proxy(int family, int protocol, void *s_ip, uint16_t s_pt, void *d_ip, uint16_t d_pt) {
     if (protocol != IPPROTO_TCP) return 1;
-    int uid = (family == AF_INET) ? 
-              app_filter_check_connection_cached_v4(*(uint32_t*)src_ip, src_port, *(uint32_t*)dst_ip, dst_port) : 
-              app_filter_check_connection_cached_v6((uint8_t*)src_ip, src_port, (uint8_t*)dst_ip, dst_port);
+    int uid = (family == AF_INET) ? app_filter_check_connection_cached_v4(*(uint32_t*)s_ip, s_pt, *(uint32_t*)d_ip, d_pt) : 
+                                    app_filter_check_connection_cached_v6((uint8_t*)s_ip, s_pt, (uint8_t*)d_ip, d_pt);
     if (uid <= 0) return 1;
     pthread_rwlock_rdlock(&g_uid_list_lock);
-    int in_list = app_filter_uid_in_list(uid, g_current_uids, g_current_uids_count);
+    int in = app_filter_uid_in_list(uid, g_current_uids, g_current_uids_count);
     pthread_rwlock_unlock(&g_uid_list_lock);
-    return (strcmp(g_config.filter.app_proxy_mode, "blacklist") == 0) ? !in_list : in_list;
+    return (strcmp(g_config.filter.app_proxy_mode, "blacklist") == 0) ? !in : in;
 }
 
 static void app_filter_configure_chain(atp_config_t *cfg, int family) {
-    char chain[64];
-    build_chain_name(family, "APP_0", chain, 64);
-    tproxy_chain_flush(cfg, family, "mangle", chain);
-    char rule[256];
-    snprintf(rule, sizeof(rule), "-m set --match-set %s src -j %s", APP_IPSET_NAME, 
+    char ch[64];
+    build_chain_name(family, "APP_0", ch, 64);
+    tproxy_chain_flush(cfg, family, "mangle", ch);
+    char r[256];
+    snprintf(r, 256, "-m set --match-set %s src -j %s", APP_IPSET_NAME, 
              strcmp(cfg->filter.app_proxy_mode, "blacklist") == 0 ? "ACCEPT" : "RETURN");
-    tproxy_rule_add(cfg, family, "mangle", chain, rule);
-    tproxy_rule_add(cfg, family, "mangle", chain, 
-                    strcmp(cfg->filter.app_proxy_mode, "blacklist") == 0 ? "-j RETURN" : "-j ACCEPT");
+    tproxy_rule_add(cfg, family, "mangle", ch, r);
+    tproxy_rule_add(cfg, family, "mangle", ch, strcmp(cfg->filter.app_proxy_mode, "blacklist") == 0 ? "-j RETURN" : "-j ACCEPT");
 }
 
 int app_filter_setup(atp_config_t *cfg) {
     if (!cfg->filter.app_proxy_enable) return 0;
-    int *uids, uid_count;
-    if (app_filter_resolve_packages(cfg->filter.proxy_apps_list, &uids, &uid_count) < 0) return -1;
+    int *uids, c;
+    if (app_filter_resolve_packages(cfg->filter.proxy_apps_list, &uids, &c) < 0) return -1;
     pthread_rwlock_wrlock(&g_uid_list_lock);
-    free(g_current_uids); g_current_uids = uids; g_current_uids_count = uid_count;
+    free(g_current_uids); g_current_uids = uids; g_current_uids_count = c;
     pthread_rwlock_unlock(&g_uid_list_lock);
     if (!cfg->ebpf.ready) {
-        app_filter_add_uids_to_ipset(cfg, uids, uid_count, cfg->filter.app_proxy_mode);
+        app_filter_add_uids_to_ipset(cfg, uids, c, cfg->filter.app_proxy_mode);
         app_filter_configure_chain(cfg, 4);
         if (cfg->network.proxy_ipv6) app_filter_configure_chain(cfg, 6);
     }
@@ -307,16 +294,14 @@ int app_filter_cleanup(atp_config_t *cfg) {
     pthread_rwlock_wrlock(&g_uid_list_lock);
     free(g_current_uids); g_current_uids = NULL; g_current_uids_count = 0;
     pthread_rwlock_unlock(&g_uid_list_lock);
-    inet_diag_cleanup();
     return 0;
 }
 
 int app_filter_reload(atp_config_t *cfg) {
     app_filter_refresh_cache();
     pthread_mutex_lock(&g_conn_cache_mutex);
-    memset(g_conn_cache, 0, sizeof(g_conn_cache));
-    g_conn_cache_count = 0;
+    memset(g_conn_cache, 0, sizeof(g_conn_cache)); memset(g_conn_cache_v6, 0, sizeof(g_conn_cache_v6));
+    g_conn_cache_count = g_conn_cache_v6_count = g_conn_cache_head = g_conn_cache_v6_head = 0;
     pthread_mutex_unlock(&g_conn_cache_mutex);
-    app_filter_cleanup(cfg);
-    return app_filter_setup(cfg);
+    app_filter_cleanup(cfg); return app_filter_setup(cfg);
 }
