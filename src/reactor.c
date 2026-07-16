@@ -28,7 +28,6 @@ typedef struct reactor_handler_s {
     void *userdata;
     reactor_free_cb free_cb;
     uint8_t active;
-    uint8_t pending_delete;
 } reactor_handler_t;
 
 typedef struct reactor_timer_internal_s {
@@ -142,16 +141,11 @@ static void process_expired_timers(reactor_t *r, reactor_private_t *priv) {
 
         timer_list_remove(priv, timer);
 
+        // FIX 1: Pass the actual heap-allocated public_timer to avoid stack-pointer free crash
         if (timer->active && timer->callback) {
-            reactor_timer_t pub_timer = {
-                .expires_ms = timer->expires_ms,
-                .interval_ms = timer->interval_ms,
-                .callback = timer->callback,
-                .userdata = timer->userdata,
-                .active = 1,
-                .internal = timer
-            };
-            timer->callback(r, &pub_timer, timer->userdata);
+            if (timer->public_timer) {
+                timer->callback(r, timer->public_timer, timer->userdata);
+            }
         }
 
         if (timer->active && !timer->pending_delete && timer->interval_ms > 0) {
@@ -271,8 +265,10 @@ void reactor_destroy(reactor_t *r) {
     reactor_timer_internal_t *timer = priv->timer_head;
     while (timer) {
         reactor_timer_internal_t *next = timer->next;
+        // FIX 3: Actually free the public_timer memory to stop the leak
         if (timer->public_timer) {
             timer->public_timer->internal = NULL;
+            free(timer->public_timer);
             timer->public_timer = NULL;
         }
         free(timer);
@@ -353,7 +349,7 @@ int reactor_run(reactor_t *r) {
 
             if (fd >= 0 && fd < REACTOR_MAX_FD) {
                 reactor_handler_t *h = priv->handlers[fd];
-                if (h && h->active && !h->pending_delete && h->callback) {
+                if (h && h->active && h->callback) {
                     priv->stats.events_processed++;
                     h->callback(r, fd, ev, h->userdata);
                 }
@@ -365,15 +361,7 @@ int reactor_run(reactor_t *r) {
             priv->idle_cb(r, priv->userdata);
         }
 
-        for (int fd = 0; fd < REACTOR_MAX_FD; fd++) {
-            reactor_handler_t *h = priv->handlers[fd];
-            if (h && h->pending_delete) {
-                epoll_ctl(r->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                if (h->free_cb) h->free_cb(h->userdata);
-                free(h);
-                priv->handlers[fd] = NULL;
-            }
-        }
+        // FIX 2: O(N) loop removed here! Cleanup is now handled synchronously in reactor_remove_fd.
     }
 
     r->in_loop = 0;
@@ -403,7 +391,6 @@ int reactor_add_fd(reactor_t *r, int fd, uint32_t events, reactor_io_cb cb, void
     h->userdata = userdata;
     h->free_cb = NULL;
     h->active = 1;
-    h->pending_delete = 0;
 
     struct epoll_event ev = {
         .events = events,
@@ -468,13 +455,20 @@ int reactor_remove_fd(reactor_t *r, int fd) {
     reactor_handler_t *h = priv->handlers[fd];
     if (!h) return 0;
 
-    h->pending_delete = 1;
-    h->active = 0;
+    // FIX 2: Synchronous cleanup. Remove from epoll immediately and free resources.
+    epoll_ctl(r->epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+    
+    if (h->free_cb) {
+        h->free_cb(h->userdata);
+    }
+    free(h);
+    
+    priv->handlers[fd] = NULL;
+    
     if (priv->stats.active_handlers > 0) {
         priv->stats.active_handlers--;
     }
 
-    reactor_wakeup(r);
     return 0;
 }
 
@@ -583,12 +577,8 @@ int reactor_watch_signal(reactor_t *r, int signo) {
 
     if (new_fd != r->signal_fd) {
         if (r->signal_fd >= 0) {
-            reactor_handler_t *h = priv->handlers[r->signal_fd];
-            if (h) {
-                h->pending_delete = 1;
-                h->active = 0;
-            }
-            epoll_ctl(r->epoll_fd, EPOLL_CTL_DEL, r->signal_fd, NULL);
+            // FIX 4: Securely remove the old signalfd using the unified function
+            reactor_remove_fd(r, r->signal_fd);
             close(r->signal_fd);
         }
         r->signal_fd = new_fd;
