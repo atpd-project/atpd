@@ -127,7 +127,7 @@ static const tproxy_family_ctx_t *get_ctx(int family) {
         default: return NULL;
     }
 }
-};
+
 static int validate_iface_name(const char *name) {
     if (!name || !*name) return -1;
     for (const char *p = name; *p; p++) {
@@ -151,9 +151,9 @@ static int validate_ip_or_cidr(const char *str) {
     if (sscanf(str, "%127[^/]/%d", ip, &prefix) == 2) {
         if (inet_pton(AF_INET, ip, &v4) == 1 && prefix >= 0 && prefix <= 32) return 0;
         if (inet_pton(AF_INET6, ip, &v6) == 1 && prefix >= 0 && prefix <= 128) return 0;
-
+   }
     return -1;
-
+}
 static int family_available(int family) {
     int *cache;
     const char *path;
