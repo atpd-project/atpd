@@ -177,6 +177,16 @@ static int detect_xfrm_interface(struct nlmsghdr *h) {
     return (xfrm_id != NULL);
 }
 
+/* ========== Socket Drain Utility ========== */
+
+static void netlink_drain_socket(int fd) {
+    uint8_t buffer[4096];
+    ssize_t bytes_read;
+    do {
+        bytes_read = recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT);
+    } while (bytes_read > 0);
+}
+
 /* ========== getifaddrs Fallback for XFRM Tunnels ========== */
 
 static int is_proxy_interface(const char *ifname);
@@ -625,6 +635,8 @@ int netlink_get_active_vpn(char *output, size_t size) {
 
     pthread_mutex_lock(&g_nl_mutex);
 
+    netlink_drain_socket(g_sync_fd);
+
     if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
         pthread_mutex_unlock(&g_nl_mutex);
         return -1;
@@ -663,6 +675,8 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
     if (req.ifi.ifi_index == 0) return -1;
 
     pthread_mutex_lock(&g_nl_mutex);
+
+    netlink_drain_socket(g_sync_fd);
 
     if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
         pthread_mutex_unlock(&g_nl_mutex);
@@ -745,6 +759,8 @@ int nl_vpn_detect(void) {
 
     pthread_mutex_lock(&g_nl_mutex);
 
+    netlink_drain_socket(g_sync_fd);
+
     if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
         pthread_mutex_unlock(&g_nl_mutex);
         return -1;
@@ -791,6 +807,8 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     };
 
     pthread_mutex_lock(&g_nl_mutex);
+
+    netlink_drain_socket(g_sync_fd);
 
     if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
         pthread_mutex_unlock(&g_nl_mutex);
@@ -905,3 +923,4 @@ static int tproxy_refresh_rules(atp_config_t *cfg) {
 
     return 0;
 }
+
