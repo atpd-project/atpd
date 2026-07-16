@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <ctype.h>
 #include <sys/wait.h>
+#include <arpa/inet.h>
 
 static int g_tproxy_supported = -1;
 static pthread_mutex_t g_tproxy_support_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -27,6 +28,12 @@ static pthread_mutex_t g_avail_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define IP6TABLES_SAVE_CMD "/system/bin/ip6tables-save"
 
 #define MAX_ORPHAN_CHAINS 128
+#define BATCH_BUF_SIZE (256 * 1024)
+
+#define APPEND_RULE(buf, pos, size, ...) do { \
+    int _n = snprintf((buf) + (pos), (size) - (pos), __VA_ARGS__); \
+    if (_n > 0 && (size_t)_n < (size) - (pos)) { (pos) += _n; } \
+} while (0)
 
 static const char *chain_suffixes[] = {
     "PRE_0", "PRE_1",
@@ -252,6 +259,38 @@ static int exec_ipt(atp_config_t *cfg, int family, const char *table,
     if (ret != 0) {
         LOG_DEBUG("%s failed: -t %s %s %s %s (ret=%d)",
                   ctx->cmd, table, cmd, chain, rule ? rule : "", ret);
+    }
+    return ret;
+}
+
+static int apply_batch(atp_config_t *cfg, int family, const char *table, const char *rules) {
+    const tproxy_family_ctx_t *ctx = get_ctx(family);
+    if (!ctx) return -1;
+
+    if (cfg->core.dry_run) {
+        LOG_DEBUG("[DRY_RUN] %s-restore -T %s:\n%s", ctx->prefix, table, rules);
+        return 0;
+    }
+
+    if (!family_available(family)) return -1;
+
+    char cmd[MAX_CMD_LEN];
+    snprintf(cmd, sizeof(cmd), "%s -T %s --noflush 2>/dev/null", 
+             (family == 4) ? IPTABLES_SAVE_CMD : IP6TABLES_SAVE_CMD, table); 
+    
+    snprintf(cmd, sizeof(cmd), "%s -T %s --noflush 2>/dev/null", 
+             (family == 4) ? "/system/bin/iptables-restore" : "/system/bin/ip6tables-restore", table);
+
+    FILE *fp = popen(cmd, "w");
+    if (!fp) {
+        LOG_ERROR("Failed to execute iptables-restore");
+        return -1;
+    }
+
+    fprintf(fp, "*%s\n%sCOMMIT\n", table, rules);
+    int ret = pclose(fp);
+    if (ret != 0) {
+        LOG_ERROR("iptables-restore failed for table %s", table);
     }
     return ret;
 }
@@ -679,19 +718,19 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family) {
     build_chain_name(family, "BYPASS_IFACE_0", bypass_chain, sizeof(bypass_chain));
     if (proxy_chain[0] == '\0' || bypass_chain[0] == '\0') return;
 
-    char rule[256], list_buf[512], *saveptr;
+    char *buf = malloc(BATCH_BUF_SIZE);
+    if (!buf) return;
+    buf[0] = '\0';
+    size_t pos = 0;
 
-    tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, "-i lo -j RETURN");
+    APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i lo -j RETURN\n", proxy_chain);
 
     if (validate_iface_name(cfg->interface.mobile_iface) == 0) {
         if (cfg->interface.proxy_mobile) {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.mobile_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j RETURN\n", proxy_chain, cfg->interface.mobile_iface);
         } else {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.mobile_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-            SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.mobile_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j ACCEPT\n", proxy_chain, cfg->interface.mobile_iface);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -o %s -j ACCEPT\n", bypass_chain, cfg->interface.mobile_iface);
         }
     }
 
@@ -700,87 +739,74 @@ static void tproxy_setup_iface_rules(atp_config_t *cfg, int family) {
 
     if (hotspot_on_wifi) {
         if (cfg->interface.proxy_hotspot) {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -s %s -j RETURN", cfg->interface.hotspot_iface, hotspot_subnet);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -s %s -j RETURN\n", proxy_chain, cfg->interface.hotspot_iface, hotspot_subnet);
         } else {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -s %s -j ACCEPT", cfg->interface.hotspot_iface, hotspot_subnet);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -s %s -j ACCEPT\n", proxy_chain, cfg->interface.hotspot_iface, hotspot_subnet);
         }
 
         if (cfg->interface.proxy_wifi) {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s ! -s %s -j RETURN", cfg->interface.wifi_iface, hotspot_subnet);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s ! -s %s -j RETURN\n", proxy_chain, cfg->interface.wifi_iface, hotspot_subnet);
         } else {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s ! -s %s -j ACCEPT", cfg->interface.wifi_iface, hotspot_subnet);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-            SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.wifi_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s ! -s %s -j ACCEPT\n", proxy_chain, cfg->interface.wifi_iface, hotspot_subnet);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -o %s -j ACCEPT\n", bypass_chain, cfg->interface.wifi_iface);
         }
     } else {
         if (cfg->interface.proxy_wifi) {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.wifi_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j RETURN\n", proxy_chain, cfg->interface.wifi_iface);
         } else {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.wifi_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-            SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.wifi_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j ACCEPT\n", proxy_chain, cfg->interface.wifi_iface);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -o %s -j ACCEPT\n", bypass_chain, cfg->interface.wifi_iface);
         }
 
         if (cfg->interface.proxy_hotspot) {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.hotspot_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j RETURN\n", proxy_chain, cfg->interface.hotspot_iface);
         } else {
-            SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.hotspot_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-            SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.hotspot_iface);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j ACCEPT\n", proxy_chain, cfg->interface.hotspot_iface);
+            APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -o %s -j ACCEPT\n", bypass_chain, cfg->interface.hotspot_iface);
         }
     }
 
     if (cfg->interface.proxy_usb && validate_iface_name(cfg->interface.usb_iface) == 0) {
-        SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", cfg->interface.usb_iface);
-        tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+        APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j RETURN\n", proxy_chain, cfg->interface.usb_iface);
     } else if (validate_iface_name(cfg->interface.usb_iface) == 0) {
-        SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", cfg->interface.usb_iface);
-        tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-        SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", cfg->interface.usb_iface);
-        tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+        APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j ACCEPT\n", proxy_chain, cfg->interface.usb_iface);
+        APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -o %s -j ACCEPT\n", bypass_chain, cfg->interface.usb_iface);
     }
 
+    char *saveptr;
     if (cfg->interface.other_proxy[0]) {
+        char list_buf[512];
         int len = snprintf(list_buf, sizeof(list_buf), "%s", cfg->interface.other_proxy);
-        if (len < 0 || len >= (int)sizeof(list_buf)) {
-            LOG_ERROR("list_buf truncated");
-            return;
-        }
-        char *token = strtok_r(list_buf, " ", &saveptr);
-        while (token) {
-            if (validate_iface_name(token) == 0) {
-                SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j RETURN", token);
-                tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+        if (len > 0 && len < (int)sizeof(list_buf)) {
+            char *token = strtok_r(list_buf, " ", &saveptr);
+            while (token) {
+                if (validate_iface_name(token) == 0) {
+                    APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j RETURN\n", proxy_chain, token);
+                }
+                token = strtok_r(NULL, " ", &saveptr);
             }
-            token = strtok_r(NULL, " ", &saveptr);
         }
     }
 
     if (cfg->interface.other_bypass[0]) {
+        char list_buf[512];
         int len = snprintf(list_buf, sizeof(list_buf), "%s", cfg->interface.other_bypass);
-        if (len < 0 || len >= (int)sizeof(list_buf)) {
-            LOG_ERROR("list_buf truncated");
-            return;
-        }
-        char *token = strtok_r(list_buf, " ", &saveptr);
-        while (token) {
-            if (validate_iface_name(token) == 0) {
-                SAFE_SNPRINTF(rule, sizeof(rule), "-i %s -j ACCEPT", token);
-                tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
-                SAFE_SNPRINTF(rule, sizeof(rule), "-o %s -j ACCEPT", token);
-                tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+        if (len > 0 && len < (int)sizeof(list_buf)) {
+            char *token = strtok_r(list_buf, " ", &saveptr);
+            while (token) {
+                if (validate_iface_name(token) == 0) {
+                    APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -i %s -j ACCEPT\n", proxy_chain, token);
+                    APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -o %s -j ACCEPT\n", bypass_chain, token);
+                }
+                token = strtok_r(NULL, " ", &saveptr);
             }
-            token = strtok_r(NULL, " ", &saveptr);
         }
     }
+
+    if (pos > 0) {
+        apply_batch(cfg, family, "mangle", buf);
+    }
+    free(buf);
 }
 
 static void tproxy_setup_ip_rules(atp_config_t *cfg, int family) {
@@ -792,45 +818,51 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family) {
     build_chain_name(family, "BYPASS_IP_0", bypass_chain, sizeof(bypass_chain));
     if (proxy_chain[0] == '\0' || bypass_chain[0] == '\0') return;
 
-    char rule[256], list_buf[4096], *saveptr;
+    char *buf = malloc(BATCH_BUF_SIZE);
+    if (!buf) return;
+    buf[0] = '\0';
+    size_t pos = 0;
+    
+    char *saveptr;
     const char *proxy_list = ctx->proxy_list(cfg);
     const char *bypass_list = ctx->bypass_list(cfg);
 
     if (proxy_list && proxy_list[0]) {
+        char list_buf[4096];
         int len = snprintf(list_buf, sizeof(list_buf), "%s", proxy_list);
-        if (len < 0 || len >= (int)sizeof(list_buf)) {
-            LOG_ERROR("list_buf truncated");
-            return;
-        }
-        char *token = strtok_r(list_buf, " ", &saveptr);
-        while (token) {
-            if (validate_ip_or_cidr(token) == 0) {
-                SAFE_SNPRINTF(rule, sizeof(rule), "-d %s -j RETURN", token);
-                tproxy_rule_ensure_single(cfg, family, "mangle", proxy_chain, rule);
+        if (len > 0 && len < (int)sizeof(list_buf)) {
+            char *token = strtok_r(list_buf, " ", &saveptr);
+            while (token) {
+                if (validate_ip_or_cidr(token) == 0) {
+                    APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -d %s -j RETURN\n", proxy_chain, token);
+                }
+                token = strtok_r(NULL, " ", &saveptr);
             }
-            token = strtok_r(NULL, " ", &saveptr);
         }
     }
 
     if (bypass_list && bypass_list[0]) {
+        char list_buf[4096];
         int len = snprintf(list_buf, sizeof(list_buf), "%s", bypass_list);
-        if (len < 0 || len >= (int)sizeof(list_buf)) {
-            LOG_ERROR("list_buf truncated");
-            return;
-        }
-        char *token = strtok_r(list_buf, " ", &saveptr);
-        while (token) {
-            if (validate_ip_or_cidr(token) == 0) {
-                SAFE_SNPRINTF(rule, sizeof(rule), "-d %s -p udp ! --dport 53 -j ACCEPT", token);
-                tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-                SAFE_SNPRINTF(rule, sizeof(rule), "-d %s ! -p udp -j ACCEPT", token);
-                tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+        if (len > 0 && len < (int)sizeof(list_buf)) {
+            char *token = strtok_r(list_buf, " ", &saveptr);
+            while (token) {
+                if (validate_ip_or_cidr(token) == 0) {
+                    APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -d %s -p udp ! --dport 53 -j ACCEPT\n", bypass_chain, token);
+                    APPEND_RULE(buf, pos, BATCH_BUF_SIZE, "-A %s -d %s ! -p udp -j ACCEPT\n", bypass_chain, token);
+                }
+                token = strtok_r(NULL, " ", &saveptr);
             }
-            token = strtok_r(NULL, " ", &saveptr);
         }
     }
 
+    if (pos > 0) {
+        apply_batch(cfg, family, "mangle", buf);
+    }
+    free(buf);
+
     if (cfg->filter.bypass_cn_ip) {
+        char rule[256];
         if (cfg->ebpf.ready) {
             const char *pin_dir = boxbpf_pin_dir();
             const char *pin_out = ctx->pin_out(cfg);
@@ -1348,7 +1380,6 @@ static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
         return exit_status;
     }
 
-    /* Stage 1: Remove builtin references */
     for (int i = 0; i < chain_count; i++) {
         char rule_buf[256];
         SAFE_SNPRINTF(rule_buf, sizeof(rule_buf), "-j %s", chains[i].chain);
@@ -1359,12 +1390,10 @@ static int parse_iptables_save_for_orphans(atp_config_t *cfg, int family) {
         delete_all_rules(cfg, family, chains[i].table, "FORWARD", rule_buf);
     }
 
-    /* Stage 2: Flush all ATP chains */
     for (int i = 0; i < chain_count; i++) {
         exec_ipt_flush_fast(cfg, family, chains[i].table, chains[i].chain);
     }
 
-    /* Stage 3: Destroy all ATP chains */
     for (int i = 0; i < chain_count; i++) {
         exec_ipt_destroy_fast(cfg, family, chains[i].table, chains[i].chain);
         LOG_DEBUG("Removed orphan chain: %s from table %s", chains[i].chain, chains[i].table);
