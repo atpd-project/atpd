@@ -125,6 +125,8 @@ static const tproxy_family_ctx_t *get_ctx(int family) {
         case 4: return &family4;
         case 6: return &family6;
         default: return NULL;
+    }
+}
 };
 static int validate_iface_name(const char *name) {
     if (!name || !*name) return -1;
