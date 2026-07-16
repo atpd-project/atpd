@@ -13,7 +13,6 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <stdatomic.h>
-#include <bpf/bpf.h>
 
 static atomic_bool g_ebpf_ready = false;
 static char g_pin_dir[256] = "/sys/fs/bpf/box";
