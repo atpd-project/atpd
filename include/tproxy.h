@@ -107,6 +107,7 @@ int tproxy_rule_insert(atp_config_t *cfg, int family, const char *table,
                        const char *chain, int position, const char *rule);
 
 void tproxy_hook_main_chains(atp_config_t *cfg, int family);
+void build_chain_name(int family, const char *suffix, char *buf, size_t len);
 
 #define SAFE_SNPRINTF(buf, size, ...) do { \
     int _n = snprintf(buf, size, __VA_ARGS__); \

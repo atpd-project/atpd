@@ -191,7 +191,7 @@ static int family_available(int family) {
     return *cache;
 }
 
-static void build_chain_name(int family, const char *suffix, char *buf, size_t len) {
+void build_chain_name(int family, const char *suffix, char *buf, size_t len) {
     const tproxy_family_ctx_t *ctx = get_ctx(family);
 
     if (!ctx) {
