@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <bpf/bpf.h>
 
 static atomic_bool g_ebpf_ready = false;
 static char g_pin_dir[256] = "/sys/fs/bpf/box";
@@ -563,6 +564,90 @@ cleanup:
     return status;
 }
 
+static int sync_cidr_map_hitless(int real_fd, const char *file_path, bool ipv6) {
+    uint32_t key_size = ipv6 ? sizeof(struct lpm6_key) : sizeof(struct lpm4_key);
+    uint32_t val_size = sizeof(uint8_t);
+    
+    int tmp_fd = create_map(BPF_MAP_TYPE_LPM_TRIE, key_size, val_size, MAX_CIDRS, COMPAT_MAP_NO_PREALLOC);
+    if (tmp_fd < 0) return ATP_ERR_EBPF;
+    
+    if (load_cidr_file(tmp_fd, file_path, ipv6) < 0) {
+        close_fd(tmp_fd);
+        return ATP_ERR_CONFIG;
+    }
+    
+    void *key = malloc(key_size);
+    void *next_key = malloc(key_size);
+    uint8_t val;
+    
+    if (!key || !next_key) {
+        free(key);
+        free(next_key);
+        close_fd(tmp_fd);
+        return ATP_ERR_NOMEM;
+    }
+    
+    bool has_next = (bpf_map_get_next_key(tmp_fd, NULL, next_key) == 0);
+    while (has_next) {
+        memcpy(key, next_key, key_size);
+        has_next = (bpf_map_get_next_key(tmp_fd, key, next_key) == 0);
+        if (bpf_map_lookup_elem(tmp_fd, key, &val) == 0) {
+            bpf_map_update_elem(real_fd, key, &val, BPF_ANY);
+        }
+    }
+    
+    has_next = (bpf_map_get_next_key(real_fd, NULL, next_key) == 0);
+    while (has_next) {
+        memcpy(key, next_key, key_size);
+        has_next = (bpf_map_get_next_key(real_fd, key, next_key) == 0);
+        if (bpf_map_lookup_elem(tmp_fd, key, &val) != 0) {
+            bpf_map_delete_elem(real_fd, key);
+        }
+    }
+    
+    free(key);
+    free(next_key);
+    close_fd(tmp_fd);
+    return ATP_OK;
+}
+
+static int sync_uid_map_hitless(int real_fd, const char *file_path) {
+    uint32_t key_size = sizeof(uint32_t);
+    uint32_t val_size = sizeof(uint8_t);
+    
+    int tmp_fd = create_map(BPF_MAP_TYPE_HASH, key_size, val_size, MAX_UIDS, 0);
+    if (tmp_fd < 0) return ATP_ERR_EBPF;
+    
+    if (load_uid_file(tmp_fd, file_path) < 0) {
+        close_fd(tmp_fd);
+        return ATP_ERR_CONFIG;
+    }
+    
+    uint32_t key, next_key;
+    uint8_t val;
+    
+    bool has_next = (bpf_map_get_next_key(tmp_fd, NULL, &next_key) == 0);
+    while (has_next) {
+        key = next_key;
+        has_next = (bpf_map_get_next_key(tmp_fd, &key, &next_key) == 0);
+        if (bpf_map_lookup_elem(tmp_fd, &key, &val) == 0) {
+            bpf_map_update_elem(real_fd, &key, &val, BPF_ANY);
+        }
+    }
+    
+    has_next = (bpf_map_get_next_key(real_fd, NULL, &next_key) == 0);
+    while (has_next) {
+        key = next_key;
+        has_next = (bpf_map_get_next_key(real_fd, &key, &next_key) == 0);
+        if (bpf_map_lookup_elem(tmp_fd, &key, &val) != 0) {
+            bpf_map_delete_elem(real_fd, &key);
+        }
+    }
+    
+    close_fd(tmp_fd);
+    return ATP_OK;
+}
+
 static int update_config(const char *config_path) {
     if (!config_path || access(config_path, R_OK) != 0) {
         LOG_ERROR("eBPF config not found: %s", config_path);
@@ -682,37 +767,25 @@ static int update_config(const char *config_path) {
 
     int status = ATP_OK;
 
-    if (clear_map(cidr4, sizeof(struct lpm4_key)) < 0) {
-        status = ATP_ERR_EBPF;
-    }
-    if (load_cidr_file(cidr4, cidr4_file, false) < 0) {
-        LOG_ERROR("Failed to reload CIDR4 map");
+    if (sync_cidr_map_hitless(cidr4, cidr4_file, false) != ATP_OK) {
+        LOG_ERROR("Failed to hitless sync CIDR4 map");
         status = ATP_ERR_CONFIG;
     }
 
     if (ipv6) {
-        if (clear_map(cidr6, sizeof(struct lpm6_key)) < 0) {
-            status = ATP_ERR_EBPF;
-        }
-        if (load_cidr_file(cidr6, cidr6_file, true) < 0) {
-            LOG_ERROR("Failed to reload CIDR6 map");
+        if (sync_cidr_map_hitless(cidr6, cidr6_file, true) != ATP_OK) {
+            LOG_ERROR("Failed to hitless sync CIDR6 map");
             status = ATP_ERR_CONFIG;
         }
     }
 
-    if (clear_map(force_uid, sizeof(uint32_t)) < 0) {
-        status = ATP_ERR_EBPF;
-    }
-    if (load_uid_file(force_uid, force_uid_file) < 0) {
-        LOG_ERROR("Failed to reload force UID map");
+    if (sync_uid_map_hitless(force_uid, force_uid_file) != ATP_OK) {
+        LOG_ERROR("Failed to hitless sync force UID map");
         status = ATP_ERR_CONFIG;
     }
 
-    if (clear_map(app_uid, sizeof(uint32_t)) < 0) {
-        status = ATP_ERR_EBPF;
-    }
-    if (load_uid_file(app_uid, app_uid_file) < 0) {
-        LOG_ERROR("Failed to reload app UID map");
+    if (sync_uid_map_hitless(app_uid, app_uid_file) != ATP_OK) {
+        LOG_ERROR("Failed to hitless sync app UID map");
         status = ATP_ERR_CONFIG;
     }
 
@@ -891,14 +964,13 @@ int boxbpf_init_from_config(atp_config_t *cfg) {
 int boxbpf_reload_from_config(atp_config_t *cfg) {
     if (!cfg) return ATP_ERR_INVAL;
 
-    if (!cfg->ebpf.enabled) {
-        LOG_DEBUG("eBPF disabled by config, skipping reload");
-        write_ebpf_state_file("disabled");
-        return ATP_ERR_EBPF;
-    }
-
-    if (cfg->filter.cnip_mode != 1) {
-        LOG_DEBUG("CNIP_MODE is not ebpf, skipping reload");
+    if (!cfg->ebpf.enabled || cfg->filter.cnip_mode != 1) {
+        LOG_DEBUG("eBPF bypass disabled by config");
+        if (boxbpf_is_ready()) {
+            LOG_INFO("Cleaning up running eBPF programs due to config disable");
+            boxbpf_clear();
+            cfg->ebpf.ready = 0;
+        }
         write_ebpf_state_file("disabled");
         return ATP_ERR_EBPF;
     }
@@ -912,10 +984,11 @@ int boxbpf_reload_from_config(atp_config_t *cfg) {
         snprintf(g_pin_dir, sizeof(g_pin_dir), "%s", cfg->ebpf.pin_dir);
     }
 
-    if (cfg->ebpf.ready) {
+    if (boxbpf_is_ready()) {
         int ret = boxbpf_update(cfg->ebpf.config_path);
         if (ret == ATP_OK) {
             LOG_INFO("eBPF CNIP maps updated successfully");
+            cfg->ebpf.ready = 1;
             return ATP_OK;
         } else {
             LOG_ERROR("eBPF CNIP update failed, reloading from scratch");
