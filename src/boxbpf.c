@@ -24,6 +24,32 @@ static void raise_memlock(void) {
     setrlimit(RLIMIT_MEMLOCK, &unlimited);
 }
 
+static int map_lookup_elem(int fd, const void *key, void *value) {
+    union bpf_attr attr = {
+        .map_fd = fd,
+        .key = (uint64_t)(uintptr_t)key,
+        .value = (uint64_t)(uintptr_t)value,
+    };
+    return bpf_call(BPF_MAP_LOOKUP_ELEM, &attr);
+}
+
+static int map_delete_elem(int fd, const void *key) {
+    union bpf_attr attr = {
+        .map_fd = fd,
+        .key = (uint64_t)(uintptr_t)key,
+    };
+    return bpf_call(BPF_MAP_DELETE_ELEM, &attr);
+}
+
+static int map_get_next_key(int fd, const void *key, void *next_key) {
+    union bpf_attr attr = {
+        .map_fd = fd,
+        .key = (uint64_t)(uintptr_t)key,
+        .next_key = (uint64_t)(uintptr_t)next_key,
+    };
+    return bpf_call(BPF_MAP_GET_NEXT_KEY, &attr);
+}
+
 struct fds {
     int cidr4;
     int cidr6;
@@ -586,21 +612,21 @@ static int sync_cidr_map_hitless(int real_fd, const char *file_path, bool ipv6) 
         return ATP_ERR_NOMEM;
     }
     
-    bool has_next = (bpf_map_get_next_key(tmp_fd, NULL, next_key) == 0);
+    bool has_next = (map_get_next_key(tmp_fd, NULL, next_key) == 0);
     while (has_next) {
         memcpy(key, next_key, key_size);
-        has_next = (bpf_map_get_next_key(tmp_fd, key, next_key) == 0);
-        if (bpf_map_lookup_elem(tmp_fd, key, &val) == 0) {
-            bpf_map_update_elem(real_fd, key, &val, BPF_ANY);
+        has_next = (map_get_next_key(tmp_fd, key, next_key) == 0);
+        if (map_lookup_elem(tmp_fd, key, &val) == 0) {
+            update_elem(real_fd, key, &val);
         }
     }
     
-    has_next = (bpf_map_get_next_key(real_fd, NULL, next_key) == 0);
+    has_next = (map_get_next_key(real_fd, NULL, next_key) == 0);
     while (has_next) {
         memcpy(key, next_key, key_size);
-        has_next = (bpf_map_get_next_key(real_fd, key, next_key) == 0);
-        if (bpf_map_lookup_elem(tmp_fd, key, &val) != 0) {
-            bpf_map_delete_elem(real_fd, key);
+        has_next = (map_get_next_key(real_fd, key, next_key) == 0);
+        if (map_lookup_elem(tmp_fd, key, &val) != 0) {
+            map_delete_elem(real_fd, key);
         }
     }
     
@@ -625,21 +651,21 @@ static int sync_uid_map_hitless(int real_fd, const char *file_path) {
     uint32_t key, next_key;
     uint8_t val;
     
-    bool has_next = (bpf_map_get_next_key(tmp_fd, NULL, &next_key) == 0);
+    bool has_next = (map_get_next_key(tmp_fd, NULL, &next_key) == 0);
     while (has_next) {
         key = next_key;
-        has_next = (bpf_map_get_next_key(tmp_fd, &key, &next_key) == 0);
-        if (bpf_map_lookup_elem(tmp_fd, &key, &val) == 0) {
-            bpf_map_update_elem(real_fd, &key, &val, BPF_ANY);
+        has_next = (map_get_next_key(tmp_fd, &key, &next_key) == 0);
+        if (map_lookup_elem(tmp_fd, &key, &val) == 0) {
+            update_elem(real_fd, &key, &val);
         }
     }
     
-    has_next = (bpf_map_get_next_key(real_fd, NULL, &next_key) == 0);
+    has_next = (map_get_next_key(real_fd, NULL, &next_key) == 0);
     while (has_next) {
         key = next_key;
-        has_next = (bpf_map_get_next_key(real_fd, &key, &next_key) == 0);
-        if (bpf_map_lookup_elem(tmp_fd, &key, &val) != 0) {
-            bpf_map_delete_elem(real_fd, &key);
+        has_next = (map_get_next_key(real_fd, &key, &next_key) == 0);
+        if (map_lookup_elem(tmp_fd, &key, &val) != 0) {
+            map_delete_elem(real_fd, &key);
         }
     }
     
