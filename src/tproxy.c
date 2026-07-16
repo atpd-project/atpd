@@ -41,7 +41,7 @@ static const char *chain_suffixes[] = {
     "APP_0", "APP_1",
     "MAC_0", "MAC_1",
     NULL
-
+};
 static const char *extra_chains_v4[] = {
     "ATP_QUIC_0",
     "ATP_REDIRECT",
