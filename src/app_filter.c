@@ -4,6 +4,7 @@
 #include "utils.h"
 #include "tproxy.h"
 #include "inet_diag.h"
+extern void build_chain_name(int family, const char *suffix, char *buf, size_t len);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
