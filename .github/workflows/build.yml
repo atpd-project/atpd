@@ -1,6 +1,6 @@
 name: Build ATP for Android (musl)
 
-run-name: "#${{ github.run_number }}: ${{ github.event.pull_request.title || github.event.head_commit.message }}"
+run-name: "#${{ github.run_number }}: ${{ github.event.pull_request.title || (github.event.head_commit.message && github.event.head_commit.message.split('\n')[0]) || 'no title' }}"
 
 on:
   push:
@@ -85,6 +85,7 @@ jobs:
         uses: ./.github/actions/build-zig
         with:
           artifact-suffix: '-${{ steps.vars.outputs.short_sha }}'
+
   update-status:
     name: Update Checkpoint
     needs: [build-clang, build-zig]
@@ -104,6 +105,16 @@ jobs:
       - name: Generate Version
         uses: ./.github/actions/gen-version
 
+      - name: Extract commit title
+        id: commit
+        run: |
+          if [[ -n "${{ github.event.pull_request.title }}" ]]; then
+            TITLE="${{ github.event.pull_request.title }}"
+          else
+            TITLE=$(echo "${{ github.event.head_commit.message }}" | head -n1)
+          fi
+          echo "title=$TITLE" >> $GITHUB_OUTPUT
+
       - name: Notify All
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -116,9 +127,9 @@ jobs:
           COMPILER_VER: ${{ needs.build-clang.outputs.compiler_ver || 'N/A' }}
           ZIG_COMPILER_VER: ${{ needs.build-zig.outputs.zig_compiler_ver || 'N/A' }}
           ATPD_VERSION_STRING: ${{ needs.build-zig.outputs.atpd_version_string || 'N/A' }}
+          COMMIT_TITLE: ${{ steps.commit.outputs.title }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           chmod +x .github/scripts/notify.sh
           .github/scripts/notify.sh all
-

@@ -72,7 +72,7 @@ notify_issue() {
     COMMIT_SHORT="${COMMIT_SHA:0:7}"
     COMMIT_LINK="https://github.com/${REPO}/commit/${COMMIT_SHA}"
     BRANCH_LINK="https://github.com/${REPO}/tree/${BRANCH}"
-    RAW_MSG="${COMMIT_MSG:-No commit message}"
+    RAW_MSG="${COMMIT_TITLE:-${COMMIT_MSG:-No commit message}}"
     DISPLAY_MSG="${RAW_MSG:0:42}"
     [ ${#RAW_MSG} -gt 42 ] && DISPLAY_MSG="${DISPLAY_MSG}..."
 
