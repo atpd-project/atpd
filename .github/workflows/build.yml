@@ -1,6 +1,6 @@
 name: Build ATP for Android (musl)
 
-run-name: "#${{ github.run_number }}: ${{ github.event.pull_request.title || github.event.head_commit.message }}"
+run-name: "#${{ github.run_number }}: Build ATP for Android (musl)"
 
 on:
   push:
@@ -45,19 +45,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set run title
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          if [[ -n "${{ github.event.pull_request.title }}" ]]; then
-            TITLE="${{ github.event.pull_request.title }}"
-          else
-            TITLE=$(echo "${{ github.event.head_commit.message }}" | head -n1)
-          fi
-          gh api -X PATCH /repos/${{ github.repository }}/actions/runs/$RUN_ID \
-            -f name="#${{ github.run_number }}: $TITLE" || echo "Failed to update run name"
-
       - name: Get Short SHA
         id: vars
         run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
@@ -89,19 +76,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set run title
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          if [[ -n "${{ github.event.pull_request.title }}" ]]; then
-            TITLE="${{ github.event.pull_request.title }}"
-          else
-            TITLE=$(echo "${{ github.event.head_commit.message }}" | head -n1)
-          fi
-          gh api -X PATCH /repos/${{ github.repository }}/actions/runs/$RUN_ID \
-            -f name="#${{ github.run_number }}: $TITLE" || echo "Failed to update run name"
-
       - name: Get Short SHA
         id: vars
         run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
@@ -127,19 +101,6 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
-      - name: Set run title
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          if [[ -n "${{ github.event.pull_request.title }}" ]]; then
-            TITLE="${{ github.event.pull_request.title }}"
-          else
-            TITLE=$(echo "${{ github.event.head_commit.message }}" | head -n1)
-          fi
-          gh api -X PATCH /repos/${{ github.repository }}/actions/runs/$RUN_ID \
-            -f name="#${{ github.run_number }}: $TITLE" || echo "Failed to update run name"
 
       - name: Generate Version
         uses: ./.github/actions/gen-version
