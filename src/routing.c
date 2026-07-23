@@ -233,9 +233,9 @@ int routing_route_add(atp_config_t *cfg, int family, const char *route) {
     if (!route) return ATP_ERR_INVAL;
 
     if (family == 4) {
-        return exec_ip(cfg, "route add", route);
+        return exec_ip(cfg, "route replace", route);
     } else {
-        return exec_ip6(cfg, "route add", route);
+        return exec_ip6(cfg, "route replace", route);
     }
 }
 

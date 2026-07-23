@@ -27,43 +27,10 @@ endif
 
 LIBS =
 
-LDFLAGS = -static
-LDFLAGS += -flto
+LDFLAGS = -flto
 LDFLAGS += -Wl,--gc-sections -Wl,--strip-all
 
-SRC = \
-    src/main.c \
-    src/config.c \
-    src/config_validator.c \
-    src/logger.c \
-    src/utils.c \
-    src/service.c \
-    src/api.c \
-    src/netlink.c \
-    src/netlink_wait.c \
-    src/app_filter.c \
-    src/fcm_monitor.c \
-    src/perf_mode.c \
-    src/status.c \
-    src/ui.c \
-    src/cli.c \
-    src/tproxy.c \
-    src/routing.c \
-    src/geoip.c \
-    src/ipset.c \
-    src/mac_filter.c \
-    src/ipv6_manager.c \
-    src/inet_diag.c \
-    src/version.c \
-    src/reactor.c \
-    src/iface_monitor_reactor.c \
-    src/yyjson.c \
-    src/boxbpf.c \
-    src/bpf_common.c \
-    src/cleanup.c \
-    src/atpd_global.c \
-    src/atpd_context.c \
-    src/session.c
+SRC = $(wildcard src/*.c)
 
 OBJDIR = build/obj
 OBJ = $(SRC:%.c=$(OBJDIR)/%.o)

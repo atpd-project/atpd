@@ -138,7 +138,7 @@ static void log_rotate_file(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) return;
 
-    if (st.st_size < g_log_config.max_file_size) return;
+    if (st.st_size < 0 || (size_t)st.st_size < g_log_config.max_file_size) return;
 
     char old_path[PATH_MAX];
     char new_path[PATH_MAX];
@@ -168,6 +168,9 @@ void log_rotate(void) {
 static void log_write_file(log_level_t level, const char *file, int line,
                            const char *func, const char *msg) {
     (void)level;
+    (void)file;
+    (void)line;
+    (void)func;
     FILE *fp = fopen(g_log_config.log_file, "a");
     if (!fp) return;
 

@@ -211,8 +211,8 @@ static int validate_proxy_mode(int mode) {
 }
 
 static int validate_table_id(int id) {
-    if (id < 1 || id > 252) {
-        LOG_ERROR("TABLE_ID must be between 1-252, got %d", id);
+    if (id < 1 || id > 65535) {
+        LOG_ERROR("TABLE_ID must be between 1-65535, got %d", id);
         return -1;
     }
     return 0;

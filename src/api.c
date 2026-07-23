@@ -57,7 +57,6 @@ static reactor_t *g_api_reactor = NULL;
 static void *api_memmem(const void *haystack, size_t haystack_len,
                          const void *needle, size_t needle_len);
 static void safe_str_copy(char *dest, size_t dest_size, const char *src, size_t src_len);
-static int validate_host_port(const char *host, int port);
 static int api_validate_request(api_request_t *req);
 static int api_socket_alive(int fd);
 static int api_parse_url(const char *base_url, char *host, int *port);

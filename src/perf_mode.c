@@ -345,7 +345,6 @@ int perf_mode_monitor_temperature(void) {
 }
 
 static int perf_tune_cpu(void) {
-    char governor_path[PATH_MAX];
     int tuned = 0;
 
     perf_save_original_governor();

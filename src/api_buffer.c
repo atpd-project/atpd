@@ -110,7 +110,7 @@ static void secure_memzero(void *ptr, size_t len) {
     }
 }
 #else
-static void secure_memzero(void *ptr, size_t len) {
+__attribute__((unused)) static void secure_memzero(void *ptr, size_t len) {
     (void)ptr;
     (void)len;
 }

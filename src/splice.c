@@ -179,12 +179,12 @@ ssize_t atpd_bridge_splice_stateful(int fd_in, int fd_out,
         state->pipe_pending -= drained;
         state->bytes_out += drained;
 
-        if (max_len && drained >= max_len) {
+        if (max_len && (size_t)drained >= max_len) {
             return (ssize_t)drained;
         }
 
         if (max_len) {
-            remaining_limit = (max_len > drained) ? (max_len - drained) : 0;
+            remaining_limit = (max_len > (size_t)drained) ? (max_len - (size_t)drained) : 0;
         }
         if (remaining_limit > ATPD_SPLICE_MAX_PER_EVENT) {
             remaining_limit = ATPD_SPLICE_MAX_PER_EVENT;

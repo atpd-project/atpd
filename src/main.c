@@ -680,6 +680,13 @@ static int do_stop(atp_options_t *opts) {
     return ret;
 }
 
+static int do_restart(atp_options_t *opts) {
+    LOG_INFO("Restarting daemon...");
+    do_stop(opts);
+    sleep(2);
+    return do_start(opts);
+}
+
 static int do_status(atp_options_t *opts) {
     if (opts->no_color) ui_set_no_color(1);
     ui_init();
@@ -903,6 +910,8 @@ int main(int argc, char *argv[]) {
             return do_start(&opts);
         case CMD_STOP:
             return do_stop(&opts);
+        case CMD_RESTART:
+            return do_restart(&opts);
         case CMD_STATUS:
             return do_status(&opts);
         case CMD_RELOAD:

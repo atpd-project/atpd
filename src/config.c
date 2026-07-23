@@ -146,9 +146,9 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->network.redirect_tcp_port = DEFAULT_REDIRECT_TCP_PORT;
     cfg->network.mark_value = DEFAULT_MARK;
     cfg->network.mark_value6 = DEFAULT_MARK6;
-    cfg->network.table_id = 150;
+    cfg->network.table_id = DEFAULT_TABLE_ID;
     cfg->network.proxy_ipv6 = 1;
-    cfg->network.dns_hijack = DNS_HIJACK_TPROXY;
+    cfg->network.dns_hijack = DNS_HIJACK_OFF;
     cfg->network.dns_port = DEFAULT_DNS_PORT;
 
     snprintf(cfg->interface.mobile_iface, sizeof(cfg->interface.mobile_iface), "rmnet_data+");

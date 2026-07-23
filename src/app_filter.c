@@ -31,7 +31,6 @@ static package_cache_t *g_package_cache = NULL;
 static int g_package_cache_count = 0;
 static int g_package_cache_loaded = 0;
 static time_t g_package_cache_mtime = 0;
-static int g_package_cache_version = 0;
 int g_current_uids_count = 0;
 int *g_current_uids = NULL;
 

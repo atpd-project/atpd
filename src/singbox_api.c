@@ -222,7 +222,7 @@ static void proxy_info_cleanup(proxy_info_t *info) {
     info->now = NULL;
 
     if (info->all) {
-        for (size_t i = 0; i < info->all_count; i++) {
+        for (int i = 0; i < info->all_count; i++) {
             free(info->all[i]);
             info->all[i] = NULL;
         }
