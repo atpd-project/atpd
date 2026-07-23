@@ -202,7 +202,7 @@ void config_set_defaults(atp_config_t *cfg) {
     snprintf(cfg->ebpf.bin_path, sizeof(cfg->ebpf.bin_path), "%s/bin/boxbpf", ATP_DEFAULT_DIR);
     snprintf(cfg->ebpf.pin_dir, sizeof(cfg->ebpf.pin_dir), "/sys/fs/bpf/box");
     snprintf(cfg->ebpf.state_dir, sizeof(cfg->ebpf.state_dir), "%s/ebpf", ATP_DEFAULT_DIR);
-    snprintf(cfg->ebpf.config_path, sizeof(cfg->ebpf.config_path), "%s/ebpf/config.json", ATP_DEFAULT_DIR);
+    snprintf(cfg->ebpf.config_path, sizeof(cfg->ebpf.config_path), "%s/ebpf/rule-config.json", ATP_DEFAULT_DIR);
 
     cfg->service.start_timeout_sec = SERVICE_DEFAULT_START_TIMEOUT_SEC;
     cfg->service.stop_timeout_sec = SERVICE_DEFAULT_STOP_TIMEOUT_SEC;

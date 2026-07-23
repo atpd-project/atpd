@@ -856,12 +856,12 @@ static int do_ebpf_init(atp_options_t *opts) {
 }
 
 static int do_ebpf_apply(atp_options_t *opts) {
-    const char *path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/config.json";
+    const char *path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/rule-config.json";
     return boxbpf_apply(path);
 }
 
 static int do_ebpf_update(atp_options_t *opts) {
-    const char *path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/config.json";
+    const char *path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/rule-config.json";
     return boxbpf_update(path);
 }
 

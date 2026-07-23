@@ -235,7 +235,7 @@ int write_ebpf_config(atp_config_t *cfg) {
     char config_path[512];
     char empty_v4[512], empty_v6[512], force_uids[512], app_uids[512];
 
-    snprintf(config_path, sizeof(config_path), "%s/config.json", state_dir);
+    snprintf(config_path, sizeof(config_path), "%s/rule-config.json", state_dir);
     snprintf(empty_v4, sizeof(empty_v4), "%s/empty-v4.txt", state_dir);
     snprintf(empty_v6, sizeof(empty_v6), "%s/empty-v6.txt", state_dir);
     snprintf(force_uids, sizeof(force_uids), "%s/force-uids.txt", state_dir);
