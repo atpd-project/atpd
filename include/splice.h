@@ -1,6 +1,7 @@
 #ifndef ATPD_SPLICE_H
 #define ATPD_SPLICE_H
 
+#include <stdint.h>
 #include <sys/types.h>
 #include <stdbool.h>
 

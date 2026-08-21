@@ -192,7 +192,8 @@ fail:
 
 void async_validate_cleanup(async_validate_ctx_t *ctx) {
     if (!ctx) return;
-    validate_cleanup(ctx, -1, "manual cleanup");
+    ctx->callback = NULL;
+    validate_cleanup(ctx, 0, "manual cleanup");
 }
 
 /* ========== Internal Callbacks ========== */
