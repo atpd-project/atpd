@@ -24,7 +24,7 @@ fi
 
 # Get proxy mode
 if [ -x "${ATP_BIN}/atpd" ]; then
-    MODE=$(${ATP_BIN}/atpd sing-box status 2>/dev/null |
+    MODE=$(${ATP_BIN}/atpd core status 2>/dev/null |
         awk '$1 == "Mode" { print $2; exit }')
     if [ -n "$MODE" ]; then
         echo "│ Mode:    $MODE                                  │"

@@ -16,6 +16,21 @@ typedef enum {
 } vpn_state_t;
 
 typedef enum {
+    DIRECT_WIFI_DISABLED = 0,
+    DIRECT_WIFI_DISCONNECTED,
+    DIRECT_WIFI_ACTIVE
+} direct_wifi_state_t;
+
+typedef struct {
+    uint64_t rx_bytes;
+    uint64_t tx_bytes;
+    uint64_t rx_bytes_per_sec;
+    uint64_t tx_bytes_per_sec;
+    uint64_t sampled_at;
+    bool rate_ready;
+} vpn_traffic_t;
+
+typedef enum {
     ATPD_RUNTIME_STATE_UNINITIALIZED = 0,
     ATPD_RUNTIME_STATE_INITIALIZING,
     ATPD_RUNTIME_STATE_RUNNING,
@@ -30,6 +45,9 @@ typedef struct {
     atomic_int vpn_state;           /* Changed to atomic */
     uint32_t xfrm_if_id;
     char vpn_iface[32];
+    char other_vpn_iface[32];
+    vpn_traffic_t google_vpn_traffic;
+    vpn_traffic_t other_vpn_traffic;
     struct timespec vpn_state_since;
     int xfrm_fd;
     uint64_t vpn_transitions;
@@ -49,6 +67,15 @@ typedef struct {
     char clash_applied_mode[32];
     char clash_last_error[128];
     uint64_t clash_last_sync;
+    uint64_t fcm_last_seen;
+    bool fcm_monitor_active;
+
+    /* === Direct Wi-Fi State === */
+    atomic_int direct_wifi_state;
+    char current_wifi_ssid[128];
+    char direct_wifi_restore_mode[32];
+    struct timespec direct_wifi_state_since;
+    uint64_t direct_wifi_transitions;
 
     /* === Runtime State === */
     atpd_runtime_state_t runtime_state;
@@ -93,6 +120,12 @@ void atpd_context_init(void);
 /* VPN State */
 void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char *iface);
 const char* vpn_state_string(vpn_state_t state);
+const char* direct_wifi_state_string(direct_wifi_state_t state);
+const char* atpd_clash_target_mode(vpn_state_t vpn_state,
+                                   direct_wifi_state_t wifi_state,
+                                   const char *configured_mode);
+void atpd_direct_wifi_state_transition(direct_wifi_state_t new_state,
+                                       const char *ssid);
 
 /* Runtime State */
 void atpd_runtime_state_transition(atpd_runtime_state_t new_state);

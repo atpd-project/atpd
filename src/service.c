@@ -886,6 +886,13 @@ static void on_validate_complete(int result, const char *output, void *userdata)
 
 int service_start_async(service_ctx_t *ctx) {
     if (!ctx || !ctx->reactor) return -1;
+    if (ctx->state == SERVICE_STOPPING) return -1;
+
+    if (!ctx->monitor_timer) {
+        ctx->monitor_timer = reactor_add_timer(ctx->reactor, 1000, 3000,
+                                               service_monitor_cb, ctx);
+        if (!ctx->monitor_timer) return -1;
+    }
 
     if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
         LOG_WARN("Service: already running or starting");
@@ -938,6 +945,11 @@ int service_start_async(service_ctx_t *ctx) {
 
 int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata) {
     if (!ctx) return -1;
+    if (ctx->state == SERVICE_STOPPING) return -1;
+    if (ctx->state == SERVICE_STOPPED) {
+        if (done_cb) done_cb(ctx, userdata);
+        return 0;
+    }
 
     ctx->state = SERVICE_STOPPING;
 

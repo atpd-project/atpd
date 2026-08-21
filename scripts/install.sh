@@ -15,7 +15,6 @@ ATP_DIR="/data/adb/atp"
 ATP_BIN="${ATP_DIR}/bin"
 ATP_CONF="${ATP_DIR}/atp.conf"
 ATP_RUN="${ATP_DIR}/run"
-ATP_RULES="${ATP_DIR}/rules"
 ATP_SINGBOX="${ATP_DIR}/sing-box"
 
 # Source paths (relative to script)
@@ -66,13 +65,11 @@ create_directories() {
     mkdir -p "$ATP_DIR"
     mkdir -p "$ATP_BIN"
     mkdir -p "$ATP_RUN"
-    mkdir -p "$ATP_RULES"
     mkdir -p "$ATP_SINGBOX"
     
     chmod 755 "$ATP_DIR"
     chmod 755 "$ATP_BIN"
     chmod 755 "$ATP_RUN"
-    chmod 755 "$ATP_RULES"
     chmod 755 "$ATP_SINGBOX"
     
     print_info "Directories created"
@@ -119,41 +116,7 @@ install_config() {
 
 install_singbox_config() {
     if [ ! -f "${ATP_SINGBOX}/config.json" ]; then
-        print_info "Creating default sing-box configuration..."
-        cat > "${ATP_SINGBOX}/config.json" << EOF
-{
-  "log": {
-    "level": "info",
-    "output": "${ATP_RUN}/sing-box.log"
-  },
-  "inbounds": [
-    {
-      "type": "mixed",
-      "tag": "mixed-in",
-      "listen": "127.0.0.1",
-      "listen_port": 1536,
-      "sniff": true,
-      "sniff_override_destination": true
-    }
-  ],
-  "outbounds": [
-    {
-      "type": "direct",
-      "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
-    }
-  ],
-  "route": {
-    "rules": [],
-    "final": "direct"
-  }
-}
-EOF
-        chmod 644 "${ATP_SINGBOX}/config.json"
-        print_info "Default configuration created"
+        print_warn "sing-box eBPF configuration is required: ${ATP_SINGBOX}/config.json"
     else
         print_info "sing-box configuration already exists"
     fi
@@ -208,7 +171,7 @@ show_summary() {
     echo "  Start daemon:   $ATP_BIN/atpd start"
     echo "  Stop daemon:    $ATP_BIN/atpd stop"
     echo "  Check status:   $ATP_BIN/atpd status"
-    echo "  Update GeoIP:   $ATP_BIN/atpd update-geoip"
+    echo "  Core status:    $ATP_BIN/atpd core status"
     echo ""
     echo "To start ATP now:"
     echo "  su -c '$ATP_BIN/atpd start'"

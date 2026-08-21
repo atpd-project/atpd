@@ -224,6 +224,8 @@ static int g_async_fd = -1;
 struct nl_link_info {
     int index;
     char name[IFNAMSIZ];
+    char kind[16];
+    int is_xfrm;
     unsigned int flags;
     uint64_t rx_bytes;
     uint64_t tx_bytes;
@@ -255,6 +257,8 @@ struct nl_rule_ctx {
 static int is_proxy_interface(const char *ifname) {
     if (!ifname) return 0;
 
+    if (strcmp(ifname, "ipsec") == 0) return 1;
+
     if (strncmp(ifname, "ipsec", 5) == 0) {
         const char *p = ifname + 5;
         if (*p >= '0' && *p <= '9') return 1;
@@ -262,6 +266,20 @@ static int is_proxy_interface(const char *ifname) {
     }
 
     return 0;
+}
+
+static int is_google_vpn_interface(const struct nl_link_info *link) {
+    return link->is_xfrm || strcmp(link->kind, "xfrm") == 0 ||
+           is_proxy_interface(link->name);
+}
+
+static int is_other_vpn_interface(const struct nl_link_info *link) {
+    const char *name = link->name;
+    return strcmp(link->kind, "tun") == 0 || strcmp(link->kind, "wireguard") == 0 ||
+           strncmp(name, "tun", 3) == 0 || strncmp(name, "wg", 2) == 0 ||
+           strncmp(name, "tap", 3) == 0 || strncmp(name, "utun", 4) == 0 ||
+           strncmp(name, "vpn", 3) == 0 ||
+           strncmp(name, "warp", 4) == 0;
 }
 
 static void safe_copy_ifname(char *dest, const void *src, size_t src_len) {
@@ -295,13 +313,14 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
     info->rx_bytes = 0;
     info->tx_bytes = 0;
 
-    if (detect_xfrm_interface(h)) {
-        info->flags |= IFF_UP;
-    }
+    info->is_xfrm = detect_xfrm_interface(h);
 
     for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
         if (rta->rta_type == IFLA_IFNAME) {
             safe_copy_ifname(info->name, RTA_DATA(rta), RTA_PAYLOAD(rta));
+        } else if (rta->rta_type == IFLA_LINKINFO) {
+            const struct rtattr *kind = atpd_find_attr(rta, IFLA_INFO_KIND);
+            if (kind) safe_copy_ifname(info->kind, RTA_DATA(kind), RTA_PAYLOAD(kind));
         } else if (rta->rta_type == IFLA_STATS64) {
             if (RTA_PAYLOAD(rta) >= sizeof(struct rtnl_link_stats64)) {
                 struct rtnl_link_stats64 *s = (struct rtnl_link_stats64 *)RTA_DATA(rta);
@@ -657,6 +676,7 @@ int netlink_xfrm_init(reactor_t *r) {
         g_xfrm_reactor = r;
         atomic_store(&g_xfrm_registered, 1);
     }
+    g_atpd_ctx.xfrm_fd = g_xfrm_fd;
 
     LOG_INFO("XFRM: Listener started (fd=%d)", g_xfrm_fd);
     return 0;
@@ -766,7 +786,7 @@ int netlink_get_active_vpn(char *output, size_t size) {
     pthread_mutex_unlock(&g_nl_mutex);
 
     for (int i = 0; i < ctx.count; i++) {
-        if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name) &&
+        if ((links[i].flags & IFF_UP) && is_google_vpn_interface(&links[i]) &&
             netlink_iface_has_default_route(links[i].index)) {
             if (!iface_has_global_ipv4(links[i].name)) continue;
             snprintf(output, size, "%s", links[i].name);
@@ -777,8 +797,69 @@ int netlink_get_active_vpn(char *output, size_t size) {
     return -1;
 }
 
+static int netlink_get_other_vpn(char *output, size_t size) {
+    struct nl_link_info links[32] = {{0}};
+    struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct ifinfomsg ifi;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct ifinfomsg)),
+            .nlmsg_type = RTM_GETLINK,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = atomic_fetch_add(&g_seq, 1)
+        },
+        .ifi = { .ifi_family = AF_PACKET }
+    };
+
+    pthread_mutex_lock(&g_nl_mutex);
+    netlink_drain_socket(g_sync_fd);
+    int ret = netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len);
+    if (ret == 0) {
+        ret = netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                            parser_link_sync, &ctx,
+                                            NL_RECV_TIMEOUT_MS);
+    }
+    pthread_mutex_unlock(&g_nl_mutex);
+    if (ret != 0) {
+        output[0] = '\0';
+        return -1;
+    }
+
+    for (int i = 0; i < ctx.count; i++) {
+        if ((links[i].flags & IFF_UP) && !is_google_vpn_interface(&links[i]) &&
+            is_other_vpn_interface(&links[i]) &&
+            iface_has_global_ipv4(links[i].name)) {
+            snprintf(output, size, "%s", links[i].name);
+            return 0;
+        }
+    }
+    output[0] = '\0';
+    return -1;
+}
+
+static void update_vpn_traffic(vpn_traffic_t *traffic, const char *iface) {
+    uint64_t rx;
+    uint64_t tx;
+    uint64_t now = (uint64_t)time(NULL);
+    if (netlink_get_iface_stats(iface, &rx, &tx) != 0) return;
+
+    if (traffic->sampled_at && now > traffic->sampled_at) {
+        uint64_t elapsed = now - traffic->sampled_at;
+        traffic->rx_bytes_per_sec = rx >= traffic->rx_bytes
+            ? (rx - traffic->rx_bytes) / elapsed : 0;
+        traffic->tx_bytes_per_sec = tx >= traffic->tx_bytes
+            ? (tx - traffic->tx_bytes) / elapsed : 0;
+        traffic->rate_ready = true;
+    }
+    traffic->rx_bytes = rx;
+    traffic->tx_bytes = tx;
+    traffic->sampled_at = now;
+}
+
 int netlink_get_vpn_table(const char *iface, uint32_t *table_id) {
-    if (!iface || !table_id || !is_proxy_interface(iface)) return -1;
+    if (!iface || !iface[0] || !table_id || if_nametoindex(iface) == 0) return -1;
 
     struct nl_rule_ctx ctx = { .iface = iface, .table = 0, .found = 0 };
     struct {
@@ -845,20 +926,44 @@ int netlink_table_has_default_route(uint32_t table_id, int family) {
 
 void netlink_refresh_now(void) {
     char iface[IFNAMSIZ] = {0};
+    char other_iface[IFNAMSIZ] = {0};
     int connected = netlink_get_active_vpn(iface, sizeof(iface)) == 0 && iface[0];
+    int other_connected = netlink_get_other_vpn(other_iface, sizeof(other_iface)) == 0 &&
+                          other_iface[0];
+
+    if (other_connected) {
+        if (strcmp(g_atpd_ctx.other_vpn_iface, other_iface) != 0) {
+            memset(&g_atpd_ctx.other_vpn_traffic, 0,
+                   sizeof(g_atpd_ctx.other_vpn_traffic));
+        }
+        snprintf(g_atpd_ctx.other_vpn_iface, sizeof(g_atpd_ctx.other_vpn_iface),
+                 "%s", other_iface);
+        update_vpn_traffic(&g_atpd_ctx.other_vpn_traffic, other_iface);
+    } else {
+        g_atpd_ctx.other_vpn_iface[0] = '\0';
+        memset(&g_atpd_ctx.other_vpn_traffic, 0,
+               sizeof(g_atpd_ctx.other_vpn_traffic));
+    }
 
     if (connected) {
         if (strcmp(g_last_vpn_iface, iface) != 0) {
-            atpd_vpn_state_transition(VPN_STATE_READY, 0, iface);
-            snprintf(g_last_vpn_iface, sizeof(g_last_vpn_iface), "%s", iface);
+            memset(&g_atpd_ctx.google_vpn_traffic, 0,
+                   sizeof(g_atpd_ctx.google_vpn_traffic));
         }
+        atpd_vpn_state_transition(VPN_STATE_READY, 0, iface);
+        snprintf(g_last_vpn_iface, sizeof(g_last_vpn_iface), "%s", iface);
+        update_vpn_traffic(&g_atpd_ctx.google_vpn_traffic, iface);
         if (g_callback) g_callback(NL_EVENT_VPN_CONNECTED, iface, g_callback_userdata);
     } else {
-        int notify = !g_network_state_initialized || g_last_vpn_iface[0];
-        if (g_last_vpn_iface[0]) {
+        vpn_state_t state = atomic_load(&g_atpd_ctx.vpn_state);
+        int notify = !g_network_state_initialized || g_last_vpn_iface[0] ||
+                     state != VPN_STATE_IDLE;
+        if (state != VPN_STATE_IDLE) {
             atpd_vpn_state_transition(VPN_STATE_IDLE, 0, NULL);
-            g_last_vpn_iface[0] = '\0';
         }
+        g_last_vpn_iface[0] = '\0';
+        memset(&g_atpd_ctx.google_vpn_traffic, 0,
+               sizeof(g_atpd_ctx.google_vpn_traffic));
         if (notify && g_callback) {
             g_callback(NL_EVENT_VPN_DISCONNECTED, NULL, g_callback_userdata);
         }
@@ -920,6 +1025,7 @@ void netlink_cleanup(void) {
         }
         close(g_xfrm_fd);
         g_xfrm_fd = -1;
+        g_atpd_ctx.xfrm_fd = -1;
     }
 
     atomic_store(&g_xfrm_registered, 0);
@@ -985,7 +1091,7 @@ int nl_vpn_detect(void) {
 
     for (int i = 0; i < ctx.count; i++) {
         if (!(links[i].flags & IFF_UP)) continue;
-        if (is_proxy_interface(links[i].name)) {
+        if (is_google_vpn_interface(&links[i])) {
             LOG_DEBUG("VPN interface detected via netlink: %s", links[i].name);
             return 1;
         }
@@ -1034,7 +1140,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
     pthread_mutex_unlock(&g_nl_mutex);
 
     for (int i = 0; i < ctx.count; i++) {
-        if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
+        if ((links[i].flags & IFF_UP) && is_google_vpn_interface(&links[i])) {
             snprintf(iface, size, "%s", links[i].name);
             LOG_DEBUG("Found VPN interface via netlink: %s", iface);
             return 0;

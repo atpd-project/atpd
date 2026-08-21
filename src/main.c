@@ -20,6 +20,7 @@
 #include "reactor.h"
 #include "uds.h"
 #include "routing.h"
+#include "wifi.h"
 #include "yyjson.h"
 
 #include <stdio.h>
@@ -56,11 +57,14 @@ static int process_is_atpd(pid_t pid);
 static int verify_pid_file_unchanged(int fd, int expected_pid);
 static void network_state_cb(nl_event_type_t event, const char *iface, void *userdata);
 static void request_clash_mode(const char *mode);
+static void reconcile_clash_mode(void);
+static void refresh_direct_wifi_state(void);
 
 static int g_pid_fd = -1;
 static int g_mode_request_inflight = 0;
 static int g_version_request_inflight = 0;
-static char g_desired_mode[32] = "Rule";
+static pid_t g_mode_pid = -1;
+static char g_desired_mode[32] = "";
 static char g_applied_mode[32] = "";
 
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
@@ -262,6 +266,7 @@ static void on_idle(reactor_t *r, void *userdata) {
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
             } else {
                 netlink_refresh_now();
+                refresh_direct_wifi_state();
                 LOG_INFO("Config reload scheduled successfully");
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
             }
@@ -289,14 +294,12 @@ static void clash_mode_response(int http_code, const char *body, void *userdata)
     char *mode = userdata;
     g_mode_request_inflight = 0;
     if (http_code >= 200 && http_code < 300) {
+        g_mode_pid = g_svc ? service_get_pid(g_svc) : -1;
         snprintf(g_applied_mode, sizeof(g_applied_mode), "%s", mode);
         snprintf(g_atpd_ctx.clash_applied_mode,
                  sizeof(g_atpd_ctx.clash_applied_mode), "%s", mode);
         g_atpd_ctx.clash_last_error[0] = '\0';
         g_atpd_ctx.clash_last_sync = (uint64_t)time(NULL);
-        if (config_set_mode(&g_config, mode) != ATP_OK) {
-            LOG_WARN("Failed to persist Clash mode %s", mode);
-        }
         LOG_INFO("Clash mode synchronized: %s", mode);
     } else {
         LOG_WARN("Clash mode synchronization failed: HTTP %d", http_code);
@@ -311,6 +314,11 @@ static void clash_mode_response(int http_code, const char *body, void *userdata)
 }
 
 static void request_clash_mode(const char *mode) {
+    pid_t core_pid = g_svc ? service_get_pid(g_svc) : -1;
+    if (core_pid > 0 && core_pid != g_mode_pid) {
+        g_applied_mode[0] = '\0';
+        g_atpd_ctx.clash_applied_mode[0] = '\0';
+    }
     snprintf(g_desired_mode, sizeof(g_desired_mode), "%s", mode);
     snprintf(g_atpd_ctx.clash_desired_mode,
              sizeof(g_atpd_ctx.clash_desired_mode), "%s", mode);
@@ -344,11 +352,68 @@ static void network_state_cb(nl_event_type_t event, const char *iface, void *use
     (void)userdata;
     if (event == NL_EVENT_VPN_CONNECTED && iface && iface[0]) {
         routing_add_vpn_policy(&g_config, iface);
-        request_clash_mode("Google VPN");
     } else if (event == NL_EVENT_VPN_DISCONNECTED) {
         routing_remove_vpn_policy(&g_config, NULL);
-        request_clash_mode("Rule");
     }
+    reconcile_clash_mode();
+}
+
+static void reconcile_clash_mode(void) {
+    vpn_state_t vpn_state = atomic_load(&g_atpd_ctx.vpn_state);
+    direct_wifi_state_t wifi_state = atomic_load(&g_atpd_ctx.direct_wifi_state);
+    const char *base = atpd_clash_target_mode(
+        vpn_state, DIRECT_WIFI_DISCONNECTED, g_config.filter.user_clash_mode);
+    if (wifi_state == DIRECT_WIFI_ACTIVE) {
+        snprintf(g_atpd_ctx.direct_wifi_restore_mode,
+                 sizeof(g_atpd_ctx.direct_wifi_restore_mode), "%s", base);
+    }
+    request_clash_mode(atpd_clash_target_mode(vpn_state, wifi_state, base));
+}
+
+static void refresh_direct_wifi_state(void) {
+    if (!g_config.filter.direct_wifi_ssid[0]) {
+        atpd_direct_wifi_state_transition(DIRECT_WIFI_DISABLED, NULL);
+        reconcile_clash_mode();
+        return;
+    }
+
+    char ssid[sizeof(g_atpd_ctx.current_wifi_ssid)];
+    int result = wifi_get_ssid(ssid, sizeof(ssid));
+    if (result < 0) {
+        LOG_DEBUG("Wi-Fi status unavailable; keeping previous Direct state");
+        return;
+    }
+
+    direct_wifi_state_t state = result == 0 &&
+        strcmp(ssid, g_config.filter.direct_wifi_ssid) == 0
+        ? DIRECT_WIFI_ACTIVE : DIRECT_WIFI_DISCONNECTED;
+    atpd_direct_wifi_state_transition(state, result == 0 ? ssid : NULL);
+    reconcile_clash_mode();
+}
+
+static int fcm_connection_active_in(const char *path) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+
+    char line[512];
+    int found = 0;
+    while (fgets(line, sizeof(line), fp)) {
+        unsigned remote_port;
+        unsigned state;
+        if (sscanf(line, " %*d: %*s %*64[0-9A-Fa-f]:%x %x",
+                   &remote_port, &state) == 2 && remote_port == 5228 && state == 1) {
+            found = 1;
+            break;
+        }
+    }
+    fclose(fp);
+    return found;
+}
+
+static int fcm_connection_active(void) {
+    /* ponytail: port-only detection avoids the old DNS/thread subsystem. */
+    return fcm_connection_active_in("/proc/net/tcp") ||
+           fcm_connection_active_in("/proc/net/tcp6");
 }
 
 static void network_audit_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
@@ -362,6 +427,20 @@ static void network_audit_cb(reactor_t *r, reactor_timer_t *timer, void *userdat
         if (api_get_version_async(&g_api_ctx, singbox_version_response, NULL) != 0) {
             g_version_request_inflight = 0;
         }
+    }
+}
+
+static void mode_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+    (void)userdata;
+    refresh_direct_wifi_state();
+    vpn_state_t vpn_state = atomic_load(&g_atpd_ctx.vpn_state);
+    g_atpd_ctx.fcm_monitor_active = vpn_state == VPN_STATE_PREDICTING ||
+                                    vpn_state == VPN_STATE_READY ||
+                                    vpn_state == VPN_STATE_TEARDOWN;
+    if (g_atpd_ctx.fcm_monitor_active && fcm_connection_active()) {
+        g_atpd_ctx.fcm_last_seen = (uint64_t)time(NULL);
     }
 }
 
@@ -390,6 +469,7 @@ static void service_stop_sync(service_ctx_t *ctx) {
 
 static void run_event_loop(void) {
     reactor_timer_t *network_timer = NULL;
+    reactor_timer_t *mode_timer = NULL;
     if (!g_reactor) {
         LOG_ERROR("Reactor is not initialized");
         return;
@@ -399,9 +479,6 @@ static void run_event_loop(void) {
     snprintf(uds_path, sizeof(uds_path), "%s/run/atpd.sock", g_config.core.data_dir);
     if (uds_init(g_reactor, uds_path) != 0) goto cleanup;
 
-    g_svc->monitor_timer = reactor_add_timer(g_reactor, 1000, 3000,
-                                              service_monitor_cb, g_svc);
-
     if (g_svc && service_start_async(g_svc) != 0) {
         LOG_ERROR("Failed to start service");
         goto cleanup;
@@ -409,6 +486,8 @@ static void run_event_loop(void) {
 
     network_timer = reactor_add_timer(g_reactor, 1000, 10000,
                                       network_audit_cb, NULL);
+    mode_timer = reactor_add_timer(g_reactor, 1000, 5000,
+                                   mode_monitor_cb, NULL);
 
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
@@ -430,6 +509,7 @@ static void run_event_loop(void) {
 
 cleanup:
     if (network_timer) reactor_cancel_timer(g_reactor, network_timer);
+    if (mode_timer) reactor_cancel_timer(g_reactor, mode_timer);
 
     routing_remove_vpn_policy(&g_config, g_config.interface.current_vpn_iface);
     service_ctx_t *svc = g_svc;
@@ -493,6 +573,10 @@ static int do_start(atp_options_t *opts) {
         goto cleanup;
     }
     g_svc = init_ctx.service;
+    snprintf(g_desired_mode, sizeof(g_desired_mode), "%s",
+             g_config.filter.user_clash_mode);
+    snprintf(g_atpd_ctx.clash_desired_mode,
+             sizeof(g_atpd_ctx.clash_desired_mode), "%s", g_desired_mode);
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
 
     run_event_loop();
@@ -645,7 +729,7 @@ static int do_status(atp_options_t *opts) {
     return 2;
 }
 
-static int do_singbox_status(atp_options_t *opts) {
+static int do_core_status(atp_options_t *opts) {
     const char *config_path = opts->config_file[0]
         ? opts->config_file : ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
     log_set_level(LOG_LEVEL_NONE);
@@ -657,7 +741,7 @@ static int do_singbox_status(atp_options_t *opts) {
     char socket_path[SAFE_PATH_MAX];
     snprintf(socket_path, sizeof(socket_path), "%s/run/atpd.sock",
              g_config.core.data_dir);
-    int status = uds_client_singbox_status(socket_path, stdout);
+    int status = uds_client_core_status(socket_path, stdout);
     if (status >= 0) return status;
 
     api_ctx_t api;
@@ -677,6 +761,28 @@ static int do_singbox_status(atp_options_t *opts) {
     printf("  Mode                %s\n\n", mode);
     printf("Overall               %s\n", overall);
     return version_ok && mode_ok ? 0 : version_ok || mode_ok ? 1 : 2;
+}
+
+static int do_core_control(atp_options_t *opts, const char *action) {
+    const char *config_path = opts->config_file[0]
+        ? opts->config_file : ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+    log_set_level(LOG_LEVEL_NONE);
+    if (config_load(config_path, &g_config) != ATP_OK) {
+        fprintf(stderr, "Failed to load config: %s\n", config_path);
+        return 1;
+    }
+
+    char socket_path[SAFE_PATH_MAX];
+    char command[32];
+    snprintf(socket_path, sizeof(socket_path), "%s/run/atpd.sock",
+             g_config.core.data_dir);
+    snprintf(command, sizeof(command), "core %s", action);
+    int status = uds_client_core_control(socket_path, command, stdout);
+    if (status < 0) {
+        fprintf(stderr, "ATPd is unavailable; cannot %s core\n", action);
+        return 1;
+    }
+    return status;
 }
 
 static int do_reload(atp_options_t *opts) {
@@ -783,8 +889,14 @@ int main(int argc, char *argv[]) {
             return do_restart(&opts);
         case CMD_STATUS:
             return do_status(&opts);
-        case CMD_SING_BOX_STATUS:
-            return do_singbox_status(&opts);
+        case CMD_CORE_STATUS:
+            return do_core_status(&opts);
+        case CMD_CORE_START:
+            return do_core_control(&opts, "start");
+        case CMD_CORE_STOP:
+            return do_core_control(&opts, "stop");
+        case CMD_CORE_RESTART:
+            return do_core_control(&opts, "restart");
         case CMD_RELOAD:
             return do_reload(&opts);
         case CMD_CHECK:

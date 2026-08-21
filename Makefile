@@ -46,6 +46,7 @@ SRC = \
 	src/service.c \
 	src/uds.c \
 	src/utils.c \
+	src/wifi.c \
 	src/yyjson.c
 
 OBJDIR = build/obj
@@ -57,8 +58,10 @@ TARGET = build/bin/atpd
 all: $(TARGET)
 
 test: $(TARGET)
+	$(CC) $(CFLAGS) -o build/test_wifi tests/test_wifi.c src/wifi.c src/atpd_context.c src/utils.c src/logger.c
+	build/test_wifi
 	bash tests/test_status.sh $(TARGET)
-	bash tests/test_singbox_status.sh $(TARGET)
+	bash tests/test_core_status.sh $(TARGET)
 
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)

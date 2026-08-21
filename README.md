@@ -1,6 +1,6 @@
 # ATP -- Advanced Transparent Proxy
 
-High-performance transparent proxy daemon for Android with TPROXY/REDIRECT support, VPN mode switching, and automatic self-healing.
+High-performance Android daemon for a sing-box eBPF inbound, VPN-aware mode switching, and automatic policy repair.
 
 ---
 
@@ -14,23 +14,21 @@ High-performance transparent proxy daemon for Android with TPROXY/REDIRECT suppo
 
 | Feature | Description |
 |--------|-------------|
-| **Dual mode** | TPROXY and REDIRECT with auto-detection |
-| **IPv4/IPv6** | Independent control for both stacks |
-| **DNS hijacking** | TPROXY or REDIRECT based DNS interception |
-| **China IP bypass** | GeoIP-based ipset with atomic updates |
-| **Per-app proxy** | Blacklist/whitelist by Android UID |
-| **MAC filtering** | Per-device proxy control for hotspots |
-| **VPN mode** | Auto-detection and switching for Google VPN(`ipsec`) |
-| **Self-healing** | Detects and repairs rule drift from netd |
+| **eBPF backend** | Supervises a sing-box native eBPF inbound |
+| **Google VPN** | Detects XFRM/ipsec handovers and selects `Google VPN` mode |
+| **Other VPNs** | Reports TUN/WireGuard VPNs such as Cloudflare WARP separately |
+| **Direct Wi-Fi** | Selects `Direct` on a configured SSID and restores the prior policy |
+| **Hotspot routing** | Binds tethered clients to Google VPN with IPv4/IPv6 policy rules |
+| **Self-healing** | Detects and repairs Android netd policy-rule drift |
 | **Service monitor** | Auto-restart of sing-box with cooldown |
 | **Clash API** | Mode synchronization with sing-box/Clash |
-| **Performance** | conntrack optimization, BBR TCP stack tuning |
+| **Runtime status** | Reports monitors, state machines, traffic, temperature, and core health |
 
 ## Requirements
 
 - Android 8.0+ (API 27+)
 - Root access (Magisk, KernelSU, or APatch)
-- Kernel with `TPROXY`, `IPSET`, and `CONNTRACK` support
+- A sing-box build and kernel that support the configured eBPF inbound
 
 ## Installation
 
@@ -58,7 +56,7 @@ make
 ```bash
 # Create default config (optional)
 mkdir -p /data/adb/atp
-cp atp.conf.example /data/adb/atp/atp.conf
+cp examples/atp.conf.example /data/adb/atp/atp.conf
 
 # Start daemon
 /data/adb/atp/bin/atpd start
@@ -66,8 +64,9 @@ cp atp.conf.example /data/adb/atp/atp.conf
 # Check status
 /data/adb/atp/bin/atpd status
 
-# Query sing-box core status
-/data/adb/atp/bin/atpd sing-box status
+# Query or control the sing-box core
+/data/adb/atp/bin/atpd core status
+/data/adb/atp/bin/atpd core restart
 
 # Stop daemon
 /data/adb/atp/bin/atpd stop
@@ -75,32 +74,18 @@ cp atp.conf.example /data/adb/atp/atp.conf
 
 ## Configuration
 
-@TP looks for `atp.conf` in the **same directory as the `atpd` binary** by default. Use `-c` to specify a custom path.
+ATPd reads `/data/adb/atp/atp.conf` by default. Use `-c` to specify a custom path.
 
 Example `atp.conf`:
 
 ```ini
-# Proxy ports
-PROXY_TCP_PORT=1536
-PROXY_UDP_PORT=1536
-
-# Mode: 0=auto  1=tproxy  2=redirect  3=enhance
-PROXY_MODE=3
-
-# IPv6 support
-PROXY_IPV6=0
-
-# DNS hijacking
-DNS_HIJACK_ENABLE=1
-DNS_PORT=1053
-
-# Routing marks
-MARK_VALUE=20
-TABLE_ID=150
-
-# API
+ATP_DATA=/data/adb/atp
+NETWORK_BACKEND=ebpf
+CORE_USER_GROUP=root:net_admin
 API_HOST=127.0.0.1
 API_PORT=9090
+USER_CLASH_MODE=Rule
+DIRECT_WIFI_SSID="Home Wi-Fi"
 ```
 
 ## Usage
@@ -116,10 +101,13 @@ atpd [options] command
 | `start` | Start daemon |
 | `stop` | Stop daemon |
 | `restart` | Restart daemon |
-| `status` | Show runtime status |
+| `status` | Show ATPd, network policy, and state-machine status |
+| `core status` | Show sing-box process and API status |
+| `core start` | Start sing-box without restarting ATPd |
+| `core stop` | Stop sing-box without stopping ATPd |
+| `core restart` | Restart sing-box without restarting ATPd |
 | `reload` | Reload configuration |
 | `check` | Check configuration syntax and validity |
-| `update-geoip` | Update GeoIP database |
 
 ### Options
 
@@ -139,7 +127,10 @@ atpd [options] command
 
 ```bash
 atpd status                       # Show daemon and network policy status
-atpd sing-box status              # Query sing-box core status
+atpd core status                  # Show sing-box core status
+atpd core start                   # Start sing-box without restarting ATPd
+atpd core stop                    # Stop sing-box without stopping ATPd
+atpd core restart                 # Restart sing-box without restarting ATPd
 atpd -c atp.conf start            # Start with custom config
 atpd -f -v start                  # Start in foreground with verbose log
 atpd -t                           # Test configuration
@@ -164,8 +155,6 @@ For a list of verified working commits, see [Issue #1](https://github.com/atpd-p
 │   ├── atpd.pid            # Daemon PID file
 │   ├── sing-box.log        # sing-box log
 │   └── sing-box.pid        # sing-box PID file
-├── rules/
-│   ├── cn.zone             # China IPv4 CIDR│   └── cn_ipv6.zone        # China IPV6 CIDR
 ├── sing-box/
 │   └── config.json         # sing-box configuration
 └── atp.conf                # Main configuration
@@ -177,7 +166,7 @@ For a list of verified working commits, see [Issue #1](https://github.com/atpd-p
 
 ```bash
 atpd status
-atpd sing-box status
+atpd core status
 ps -A | grep atpd
 ```
 
@@ -188,17 +177,11 @@ cat /data/adb/atp/run/atp.log
 tail -f /data/adb/atp/run/atp.log
 ```
 
-**Inspect iptables rules**
+**Inspect managed hotspot policy rules**
 
 ```bash
-iptables -t mangle -L | grep ATP
-ip6tables -t mangle -L | grep ATP
-```
-
-**Force GeoIP update**
-
-```bash
-atpd update-geoip
+ip rule show pref 100
+ip -6 rule show pref 100
 ```
 
 ## Development

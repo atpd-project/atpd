@@ -6,6 +6,5 @@
 void config_set_defaults(atp_config_t *cfg);
 int config_load(const char *path, atp_config_t *cfg);
 int config_reload(atp_config_t *cfg);
-int config_set_mode(atp_config_t *cfg, const char *mode);
 
 #endif

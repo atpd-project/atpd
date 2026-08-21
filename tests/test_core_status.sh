@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -eu
 
-binary=${1:?usage: test_singbox_status.sh /path/to/atpd}
-test_root=$(mktemp -d /tmp/atpd-singbox-status-test.XXXXXX)
+binary=${1:?usage: test_core_status.sh /path/to/atpd}
+test_root=$(mktemp -d /tmp/atpd-core-status-test.XXXXXX)
 case "$test_root" in
-    /tmp/atpd-singbox-status-test.*) ;;
+    /tmp/atpd-core-status-test.*) ;;
     *) echo "unsafe temporary path: $test_root" >&2; exit 1 ;;
 esac
 server_pid=
@@ -31,9 +31,9 @@ server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(path)
 server.listen(1)
 client, _ = server.accept()
-if client.recv(128) != b"sing-box status\n":
+if client.recv(128) != b"core status\n":
     raise SystemExit("unexpected UDS command")
-client.sendall(b"""SINGBOX_STATUS 0
+client.sendall(b"""CORE_STATUS 0
 sing-box                                      HEALTHY
 
 Core
@@ -46,6 +46,7 @@ Core
   eBPF                redirect, auto
   Config              /tmp/config.json
   RSS / Threads / FDs 10.0 MiB / 2 / 8
+  CPU                 0.0%
   Restarts            1
   Last error          none
 
@@ -60,12 +61,12 @@ for _ in $(seq 1 100); do
     sleep 0.01
 done
 printf 'ATP_DATA=%s\n' "$test_root" > "$config_path"
-uds_output=$("$binary" -c "$config_path" sing-box status)
+uds_output=$("$binary" -c "$config_path" core status)
 wait "$server_pid"
 server_pid=
 case "$uds_output" in
-    *"State               RUNNING"*"RSS / Threads / FDs 10.0 MiB / 2 / 8"*"Restarts            1"*) ;;
-    *) echo "incomplete UDS sing-box status" >&2; exit 1 ;;
+    *"State               RUNNING"*"RSS / Threads / FDs 10.0 MiB / 2 / 8"*"CPU                 0.0%"*"Restarts            1"*) ;;
+    *) echo "incomplete UDS core status" >&2; exit 1 ;;
 esac
 
 rm -f -- "$socket_path"
@@ -117,12 +118,45 @@ API_HOST=127.0.0.1
 API_PORT=$api_port
 CLASH_SECRET=test-secret
 EOF
-api_output=$("$binary" -c "$config_path" sing-box status)
+api_output=$("$binary" -c "$config_path" core status)
 wait "$server_pid"
 server_pid=
 case "$api_output" in
     *"API                 REACHABLE"*"Version             1.12.0"*"Mode                Rule"*"Overall               HEALTHY"*) ;;
-    *) echo "incomplete direct sing-box status" >&2; exit 1 ;;
+    *) echo "incomplete direct core status" >&2; exit 1 ;;
 esac
 
-echo "sing-box status tests passed"
+for action in start stop restart; do
+    rm -f -- "$socket_path"
+    python3 - "$socket_path" "$action" <<'PY' &
+import os
+import socket
+import sys
+
+path, action = sys.argv[1:]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+server.listen(1)
+client, _ = server.accept()
+if client.recv(128) != f"core {action}\n".encode():
+    raise SystemExit("unexpected core control command")
+client.sendall(f"CORE_CONTROL 0\nCore {action} scheduled\n".encode())
+client.close()
+server.close()
+PY
+    server_pid=$!
+    for _ in $(seq 1 100); do
+        [ -S "$socket_path" ] && break
+        sleep 0.01
+    done
+    control_output=$("$binary" -c "$config_path" core "$action")
+    wait "$server_pid"
+    server_pid=
+    [ "$control_output" = "Core $action scheduled" ]
+done
+
+echo "core command tests passed"

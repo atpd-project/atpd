@@ -10,6 +10,8 @@
 #include "logger.h"
 #include "atpd_context.h"
 #include "atpd_global.h"
+#include "netlink.h"
+#include "utils.h"
 #include "version.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -158,6 +160,84 @@ static void read_process_status(pid_t pid, uint64_t *rss_kib,
     closedir(dir);
 }
 
+static int read_cpu_temperature(void) {
+    DIR *dir = opendir("/sys/class/thermal");
+    if (!dir) return -1;
+
+    int temperature = -1;
+    struct dirent *entry;
+    while ((entry = readdir(dir))) {
+        if (strncmp(entry->d_name, "thermal_zone", 12) != 0) continue;
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "/sys/class/thermal/%s/temp", entry->d_name);
+        FILE *fp = fopen(path, "r");
+        long millidegrees;
+        if (fp && fscanf(fp, "%ld", &millidegrees) == 1 && millidegrees > 0) {
+            temperature = (int)(millidegrees / 1000);
+        }
+        if (fp) fclose(fp);
+        if (temperature >= 0) break;
+    }
+    closedir(dir);
+    return temperature;
+}
+
+static void format_bytes(uint64_t bytes, char *output, size_t size) {
+    const char *unit = "B";
+    double value = (double)bytes;
+    if (bytes >= 1024ULL * 1024 * 1024) {
+        value /= 1024.0 * 1024 * 1024;
+        unit = "GiB";
+    } else if (bytes >= 1024ULL * 1024) {
+        value /= 1024.0 * 1024;
+        unit = "MiB";
+    } else if (bytes >= 1024) {
+        value /= 1024.0;
+        unit = "KiB";
+    }
+    snprintf(output, size, "%.1f %s", value, unit);
+}
+
+static void format_rate(uint64_t bytes_per_sec, char *output, size_t size) {
+    const char *unit = "bps";
+    double value = (double)bytes_per_sec * 8.0;
+    if (value >= 1024.0 * 1024 * 1024) {
+        value /= 1024.0 * 1024 * 1024;
+        unit = "Gbps";
+    } else if (value >= 1024.0 * 1024) {
+        value /= 1024.0 * 1024;
+        unit = "Mbps";
+    } else if (value >= 1024.0) {
+        value /= 1024.0;
+        unit = "Kbps";
+    }
+    snprintf(output, size, "%.1f %s", value, unit);
+}
+
+static uint64_t monotonic_age(const struct timespec *since) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return now.tv_sec >= since->tv_sec ? (uint64_t)(now.tv_sec - since->tv_sec) : 0;
+}
+
+static size_t append_traffic(char *response, size_t size, size_t off,
+                             const char *label, const vpn_traffic_t *traffic) {
+    char rx[32];
+    char tx[32];
+    char rx_rate[32] = "sampling";
+    char tx_rate[32] = "sampling";
+    format_bytes(traffic->rx_bytes, rx, sizeof(rx));
+    format_bytes(traffic->tx_bytes, tx, sizeof(tx));
+    if (traffic->rate_ready) {
+        format_rate(traffic->rx_bytes_per_sec, rx_rate, sizeof(rx_rate));
+        format_rate(traffic->tx_bytes_per_sec, tx_rate, sizeof(tx_rate));
+    }
+    return append_response(response, size, off,
+                           "  %s RX / TX       %s / %s\n"
+                           "  %s rate          %s / %s\n",
+                           label, rx, tx, label, rx_rate, tx_rate);
+}
+
 static const char *yes_no(int value) {
     return value ? "yes" : "no";
 }
@@ -177,8 +257,11 @@ static void handle_status(int fd) {
         (g_atpd_ctx.hotspot_ipv4_active == g_atpd_ctx.hotspot_count &&
          (!g_atpd_ctx.vpn_ipv6_default ||
           g_atpd_ctx.hotspot_ipv6_active == g_atpd_ctx.hotspot_count));
+    int netlink_ok = netlink_get_fd() >= 0;
+    int xfrm_ok = g_atpd_ctx.xfrm_fd >= 0;
+    const reactor_stats_t *reactor_stats = reactor_get_stats(g_reactor);
     int healthy = g_atpd_ctx.runtime_state == ATPD_RUNTIME_STATE_RUNNING &&
-        vpn_stable && policy_ok;
+        netlink_ok && xfrm_ok && reactor_stats && vpn_stable && policy_ok;
     const char *overall = healthy ? "HEALTHY" : "DEGRADED";
 
     off = append_response(response, sizeof(response), off,
@@ -188,34 +271,144 @@ static void handle_status(int fd) {
                           ATP_VERSION_STRING, overall);
     off = append_response(response, sizeof(response), off,
                           "Daemon\n"
+                          "  State               %s\n"
                           "  PID / Uptime        %d / %s\n"
                           "  Backend             %s\n"
                           "  Config              %s\n\n",
+                          atpd_runtime_state_string(g_atpd_ctx.runtime_state),
                           getpid(), daemon_uptime_text, g_config.network.backend,
                           g_atpd_ctx.config_path[0] ? g_atpd_ctx.config_path : "unknown");
 
-    const char *vpn_status = vpn_state == VPN_STATE_READY ? "CONNECTED" :
+    uint64_t sync_age = g_atpd_ctx.clash_last_sync &&
+        (uint64_t)time(NULL) >= g_atpd_ctx.clash_last_sync
+        ? (uint64_t)time(NULL) - g_atpd_ctx.clash_last_sync : 0;
+    off = append_response(response, sizeof(response), off,
+                          "Clash policy\n"
+                          "  Configured mode     %s\n"
+                          "  Desired mode        %s\n"
+                          "  Applied mode        %s\n"
+                          "  Last sync           %s",
+                          g_config.filter.user_clash_mode,
+                          g_atpd_ctx.clash_desired_mode[0]
+                              ? g_atpd_ctx.clash_desired_mode : "unknown",
+                          g_atpd_ctx.clash_applied_mode[0]
+                              ? g_atpd_ctx.clash_applied_mode : "unknown",
+                          g_atpd_ctx.clash_last_sync ? "" : "never\n");
+    if (g_atpd_ctx.clash_last_sync) {
+        off = append_response(response, sizeof(response), off,
+                              "%" PRIu64 "s ago\n", sync_age);
+    }
+    off = append_response(response, sizeof(response), off,
+                          "  Last error          %s\n\n",
+                          g_atpd_ctx.clash_last_error[0]
+                              ? g_atpd_ctx.clash_last_error : "none");
+
+    off = append_response(response, sizeof(response), off,
+                          "Monitors\n"
+                          "  Netlink             %s\n"
+                          "  XFRM listener       %s\n",
+                          netlink_ok ? "ACTIVE" : "INACTIVE",
+                          xfrm_ok ? "ACTIVE" : "INACTIVE");
+    uint64_t fcm_age = g_atpd_ctx.fcm_last_seen &&
+        (uint64_t)time(NULL) >= g_atpd_ctx.fcm_last_seen
+        ? (uint64_t)time(NULL) - g_atpd_ctx.fcm_last_seen : 0;
+    if (!g_atpd_ctx.fcm_monitor_active) {
+        off = append_response(response, sizeof(response), off,
+                              "  FCM                 INACTIVE%s",
+                              g_atpd_ctx.fcm_last_seen ? " (last seen " : "\n\n");
+        if (g_atpd_ctx.fcm_last_seen) {
+            off = append_response(response, sizeof(response), off,
+                                  "%" PRIu64 "s ago)\n\n", fcm_age);
+        }
+    } else if (g_atpd_ctx.fcm_last_seen) {
+        off = append_response(response, sizeof(response), off,
+                              "  FCM                 ACTIVE (seen %" PRIu64 "s ago)\n\n",
+                              fcm_age);
+    } else {
+        off = append_response(response, sizeof(response), off,
+                              "  FCM                 ACTIVE (waiting)\n\n");
+    }
+
+    const char *google_status = vpn_state == VPN_STATE_READY ? "CONNECTED" :
         vpn_state == VPN_STATE_PREDICTING ? "CONNECTING" :
         vpn_state == VPN_STATE_TEARDOWN ? "DISCONNECTING" : "DISCONNECTED";
+    const char *other_status = g_atpd_ctx.other_vpn_iface[0] ? "CONNECTED" : "DISCONNECTED";
     off = append_response(response, sizeof(response), off,
                           "VPN\n"
-                          "  State               %s\n"
-                          "  Interface           %s\n"
+                          "  Google VPN          %s\n"
+                          "  Google interface    %s\n"
+                          "  Other VPN           %s\n"
+                          "  Other interface     %s\n"
                           "  Route table         %s",
-                          vpn_status,
+                          google_status,
                           g_atpd_ctx.vpn_iface[0] ? g_atpd_ctx.vpn_iface : "none",
+                          other_status,
+                          g_atpd_ctx.other_vpn_iface[0] ? g_atpd_ctx.other_vpn_iface : "none",
                           g_atpd_ctx.vpn_route_table ? "" : "none\n");
     if (g_atpd_ctx.vpn_route_table) {
         off = append_response(response, sizeof(response), off, "%u\n",
                               g_atpd_ctx.vpn_route_table);
     }
+    if (vpn_connected && g_atpd_ctx.google_vpn_traffic.sampled_at) {
+        off = append_traffic(response, sizeof(response), off, "Google",
+                             &g_atpd_ctx.google_vpn_traffic);
+    }
+    if (g_atpd_ctx.other_vpn_iface[0] &&
+        g_atpd_ctx.other_vpn_traffic.sampled_at) {
+        off = append_traffic(response, sizeof(response), off, "Other ",
+                             &g_atpd_ctx.other_vpn_traffic);
+    }
     off = append_response(response, sizeof(response), off,
                           "  IPv4 default route  %s\n"
-                          "  IPv6 default route  %s\n"
-                          "  Target core mode    %s\n\n",
+                          "  IPv6 default route  %s\n\n",
                           yes_no(g_atpd_ctx.vpn_ipv4_default),
-                          yes_no(g_atpd_ctx.vpn_ipv6_default),
-                          g_atpd_ctx.clash_desired_mode);
+                          yes_no(g_atpd_ctx.vpn_ipv6_default));
+
+    direct_wifi_state_t wifi_state = atomic_load(&g_atpd_ctx.direct_wifi_state);
+    const char *xfrm_sync = vpn_state == VPN_STATE_PREDICTING ? "PREDICTING" :
+        vpn_state == VPN_STATE_READY ? "LOCKED" : "PENDING";
+    off = append_response(response, sizeof(response), off,
+                          "State machines\n"
+                          "  Reactor             %s\n"
+                          "  VPN                 %s (%" PRIu64 "s, %" PRIu64 " transitions)\n"
+                          "  XFRM sync           %s",
+                          g_reactor && g_reactor->running ? "RUNNING" : "STOPPED",
+                          vpn_state_string(vpn_state),
+                          monotonic_age(&g_atpd_ctx.vpn_state_since),
+                          g_atpd_ctx.vpn_transitions,
+                          xfrm_sync);
+    if (g_atpd_ctx.xfrm_if_id) {
+        off = append_response(response, sizeof(response), off,
+                              " (IF_ID=%u)\n", g_atpd_ctx.xfrm_if_id);
+    } else {
+        off = append_response(response, sizeof(response), off, "\n");
+    }
+    off = append_response(response, sizeof(response), off,
+                          "  Direct Wi-Fi        %s (%" PRIu64 "s, %" PRIu64 " transitions)\n"
+                          "  Current SSID        %s\n"
+                          "  Direct SSID         %s\n"
+                          "  Restore mode        %s\n",
+                          direct_wifi_state_string(wifi_state),
+                          monotonic_age(&g_atpd_ctx.direct_wifi_state_since),
+                          g_atpd_ctx.direct_wifi_transitions,
+                          g_atpd_ctx.current_wifi_ssid[0]
+                              ? g_atpd_ctx.current_wifi_ssid : "none",
+                          g_config.filter.direct_wifi_ssid[0]
+                              ? g_config.filter.direct_wifi_ssid : "disabled",
+                          g_atpd_ctx.direct_wifi_restore_mode[0]
+                              ? g_atpd_ctx.direct_wifi_restore_mode
+                              : g_config.filter.user_clash_mode);
+    if (reactor_stats) {
+        off = append_response(response, sizeof(response), off,
+                              "  Events / Timers     %" PRIu64 " / %" PRIu64 "\n"
+                              "  Handlers / Timers   %zu / %zu\n\n",
+                              reactor_stats->events_processed,
+                              reactor_stats->timers_fired,
+                              reactor_stats->active_handlers,
+                              reactor_stats->active_timers);
+    } else {
+        off = append_response(response, sizeof(response), off, "\n");
+    }
 
     const char *ipv4_rule = g_atpd_ctx.hotspot_count == 0 ? "not installed" :
         g_atpd_ctx.hotspot_ipv4_active == g_atpd_ctx.hotspot_count ? "active" : "incomplete";
@@ -238,13 +431,22 @@ static void handle_status(int fd) {
                           "  Interfaces          %s\n"
                           "  IPv4 rule           %s (%u/%u)\n"
                           "  IPv6 rule           %s (%u/%u)\n"
-                          "  Last reconcile      %s\n\n"
-                          "Overall               %s\n",
+                          "  Last reconcile      %s\n",
                           g_atpd_ctx.hotspot_ifaces[0] ? g_atpd_ctx.hotspot_ifaces : "none",
                           ipv4_rule, g_atpd_ctx.hotspot_ipv4_active, g_atpd_ctx.hotspot_count,
                           ipv6_rule, g_atpd_ctx.hotspot_ipv6_active, g_atpd_ctx.hotspot_count,
-                          reconcile_text,
-                          overall);
+                          reconcile_text);
+
+    int temperature = read_cpu_temperature();
+    off = append_response(response, sizeof(response), off,
+                          "\nSystem\n"
+                          "  CPU temperature     %s",
+                          temperature >= 0 ? "" : "unknown\n");
+    if (temperature >= 0) {
+        off = append_response(response, sizeof(response), off, "%d C\n", temperature);
+    }
+    off = append_response(response, sizeof(response), off,
+                          "\nOverall               %s\n", overall);
 
     if (off >= sizeof(response)) {
         send_string_all(fd, "ERROR: response too large\n");
@@ -254,7 +456,7 @@ static void handle_status(int fd) {
     send_response_all(fd, response, off);
 }
 
-static void handle_singbox_status(int fd) {
+static void handle_core_status(int fd) {
     char response[UDS_RESPONSE_SIZE];
     size_t off = 0;
     pid_t pid = g_svc ? service_get_pid(g_svc) : -1;
@@ -262,14 +464,18 @@ static void handle_singbox_status(int fd) {
     unsigned threads;
     unsigned fds;
     read_process_status(pid, &rss_kib, &threads, &fds);
+    double cpu = pid > 0 ? get_process_cpu_percent(pid) : 0.0;
 
     char version[64] = "unknown";
     char mode[32] = "unknown";
     int version_ok = 0;
     int mode_ok = 0;
     if (pid > 0) {
-        version_ok = api_get_version_sync(&g_api_ctx, version, sizeof(version)) == 0;
-        mode_ok = api_get_mode_sync(&g_api_ctx, mode, sizeof(mode)) == 0;
+        api_ctx_t api;
+        api_init(&api, &g_config);
+        version_ok = api_get_version_sync(&api, version, sizeof(version)) == 0;
+        mode_ok = api_get_mode_sync(&api, mode, sizeof(mode)) == 0;
+        api_cleanup(&api);
     }
     if (version_ok && g_svc) {
         snprintf(g_svc->version, sizeof(g_svc->version), "%s", version);
@@ -295,7 +501,7 @@ static void handle_singbox_status(int fd) {
     const char *overall = healthy ? "HEALTHY" : pid > 0 ? "DEGRADED" : "STOPPED";
 
     off = append_response(response, sizeof(response), off,
-                          "SINGBOX_STATUS %d\n", status);
+                          "CORE_STATUS %d\n", status);
     off = append_response(response, sizeof(response), off,
                           "sing-box                                      %s\n\n"
                           "Core\n"
@@ -325,9 +531,11 @@ static void handle_singbox_status(int fd) {
                               "  RSS / Threads / FDs unknown\n");
     }
     off = append_response(response, sizeof(response), off,
+                          "  CPU                 %.1f%%\n"
                           "  Restarts            %u\n"
                           "  Last error          %s\n\n"
                           "Overall               %s\n",
+                          cpu,
                           g_svc ? g_svc->restart_count : 0,
                           g_svc && g_svc->last_error[0] ? g_svc->last_error : "none",
                           overall);
@@ -337,6 +545,36 @@ static void handle_singbox_status(int fd) {
         return;
     }
     send_response_all(fd, response, off);
+}
+
+static void core_restart_done(service_ctx_t *ctx, void *userdata) {
+    (void)userdata;
+    ctx->restart_count++;
+    if (service_start_async(ctx) != 0) {
+        LOG_ERROR("Core restart failed");
+    }
+}
+
+static void handle_core_control(int fd, const char *action) {
+    if (!g_svc) {
+        send_string_all(fd, "CORE_CONTROL 1\nCore service unavailable\n");
+        return;
+    }
+
+    int result;
+    if (strcmp(action, "start") == 0) {
+        result = service_start_async(g_svc);
+    } else if (strcmp(action, "stop") == 0) {
+        result = service_stop_async(g_svc, NULL, NULL);
+    } else {
+        result = service_stop_async(g_svc, core_restart_done, NULL);
+    }
+
+    char response[96];
+    snprintf(response, sizeof(response), result == 0
+             ? "CORE_CONTROL 0\nCore %s scheduled\n"
+             : "CORE_CONTROL 1\nCore %s failed\n", action);
+    send_string_all(fd, response);
 }
 
 static void handle_stop(int fd) {
@@ -405,7 +643,10 @@ static void handle_help(int fd) {
     const char *help =
         "Available commands:\n"
         "  status    - Show runtime status\n"
-        "  sing-box status - Query sing-box core status\n"
+        "  core status  - Show sing-box core status\n"
+        "  core start   - Start sing-box core\n"
+        "  core stop    - Stop sing-box core\n"
+        "  core restart - Restart sing-box core\n"
         "  stop      - Shutdown ATPd\n"
         "  reload    - Reload ATPd and sing-box configuration\n"
         "  ping      - Check if ATPd is alive\n"
@@ -450,8 +691,14 @@ static void process_command(int fd, const char *cmd, size_t cmd_len) {
 
     if (strcmp(buf, "status") == 0) {
         handle_status(fd);
-    } else if (strcmp(buf, "sing-box status") == 0) {
-        handle_singbox_status(fd);
+    } else if (strcmp(buf, "core status") == 0) {
+        handle_core_status(fd);
+    } else if (strcmp(buf, "core start") == 0) {
+        handle_core_control(fd, "start");
+    } else if (strcmp(buf, "core stop") == 0) {
+        handle_core_control(fd, "stop");
+    } else if (strcmp(buf, "core restart") == 0) {
+        handle_core_control(fd, "restart");
     } else if (strcmp(buf, "stop") == 0) {
         handle_stop(fd);
     } else if (strcmp(buf, "reload") == 0) {
@@ -699,23 +946,6 @@ static int uds_client_open(const char *path, const char *command) {
     return fd;
 }
 
-int uds_client_request(const char *path, const char *command, FILE *output) {
-    if (!output) return -1;
-    int fd = uds_client_open(path, command);
-    if (fd < 0) return -1;
-
-    char buf[2048];
-    ssize_t n;
-    while ((n = read(fd, buf, sizeof(buf))) > 0) {
-        if (fwrite(buf, 1, (size_t)n, output) != (size_t)n) {
-            close(fd);
-            return -1;
-        }
-    }
-    close(fd);
-    return n == 0 ? 0 : -1;
-}
-
 static int uds_client_status_request(const char *path, const char *command,
                                      const char *prefix, FILE *output) {
     if (!output) return -1;
@@ -752,7 +982,11 @@ int uds_client_status(const char *path, FILE *output) {
     return uds_client_status_request(path, "status", "ATPD_STATUS", output);
 }
 
-int uds_client_singbox_status(const char *path, FILE *output) {
-    return uds_client_status_request(path, "sing-box status",
-                                     "SINGBOX_STATUS", output);
+int uds_client_core_status(const char *path, FILE *output) {
+    return uds_client_status_request(path, "core status",
+                                     "CORE_STATUS", output);
+}
+
+int uds_client_core_control(const char *path, const char *command, FILE *output) {
+    return uds_client_status_request(path, command, "CORE_CONTROL", output);
 }

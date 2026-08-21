@@ -34,7 +34,7 @@ void print_usage(const char *progname) {
     const char *base = strrchr(progname, '/');
     base = base ? base + 1 : progname;
 
-    printf(ATP_NAME " v" ATP_VERSION_STRING "\n\n");
+    printf(ATP_NAME " " ATP_VERSION_STRING "\n\n");
     printf("Usage: %s [options] command [subcommand] [args]\n\n", base);
     printf("Options:\n");
     printf("  -c, --config FILE     Specify configuration file\n");
@@ -53,14 +53,17 @@ void print_usage(const char *progname) {
     printf("  stop                  Stop daemon\n");
     printf("  restart               Restart daemon\n");
     printf("  status                Show daemon and network policy status\n");
-    printf("  sing-box status       Query sing-box core status\n");
+    printf("  core status           Show sing-box core status\n");
+    printf("  core start            Start the sing-box core\n");
+    printf("  core stop             Stop the sing-box core\n");
+    printf("  core restart          Restart the sing-box core\n");
     printf("  reload                Reload configuration without restart\n");
     printf("  check                 Validate configuration and exit\n");
     printf("  version               Print version information\n");
     printf("  help                  Show this help message\n");
     printf("\nExamples:\n");
     printf("  %s status\n", base);
-    printf("  %s sing-box status\n", base);
+    printf("  %s core status\n", base);
 }
 
 void print_version(void) {
@@ -72,7 +75,7 @@ void print_help(const char *progname) {
 }
 
 static const char* suggest_command(const char *cmd) {
-    const char *commands[] = {"start", "stop", "restart", "status", "sing-box",
+    const char *commands[] = {"start", "stop", "restart", "status", "core",
                               "reload", "check",
                               "version", "help", NULL};
     for (int i = 0; commands[i]; i++) {
@@ -150,12 +153,20 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
         else if (strcmp(cmd, "stop") == 0) opts->command = CMD_STOP;
         else if (strcmp(cmd, "restart") == 0) opts->command = CMD_RESTART;
         else if (strcmp(cmd, "status") == 0) opts->command = CMD_STATUS;
-        else if (strcmp(cmd, "sing-box") == 0) {
-            if (optind + 1 >= argc || strcmp(argv[optind + 1], "status") != 0) {
-                fprintf(stderr, "atpd: expected 'sing-box status'\n");
+        else if (strcmp(cmd, "core") == 0) {
+            if (optind + 1 >= argc) {
+                fprintf(stderr, "atpd: expected 'core status|start|stop|restart'\n");
                 return -1;
             }
-            opts->command = CMD_SING_BOX_STATUS;
+            const char *subcommand = argv[optind + 1];
+            if (strcmp(subcommand, "status") == 0) opts->command = CMD_CORE_STATUS;
+            else if (strcmp(subcommand, "start") == 0) opts->command = CMD_CORE_START;
+            else if (strcmp(subcommand, "stop") == 0) opts->command = CMD_CORE_STOP;
+            else if (strcmp(subcommand, "restart") == 0) opts->command = CMD_CORE_RESTART;
+            else {
+                fprintf(stderr, "atpd: unknown core command '%s'\n", subcommand);
+                return -1;
+            }
         }
         else if (strcmp(cmd, "reload") == 0) opts->command = CMD_RELOAD;
         else if (strcmp(cmd, "check") == 0) opts->command = CMD_CHECK;
@@ -186,7 +197,10 @@ const char* command_to_string(atp_command_t cmd) {
         case CMD_STOP:         return "stop";
         case CMD_RESTART:      return "restart";
         case CMD_STATUS:       return "status";
-        case CMD_SING_BOX_STATUS: return "sing-box status";
+        case CMD_CORE_STATUS:     return "core status";
+        case CMD_CORE_START:      return "core start";
+        case CMD_CORE_STOP:       return "core stop";
+        case CMD_CORE_RESTART:    return "core restart";
         case CMD_RELOAD:       return "reload";
         case CMD_CHECK:        return "check";
         case CMD_VERSION:      return "version";

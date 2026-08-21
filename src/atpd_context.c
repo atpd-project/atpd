@@ -35,6 +35,26 @@ const char* vpn_state_string(vpn_state_t state) {
     }
 }
 
+const char* direct_wifi_state_string(direct_wifi_state_t state) {
+    switch (state) {
+        case DIRECT_WIFI_DISABLED:     return "DISABLED";
+        case DIRECT_WIFI_DISCONNECTED: return "DISCONNECTED";
+        case DIRECT_WIFI_ACTIVE:       return "DIRECT";
+        default:                       return "UNKNOWN";
+    }
+}
+
+const char* atpd_clash_target_mode(vpn_state_t vpn_state,
+                                   direct_wifi_state_t wifi_state,
+                                   const char *configured_mode) {
+    if (wifi_state == DIRECT_WIFI_ACTIVE) return "Direct";
+    if (vpn_state == VPN_STATE_PREDICTING || vpn_state == VPN_STATE_READY ||
+        vpn_state == VPN_STATE_TEARDOWN) {
+        return "Google VPN";
+    }
+    return configured_mode;
+}
+
 const char* atpd_runtime_state_string(atpd_runtime_state_t state) {
     if (state >= ATPD_RUNTIME_STATE_UNINITIALIZED && state <= ATPD_RUNTIME_STATE_FAILED) {
         return runtime_state_names[state];
@@ -47,8 +67,10 @@ void atpd_context_init(void) {
     
     /* VPN State - atomic init */
     atomic_init(&g_atpd_ctx.vpn_state, VPN_STATE_IDLE);
+    atomic_init(&g_atpd_ctx.direct_wifi_state, DIRECT_WIFI_DISABLED);
     g_atpd_ctx.xfrm_fd = -1;
     clock_gettime(CLOCK_MONOTONIC, &g_atpd_ctx.vpn_state_since);
+    g_atpd_ctx.direct_wifi_state_since = g_atpd_ctx.vpn_state_since;
     g_atpd_ctx.vpn_transitions = 0;
     snprintf(g_atpd_ctx.clash_desired_mode,
              sizeof(g_atpd_ctx.clash_desired_mode), "Rule");
@@ -89,6 +111,13 @@ void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char
     int old_int = atomic_exchange_explicit(&g_atpd_ctx.vpn_state, (int)new_state, memory_order_acq_rel);
     vpn_state_t old_state = (vpn_state_t)old_int;
 
+    if (if_id) g_atpd_ctx.xfrm_if_id = if_id;
+    if (iface && iface[0]) {
+        snprintf(g_atpd_ctx.vpn_iface, sizeof(g_atpd_ctx.vpn_iface), "%s", iface);
+    } else if (new_state == VPN_STATE_IDLE) {
+        g_atpd_ctx.vpn_iface[0] = '\0';
+        g_atpd_ctx.xfrm_if_id = 0;
+    }
     if (old_state == new_state) return;
 
     struct timespec now;
@@ -101,14 +130,25 @@ void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char
              vpn_state_string(old_state), vpn_state_string(new_state),
              if_id, elapsed_us);
 
-    g_atpd_ctx.xfrm_if_id = if_id;
     g_atpd_ctx.vpn_state_since = now;
     g_atpd_ctx.vpn_transitions++;
+}
 
-    if (iface && iface[0]) {
-        snprintf(g_atpd_ctx.vpn_iface, sizeof(g_atpd_ctx.vpn_iface), "%s", iface);
-    }
+void atpd_direct_wifi_state_transition(direct_wifi_state_t new_state,
+                                       const char *ssid) {
+    direct_wifi_state_t old_state = (direct_wifi_state_t)atomic_exchange_explicit(
+        &g_atpd_ctx.direct_wifi_state, (int)new_state, memory_order_acq_rel);
 
+    snprintf(g_atpd_ctx.current_wifi_ssid,
+             sizeof(g_atpd_ctx.current_wifi_ssid), "%s", ssid ? ssid : "");
+    if (old_state == new_state) return;
+
+    clock_gettime(CLOCK_MONOTONIC, &g_atpd_ctx.direct_wifi_state_since);
+    g_atpd_ctx.direct_wifi_transitions++;
+    LOG_INFO("DIRECT_WIFI_STATE: %s -> %s (SSID=%s)",
+             direct_wifi_state_string(old_state),
+             direct_wifi_state_string(new_state),
+             ssid && ssid[0] ? ssid : "none");
 }
 
 /* === Runtime State Functions === */

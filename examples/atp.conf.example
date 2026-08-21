@@ -1,179 +1,31 @@
-# ATP (Advanced Transparent Proxy) Configuration File
-# Copy to /data/adb/atp/atp.conf
+# ATPd eBPF configuration
 
-# -----------------------------------------------------------------------------
-# Proxy Core Configuration
-# -----------------------------------------------------------------------------
-
-# Proxy ports
-PROXY_TCP_PORT=1536
-PROXY_UDP_PORT=1536
-
-# Proxy mode: 0=auto, 1=tproxy, 2=redirect, 3=enhance
-PROXY_MODE=0
-
-# Performance mode: 0=off, 1=on (conntrack optimization)
-PERFORMANCE_MODE=0
-
-# TCP/UDP proxy switches: 0=off, 1=on
-PROXY_TCP=1
-PROXY_UDP=1
-
-# IPv6 proxy: 0=off, 1=on, -1=completely disable IPv6
-PROXY_IPV6=0
-
-# -----------------------------------------------------------------------------
-# DNS Configuration
-# -----------------------------------------------------------------------------
-
-# DNS hijack: 0=off, 1=tproxy, 2=redirect
-DNS_HIJACK_ENABLE=1
-
-# DNS port for hijacking
-DNS_PORT=1053
-
-# -----------------------------------------------------------------------------
-# Routing Configuration
-# -----------------------------------------------------------------------------
-
-# Fwmark values for policy routing
-MARK_VALUE=20
-MARK_VALUE6=25
-
-# Custom routing table ID
-TABLE_ID=2025
-
-# Core user and group for bypass
+ATP_DATA="/data/adb/atp"
+NETWORK_BACKEND="ebpf"
 CORE_USER_GROUP="root:net_admin"
 
-# Force bypass for marked traffic
-ROUTING_MARK=
-FORCE_MARK_BYPASS=0
+# Empty uses Android hotspot interface discovery.
+HOTSPOT_INTERFACE=""
 
-# -----------------------------------------------------------------------------
-# API Configuration (Clash/sing-box external control)
-# -----------------------------------------------------------------------------
-
-# API host and port (sing-box default: 127.0.0.1:9090)
+# Clash API and automatic mode selection.
 API_HOST="127.0.0.1"
 API_PORT=9090
-
-# API secret (leave empty if not configured in sing-box)
-# CLASH_SECRET="your-secret-here"
-
-# -----------------------------------------------------------------------------
-# Interface Configuration
-# -----------------------------------------------------------------------------
-
-# Interface patterns (supports wildcards like rmnet_data+)
-MOBILE_INTERFACE="rmnet_data+"
-WIFI_INTERFACE="wlan0"
-HOTSPOT_INTERFACE="wlan2"
-USB_INTERFACE="rndis+"
-
-# Additional interfaces
-OTHER_BYPASS_INTERFACES=""
-OTHER_PROXY_INTERFACES=""
-
-# Per-interface proxy switches
-PROXY_MOBILE=1
-PROXY_WIFI=1
-PROXY_HOTSPOT=0
-PROXY_USB=0
-
-# Hotspot subnets
-HOTSPOT_SUBNET_IPV4="192.168.43.0/24"
-HOTSPOT_SUBNET_IPV6="fe80::/10"
-
-# -----------------------------------------------------------------------------
-# IP Lists
-# -----------------------------------------------------------------------------
-
-# IPv4/IPv6 networks to proxy (space separated)
-PROXY_IPv4_LIST=""
-PROXY_IPv6_LIST=""
-
-# IPv4/IPv6 networks to bypass (space separated)
-BYPASS_IPv4_LIST="0.0.0.0/8 10.0.0.0/8 100.0.0.0/8 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.88.99.0/24 192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32"
-BYPASS_IPv6_LIST="::/128 ::1/128 ::ffff:0:0/96 100::/64 64:ff9b::/96 2001::/32 2001:10::/28 2001:20::/28 2001:db8::/32 2002::/16 fe80::/10 ff00::/8"
-
-# -----------------------------------------------------------------------------
-# China IP Bypass (GeoIP)
-# -----------------------------------------------------------------------------
-
-# Enable China IP bypass using ipset
-BYPASS_CN_IP=0
-
-# China IP list files (stored in rules/ directory)
-CN_IP_FILE="cn.zone"
-CN_IPV6_FILE="cn_ipv6.zone"
-
-# Download URLs for China IP lists
-CN_IP_URL="https://raw.githubusercontent.com/Hackl0us/GeoIP2-CN/release/CN-ip-cidr.txt"
-CN_IPV6_URL="https://ispip.clang.cn/all_cn_ipv6.txt"
-
-# -----------------------------------------------------------------------------
-# Application Proxy (Per-App)
-# -----------------------------------------------------------------------------
-
-# Enable per-app proxy
-APP_PROXY_ENABLE=0
-
-# App lists (format: user:package.name, e.g., 0:com.android.chrome)
-PROXY_APPS_LIST=""
-BYPASS_APPS_LIST=""
-
-# App proxy mode: blacklist or whitelist
-APP_PROXY_MODE="blacklist"
-
-# -----------------------------------------------------------------------------
-# MAC Filter (For Hotspot)
-# -----------------------------------------------------------------------------
-
-# Enable MAC address filtering
-MAC_FILTER_ENABLE=0
-
-# MAC address lists (space separated, format: XX:XX:XX:XX:XX:XX)
-PROXY_MACS_LIST=""
-BYPASS_MACS_LIST=""
-
-# MAC proxy mode: blacklist or whitelist
-MAC_PROXY_MODE="blacklist"
-
-# -----------------------------------------------------------------------------
-# Security and Features
-# -----------------------------------------------------------------------------
-
-# Block QUIC (UDP 443) to force HTTP/3 fallback to HTTP/2
-BLOCK_QUIC=0
-
-# Include timestamp in logs
-LOG_TIMESTAMP=1
-
-# Skip kernel feature checks (use with caution)
-SKIP_CHECK_FEATURE=0
-
-# Default clash/sing-box mode
+CLASH_SECRET=""
 USER_CLASH_MODE="Rule"
 
-# Restart delay in seconds
-RESTART_DELAY=2
+# Switch to Direct on this Wi-Fi SSID, then restore the selected mode.
+# Empty disables the override.
+DIRECT_WIFI_SSID=""
 
-# -----------------------------------------------------------------------------
-# Paths (Override defaults)
-# -----------------------------------------------------------------------------
+# sing-box service supervision.
+SERVICE_START_TIMEOUT=10
+SERVICE_STOP_TIMEOUT=10
+SERVICE_GRACE_PERIOD=3
+SERVICE_MAX_FAILURES=5
+SERVICE_CIRCUIT_THRESHOLD=5
+SERVICE_CIRCUIT_COOLDOWN=300
+SERVICE_HEALTH_CHECK_INTERVAL=5000
+SERVICE_ARGS=""
+SERVICE_ENV=""
 
-# ATP data directory
-# ATP_DATA="/data/adb/atp"
-
-# sing-box binary path
-# SINGBOX_BIN="$ATP_DATA/bin/sing-box"
-
-# sing-box config directory
-# SINGBOX_CONF="$ATP_DATA/sing-box/config.json"
-
-# sing-box log file
-# SINGBOX_LOG="$ATP_DATA/run/sing-box.log"
-
-# sing-box PID file
-# SINGBOX_PID="$ATP_DATA/run/sing-box.pid"
+DRY_RUN=0

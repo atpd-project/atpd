@@ -12,8 +12,8 @@ int uds_get_fd(void);
 int uds_stop_requested(void);
 int uds_reload_requested(void);
 void uds_clear_requests(void);
-int uds_client_request(const char *path, const char *command, FILE *output);
 int uds_client_status(const char *path, FILE *output);
-int uds_client_singbox_status(const char *path, FILE *output);
+int uds_client_core_status(const char *path, FILE *output);
+int uds_client_core_control(const char *path, const char *command, FILE *output);
 
 #endif

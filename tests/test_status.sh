@@ -31,7 +31,33 @@ server.listen(1)
 client, _ = server.accept()
 if client.recv(128) != b"status\n":
     raise SystemExit("unexpected UDS command")
-client.sendall(f"ATPD_STATUS {status}\nmock status\n".encode())
+client.sendall(f"""ATPD_STATUS {status}
+ATPd
+Clash policy
+  Configured mode     Rule
+  Desired mode        Direct
+  Applied mode        Direct
+Monitors
+  Netlink             ACTIVE
+  XFRM listener       ACTIVE
+  FCM                 ACTIVE (waiting)
+VPN
+  Google VPN          DISCONNECTED
+  Other VPN           CONNECTED
+  Other interface     tun0
+  Other  RX / TX      1.0 MiB / 2.0 MiB
+State machines
+  Reactor             RUNNING
+  VPN                 IDLE (5s, 2 transitions)
+  Direct Wi-Fi        DIRECT (3s, 1 transitions)
+  Current SSID        Home
+  Direct SSID         Home
+  Restore mode        Rule
+System
+  CPU temperature     31 C
+
+Overall               HEALTHY
+""".encode())
 client.close()
 server.close()
 PY
@@ -56,7 +82,10 @@ for expected in 0 1; do
     set -e
     wait "$server_pid"
     [ "$actual" -eq "$expected" ]
-    [ "$output" = "mock status" ]
+    case "$output" in
+        *"Configured mode     Rule"*"Desired mode        Direct"*"FCM                 ACTIVE (waiting)"*"Google VPN          DISCONNECTED"*"Other VPN           CONNECTED"*"VPN                 IDLE"*"Direct Wi-Fi        DIRECT"*"Restore mode        Rule"*"Overall               HEALTHY") ;;
+        *) echo "incomplete ATPd status output" >&2; exit 1 ;;
+    esac
 done
 
 rm -f -- "$socket_path"
