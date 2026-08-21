@@ -14,5 +14,6 @@ int uds_reload_requested(void);
 void uds_clear_requests(void);
 int uds_client_request(const char *path, const char *command, FILE *output);
 int uds_client_status(const char *path, FILE *output);
+int uds_client_singbox_status(const char *path, FILE *output);
 
 #endif

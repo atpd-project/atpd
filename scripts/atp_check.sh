@@ -24,16 +24,11 @@ fi
 
 # Get proxy mode
 if [ -x "${ATP_BIN}/atpd" ]; then
-    MODE=$(${ATP_BIN}/atpd status 2>/dev/null | grep "Routing:" | awk '{print $NF}')
+    MODE=$(${ATP_BIN}/atpd sing-box status 2>/dev/null |
+        awk '$1 == "Mode" { print $2; exit }')
     if [ -n "$MODE" ]; then
         echo "│ Mode:    $MODE                                  │"
     fi
-fi
-
-# Check VPN traffic
-TRAFFIC=$(${ATP_BIN}/atpd status 2>/dev/null | grep "VPN Traffic" | head -1)
-if [ -n "$TRAFFIC" ]; then
-    echo "│ $TRAFFIC │"
 fi
 
 # Check memory usage

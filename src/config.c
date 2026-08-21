@@ -1,5 +1,4 @@
 #include "config.h"
-#include "config_validator.h"
 #include "atp.h"
 #include "atpd_context.h"
 #include "logger.h"
@@ -38,8 +37,7 @@ static void set_string(char *dst, size_t size, const char *value) {
 }
 
 static int parse_value(const char *key, const char *value, atp_config_t *cfg) {
-    int number;
-    if (config_validate_key(key, cfg) != ATP_OK) return ATP_ERR_CONFIG;
+    int *number_target = NULL;
 
     if (strcmp(key, "ATP_DATA") == 0) {
         set_string(cfg->core.data_dir, sizeof(cfg->core.data_dir), value);
@@ -71,17 +69,58 @@ static int parse_value(const char *key, const char *value, atp_config_t *cfg) {
         set_string(cfg->service.args, sizeof(cfg->service.args), value);
     } else if (strcmp(key, "SERVICE_ENV") == 0) {
         set_string(cfg->service.env, sizeof(cfg->service.env), value);
+    } else if (strcmp(key, "API_PORT") == 0) {
+        number_target = &cfg->api.port;
+    } else if (strcmp(key, "DRY_RUN") == 0) {
+        number_target = &cfg->core.dry_run;
+    } else if (strcmp(key, "SERVICE_START_TIMEOUT") == 0) {
+        number_target = &cfg->service.start_timeout_sec;
+    } else if (strcmp(key, "SERVICE_STOP_TIMEOUT") == 0) {
+        number_target = &cfg->service.stop_timeout_sec;
+    } else if (strcmp(key, "SERVICE_GRACE_PERIOD") == 0) {
+        number_target = &cfg->service.grace_period_sec;
+    } else if (strcmp(key, "SERVICE_MAX_FAILURES") == 0) {
+        number_target = &cfg->service.max_failures;
+    } else if (strcmp(key, "SERVICE_CIRCUIT_THRESHOLD") == 0) {
+        number_target = &cfg->service.circuit_threshold;
+    } else if (strcmp(key, "SERVICE_CIRCUIT_COOLDOWN") == 0) {
+        number_target = &cfg->service.circuit_cooldown_sec;
+    } else if (strcmp(key, "SERVICE_HEALTH_CHECK_INTERVAL") == 0) {
+        number_target = &cfg->service.health_check_interval_ms;
     } else {
-        if (parse_int(value, &number) != ATP_OK) return ATP_ERR_CONFIG;
-        if (strcmp(key, "API_PORT") == 0) cfg->api.port = number;
-        else if (strcmp(key, "DRY_RUN") == 0) cfg->core.dry_run = number;
-        else if (strcmp(key, "SERVICE_START_TIMEOUT") == 0) cfg->service.start_timeout_sec = number;
-        else if (strcmp(key, "SERVICE_STOP_TIMEOUT") == 0) cfg->service.stop_timeout_sec = number;
-        else if (strcmp(key, "SERVICE_GRACE_PERIOD") == 0) cfg->service.grace_period_sec = number;
-        else if (strcmp(key, "SERVICE_MAX_FAILURES") == 0) cfg->service.max_failures = number;
-        else if (strcmp(key, "SERVICE_CIRCUIT_THRESHOLD") == 0) cfg->service.circuit_threshold = number;
-        else if (strcmp(key, "SERVICE_CIRCUIT_COOLDOWN") == 0) cfg->service.circuit_cooldown_sec = number;
-        else if (strcmp(key, "SERVICE_HEALTH_CHECK_INTERVAL") == 0) cfg->service.health_check_interval_ms = number;
+        LOG_WARN("Ignoring obsolete or unknown config key: %s", key);
+        return ATP_OK;
+    }
+
+    return number_target ? parse_int(value, number_target) : ATP_OK;
+}
+
+static int valid_mode(const char *mode) {
+    return strcmp(mode, "Rule") == 0 || strcmp(mode, "Global") == 0 ||
+           strcmp(mode, "Direct") == 0 || strcmp(mode, "Google VPN") == 0;
+}
+
+static int config_validate_values(atp_config_t *cfg) {
+    if (strcmp(cfg->network.backend, "ebpf") != 0) {
+        LOG_ERROR("NETWORK_BACKEND must be ebpf");
+        return ATP_ERR_CONFIG;
+    }
+    if (!cfg->core.data_dir[0] || !cfg->core.core_user[0] ||
+        !cfg->core.core_group[0] || !cfg->api.host[0] ||
+        cfg->api.port < 1 || cfg->api.port > 65535 ||
+        !valid_mode(cfg->filter.user_clash_mode)) {
+        LOG_ERROR("Invalid ATP configuration");
+        return ATP_ERR_CONFIG;
+    }
+    if (cfg->service.start_timeout_sec < 1 ||
+        cfg->service.stop_timeout_sec < 1 ||
+        cfg->service.grace_period_sec < 0 ||
+        cfg->service.max_failures < 1 ||
+        cfg->service.circuit_threshold < 1 ||
+        cfg->service.circuit_cooldown_sec < 1 ||
+        cfg->service.health_check_interval_ms < 100) {
+        LOG_ERROR("Invalid service timing configuration");
+        return ATP_ERR_CONFIG;
     }
     return ATP_OK;
 }
@@ -109,7 +148,7 @@ void config_set_defaults(atp_config_t *cfg) {
     set_string(cfg->api.host, sizeof(cfg->api.host), DEFAULT_API_HOST);
 }
 
-int config_load_file(const char *path, atp_config_t *cfg) {
+static int config_load_file(const char *path, atp_config_t *cfg) {
     FILE *file = fopen(path, "r");
     if (!file) return errno == ENOENT ? ATP_ERR_NOENT : ATP_ERR_IO;
 

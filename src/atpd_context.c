@@ -1,4 +1,3 @@
-#include "atpd_error.h"
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
@@ -44,7 +43,6 @@ const char* atpd_runtime_state_string(atpd_runtime_state_t state) {
 }
 
 void atpd_context_init(void) {
-    atpd_error_init();
     memset(&g_atpd_ctx, 0, sizeof(g_atpd_ctx));
     
     /* VPN State - atomic init */

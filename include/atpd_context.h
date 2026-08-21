@@ -113,6 +113,4 @@ void atpd_stats_increment_signals(void);
 void atpd_stats_increment_errors(void);
 void atpd_stats_add_bytes(uint64_t rx, uint64_t tx);
 
-/* Error */
-
 #endif /* ATPD_CONTEXT_H */

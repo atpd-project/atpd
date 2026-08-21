@@ -225,23 +225,26 @@ static int service_binary_exists(service_ctx_t *ctx) {
 
 void service_rotate_log(service_ctx_t *ctx) {
     struct stat st;
-    char backup_path[512];
-    char timestamp[64];
-    time_t now;
-    struct tm *tm_info;
+    char timestamp[20];
+    char backup_path[PATH_MAX + sizeof(timestamp)];
 
     if (stat(ctx->log_path, &st) != 0) return;
     if (st.st_size < MAX_LOG_SIZE) return;
 
-    now = time(NULL);
-    tm_info = localtime(&now);
-    if (!tm_info) {
+    time_t now = time(NULL);
+    struct tm tm_info;
+    if (!localtime_r(&now, &tm_info)) {
         LOG_WARN("Service: failed to get localtime for log rotation");
         return;
     }
 
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
-    snprintf(backup_path, sizeof(backup_path), "%s.%s", ctx->log_path, timestamp);
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", &tm_info);
+    int length = snprintf(backup_path, sizeof(backup_path),
+                          "%s.%s", ctx->log_path, timestamp);
+    if (length < 0 || (size_t)length >= sizeof(backup_path)) {
+        LOG_WARN("Service: log path too long to rotate");
+        return;
+    }
 
     if (rename(ctx->log_path, backup_path) == 0) {
         LOG_INFO("Service: rotated log to %s (size: %ld bytes)",

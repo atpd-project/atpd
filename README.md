@@ -66,6 +66,9 @@ cp atp.conf.example /data/adb/atp/atp.conf
 # Check status
 /data/adb/atp/bin/atpd status
 
+# Query sing-box core status
+/data/adb/atp/bin/atpd sing-box status
+
 # Stop daemon
 /data/adb/atp/bin/atpd stop
 ```
@@ -135,7 +138,8 @@ atpd [options] command
 ### Examples
 
 ```bash
-atpd status                       # Show status
+atpd status                       # Show daemon and network policy status
+atpd sing-box status              # Query sing-box core status
 atpd -c atp.conf start            # Start with custom config
 atpd -f -v start                  # Start in foreground with verbose log
 atpd -t                           # Test configuration
@@ -173,6 +177,7 @@ For a list of verified working commits, see [Issue #1](https://github.com/atpd-p
 
 ```bash
 atpd status
+atpd sing-box status
 ps -A | grep atpd
 ```
 

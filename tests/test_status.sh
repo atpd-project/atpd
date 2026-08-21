@@ -29,7 +29,8 @@ server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(path)
 server.listen(1)
 client, _ = server.accept()
-client.recv(128)
+if client.recv(128) != b"status\n":
+    raise SystemExit("unexpected UDS command")
 client.sendall(f"ATPD_STATUS {status}\nmock status\n".encode())
 client.close()
 server.close()
@@ -44,7 +45,7 @@ PY
 }
 
 run_status() {
-    "$binary" -c <(printf 'ATP_DATA=%s\n' "$test_root") status
+    "$binary" -c <(printf 'ATP_DATA=%s\nOBSOLETE_OPTION=legacy\n' "$test_root") status
 }
 
 for expected in 0 1; do

@@ -142,8 +142,8 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
                           const char *body, api_callback_t callback, void *userdata);
 
 int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size);
+int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size);
 int api_get_mode(api_ctx_t *ctx, char *mode, size_t size);
-int api_get_sync(const char *url, char *response, size_t response_size);
 
 const char *api_mode_to_string(api_mode_t mode);
 api_mode_t api_string_to_mode(const char *str);

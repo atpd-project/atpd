@@ -23,7 +23,6 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
-#include <pwd.h>
 #include <dirent.h>
 #include <time.h>
 
@@ -167,19 +166,9 @@ static void handle_status(int fd) {
     char response[UDS_RESPONSE_SIZE];
     size_t off = 0;
 
-    pid_t singbox_pid = g_svc ? service_get_pid(g_svc) : -1;
-    uint64_t rss_kib = 0;
-    unsigned threads = 0;
-    unsigned fds = 0;
-    read_process_status(singbox_pid, &rss_kib, &threads, &fds);
-
     uint64_t daemon_uptime = atpd_runtime_get_uptime();
-    uint64_t singbox_uptime = g_svc && g_svc->started_at > 0 &&
-        time(NULL) >= g_svc->started_at ? (uint64_t)(time(NULL) - g_svc->started_at) : 0;
     char daemon_uptime_text[32];
-    char singbox_uptime_text[32];
     format_duration(daemon_uptime, daemon_uptime_text, sizeof(daemon_uptime_text));
-    format_duration(singbox_uptime, singbox_uptime_text, sizeof(singbox_uptime_text));
 
     vpn_state_t vpn_state = atomic_load(&g_atpd_ctx.vpn_state);
     int vpn_connected = vpn_state == VPN_STATE_READY;
@@ -188,11 +177,8 @@ static void handle_status(int fd) {
         (g_atpd_ctx.hotspot_ipv4_active == g_atpd_ctx.hotspot_count &&
          (!g_atpd_ctx.vpn_ipv6_default ||
           g_atpd_ctx.hotspot_ipv6_active == g_atpd_ctx.hotspot_count));
-    int clash_ok = !g_atpd_ctx.clash_last_error[0] &&
-        g_atpd_ctx.clash_applied_mode[0] &&
-        strcmp(g_atpd_ctx.clash_applied_mode, g_atpd_ctx.clash_desired_mode) == 0;
     int healthy = g_atpd_ctx.runtime_state == ATPD_RUNTIME_STATE_RUNNING &&
-        g_svc && service_is_healthy(g_svc) && vpn_stable && policy_ok && clash_ok;
+        vpn_stable && policy_ok;
     const char *overall = healthy ? "HEALTHY" : "DEGRADED";
 
     off = append_response(response, sizeof(response), off,
@@ -207,33 +193,6 @@ static void handle_status(int fd) {
                           "  Config              %s\n\n",
                           getpid(), daemon_uptime_text, g_config.network.backend,
                           g_atpd_ctx.config_path[0] ? g_atpd_ctx.config_path : "unknown");
-
-    off = append_response(response, sizeof(response), off,
-                          "sing-box\n"
-                          "  State               %s\n"
-                          "  PID / Uptime        %d / %s\n"
-                          "  Version             %s\n"
-                          "  eBPF                %s, %s\n"
-                          "  Config              %s\n",
-                          g_svc ? service_state_string(g_svc->state) : "UNKNOWN",
-                          singbox_pid, singbox_pid > 0 ? singbox_uptime_text : "unknown",
-                          g_svc && g_svc->version[0] ? g_svc->version : "unknown",
-                          g_svc ? g_svc->ebpf_mode : "unknown",
-                          g_svc ? g_svc->ebpf_network : "unknown",
-                          g_svc ? g_svc->conf_path : "unknown");
-    if (rss_kib) {
-        off = append_response(response, sizeof(response), off,
-                              "  RSS / Threads / FDs %.1f MiB / %u / %u\n",
-                              (double)rss_kib / 1024.0, threads, fds);
-    } else {
-        off = append_response(response, sizeof(response), off,
-                              "  RSS / Threads / FDs unknown\n");
-    }
-    off = append_response(response, sizeof(response), off,
-                          "  Restarts            %u\n"
-                          "  Last error          %s\n\n",
-                          g_svc ? g_svc->restart_count : 0,
-                          g_svc && g_svc->last_error[0] ? g_svc->last_error : "none");
 
     const char *vpn_status = vpn_state == VPN_STATE_READY ? "CONNECTED" :
         vpn_state == VPN_STATE_PREDICTING ? "CONNECTING" :
@@ -250,21 +209,13 @@ static void handle_status(int fd) {
         off = append_response(response, sizeof(response), off, "%u\n",
                               g_atpd_ctx.vpn_route_table);
     }
-    char clash_mode_text[96];
-    if (g_atpd_ctx.clash_applied_mode[0]) {
-        snprintf(clash_mode_text, sizeof(clash_mode_text), "%s",
-                 g_atpd_ctx.clash_applied_mode);
-    } else {
-        snprintf(clash_mode_text, sizeof(clash_mode_text),
-                 "pending (desired: %s)", g_atpd_ctx.clash_desired_mode);
-    }
     off = append_response(response, sizeof(response), off,
                           "  IPv4 default route  %s\n"
                           "  IPv6 default route  %s\n"
-                          "  Clash mode          %s\n\n",
+                          "  Target core mode    %s\n\n",
                           yes_no(g_atpd_ctx.vpn_ipv4_default),
                           yes_no(g_atpd_ctx.vpn_ipv6_default),
-                          clash_mode_text);
+                          g_atpd_ctx.clash_desired_mode);
 
     const char *ipv4_rule = g_atpd_ctx.hotspot_count == 0 ? "not installed" :
         g_atpd_ctx.hotspot_ipv4_active == g_atpd_ctx.hotspot_count ? "active" : "incomplete";
@@ -300,6 +251,91 @@ static void handle_status(int fd) {
         return;
     }
 
+    send_response_all(fd, response, off);
+}
+
+static void handle_singbox_status(int fd) {
+    char response[UDS_RESPONSE_SIZE];
+    size_t off = 0;
+    pid_t pid = g_svc ? service_get_pid(g_svc) : -1;
+    uint64_t rss_kib;
+    unsigned threads;
+    unsigned fds;
+    read_process_status(pid, &rss_kib, &threads, &fds);
+
+    char version[64] = "unknown";
+    char mode[32] = "unknown";
+    int version_ok = 0;
+    int mode_ok = 0;
+    if (pid > 0) {
+        version_ok = api_get_version_sync(&g_api_ctx, version, sizeof(version)) == 0;
+        mode_ok = api_get_mode_sync(&g_api_ctx, mode, sizeof(mode)) == 0;
+    }
+    if (version_ok && g_svc) {
+        snprintf(g_svc->version, sizeof(g_svc->version), "%s", version);
+    } else if (g_svc && g_svc->version[0]) {
+        snprintf(version, sizeof(version), "%s", g_svc->version);
+    }
+    if (mode_ok) {
+        snprintf(g_atpd_ctx.clash_applied_mode,
+                 sizeof(g_atpd_ctx.clash_applied_mode), "%s", mode);
+    } else if (g_atpd_ctx.clash_applied_mode[0]) {
+        snprintf(mode, sizeof(mode), "%s", g_atpd_ctx.clash_applied_mode);
+    }
+
+    uint64_t uptime = g_svc && g_svc->started_at > 0 &&
+        time(NULL) >= g_svc->started_at
+        ? (uint64_t)(time(NULL) - g_svc->started_at) : 0;
+    char uptime_text[32];
+    format_duration(uptime, uptime_text, sizeof(uptime_text));
+
+    int healthy = g_svc && g_svc->state == SERVICE_RUNNING &&
+        service_is_healthy(g_svc) && version_ok && mode_ok;
+    int status = healthy ? 0 : pid > 0 ? 1 : 2;
+    const char *overall = healthy ? "HEALTHY" : pid > 0 ? "DEGRADED" : "STOPPED";
+
+    off = append_response(response, sizeof(response), off,
+                          "SINGBOX_STATUS %d\n", status);
+    off = append_response(response, sizeof(response), off,
+                          "sing-box                                      %s\n\n"
+                          "Core\n"
+                          "  State               %s\n"
+                          "  API                 %s\n"
+                          "  Endpoint            %s\n"
+                          "  PID / Uptime        %d / %s\n"
+                          "  Version             %s\n"
+                          "  Mode                %s\n"
+                          "  eBPF                %s, %s\n"
+                          "  Config              %s\n",
+                          overall,
+                          g_svc ? service_state_string(g_svc->state) : "UNKNOWN",
+                          version_ok || mode_ok ? "REACHABLE" : "UNREACHABLE",
+                          g_api_ctx.base_url[0] ? g_api_ctx.base_url : "unknown",
+                          pid, pid > 0 ? uptime_text : "unknown",
+                          version, mode,
+                          g_svc && g_svc->ebpf_mode[0] ? g_svc->ebpf_mode : "unknown",
+                          g_svc && g_svc->ebpf_network[0] ? g_svc->ebpf_network : "unknown",
+                          g_svc ? g_svc->conf_path : "unknown");
+    if (rss_kib) {
+        off = append_response(response, sizeof(response), off,
+                              "  RSS / Threads / FDs %.1f MiB / %u / %u\n",
+                              (double)rss_kib / 1024.0, threads, fds);
+    } else {
+        off = append_response(response, sizeof(response), off,
+                              "  RSS / Threads / FDs unknown\n");
+    }
+    off = append_response(response, sizeof(response), off,
+                          "  Restarts            %u\n"
+                          "  Last error          %s\n\n"
+                          "Overall               %s\n",
+                          g_svc ? g_svc->restart_count : 0,
+                          g_svc && g_svc->last_error[0] ? g_svc->last_error : "none",
+                          overall);
+
+    if (off >= sizeof(response)) {
+        send_string_all(fd, "ERROR: response too large\n");
+        return;
+    }
     send_response_all(fd, response, off);
 }
 
@@ -369,6 +405,7 @@ static void handle_help(int fd) {
     const char *help =
         "Available commands:\n"
         "  status    - Show runtime status\n"
+        "  sing-box status - Query sing-box core status\n"
         "  stop      - Shutdown ATPd\n"
         "  reload    - Reload ATPd and sing-box configuration\n"
         "  ping      - Check if ATPd is alive\n"
@@ -413,6 +450,8 @@ static void process_command(int fd, const char *cmd, size_t cmd_len) {
 
     if (strcmp(buf, "status") == 0) {
         handle_status(fd);
+    } else if (strcmp(buf, "sing-box status") == 0) {
+        handle_singbox_status(fd);
     } else if (strcmp(buf, "stop") == 0) {
         handle_stop(fd);
     } else if (strcmp(buf, "reload") == 0) {
@@ -677,9 +716,10 @@ int uds_client_request(const char *path, const char *command, FILE *output) {
     return n == 0 ? 0 : -1;
 }
 
-int uds_client_status(const char *path, FILE *output) {
+static int uds_client_status_request(const char *path, const char *command,
+                                     const char *prefix, FILE *output) {
     if (!output) return -1;
-    int fd = uds_client_open(path, "status");
+    int fd = uds_client_open(path, command);
     if (fd < 0) return -1;
 
     char response[UDS_RESPONSE_SIZE + 1];
@@ -694,13 +734,25 @@ int uds_client_status(const char *path, FILE *output) {
     response[used] = '\0';
 
     char *newline = strchr(response, '\n');
-    int status = -1;
-    if (!newline || sscanf(response, "ATPD_STATUS %d", &status) != 1 ||
-        (status != 0 && status != 1)) {
+    size_t prefix_len = strlen(prefix);
+    if (!newline || strncmp(response, prefix, prefix_len) != 0 ||
+        response[prefix_len] != ' ') {
         return -1;
     }
+    char *end;
+    long status = strtol(response + prefix_len + 1, &end, 10);
+    if (end != newline || status < 0 || status > 2) return -1;
     newline++;
     size_t body_len = used - (size_t)(newline - response);
     if (fwrite(newline, 1, body_len, output) != body_len) return -1;
-    return status;
+    return (int)status;
+}
+
+int uds_client_status(const char *path, FILE *output) {
+    return uds_client_status_request(path, "status", "ATPD_STATUS", output);
+}
+
+int uds_client_singbox_status(const char *path, FILE *output) {
+    return uds_client_status_request(path, "sing-box status",
+                                     "SINGBOX_STATUS", output);
 }

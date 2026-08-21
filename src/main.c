@@ -645,6 +645,40 @@ static int do_status(atp_options_t *opts) {
     return 2;
 }
 
+static int do_singbox_status(atp_options_t *opts) {
+    const char *config_path = opts->config_file[0]
+        ? opts->config_file : ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+    log_set_level(LOG_LEVEL_NONE);
+    if (config_load(config_path, &g_config) != ATP_OK) {
+        fprintf(stderr, "Failed to load config: %s\n", config_path);
+        return 1;
+    }
+
+    char socket_path[SAFE_PATH_MAX];
+    snprintf(socket_path, sizeof(socket_path), "%s/run/atpd.sock",
+             g_config.core.data_dir);
+    int status = uds_client_singbox_status(socket_path, stdout);
+    if (status >= 0) return status;
+
+    api_ctx_t api;
+    api_init(&api, &g_config);
+    char version[64] = "unknown";
+    char mode[32] = "unknown";
+    int version_ok = api_get_version_sync(&api, version, sizeof(version)) == 0;
+    int mode_ok = api_get_mode_sync(&api, mode, sizeof(mode)) == 0;
+    api_cleanup(&api);
+
+    const char *overall = version_ok && mode_ok ? "HEALTHY" :
+        version_ok || mode_ok ? "DEGRADED" : "UNREACHABLE";
+    printf("sing-box\n");
+    printf("  API                 %s\n", version_ok || mode_ok ? "REACHABLE" : "UNREACHABLE");
+    printf("  Endpoint            %s:%d\n", g_config.api.host, g_config.api.port);
+    printf("  Version             %s\n", version);
+    printf("  Mode                %s\n\n", mode);
+    printf("Overall               %s\n", overall);
+    return version_ok && mode_ok ? 0 : version_ok || mode_ok ? 1 : 2;
+}
+
 static int do_reload(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
     int pid_file_fd = -1;
@@ -749,6 +783,8 @@ int main(int argc, char *argv[]) {
             return do_restart(&opts);
         case CMD_STATUS:
             return do_status(&opts);
+        case CMD_SING_BOX_STATUS:
+            return do_singbox_status(&opts);
         case CMD_RELOAD:
             return do_reload(&opts);
         case CMD_CHECK:

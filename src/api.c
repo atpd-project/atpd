@@ -21,6 +21,7 @@
 #include <yyjson.h>
 #include <netdb.h>
 #include <limits.h>
+#include <poll.h>
 #include <sys/socket.h>
 
 #define API_MAX_HOST_LEN 255
@@ -1617,8 +1618,9 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
     return 0;
 }
 
-int api_get_sync(const char *url, char *response, size_t response_size) {
-    if (!url || !response || response_size == 0) return -1;
+static int api_get_sync(api_ctx_t *ctx, const char *url,
+                        char *response, size_t response_size) {
+    if (!ctx || !url || !response || response_size == 0) return -1;
 
     if (strncmp(url, "https://", 8) == 0) {
         LOG_ERROR("API sync: HTTPS not supported");
@@ -1755,12 +1757,35 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
         goto cleanup;
     }
 
-    struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
+    int timeout_sec = ctx->timeout_sec > 0 ? ctx->timeout_sec : 2;
+    struct timeval tv = { .tv_sec = timeout_sec, .tv_usec = 0 };
     setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    if (connect(sock_fd, ai->ai_addr, ai->ai_addrlen) < 0) {
+    int flags = fcntl(sock_fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(sock_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        LOG_ERROR("API sync: failed to configure socket");
+        goto cleanup;
+    }
+    if (connect(sock_fd, ai->ai_addr, ai->ai_addrlen) < 0 && errno != EINPROGRESS) {
         LOG_ERROR("API sync: connect failed: %s", strerror(errno));
+        goto cleanup;
+    }
+    struct pollfd connect_poll = { .fd = sock_fd, .events = POLLOUT };
+    int poll_result;
+    do {
+        poll_result = poll(&connect_poll, 1, timeout_sec * 1000);
+    } while (poll_result < 0 && errno == EINTR);
+    int socket_error = 0;
+    socklen_t socket_error_size = sizeof(socket_error);
+    if (poll_result <= 0 ||
+        getsockopt(sock_fd, SOL_SOCKET, SO_ERROR,
+                   &socket_error, &socket_error_size) < 0 || socket_error != 0) {
+        LOG_ERROR("API sync: connect failed or timed out");
+        goto cleanup;
+    }
+    if (fcntl(sock_fd, F_SETFL, flags) < 0) {
+        LOG_ERROR("API sync: failed to restore socket flags");
         goto cleanup;
     }
 
@@ -1771,23 +1796,42 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
     api_build_host_header(host_header, sizeof(host_header), host, port);
 
     char headers[2048];
-    int header_len = snprintf(headers, sizeof(headers),
-             "GET %s HTTP/1.1\r\n"
-             "Host: %s\r\n"
-             "User-Agent: ATPd/1.0\r\n"
-             "Accept: */*\r\n"
-             "Connection: close\r\n"
-             "\r\n", path, host_header);
+    int header_len;
+    if (ctx->secret[0]) {
+        header_len = snprintf(headers, sizeof(headers),
+                 "GET %s HTTP/1.1\r\n"
+                 "Host: %s\r\n"
+                 "Authorization: Bearer %s\r\n"
+                 "User-Agent: ATPd/1.0\r\n"
+                 "Accept: */*\r\n"
+                 "Connection: close\r\n\r\n",
+                 path, host_header, ctx->secret);
+    } else {
+        header_len = snprintf(headers, sizeof(headers),
+                 "GET %s HTTP/1.1\r\n"
+                 "Host: %s\r\n"
+                 "User-Agent: ATPd/1.0\r\n"
+                 "Accept: */*\r\n"
+                 "Connection: close\r\n\r\n", path, host_header);
+    }
 
     if (header_len < 0 || header_len >= (int)sizeof(headers)) {
         LOG_ERROR("API sync: headers too long");
         goto cleanup;
     }
 
-    ssize_t sent = send(sock_fd, headers, header_len, 0);
-    if (sent != header_len) {
-        LOG_ERROR("API sync: send failed: %s", strerror(errno));
-        goto cleanup;
+    size_t sent_total = 0;
+    while (sent_total < (size_t)header_len) {
+        ssize_t sent = send(sock_fd, headers + sent_total,
+                            (size_t)header_len - sent_total, MSG_NOSIGNAL);
+        if (sent > 0) {
+            sent_total += (size_t)sent;
+        } else if (sent < 0 && errno == EINTR) {
+            continue;
+        } else {
+            LOG_ERROR("API sync: send failed: %s", strerror(errno));
+            goto cleanup;
+        }
     }
 
     recv_buf = malloc(recv_size);
@@ -1921,7 +1965,11 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
                 goto cleanup;
             }
         } else {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                LOG_ERROR("API sync: receive timed out");
+                goto cleanup;
+            }
             LOG_ERROR("API sync: recv failed: %s", strerror(errno));
             goto cleanup;
         }
@@ -1959,28 +2007,37 @@ int api_get_mode(api_ctx_t *ctx, char *mode, size_t size) {
     return api_get_mode_sync(ctx, mode, size);
 }
 
-int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
-    if (!ctx || !mode || size == 0) return -1;
-
+static int api_get_string_sync(api_ctx_t *ctx, const char *path,
+                               const char *key, char *value, size_t size) {
+    if (!ctx || !path || !key || !value || size == 0) return -1;
     char url[256];
-    snprintf(url, sizeof(url), "%s/configs", ctx->base_url);
+    int length = snprintf(url, sizeof(url), "%s%s", ctx->base_url, path);
+    if (length < 0 || (size_t)length >= sizeof(url)) return -1;
 
     char response[8192];
-    if (api_get_sync(url, response, sizeof(response)) != 0) return -1;
+    if (api_get_sync(ctx, url, response, sizeof(response)) != 0) return -1;
 
     yyjson_doc *doc = yyjson_read(response, strlen(response), 0);
     if (!doc) return -1;
 
     yyjson_val *root = yyjson_doc_get_root(doc);
-    yyjson_val *mode_item = yyjson_obj_get(root, "mode");
-    if (mode_item && yyjson_is_str(mode_item)) {
-        snprintf(mode, size, "%s", yyjson_get_str(mode_item));
+    yyjson_val *item = yyjson_obj_get(root, key);
+    if (item && yyjson_is_str(item)) {
+        snprintf(value, size, "%s", yyjson_get_str(item));
         yyjson_doc_free(doc);
         return 0;
     }
 
     yyjson_doc_free(doc);
     return -1;
+}
+
+int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
+    return api_get_string_sync(ctx, "/configs", "mode", mode, size);
+}
+
+int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size) {
+    return api_get_string_sync(ctx, "/version", "version", version, size);
 }
 
 const char *api_mode_to_string(api_mode_t mode) {

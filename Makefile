@@ -31,16 +31,13 @@ LDFLAGS = -flto
 LDFLAGS += -Wl,--gc-sections -Wl,--strip-all
 
 SRC = \
-	src/api_buffer.c \
 	src/api.c \
 	src/async_validate.c \
 	src/atpd_context.c \
-	src/atpd_error.c \
 	src/atpd_global.c \
 	src/atpd_init.c \
 	src/cli.c \
 	src/config.c \
-	src/config_validator.c \
 	src/logger.c \
 	src/main.c \
 	src/netlink.c \
@@ -49,7 +46,6 @@ SRC = \
 	src/service.c \
 	src/uds.c \
 	src/utils.c \
-	src/version.c \
 	src/yyjson.c
 
 OBJDIR = build/obj
@@ -62,6 +58,7 @@ all: $(TARGET)
 
 test: $(TARGET)
 	bash tests/test_status.sh $(TARGET)
+	bash tests/test_singbox_status.sh $(TARGET)
 
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
