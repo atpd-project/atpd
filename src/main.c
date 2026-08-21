@@ -902,6 +902,13 @@ int main(int argc, char *argv[]) {
     }
 
     config_set_defaults(&g_config);
+    const char *cfg_path = opts.config_file[0] ? opts.config_file : ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+    if (access(cfg_path, R_OK) == 0) {
+        config_load(cfg_path, &g_config);
+    }
+    g_config.core.foreground = opts.foreground;
+    g_config.core.verbose = opts.verbose;
+
     atpd_context_init();
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_INITIALIZING);
 

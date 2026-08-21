@@ -228,7 +228,7 @@ static void status_show_monitors(void) {
     ui_table_begin();
     ui_table_header("MONITORS");
 
-    if (0) {
+    if (netlink_get_fd() >= 0) {
         ui_table_subrow_color("├─", "Netlink Monitor", "ACTIVE", COLOR_GREEN);
     } else {
         ui_table_subrow_color("├─", "Netlink Monitor", "INACTIVE", COLOR_RED);
@@ -492,7 +492,8 @@ static void status_show_system(void) {
         ui_table_subrow("├─", "🌡️ CPU Temp", "N/A");
     }
 
-    snprintf(pid_path, sizeof(pid_path), "%s/%s", ATP_DEFAULT_DIR, ATP_PID_FILE);
+    snprintf(pid_path, sizeof(pid_path), "%s/%s",
+             g_config.core.data_dir[0] ? g_config.core.data_dir : ATP_DEFAULT_DIR, ATP_PID_FILE);
     if (stat(pid_path, &st) == 0) {
         time_t now = time(NULL);
         int elapsed = (int)(now - st.st_mtime);

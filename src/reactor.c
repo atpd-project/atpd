@@ -133,6 +133,7 @@ static void process_expired_timers(reactor_t *r, reactor_private_t *priv) {
             timer_list_remove(priv, timer);
             if (timer->public_timer) {
                 timer->public_timer->internal = NULL;
+                free(timer->public_timer);
                 timer->public_timer = NULL;
             }
             free(timer);
@@ -159,6 +160,7 @@ static void process_expired_timers(reactor_t *r, reactor_private_t *priv) {
         } else {
             if (timer->public_timer) {
                 timer->public_timer->internal = NULL;
+                free(timer->public_timer);
                 timer->public_timer = NULL;
             }
             free(timer);

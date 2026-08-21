@@ -679,9 +679,6 @@ int inet_diag_get_uid_fallback_v4(int protocol,
         return -1;
     }
     
-    uint32_t src_ip_net = htonl(src_ip);
-    uint32_t dst_ip_net = htonl(dst_ip);
-    
     fgets(line, sizeof(line), fp);
     
     while (fgets(line, sizeof(line), fp)) {
@@ -709,8 +706,8 @@ int inet_diag_get_uid_fallback_v4(int protocol,
         if (sscanf(local, "%x:%hx", &l_ip, &l_port) != 2) continue;
         if (sscanf(remote, "%x:%hx", &r_ip, &r_port) != 2) continue;
         
-        if (l_ip == src_ip_net && l_port == src_port &&
-            r_ip == dst_ip_net && r_port == dst_port) {
+        if (l_ip == src_ip && l_port == src_port &&
+            r_ip == dst_ip && r_port == dst_port) {
             found_uid = atoi(uid_str);
             break;
         }

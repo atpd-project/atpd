@@ -115,7 +115,9 @@ int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
         return -1;
     }
     
-    netlink_set_reactor(ctx->reactor);
+    if (ctx->reactor) {
+        netlink_set_reactor(ctx->reactor);
+    }
     
     return 0;
 }
@@ -158,7 +160,9 @@ int atpd_init_phase_api(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing API...");
     
     api_init(ctx->api, ctx->config);
-    api_start_with_reactor(ctx->api, ctx->reactor);
+    if (ctx->reactor) {
+        api_start_with_reactor(ctx->api, ctx->reactor);
+    }
     
     return 0;
 }

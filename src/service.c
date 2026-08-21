@@ -892,8 +892,14 @@ int service_get_pid(service_ctx_t *ctx) {
         return ctx->child_pid;
     }
 
-    char pid_path[256];
-    snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ATP_DEFAULT_DIR);
+    char pid_path[PATH_MAX];
+    snprintf(pid_path, sizeof(pid_path), "%s", ctx->log_path);
+    char *dot = strrchr(pid_path, '.');
+    if (dot) {
+        snprintf(dot, sizeof(pid_path) - (dot - pid_path), ".pid");
+    } else {
+        snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ATP_DEFAULT_DIR);
+    }
 
     FILE *f = fopen(pid_path, "r");
     if (f) {

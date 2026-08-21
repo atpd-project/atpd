@@ -841,28 +841,28 @@ static int ip_rule_audit(atp_config_t *cfg) {
     int needs_repair = 0;
 
     snprintf(cmd, sizeof(cmd),
-             "ip rule show | grep -q 'fwmark %d lookup %d' 2>/dev/null",
+             "ip rule show | grep -q 'fwmark 0x%x.*lookup %d ' 2>/dev/null",
              cfg->network.mark_value, cfg->network.table_id);
 
     if (exec_cmd_simple(cmd, 2) != 0) {
         LOG_WARN("IPv4 fwmark rule missing, repairing...");
         snprintf(cmd, sizeof(cmd),
-                 "ip rule add fwmark %d table %d 2>/dev/null",
-                 cfg->network.mark_value, cfg->network.table_id);
+                 "ip rule add fwmark 0x%x table %d pref %d 2>/dev/null",
+                 cfg->network.mark_value, cfg->network.table_id, cfg->network.table_id);
         exec_cmd_simple(cmd, 2);
         needs_repair = 1;
     }
 
     if (cfg->network.proxy_ipv6) {
         snprintf(cmd, sizeof(cmd),
-                 "ip -6 rule show | grep -q 'fwmark %d lookup %d' 2>/dev/null",
+                 "ip -6 rule show | grep -q 'fwmark 0x%x.*lookup %d ' 2>/dev/null",
                  cfg->network.mark_value6, cfg->network.table_id);
 
         if (exec_cmd_simple(cmd, 2) != 0) {
             LOG_WARN("IPv6 fwmark rule missing, repairing...");
             snprintf(cmd, sizeof(cmd),
-                     "ip -6 rule add fwmark %d table %d 2>/dev/null",
-                     cfg->network.mark_value6, cfg->network.table_id);
+                     "ip -6 rule add fwmark 0x%x table %d pref %d 2>/dev/null",
+                     cfg->network.mark_value6, cfg->network.table_id, cfg->network.table_id);
             exec_cmd_simple(cmd, 2);
             needs_repair = 1;
         }
