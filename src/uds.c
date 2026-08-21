@@ -566,14 +566,23 @@ static void handle_core_control(int fd, const char *action) {
         result = service_start_async(g_svc);
     } else if (strcmp(action, "stop") == 0) {
         result = service_stop_async(g_svc, NULL, NULL);
+    } else if ((g_svc->state == SERVICE_STOPPED ||
+                g_svc->state == SERVICE_FAILED) && service_get_pid(g_svc) < 0) {
+        g_svc->restart_count++;
+        result = service_start_async(g_svc);
     } else {
         result = service_stop_async(g_svc, core_restart_done, NULL);
     }
 
     char response[96];
-    snprintf(response, sizeof(response), result == 0
-             ? "CORE_CONTROL 0\nCore %s scheduled\n"
-             : "CORE_CONTROL 1\nCore %s failed\n", action);
+    if (result == 0) {
+        snprintf(response, sizeof(response),
+                 "CORE_CONTROL 0\nCore %s scheduled\n", action);
+    } else {
+        snprintf(response, sizeof(response),
+                 "CORE_CONTROL 1\nCore %s failed: %.48s\n", action,
+                 g_svc->last_error[0] ? g_svc->last_error : "unknown error");
+    }
     send_string_all(fd, response);
 }
 
@@ -673,17 +682,9 @@ static void process_command(int fd, const char *cmd, size_t cmd_len) {
     memcpy(buf, cmd, cmd_len);
     buf[cmd_len] = '\0';
 
-    char *newline = strchr(buf, '\n');
-    if (newline) *newline = '\0';
-
-    char *cr = strchr(buf, '\r');
-    if (cr) *cr = '\0';
-
-    char *end = buf + strlen(buf) - 1;
-    while (end >= buf && (*end == ' ' || *end == '\t')) {
-        *end = '\0';
-        end--;
-    }
+    size_t len = strcspn(buf, "\r\n");
+    while (len > 0 && (buf[len - 1] == ' ' || buf[len - 1] == '\t')) len--;
+    buf[len] = '\0';
 
     if (buf[0] == '\0') {
         return;
@@ -810,8 +811,12 @@ static void uds_accept_cb(reactor_t *r, int listen_fd, uint32_t events, void *us
         }
 
         LOG_DEBUG("UDS: client connected (fd=%d)", client_fd);
-        reactor_add_fd(r, client_fd, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
-                       uds_client_cb, NULL);
+        if (reactor_add_fd(r, client_fd,
+                           REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
+                           uds_client_cb, NULL) != 0) {
+            LOG_ERROR("UDS: failed to register client fd=%d", client_fd);
+            close(client_fd);
+        }
     }
 }
 

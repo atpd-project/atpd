@@ -202,17 +202,10 @@ void async_validate_cleanup(async_validate_ctx_t *ctx) {
 
 static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
     async_validate_ctx_t *ctx = userdata;
-    int completed_old;
     (void)r;
     (void)events;
 
-    if (!ctx) return;
-
-    /* Check if already completed */
-    completed_old = atomic_exchange(&ctx->completed, 1);
-    if (completed_old) {
-        return;
-    }
+    if (!ctx || atomic_load(&ctx->completed)) return;
 
     char buf[1024];
     ssize_t n = read(fd, buf, sizeof(buf) - 1);
@@ -226,8 +219,6 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
             ctx->output_truncated = 1;
             LOG_WARN("AsyncValidate: output truncated");
         }
-        /* Re-arm: mark not completed and continue reading */
-        atomic_store(&ctx->completed, 0);
         return;
     } else if (n == 0) {
         /* EOF - child should have exited */
@@ -237,7 +228,6 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
         if (wr == 0) {
             /* Child still running - keep waiting */
             LOG_DEBUG("AsyncValidate: EOF but child still running, waiting");
-            atomic_store(&ctx->completed, 0);
             return;
         } else if (wr < 0) {
             LOG_ERROR("AsyncValidate: waitpid failed: %s", strerror(errno));
@@ -246,6 +236,7 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
         } else if (wr == ctx->child_pid) {
             int result = (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 1 : 0;
             LOG_DEBUG("AsyncValidate: completed, result=%d", result);
+            ctx->child_pid = -1;
             validate_cleanup(ctx, result, ctx->output);
             return;
         }
@@ -255,23 +246,14 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
         return;
     }
 
-    /* Re-arm if not completed */
-    atomic_store(&ctx->completed, 0);
 }
 
 static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
     async_validate_ctx_t *ctx = userdata;
-    int completed_old;
     (void)r;
     (void)events;
 
-    if (!ctx) return;
-
-    /* Check if already completed */
-    completed_old = atomic_exchange(&ctx->completed, 1);
-    if (completed_old) {
-        return;
-    }
+    if (!ctx || atomic_load(&ctx->completed)) return;
 
     uint64_t expirations;
     ssize_t nr = read(fd, &expirations, sizeof(expirations));
@@ -282,12 +264,19 @@ static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *use
         return;
     }
 
-    /* Check if child already exited */
-    pid_t wr = waitpid(ctx->child_pid, NULL, WNOHANG);
+    int status = 0;
+    pid_t wr = waitpid(ctx->child_pid, &status, WNOHANG);
     if (wr == ctx->child_pid) {
-        /* Child already exited, wait for IO callback to handle */
         LOG_DEBUG("AsyncValidate: timeout but child already exited");
-        atomic_store(&ctx->completed, 0);
+        ctx->child_pid = -1;
+        validate_cleanup(ctx,
+                         WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                         ctx->output);
+        return;
+    }
+    if (wr < 0) {
+        LOG_ERROR("AsyncValidate: waitpid failed: %s", strerror(errno));
+        validate_cleanup(ctx, 0, "waitpid error");
         return;
     }
 
@@ -296,6 +285,7 @@ static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *use
 
     /* Reap child */
     waitpid(ctx->child_pid, NULL, 0);
+    ctx->child_pid = -1;
 
     validate_cleanup(ctx, 0, "timeout");
 }
@@ -356,8 +346,8 @@ static void validate_cleanup(async_validate_ctx_t *ctx, int result, const char *
     /* Reset reactor reference */
     ctx->reactor = NULL;
 
-    /* Invoke callback exactly once */
-    if (ctx->callback) {
-        ctx->callback(result, output, ctx->userdata);
-    }
+    validate_callback_t callback = ctx->callback;
+    void *userdata = ctx->userdata;
+    ctx->callback = NULL;
+    if (callback) callback(result, output, userdata);
 }

@@ -17,6 +17,8 @@
 #include <stdarg.h>
 #include <limits.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <poll.h>
 
 #define CPU_CACHE_MAX 64
 
@@ -147,48 +149,50 @@ int exec_cmd_argv(const char *cmd_path, char *const argv[], char *output, size_t
 
     close(pipefd[1]);
 
-    if (output && output_size > 0) {
-        size_t total = 0;
-
-        while (total < output_size - 1) {
-            ssize_t n = read(pipefd[0], output + total, output_size - 1 - total);
-
-            if (n < 0) {
-                if (errno == EINTR) {
-                    continue;
-                }
-                LOG_ERROR("read failed: %s", strerror(errno));
-                output[0] = '\0';
-                break;
-            }
-
-            if (n == 0) {
-                break;
-            }
-
-            total += n;
-        }
-
-        if (total >= output_size - 1) {
-            LOG_WARN("output truncated (%zu bytes)", output_size);
-        }
-
-        output[total] = '\0';
-        trim(output);
+    int flags = fcntl(pipefd[0], F_GETFL);
+    if (flags < 0 || fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK) < 0) {
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        close(pipefd[0]);
+        return -1;
     }
 
-    close(pipefd[0]);
-
-    int status;
+    size_t total = 0;
+    if (output && output_size) output[0] = '\0';
+    int status = 0;
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
 
     while (1) {
+        struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN | POLLHUP };
+        int polled = poll(&pfd, 1, 100);
+        if (polled < 0 && errno != EINTR) {
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            close(pipefd[0]);
+            return -1;
+        }
+        if (polled > 0) {
+            char discard[256];
+            while (1) {
+                char *target = discard;
+                size_t available = sizeof(discard);
+                if (output && total + 1 < output_size) {
+                    target = output + total;
+                    available = output_size - 1 - total;
+                }
+                ssize_t n = read(pipefd[0], target, available);
+                if (n > 0 && target != discard) total += (size_t)n;
+                if (n <= 0) break;
+            }
+        }
+
         pid_t result = waitpid(pid, &status, WNOHANG);
         if (result == pid) {
-            if (WIFEXITED(status)) {
-                return WEXITSTATUS(status);
-            }
+            break;
+        }
+        if (result < 0 && errno != EINTR) {
+            close(pipefd[0]);
             return -1;
         }
 
@@ -200,12 +204,22 @@ int exec_cmd_argv(const char *cmd_path, char *const argv[], char *output, size_t
         if (elapsed >= timeout_sec) {
             kill(pid, SIGKILL);
             waitpid(pid, &status, 0);
+            close(pipefd[0]);
+            if (output && output_size) {
+                output[total] = '\0';
+                trim(output);
+            }
             LOG_ERROR("command timeout: %s", cmd_path);
             return 124;
         }
-
-        usleep(100000);
     }
+
+    close(pipefd[0]);
+    if (output && output_size) {
+        output[total] = '\0';
+        trim(output);
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
 int read_file(const char *path, char *buf, size_t buf_size) {

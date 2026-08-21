@@ -87,7 +87,11 @@ static void trigger_network_refresh(reactor_t *r) {
 
     g_debounce_timer = reactor_add_timer(r, NETLINK_DEBOUNCE_MS, 0,
                                          debounce_flush_cb, NULL);
-    LOG_DEBUG("[NET] Debounce timer (re)started: %dms", NETLINK_DEBOUNCE_MS);
+    if (g_debounce_timer) {
+        LOG_DEBUG("[NET] Debounce timer (re)started: %dms", NETLINK_DEBOUNCE_MS);
+    } else {
+        LOG_ERROR("[NET] Failed to schedule network refresh");
+    }
 
     pthread_mutex_unlock(&g_debounce_lock);
 }
@@ -560,6 +564,8 @@ int netlink_init(nl_callback_t callback, void *userdata) {
     if (g_sync_fd < 0 || g_async_fd < 0) {
         if (g_sync_fd >= 0) close(g_sync_fd);
         if (g_async_fd >= 0) close(g_async_fd);
+        g_sync_fd = -1;
+        g_async_fd = -1;
         return -1;
     }
 
@@ -572,6 +578,8 @@ int netlink_init(nl_callback_t callback, void *userdata) {
     if (bind(g_async_fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
         close(g_sync_fd);
         close(g_async_fd);
+        g_sync_fd = -1;
+        g_async_fd = -1;
         return -1;
     }
 
@@ -672,7 +680,12 @@ int netlink_xfrm_init(reactor_t *r) {
     }
 
     if (r) {
-        reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
+        if (reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ,
+                           netlink_xfrm_event_cb, NULL) != 0) {
+            close(g_xfrm_fd);
+            g_xfrm_fd = -1;
+            return -1;
+        }
         g_xfrm_reactor = r;
         atomic_store(&g_xfrm_registered, 1);
     }
@@ -1011,13 +1024,19 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
 }
 
 void netlink_cleanup(void) {
+    reactor_t *reactor;
     pthread_mutex_lock(&g_debounce_lock);
+    reactor = g_debounce_reactor;
     if (g_debounce_timer && g_debounce_reactor) {
         reactor_cancel_timer(g_debounce_reactor, g_debounce_timer);
         g_debounce_timer = NULL;
     }
     g_debounce_reactor = NULL;
     pthread_mutex_unlock(&g_debounce_lock);
+
+    if (g_async_fd >= 0 && reactor) {
+        reactor_remove_fd(reactor, g_async_fd);
+    }
 
     if (g_xfrm_fd >= 0) {
         if (g_xfrm_reactor) {
@@ -1048,14 +1067,19 @@ int netlink_get_fd(void) {
     return g_async_fd;
 }
 
-void netlink_set_reactor(reactor_t *r) {
+int netlink_set_reactor(reactor_t *r) {
     g_debounce_reactor = r;
 
     if (g_xfrm_fd >= 0 && r && !atomic_load(&g_xfrm_registered)) {
-        reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
+        if (reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ,
+                           netlink_xfrm_event_cb, NULL) != 0) {
+            g_debounce_reactor = NULL;
+            return -1;
+        }
         g_xfrm_reactor = r;
         atomic_store(&g_xfrm_registered, 1);
     }
+    return 0;
 }
 
 /* ========== VPN Detection Functions ========== */

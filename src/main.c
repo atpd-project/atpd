@@ -46,10 +46,9 @@
 #define g_reload g_atpd.reload
 #define g_show_status g_atpd.show_status
 
-static void run_event_loop(void);
+static int run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
 static void on_idle(reactor_t *r, void *userdata);
-static void service_stop_sync(service_ctx_t *ctx);
 static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static void daemonize(void);
@@ -66,6 +65,7 @@ static int g_version_request_inflight = 0;
 static pid_t g_mode_pid = -1;
 static char g_desired_mode[32] = "";
 static char g_applied_mode[32] = "";
+static char g_requested_mode[32] = "";
 
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
@@ -84,7 +84,7 @@ static int process_is_atpd(pid_t pid) {
 
     snprintf(path, sizeof(path), "/proc/%d/exe", pid);
 
-    ssize_t len;
+    ssize_t len = -1;
     int retry = 3;
 
     while (retry-- > 0) {
@@ -259,9 +259,14 @@ static void on_idle(reactor_t *r, void *userdata) {
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
         } else {
             api_cleanup(&g_api_ctx);
-            api_init(&g_api_ctx, &g_config);
-            api_start_with_reactor(&g_api_ctx, g_reactor);
-            if (service_reload_async(g_svc, &g_config) != 0) {
+            g_mode_request_inflight = 0;
+            g_version_request_inflight = 0;
+            g_mode_pid = -1;
+            if (api_init(&g_api_ctx, &g_config) != 0 ||
+                api_start_with_reactor(&g_api_ctx, g_reactor) != 0) {
+                LOG_ERROR("Clash API reload failed");
+                atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
+            } else if (service_reload_async(g_svc, &g_config) != 0) {
                 LOG_ERROR("sing-box reload failed validation");
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
             } else {
@@ -291,22 +296,21 @@ static void on_idle(reactor_t *r, void *userdata) {
 
 static void clash_mode_response(int http_code, const char *body, void *userdata) {
     (void)body;
-    char *mode = userdata;
+    (void)userdata;
     g_mode_request_inflight = 0;
     if (http_code >= 200 && http_code < 300) {
         g_mode_pid = g_svc ? service_get_pid(g_svc) : -1;
-        snprintf(g_applied_mode, sizeof(g_applied_mode), "%s", mode);
+        snprintf(g_applied_mode, sizeof(g_applied_mode), "%s", g_requested_mode);
         snprintf(g_atpd_ctx.clash_applied_mode,
-                 sizeof(g_atpd_ctx.clash_applied_mode), "%s", mode);
+                 sizeof(g_atpd_ctx.clash_applied_mode), "%s", g_requested_mode);
         g_atpd_ctx.clash_last_error[0] = '\0';
         g_atpd_ctx.clash_last_sync = (uint64_t)time(NULL);
-        LOG_INFO("Clash mode synchronized: %s", mode);
+        LOG_INFO("Clash mode synchronized: %s", g_requested_mode);
     } else {
         LOG_WARN("Clash mode synchronization failed: HTTP %d", http_code);
         snprintf(g_atpd_ctx.clash_last_error,
                  sizeof(g_atpd_ctx.clash_last_error), "HTTP %d", http_code);
     }
-    free(mode);
     if (http_code >= 200 && http_code < 300 &&
         strcmp(g_applied_mode, g_desired_mode) != 0) {
         request_clash_mode(g_desired_mode);
@@ -324,12 +328,10 @@ static void request_clash_mode(const char *mode) {
              sizeof(g_atpd_ctx.clash_desired_mode), "%s", mode);
     if (g_mode_request_inflight || strcmp(g_applied_mode, mode) == 0) return;
 
-    char *requested = strdup(mode);
-    if (!requested) return;
+    snprintf(g_requested_mode, sizeof(g_requested_mode), "%s", mode);
     g_mode_request_inflight = 1;
-    if (api_set_mode_async(&g_api_ctx, mode, clash_mode_response, requested) != 0) {
+    if (api_set_mode_async(&g_api_ctx, mode, clash_mode_response, NULL) != 0) {
         g_mode_request_inflight = 0;
-        free(requested);
     }
 }
 
@@ -450,29 +452,13 @@ static void netlink_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
     netlink_handle_event(fd, userdata);
 }
 
-static void service_stop_sync(service_ctx_t *ctx) {
-    if (!ctx) return;
-    pid_t pid = service_get_pid(ctx);
-    if (pid <= 0) return;
-
-    LOG_INFO("Stopping sing-box (PID: %d)", pid);
-    kill(pid, SIGTERM);
-    for (int i = 0; i < 50; i++) {
-        pid_t reaped = waitpid(pid, NULL, WNOHANG);
-        if (reaped == pid || (reaped < 0 && errno == ECHILD)) return;
-        usleep(100000);
-    }
-    LOG_WARN("sing-box stop timeout, sending SIGKILL");
-    kill(pid, SIGKILL);
-    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
-}
-
-static void run_event_loop(void) {
+static int run_event_loop(void) {
+    int result = -1;
     reactor_timer_t *network_timer = NULL;
     reactor_timer_t *mode_timer = NULL;
     if (!g_reactor) {
         LOG_ERROR("Reactor is not initialized");
-        return;
+        return -1;
     }
 
     char uds_path[SAFE_PATH_MAX];
@@ -488,23 +474,36 @@ static void run_event_loop(void) {
                                       network_audit_cb, NULL);
     mode_timer = reactor_add_timer(g_reactor, 1000, 5000,
                                    mode_monitor_cb, NULL);
+    if (!network_timer || !mode_timer) {
+        LOG_ERROR("Failed to schedule network monitors");
+        goto cleanup;
+    }
 
-    reactor_set_signal_cb(g_reactor, on_signal);
+    if (reactor_set_signal_cb(g_reactor, on_signal) != 0) goto cleanup;
     reactor_set_idle_cb(g_reactor, on_idle);
 
-    reactor_watch_signal(g_reactor, SIGINT);
-    reactor_watch_signal(g_reactor, SIGTERM);
-    reactor_watch_signal(g_reactor, SIGHUP);
-    reactor_watch_signal(g_reactor, SIGUSR1);
-    reactor_watch_signal(g_reactor, SIGCHLD);
+    const int signals[] = {SIGINT, SIGTERM, SIGHUP, SIGUSR1, SIGCHLD};
+    for (size_t i = 0; i < sizeof(signals) / sizeof(signals[0]); i++) {
+        if (reactor_watch_signal(g_reactor, signals[i]) != 0) {
+            LOG_ERROR("Failed to watch signal %d", signals[i]);
+            goto cleanup;
+        }
+    }
 
     int nl_fd = netlink_get_fd();
     if (nl_fd >= 0) {
-        reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_io_cb, NULL);
+        if (reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ,
+                           netlink_io_cb, NULL) != 0) {
+            LOG_ERROR("Failed to register netlink event socket");
+            goto cleanup;
+        }
+    } else {
+        LOG_ERROR("Netlink event socket is unavailable");
+        goto cleanup;
     }
 
     LOG_INFO("Reactor event loop started");
-    reactor_run(g_reactor);
+    result = reactor_run(g_reactor);
     LOG_INFO("Reactor event loop stopped");
 
 cleanup:
@@ -515,7 +514,7 @@ cleanup:
     service_ctx_t *svc = g_svc;
     g_svc = NULL;
     if (svc) {
-        service_stop_sync(svc);
+        service_cleanup(svc);
         free(svc);
     }
 
@@ -527,6 +526,7 @@ cleanup:
         reactor_destroy(g_reactor);
         g_reactor = NULL;
     }
+    return result;
 }
 
 static int do_start(atp_options_t *opts) {
@@ -579,8 +579,7 @@ static int do_start(atp_options_t *opts) {
              sizeof(g_atpd_ctx.clash_desired_mode), "%s", g_desired_mode);
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
 
-    run_event_loop();
-    ret = 0;
+    ret = run_event_loop() == 0 ? 0 : 1;
 
 cleanup:
     if (ret != 0) {
@@ -589,7 +588,7 @@ cleanup:
         uds_cleanup();
         api_cleanup(&g_api_ctx);
         if (g_svc) {
-            service_stop_sync(g_svc);
+            service_cleanup(g_svc);
             free(g_svc);
             g_svc = NULL;
         }

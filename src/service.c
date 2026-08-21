@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/prctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pwd.h>
@@ -182,6 +183,14 @@ static int service_probe_port(int port) {
     return 0;
 }
 
+static int service_api_in_use(service_ctx_t *ctx) {
+    if (!service_probe_port(ctx->api_port)) return 0;
+    snprintf(ctx->last_error, sizeof(ctx->last_error),
+             "API endpoint 127.0.0.1:%d already in use", ctx->api_port);
+    LOG_ERROR("Service: %s; refusing to start another core", ctx->last_error);
+    return 1;
+}
+
 static int service_api_health_check(service_ctx_t *ctx) {
     int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (sock < 0) return 0;
@@ -331,6 +340,8 @@ static void set_service_environment(service_ctx_t *ctx) {
 }
 
 static int service_spawn(service_ctx_t *ctx) {
+    if (service_api_in_use(ctx)) return -1;
+
     if (!service_binary_exists(ctx)) {
         LOG_ERROR("Service: binary not found or not executable: %s", ctx->bin_path);
         return -1;
@@ -338,6 +349,7 @@ static int service_spawn(service_ctx_t *ctx) {
 
     service_rotate_log(ctx);
 
+    pid_t parent_pid = getpid();
     pid_t pid = fork();
     if (pid < 0) {
         LOG_ERROR("Service: fork failed: %s", strerror(errno));
@@ -345,6 +357,10 @@ static int service_spawn(service_ctx_t *ctx) {
     }
 
     if (pid == 0) {
+        if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 || getppid() != parent_pid) {
+            _exit(127);
+        }
+
         struct sigaction sa;
         memset(&sa, 0, sizeof(sa));
         sa.sa_handler = SIG_IGN;
@@ -425,34 +441,6 @@ static int service_spawn(service_ctx_t *ctx) {
     return 0;
 }
 
-static void service_kill_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
-    kill_state_t *state = userdata;
-    service_ctx_t *ctx = state->ctx;
-
-    (void)r;
-    (void)timer;
-
-    if (!ctx) {
-        free(state);
-        return;
-    }
-
-    if (!service_is_alive(ctx)) {
-        free(state);
-        return;
-    }
-
-    state->attempts++;
-    if (state->attempts >= state->max_attempts) {
-        LOG_WARN("Service: sing-box did not respond to SIGTERM, sending SIGKILL");
-        kill(ctx->child_pid, SIGKILL);
-        free(state);
-        return;
-    }
-
-    reactor_add_timer(r, 100, 0, service_kill_timeout_cb, state);
-}
-
 static void service_kill(service_ctx_t *ctx) {
     if (!ctx || ctx->child_pid <= 0) return;
 
@@ -465,72 +453,72 @@ static void service_kill(service_ctx_t *ctx) {
         if (kill(ctx->child_pid, 0) == 0) {
             kill(ctx->child_pid, SIGKILL);
         }
-        waitpid(ctx->child_pid, NULL, WNOHANG);
+        while (waitpid(ctx->child_pid, NULL, 0) < 0 && errno == EINTR) {}
         ctx->child_pid = -1;
         ctx->validated_pid = 0;
-        return;
     }
+}
 
-    kill_state_t *state = calloc(1, sizeof(kill_state_t));
-    if (!state) {
-        LOG_WARN("Service: failed to allocate kill state, using blocking fallback");
-        usleep(500000);
-        if (kill(ctx->child_pid, 0) == 0) {
-            kill(ctx->child_pid, SIGKILL);
-        }
-        waitpid(ctx->child_pid, NULL, WNOHANG);
-        ctx->child_pid = -1;
-        ctx->validated_pid = 0;
-        return;
+static void service_kill_sync(service_ctx_t *ctx) {
+    if (!ctx || ctx->child_pid <= 0) return;
+
+    pid_t pid = ctx->child_pid;
+    kill(pid, SIGTERM);
+    for (int i = 0; i < ctx->stop_timeout_sec * 10; i++) {
+        pid_t reaped = waitpid(pid, NULL, WNOHANG);
+        if (reaped == pid || (reaped < 0 && errno == ECHILD)) goto done;
+        usleep(100000);
     }
+    kill(pid, SIGKILL);
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
 
-    state->ctx = ctx;
-    state->attempts = 0;
-    state->max_attempts = ctx->stop_timeout_sec * 10;
+done:
+    ctx->child_pid = -1;
+    ctx->validated_pid = 0;
+}
 
-    reactor_add_timer(ctx->reactor, 100, 0, service_kill_timeout_cb, state);
+static void service_finish_stop(service_ctx_t *ctx,
+                                void (*done_cb)(service_ctx_t *, void *),
+                                void *userdata, int force) {
+    if (force && ctx->child_pid > 0) {
+        pid_t pid = ctx->child_pid;
+        kill(pid, SIGKILL);
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
+    }
+    ctx->child_pid = -1;
+    ctx->validated_pid = 0;
+    ctx->state = SERVICE_STOPPED;
+    ctx->fail_count = 0;
+    ctx->running_healthy = 0;
+    ctx->stop_done_cb = NULL;
+    ctx->stop_userdata = NULL;
+    if (done_cb) done_cb(ctx, userdata);
 }
 
 static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
-    service_stop_state_t *state = userdata;
-    service_ctx_t *ctx = state->ctx;
+    service_ctx_t *ctx = userdata;
 
-    (void)r;
-    (void)timer;
-
-    if (!ctx) {
-        free(state);
-        return;
-    }
+    if (!ctx) return;
 
     if (!service_is_alive(ctx)) {
         LOG_INFO("Service: stopped successfully");
-        ctx->state = SERVICE_STOPPED;
-        ctx->running_healthy = 0;
-        if (state->done_cb) {
-            state->done_cb(ctx, state->userdata);
-        }
-        free(state);
+        void (*done_cb)(service_ctx_t *, void *) = ctx->stop_done_cb;
+        void *callback_data = ctx->stop_userdata;
+        ctx->stop_timer = NULL;
+        reactor_cancel_timer(r, timer);
+        service_finish_stop(ctx, done_cb, callback_data, 0);
         return;
     }
 
-    state->attempts++;
-    if (state->attempts >= state->max_attempts) {
+    ctx->stop_attempts++;
+    if (ctx->stop_attempts >= ctx->stop_timeout_sec * 10) {
         LOG_ERROR("Service: stop timeout, forcing kill");
-        kill(ctx->child_pid, SIGKILL);
-        waitpid(ctx->child_pid, NULL, WNOHANG);
-        ctx->child_pid = -1;
-        ctx->validated_pid = 0;
-        ctx->state = SERVICE_STOPPED;
-        ctx->running_healthy = 0;
-        if (state->done_cb) {
-            state->done_cb(ctx, state->userdata);
-        }
-        free(state);
-        return;
+        void (*done_cb)(service_ctx_t *, void *) = ctx->stop_done_cb;
+        void *callback_data = ctx->stop_userdata;
+        ctx->stop_timer = NULL;
+        reactor_cancel_timer(r, timer);
+        service_finish_stop(ctx, done_cb, callback_data, 1);
     }
-
-    reactor_add_timer(r, 100, 0, service_stop_wait_cb, state);
 }
 
 static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
@@ -580,6 +568,10 @@ void service_schedule_retry(service_ctx_t *ctx) {
     }
     ctx->retry_timer = reactor_add_timer(ctx->reactor, delay, 0,
                                           service_delayed_spawn_cb, ctx);
+    if (!ctx->retry_timer) {
+        snprintf(ctx->last_error, sizeof(ctx->last_error), "failed to schedule retry");
+        ctx->state = SERVICE_FAILED;
+    }
 }
 
 void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
@@ -589,36 +581,35 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
     service_ctx_t *ctx = userdata;
     if (!ctx) return;
 
+    if (ctx->child_pid <= 0) return;
+
     int status;
-    pid_t pid;
+    pid_t pid = waitpid(ctx->child_pid, &status, WNOHANG);
+    if (pid != ctx->child_pid) return;
 
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        if (pid == ctx->child_pid) {
-            if (WIFEXITED(status)) {
-                LOG_WARN("Service: sing-box exited with code %d", WEXITSTATUS(status));
-                snprintf(ctx->last_error, sizeof(ctx->last_error),
-                         "exited with code %d", WEXITSTATUS(status));
-            } else if (WIFSIGNALED(status)) {
-                LOG_WARN("Service: sing-box killed by signal %d", WTERMSIG(status));
-                snprintf(ctx->last_error, sizeof(ctx->last_error),
-                         "killed by signal %d", WTERMSIG(status));
-            }
+    if (WIFEXITED(status)) {
+        LOG_WARN("Service: sing-box exited with code %d", WEXITSTATUS(status));
+        snprintf(ctx->last_error, sizeof(ctx->last_error),
+                 "exited with code %d", WEXITSTATUS(status));
+    } else if (WIFSIGNALED(status)) {
+        LOG_WARN("Service: sing-box killed by signal %d", WTERMSIG(status));
+        snprintf(ctx->last_error, sizeof(ctx->last_error),
+                 "killed by signal %d", WTERMSIG(status));
+    }
 
-            ctx->child_pid = -1;
-            ctx->validated_pid = 0;
-            ctx->running_healthy = 0;
+    ctx->child_pid = -1;
+    ctx->validated_pid = 0;
+    ctx->running_healthy = 0;
 
-            if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
-                ctx->restart_count++;
-                ctx->state = SERVICE_FAILED;
-                ctx->fail_count++;
-                circuit_breaker_record_failure(&ctx->breaker);
-                if (ctx->fail_count < ctx->max_failures) {
-                    service_schedule_retry(ctx);
-                } else {
-                    LOG_ERROR("Service: max failures reached, giving up");
-                }
-            }
+    if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
+        ctx->restart_count++;
+        ctx->state = SERVICE_FAILED;
+        ctx->fail_count++;
+        circuit_breaker_record_failure(&ctx->breaker);
+        if (ctx->fail_count < ctx->max_failures) {
+            service_schedule_retry(ctx);
+        } else {
+            LOG_ERROR("Service: max failures reached, giving up");
         }
     }
 }
@@ -675,8 +666,10 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                     if (validate_process(ctx, ctx->child_pid)) {
                         ctx->validated_pid = 1;
                     } else {
-                        LOG_WARN("Service: PID %d validation failed, killing", ctx->child_pid);
-                        kill(ctx->child_pid, SIGKILL);
+                        pid_t pid = ctx->child_pid;
+                        LOG_WARN("Service: PID %d validation failed, killing", pid);
+                        kill(pid, SIGKILL);
+                        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
                         ctx->child_pid = -1;
                     }
                 }
@@ -699,6 +692,9 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                             ctx->reactor, ctx->health_check_interval_ms,
                             ctx->health_check_interval_ms,
                             service_health_check_cb, ctx);
+                        if (!ctx->health_timer) {
+                            LOG_ERROR("Service: failed to schedule health checks");
+                        }
                     }
                 }
             } else {
@@ -759,7 +755,6 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     ctx->stop_timeout_sec = cfg->service.stop_timeout_sec > 0 ? cfg->service.stop_timeout_sec : 10;
     ctx->grace_period_sec = cfg->service.grace_period_sec > 0 ? cfg->service.grace_period_sec : 3;
     ctx->health_check_interval_ms = cfg->service.health_check_interval_ms > 0 ? cfg->service.health_check_interval_ms : 5000;
-    ctx->stop_attempts = 0;
     ctx->running_healthy = 0;
     ctx->last_health_check = 0;
     ctx->retry_timer = NULL;
@@ -787,6 +782,35 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
 
 void service_set_reactor(service_ctx_t *ctx, reactor_t *reactor) {
     if (ctx) ctx->reactor = reactor;
+}
+
+void service_cleanup(service_ctx_t *ctx) {
+    if (!ctx) return;
+
+    if (ctx->validate_ctx) {
+        async_validate_cleanup(ctx->validate_ctx);
+        free(ctx->validate_ctx);
+        ctx->validate_ctx = NULL;
+    }
+    if (ctx->reactor && ctx->monitor_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
+        ctx->monitor_timer = NULL;
+    }
+    if (ctx->reactor && ctx->retry_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+        ctx->retry_timer = NULL;
+    }
+    if (ctx->reactor && ctx->health_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->health_timer);
+        ctx->health_timer = NULL;
+    }
+    if (ctx->reactor && ctx->stop_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->stop_timer);
+        ctx->stop_timer = NULL;
+    }
+    service_kill_sync(ctx);
+    ctx->reactor = NULL;
+    ctx->state = SERVICE_STOPPED;
 }
 
 static int service_inspect_config(const char *path, service_ctx_t *ctx) {
@@ -864,7 +888,7 @@ static void on_validate_complete(int result, const char *output, void *userdata)
         if (!circuit_breaker_should_allow(&ctx->breaker)) {
             LOG_WARN("Circuit breaker: open, delaying start");
             service_schedule_retry(ctx);
-            return;
+            goto done;
         }
         if (service_spawn(ctx) == 0) {
             ctx->state = SERVICE_STARTING;
@@ -880,18 +904,16 @@ static void on_validate_complete(int result, const char *output, void *userdata)
         circuit_breaker_record_failure(&ctx->breaker);
     }
 
+done:
     free(ctx->validate_ctx);
     ctx->validate_ctx = NULL;
 }
 
 int service_start_async(service_ctx_t *ctx) {
     if (!ctx || !ctx->reactor) return -1;
-    if (ctx->state == SERVICE_STOPPING) return -1;
-
-    if (!ctx->monitor_timer) {
-        ctx->monitor_timer = reactor_add_timer(ctx->reactor, 1000, 3000,
-                                               service_monitor_cb, ctx);
-        if (!ctx->monitor_timer) return -1;
+    if (ctx->state == SERVICE_STOPPING) {
+        snprintf(ctx->last_error, sizeof(ctx->last_error), "service is stopping");
+        return -1;
     }
 
     if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
@@ -899,15 +921,31 @@ int service_start_async(service_ctx_t *ctx) {
         return 0;
     }
 
-    if (!circuit_breaker_should_allow(&ctx->breaker)) {
-        LOG_WARN("Service: circuit breaker open, refusing to start");
-        return -1;
-    }
-
     if (service_is_alive(ctx)) {
         LOG_INFO("Service: process already running (PID: %d)", ctx->child_pid);
         ctx->state = SERVICE_STARTING;
-        return 0;
+    } else if (service_api_in_use(ctx)) {
+        ctx->state = SERVICE_FAILED;
+        return -1;
+    }
+
+    if (!ctx->monitor_timer) {
+        ctx->monitor_timer = reactor_add_timer(ctx->reactor, 1000, 3000,
+                                               service_monitor_cb, ctx);
+        if (!ctx->monitor_timer) {
+            snprintf(ctx->last_error, sizeof(ctx->last_error),
+                     "failed to schedule service monitor");
+            ctx->state = SERVICE_FAILED;
+            return -1;
+        }
+    }
+
+    if (ctx->state == SERVICE_STARTING) return 0;
+
+    if (!circuit_breaker_should_allow(&ctx->breaker)) {
+        LOG_WARN("Service: circuit breaker open, refusing to start");
+        snprintf(ctx->last_error, sizeof(ctx->last_error), "circuit breaker open");
+        return -1;
     }
 
     if (!service_binary_exists(ctx)) {
@@ -953,6 +991,12 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
 
     ctx->state = SERVICE_STOPPING;
 
+    if (ctx->validate_ctx) {
+        async_validate_cleanup(ctx->validate_ctx);
+        free(ctx->validate_ctx);
+        ctx->validate_ctx = NULL;
+    }
+
     if (ctx->reactor && ctx->health_timer) {
         reactor_cancel_timer(ctx->reactor, ctx->health_timer);
         ctx->health_timer = NULL;
@@ -961,12 +1005,7 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
     service_kill(ctx);
 
     if (!ctx->reactor) {
-        ctx->state = SERVICE_STOPPED;
-        ctx->fail_count = 0;
-        ctx->running_healthy = 0;
-        if (done_cb) {
-            done_cb(ctx, userdata);
-        }
+        service_finish_stop(ctx, done_cb, userdata, 0);
         return 0;
     }
 
@@ -979,26 +1018,16 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
         ctx->retry_timer = NULL;
     }
 
-    service_stop_state_t *state = calloc(1, sizeof(service_stop_state_t));
-    if (!state) {
-        LOG_WARN("Service: failed to allocate stop state, using blocking fallback");
-        usleep(500000);
-        ctx->state = SERVICE_STOPPED;
-        ctx->fail_count = 0;
-        ctx->running_healthy = 0;
-        if (done_cb) {
-            done_cb(ctx, userdata);
-        }
+    ctx->stop_attempts = 0;
+    ctx->stop_done_cb = done_cb;
+    ctx->stop_userdata = userdata;
+    ctx->stop_timer = reactor_add_timer(ctx->reactor, 100, 100,
+                                        service_stop_wait_cb, ctx);
+    if (!ctx->stop_timer) {
+        LOG_ERROR("Service: failed to schedule stop check, forcing kill");
+        service_finish_stop(ctx, done_cb, userdata, 1);
         return -1;
     }
-
-    state->ctx = ctx;
-    state->attempts = 0;
-    state->max_attempts = ctx->stop_timeout_sec * 10;
-    state->done_cb = done_cb;
-    state->userdata = userdata;
-
-    reactor_add_timer(ctx->reactor, 100, 0, service_stop_wait_cb, state);
 
     return 0;
 }

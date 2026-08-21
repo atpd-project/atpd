@@ -48,12 +48,11 @@ typedef struct chunk_ctx_s {
 static void api_request_cleanup(api_request_t *req);
 static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdata);
 static void api_process_requests(api_ctx_t *ctx);
+static void api_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
 static int api_decode_chunked(api_request_t *req);
 static const char *api_extract_body(api_request_t *req);
 static int api_parse_status_line(const char *line, int *code, uint8_t *major, uint8_t *minor);
 static int api_decode_chunked_common(chunk_ctx_t *ctx, const char *buf, size_t avail, size_t *bytes_consumed);
-
-static reactor_t *g_api_reactor = NULL;
 
 static void *api_memmem(const void *haystack, size_t haystack_len,
                          const void *needle, size_t needle_len);
@@ -114,6 +113,12 @@ static int api_validate_request(api_request_t *req) {
     if (!req->method[0]) {
         LOG_ERROR("API: empty method");
         return -1;
+    }
+    for (const char *p = req->method; *p; p++) {
+        if (*p < 'A' || *p > 'Z') {
+            LOG_ERROR("API: invalid method");
+            return -1;
+        }
     }
 
     if (!req->path[0]) {
@@ -343,11 +348,18 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
 }
 
 void api_cleanup(api_ctx_t *ctx) {
+    if (!ctx) return;
+
+    if (ctx->timeout_timer && ctx->reactor) {
+        reactor_cancel_timer(ctx->reactor, ctx->timeout_timer);
+        ctx->timeout_timer = NULL;
+    }
+
     api_request_t *req = ctx->pending_requests;
     while (req) {
         api_request_t *next = req->next;
-        if (req->sock_fd >= 0 && g_api_reactor) {
-            reactor_remove_fd(g_api_reactor, req->sock_fd);
+        if (req->sock_fd >= 0 && ctx->reactor) {
+            reactor_remove_fd(ctx->reactor, req->sock_fd);
         }
         api_request_cleanup(req);
         req = next;
@@ -356,8 +368,8 @@ void api_cleanup(api_ctx_t *ctx) {
     ctx->pending_count = 0;
 
     if (ctx->keepalive_fd >= 0) {
-        if (g_api_reactor) {
-            reactor_remove_fd(g_api_reactor, ctx->keepalive_fd);
+        if (ctx->reactor) {
+            reactor_remove_fd(ctx->reactor, ctx->keepalive_fd);
         }
         close(ctx->keepalive_fd);
         ctx->keepalive_fd = -1;
@@ -365,7 +377,7 @@ void api_cleanup(api_ctx_t *ctx) {
     ctx->keepalive_host[0] = '\0';
     ctx->keepalive_port = 0;
 
-    g_api_reactor = NULL;
+    ctx->reactor = NULL;
 }
 
 static int api_build_http_request(api_request_t *req) {
@@ -458,8 +470,8 @@ static void api_request_cleanup(api_request_t *req) {
     if (!req) return;
 
     if (req->sock_fd >= 0) {
-        if (g_api_reactor) {
-            reactor_remove_fd(g_api_reactor, req->sock_fd);
+        if (req->ctx && req->ctx->reactor) {
+            reactor_remove_fd(req->ctx->reactor, req->sock_fd);
         }
         close(req->sock_fd);
         req->sock_fd = -1;
@@ -498,8 +510,8 @@ static int api_socket_connect(api_request_t *req) {
             req->sock_fd = ctx->keepalive_fd;
             ctx->keepalive_fd = -1;
 
-            if (g_api_reactor) {
-                reactor_remove_fd(g_api_reactor, req->sock_fd);
+            if (ctx->reactor) {
+                reactor_remove_fd(ctx->reactor, req->sock_fd);
             }
 
             req->state = API_STATE_SENDING;
@@ -509,10 +521,12 @@ static int api_socket_connect(api_request_t *req) {
                 return -1;
             }
 
-            if (g_api_reactor) {
-                reactor_add_fd(g_api_reactor, req->sock_fd,
+            if (reactor_add_fd(ctx->reactor, req->sock_fd,
                                REACTOR_EVENT_READ | REACTOR_EVENT_WRITE,
-                               api_io_callback, req);
+                               api_io_callback, req) != 0) {
+                close(req->sock_fd);
+                req->sock_fd = -1;
+                return -1;
             }
 
             LOG_DEBUG("API: reused keep-alive connection (fd=%d)", req->sock_fd);
@@ -520,8 +534,8 @@ static int api_socket_connect(api_request_t *req) {
         }
 
         LOG_DEBUG("API: keep-alive connection dead, reconnecting");
-        if (g_api_reactor) {
-            reactor_remove_fd(g_api_reactor, ctx->keepalive_fd);
+        if (ctx->reactor) {
+            reactor_remove_fd(ctx->reactor, ctx->keepalive_fd);
         }
         close(ctx->keepalive_fd);
         ctx->keepalive_fd = -1;
@@ -552,18 +566,21 @@ static int api_socket_connect(api_request_t *req) {
             continue;
         }
 
-        if (g_api_reactor) {
-            reactor_add_fd(g_api_reactor, req->sock_fd,
+        if (reactor_add_fd(ctx->reactor, req->sock_fd,
                            REACTOR_EVENT_READ | REACTOR_EVENT_WRITE,
-                           api_io_callback, req);
+                           api_io_callback, req) != 0) {
+            close(req->sock_fd);
+            req->sock_fd = -1;
+            req->current_addr = req->current_addr->ai_next;
+            continue;
         }
 
         if (connect(req->sock_fd, req->current_addr->ai_addr,
                     req->current_addr->ai_addrlen) == 0) {
             req->state = API_STATE_SENDING;
             if (api_build_http_request(req) != 0) {
-                if (g_api_reactor) {
-                    reactor_remove_fd(g_api_reactor, req->sock_fd);
+                if (ctx->reactor) {
+                    reactor_remove_fd(ctx->reactor, req->sock_fd);
                 }
                 close(req->sock_fd);
                 req->sock_fd = -1;
@@ -577,8 +594,8 @@ static int api_socket_connect(api_request_t *req) {
             return 0;
         }
 
-        if (g_api_reactor) {
-            reactor_remove_fd(g_api_reactor, req->sock_fd);
+        if (ctx->reactor) {
+            reactor_remove_fd(ctx->reactor, req->sock_fd);
         }
         close(req->sock_fd);
         req->sock_fd = -1;
@@ -1345,18 +1362,26 @@ static void api_io_callback(reactor_t *r, int fd, uint32_t events, void *userdat
 }
 
 static void api_process_requests(api_ctx_t *ctx) {
-    api_request_t *prev = NULL;
-    api_request_t *req = ctx->pending_requests;
     time_t now = time(NULL);
 
-    while (req) {
-        api_request_t *next = req->next;
-        int should_remove = 0;
-
-        if (now - req->start_time > ctx->timeout_sec) {
-            LOG_ERROR("API: request timeout (%ds)", ctx->timeout_sec);
-            req->state = API_STATE_ERROR;
+    for (;;) {
+        api_request_t *prev = NULL;
+        api_request_t *req = ctx->pending_requests;
+        while (req) {
+            if (now - req->start_time >= ctx->timeout_sec) {
+                LOG_ERROR("API: request timeout (%ds)", ctx->timeout_sec);
+                req->state = API_STATE_ERROR;
+            }
+            if (req->state == API_STATE_DONE || req->state == API_STATE_ERROR) break;
+            prev = req;
+            req = req->next;
         }
+        if (!req) break;
+
+        if (prev) prev->next = req->next;
+        else ctx->pending_requests = req->next;
+        req->next = NULL;
+        if (ctx->pending_count > 0) ctx->pending_count--;
 
         if (req->state == API_STATE_DONE) {
             ctx->last_http_code = req->http_code;
@@ -1364,18 +1389,14 @@ static void api_process_requests(api_ctx_t *ctx) {
 
             LOG_DEBUG("API: request success, HTTP %d", req->http_code);
 
-            if (req->callback) {
-                req->callback(req->http_code, body, req->userdata);
-            }
-
             /* KeepAlive: ensure message fully parsed before saving */
             if (req->sock_fd >= 0 && 
                 !req->keepalive_disabled && 
                 !req->read_until_close &&
                 req->parse_state == HTTP_PARSE_DONE) {
                 if (ctx->keepalive_fd >= 0) {
-                    if (g_api_reactor) {
-                        reactor_remove_fd(g_api_reactor, ctx->keepalive_fd);
+                    if (ctx->reactor) {
+                        reactor_remove_fd(ctx->reactor, ctx->keepalive_fd);
                     }
                     close(ctx->keepalive_fd);
                 }
@@ -1387,18 +1408,15 @@ static void api_process_requests(api_ctx_t *ctx) {
                 LOG_DEBUG("API: saved keep-alive connection (fd=%d)", ctx->keepalive_fd);
             }
 
-            should_remove = 1;
+            if (req->callback) req->callback(req->http_code, body, req->userdata);
         } else if (req->state == API_STATE_ERROR) {
             ctx->last_http_code = 0;
             snprintf(ctx->last_error, sizeof(ctx->last_error), "Request failed");
             LOG_DEBUG("API: request failed");
-            if (req->callback) {
-                req->callback(0, NULL, req->userdata);
-            }
 
             if (ctx->keepalive_fd >= 0) {
-                if (g_api_reactor) {
-                    reactor_remove_fd(g_api_reactor, ctx->keepalive_fd);
+                if (ctx->reactor) {
+                    reactor_remove_fd(ctx->reactor, ctx->keepalive_fd);
                 }
                 close(ctx->keepalive_fd);
                 ctx->keepalive_fd = -1;
@@ -1407,32 +1425,15 @@ static void api_process_requests(api_ctx_t *ctx) {
                 LOG_DEBUG("API: closed keep-alive connection due to error");
             }
 
-            should_remove = 1;
+            if (req->callback) req->callback(0, NULL, req->userdata);
         }
-
-        if (should_remove) {
-            if (prev) {
-                prev->next = next;
-            } else {
-                ctx->pending_requests = next;
-            }
-            if (ctx->pending_count > 0) {
-                ctx->pending_count--;
-            } else {
-                LOG_WARN("API: pending_count underflow detected");
-            }
-            api_request_cleanup(req);
-        } else {
-            prev = req;
-        }
-
-        req = next;
+        api_request_cleanup(req);
     }
 
     if (ctx->keepalive_fd >= 0 && now - ctx->keepalive_time > 60) {
         LOG_DEBUG("API: keep-alive connection expired");
-        if (g_api_reactor) {
-            reactor_remove_fd(g_api_reactor, ctx->keepalive_fd);
+        if (ctx->reactor) {
+            reactor_remove_fd(ctx->reactor, ctx->keepalive_fd);
         }
         close(ctx->keepalive_fd);
         ctx->keepalive_fd = -1;
@@ -1441,9 +1442,18 @@ static void api_process_requests(api_ctx_t *ctx) {
     }
 }
 
+static void api_timeout_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
+    (void)r;
+    (void)timer;
+    api_process_requests(userdata);
+}
+
 int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r) {
     if (!ctx || !r) return -1;
-    g_api_reactor = r;
+    if (ctx->timeout_timer) return ctx->reactor == r ? 0 : -1;
+    ctx->timeout_timer = reactor_add_timer(r, 250, 250, api_timeout_cb, ctx);
+    if (!ctx->timeout_timer) return -1;
+    ctx->reactor = r;
     LOG_DEBUG("API: Reactor registered");
     return 0;
 }
@@ -1476,7 +1486,9 @@ int api_process(api_ctx_t *ctx) {
 
 static int api_request_async(api_ctx_t *ctx, const char *method, const char *path,
                               const char *body, api_callback_t callback, void *userdata) {
-    if (!ctx || !method || !path) return -1;
+    if (!ctx || !ctx->reactor || !method || !path) return -1;
+    if (strlen(method) >= sizeof(((api_request_t *)0)->method) ||
+        strlen(path) >= sizeof(((api_request_t *)0)->path)) return -1;
 
     if (ctx->pending_count >= API_MAX_PENDING_REQUESTS) {
         LOG_ERROR("API: too many pending requests (%d)", ctx->pending_count);
@@ -1514,6 +1526,10 @@ static int api_request_async(api_ctx_t *ctx, const char *method, const char *pat
     snprintf(req->method, sizeof(req->method), "%s", method);
     snprintf(req->path, sizeof(req->path), "%s", path);
     req->body = body ? strdup(body) : NULL;
+    if (body && !req->body) {
+        free(req);
+        return -1;
+    }
     req->callback = callback;
     req->userdata = userdata;
     req->start_time = time(NULL);
@@ -1562,7 +1578,7 @@ int api_get_proxies_async(api_ctx_t *ctx, api_callback_t callback, void *userdat
 
 int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
                           const char *body, api_callback_t callback, void *userdata) {
-    if (!ctx || !method || !url) return -1;
+    if (!ctx || !ctx->reactor || !method || !url) return -1;
 
     if (ctx->pending_count >= API_MAX_PENDING_REQUESTS) {
         LOG_ERROR("API: too many pending requests (%d)", ctx->pending_count);
@@ -1594,6 +1610,10 @@ int api_request_raw_async(api_ctx_t *ctx, const char *method, const char *url,
     req->http_minor = 0;
     snprintf(req->method, sizeof(req->method), "%s", method);
     req->body = body ? strdup(body) : NULL;
+    if (body && !req->body) {
+        free(req);
+        return -1;
+    }
     req->callback = callback;
     req->userdata = userdata;
     req->start_time = time(NULL);

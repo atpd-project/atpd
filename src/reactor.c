@@ -243,8 +243,11 @@ reactor_t* reactor_create(void) {
         return NULL;
     }
 
-    reactor_add_fd(r, r->signal_fd, REACTOR_EVENT_READ, NULL, r);
-    reactor_add_fd(r, r->event_fd, REACTOR_EVENT_READ, NULL, r);
+    if (reactor_add_fd(r, r->signal_fd, REACTOR_EVENT_READ, NULL, r) != 0 ||
+        reactor_add_fd(r, r->event_fd, REACTOR_EVENT_READ, NULL, r) != 0) {
+        reactor_destroy(r);
+        return NULL;
+    }
 
     priv->current_time_ms = get_monotonic_ms();
 
@@ -524,7 +527,8 @@ int reactor_cancel_timer(reactor_t *r, reactor_timer_t *timer) {
         return 0;
     }
 
-    if (internal->linked) {
+    int linked = internal->linked;
+    if (linked) {
         timer_list_remove(priv, internal);
     }
 
@@ -539,6 +543,8 @@ int reactor_cancel_timer(reactor_t *r, reactor_timer_t *timer) {
     timer->internal = NULL;
 
     free(timer);
+
+    if (linked) free(internal);
 
     reactor_wakeup(r);
 

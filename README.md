@@ -139,8 +139,9 @@ atpd stop --force                 # Stop without confirmation
 
 ## Versioning
 
-- **Stable releases**: Tagged commits (e.g., `v1.0.0`).
-- **Development builds**: Format `dev-<short-commit>` (e.g., `dev-abc1234`).
+- **Stable releases**: Tagged commits use `<version>` (e.g., tag `v1.0.0` produces `1.0.0`).
+- **Post-tag builds**: Format `<version>-<count>-g<hash>`.
+- **Builds without a reachable tag**: Format `0.0.0-0-g<hash>`.
 
 For a list of verified working commits, see [Issue #1](https://github.com/atpd-project/atpd/issues/1).
 
@@ -153,8 +154,7 @@ For a list of verified working commits, see [Issue #1](https://github.com/atpd-p
 ├── run/
 │   ├── atp.log             # ATP log file
 │   ├── atpd.pid            # Daemon PID file
-│   ├── sing-box.log        # sing-box log
-│   └── sing-box.pid        # sing-box PID file
+│   └── sing-box.log        # sing-box log
 ├── sing-box/
 │   └── config.json         # sing-box configuration
 └── atp.conf                # Main configuration
@@ -186,37 +186,24 @@ ip -6 rule show pref 100
 
 ## Development
 
-### Environment Setup
-
-A consistent environment across PC and Android is recommended:
-
-- **PC**: WSL2 (Debian) with Git, GitHub CLI, and GPG signing.
-- **Android**: Termux with Git, GitHub CLI, and GPG.
-
 ### Common Commands
 
 | Task | Command |
 |-------|--------|
-| Pull latest | `git pull origin dev` |
-| Commit | `git add . && git ci -m "message"` |
-| Push | `git push origin dev` |
-| Clean workspace | `git reset --hard HEAD && git clean -fd` |
+| Build | `make` |
+| Test | `make test` |
+| Validate config | `build/bin/atpd -c examples/atp.conf.example check` |
+| Inspect changes | `git status --short && git diff --check` |
 
 ## License
 
 GPL v3
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 ATP is built upon the shoulders of giants. Special thanks to:
 
-- **[AndroidTProxyShell]** by [CHIZI-0618](https://github.com/CHIZI-0618) — The original shell script that inspired this project's architecture, TPROXY implementation, and comprehensive feature set.
-- **[sing-box]** by [SagerNet](https://github.com/SagerNet) — The powerful universal proxy core that powers ATP's underlying traffic handling and Clash API integration.
-- **[DeepSeek](https://www.deepseek.com/)** — AI-driven development assistance that accelerated the creation of this project's C language implementation.
+- **[sing-box]** by [SagerNet](https://github.com/SagerNet) - the proxy core and eBPF inbound supervised by ATPd.
+- **[yyjson](https://github.com/ibireme/yyjson)** - the JSON parser used for sing-box configuration and Clash API responses.
 
 Their excellent work made ATP possible.
-
----
-🚀 **Project:** ATP -- Advanced Transparent Proxy
-🛡️ **Status:** Verified Commit Flow Enabled
-👤 **Identity:** DeepSeek (Author) / debiansid (Committer)

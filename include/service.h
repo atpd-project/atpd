@@ -24,21 +24,6 @@ typedef struct {
 typedef struct service_ctx_t service_ctx_t;
 
 typedef struct {
-    service_ctx_t *ctx;
-    int attempts;
-    int max_attempts;
-    reactor_timer_t *timer;
-    void (*done_cb)(service_ctx_t *, void *);
-    void *userdata;
-} service_stop_state_t;
-
-typedef struct {
-    service_ctx_t *ctx;
-    int attempts;
-    int max_attempts;
-} kill_state_t;
-
-typedef struct {
     int consecutive_failures;
     int threshold;
     int cooldown_seconds;
@@ -68,13 +53,16 @@ struct service_ctx_t {
     reactor_timer_t *monitor_timer;
     reactor_timer_t *retry_timer;
     reactor_timer_t *health_timer;
+    reactor_timer_t *stop_timer;
+    int stop_attempts;
+    void (*stop_done_cb)(service_ctx_t *, void *);
+    void *stop_userdata;
     void *validate_ctx;
     backoff_t backoff;
     circuit_breaker_t breaker;
     time_t last_health_check;
     int health_check_interval_ms;
     int running_healthy;
-    int stop_attempts;
     time_t started_at;
     unsigned restart_count;
     char ebpf_mode[16];
@@ -84,6 +72,7 @@ struct service_ctx_t {
 };
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
+void service_cleanup(service_ctx_t *ctx);
 void service_set_reactor(service_ctx_t *ctx, reactor_t *reactor);
 int service_validate_config(const char *path);
 int service_reload_async(service_ctx_t *ctx, atp_config_t *cfg);

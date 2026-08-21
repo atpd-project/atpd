@@ -8,6 +8,7 @@ on:
       - main
       - dev
       - staging
+      - ebpf-vpn
       - 'feat-*'
       - 'feat/**'
       - 'test/**'
@@ -15,6 +16,7 @@ on:
       - 'src/**'
       - 'include/**'
       - 'scripts/**'
+      - 'tests/**'
       - '.github/scripts/**'
       - '.github/actions/**'
       - 'Makefile'
@@ -33,6 +35,7 @@ jobs:
     if: |
       github.ref_name == 'main' ||
       github.ref_name == 'dev' ||
+      github.ref_name == 'ebpf-vpn' ||
       startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:

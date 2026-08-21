@@ -113,6 +113,8 @@ typedef struct api_ctx_s {
     char base_url[128];
     char secret[128];
     int timeout_sec;
+    reactor_t *reactor;
+    reactor_timer_t *timeout_timer;
 
     api_request_t *pending_requests;
     int pending_count;

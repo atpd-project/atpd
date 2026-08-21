@@ -42,25 +42,18 @@ runs:
           - **Build Date:** ${{ inputs.build-date }}
           
           ### Features
-          - TPROXY transparent proxy for IPv4/IPv6
-          - Performance optimization (CPU/BBR/RPS/RFS)
-          - Application filter by UID (per-app proxy control)
-          - MAC filter for hotspot devices
-          - GeoIP CN bypass with atomic ipset update
-          - INET_DIAG UID detection (connection-level control)
-          - Netlink async VPN monitoring (microsecond response)
-          - State machine lifecycle management
-          - Thermal throttling protection (75°C)
-          - Persistent traffic statistics
+          - sing-box native eBPF inbound supervision
+          - Google VPN XFRM/ipsec detection and Clash mode switching
+          - Separate TUN/WireGuard/WARP VPN reporting
+          - Direct mode on a configured Wi-Fi SSID with mode restoration
+          - IPv4/IPv6 hotspot policy reconciliation
+          - Runtime state machines, health checks, and traffic status
           
           ### Installation
           ```bash
           # Download and install
           wget -O /data/adb/atp/bin/atpd "https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag-name }}/atpd"
           chmod 755 /data/adb/atp/bin/atpd
-          
-          # Apply SELinux policy (if using INET_DIAG)
-          /data/adb/atp/bin/sepolicy_atp.sh start
           
           # Start ATP
           /data/adb/atp/bin/atpd start

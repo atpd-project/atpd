@@ -65,7 +65,10 @@ int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
         return -1;
     }
     
-    netlink_set_reactor(ctx->reactor);
+    if (netlink_set_reactor(ctx->reactor) != 0) {
+        LOG_ERROR("Failed to register netlink listeners");
+        return -1;
+    }
     
     return 0;
 }
@@ -93,10 +96,8 @@ int atpd_init_phase_service(atpd_init_context_t *ctx) {
 int atpd_init_phase_api(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing API...");
     
-    api_init(ctx->api, ctx->config);
-    api_start_with_reactor(ctx->api, ctx->reactor);
-    
-    return 0;
+    return api_init(ctx->api, ctx->config) == 0 &&
+           api_start_with_reactor(ctx->api, ctx->reactor) == 0 ? 0 : -1;
 }
 
 int atpd_init_phase_ready(atpd_init_context_t *ctx) {
@@ -135,9 +136,12 @@ int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
     
     for (int i = phase; i >= 0; i--) {
         switch (init_phases[i].phase) {
+            case INIT_PHASE_API:
+                api_cleanup(ctx->api);
+                break;
             case INIT_PHASE_SERVICE:
                 if (ctx->service) {
-                    service_stop_async(ctx->service, NULL, NULL);
+                    service_cleanup(ctx->service);
                     free(ctx->service);
                     ctx->service = NULL;
                 }

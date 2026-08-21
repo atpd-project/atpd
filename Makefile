@@ -60,6 +60,10 @@ all: $(TARGET)
 test: $(TARGET)
 	$(CC) $(CFLAGS) -o build/test_wifi tests/test_wifi.c src/wifi.c src/atpd_context.c src/utils.c src/logger.c
 	build/test_wifi
+	$(CC) $(CFLAGS) -o build/test_service tests/test_service.c src/service.c src/async_validate.c src/reactor.c src/utils.c src/logger.c src/yyjson.c
+	build/test_service
+	$(CC) $(CFLAGS) -o build/test_api tests/test_api.c src/api.c src/reactor.c src/utils.c src/logger.c src/yyjson.c
+	build/test_api
 	bash tests/test_status.sh $(TARGET)
 	bash tests/test_core_status.sh $(TARGET)
 

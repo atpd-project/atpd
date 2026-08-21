@@ -126,6 +126,59 @@ case "$api_output" in
     *) echo "incomplete direct core status" >&2; exit 1 ;;
 esac
 
+check_invalid_json() {
+    version_body=$1
+    mode_body=$2
+    rm -f -- "$port_file"
+    python3 - "$port_file" "$version_body" "$mode_body" <<'PY' &
+import socket
+import sys
+
+port_file, version_body, mode_body = sys.argv[1:]
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.bind(("127.0.0.1", 0))
+server.listen(2)
+with open(port_file, "w", encoding="ascii") as output:
+    output.write(str(server.getsockname()[1]))
+
+for _ in range(2):
+    client, _ = server.accept()
+    request = b""
+    while b"\r\n\r\n" not in request:
+        chunk = client.recv(2048)
+        if not chunk:
+            break
+        request += chunk
+    body = version_body if request.startswith(b"GET /version ") else mode_body
+    body = body.encode()
+    client.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: " +
+                   str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
+    client.close()
+server.close()
+PY
+    server_pid=$!
+    for _ in $(seq 1 100); do
+        [ -s "$port_file" ] && break
+        sleep 0.01
+    done
+    api_port=$(cat "$port_file")
+    sed -i "s/^API_PORT=.*/API_PORT=$api_port/" "$config_path"
+    set +e
+    invalid_output=$("$binary" -c "$config_path" core status)
+    invalid_status=$?
+    set -e
+    wait "$server_pid"
+    server_pid=
+    [ "$invalid_status" -eq 2 ]
+    case "$invalid_output" in
+        *"Version             unknown"*"Mode                unknown"*"Overall               UNREACHABLE"*) ;;
+        *) echo "invalid Clash JSON was accepted" >&2; exit 1 ;;
+    esac
+}
+
+check_invalid_json '{"version":' '{"mode":'
+check_invalid_json '{"nested":{"version":"fake"}}' '{"mode":7}'
+
 for action in start stop restart; do
     rm -f -- "$socket_path"
     python3 - "$socket_path" "$action" <<'PY' &
