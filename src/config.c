@@ -3,7 +3,6 @@
 #include "utils.h"
 #include "atp.h"
 #include "atpd_context.h"
-#include "boxbpf.h"
 #include "app_filter.h"
 #include "config_validator.h"
 #include <pwd.h>
@@ -34,7 +33,6 @@ static void config_copy_content(atp_config_t *dst, const atp_config_t *src) {
     dst->interface = src->interface;
     dst->filter = src->filter;
     dst->iplist = src->iplist;
-    dst->ebpf = src->ebpf;
     dst->service = src->service;
     dst->api = src->api;
 }
@@ -47,7 +45,6 @@ static void config_snapshot_content(atp_config_t *dst, const atp_config_t *src) 
     dst->interface = src->interface;
     dst->filter = src->filter;
     dst->iplist = src->iplist;
-    dst->ebpf = src->ebpf;
     dst->service = src->service;
     dst->api = src->api;
 }
@@ -168,7 +165,6 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->filter.app_proxy_enable = 1;
     cfg->filter.mac_filter_enable = 0;
     cfg->filter.bypass_cn_ip = 1;
-    cfg->filter.cnip_mode = 1;
     snprintf(cfg->filter.app_proxy_mode, sizeof(cfg->filter.app_proxy_mode), "blacklist");
     snprintf(cfg->filter.mac_proxy_mode, sizeof(cfg->filter.mac_proxy_mode), "blacklist");
     snprintf(cfg->filter.user_clash_mode, sizeof(cfg->filter.user_clash_mode), "Rule");
@@ -195,15 +191,6 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->iplist.proxy_ipv4_list[0] = '\0';
     cfg->iplist.proxy_ipv6_list[0] = '\0';
 
-    cfg->ebpf.enabled = 1;
-    cfg->ebpf.ready = 0;
-    cfg->ebpf.load_retry = 3;
-    cfg->ebpf.load_delay = 2;
-    snprintf(cfg->ebpf.bin_path, sizeof(cfg->ebpf.bin_path), "%s/bin/boxbpf", ATP_DEFAULT_DIR);
-    snprintf(cfg->ebpf.pin_dir, sizeof(cfg->ebpf.pin_dir), "/sys/fs/bpf/box");
-    snprintf(cfg->ebpf.state_dir, sizeof(cfg->ebpf.state_dir), "%s/ebpf", ATP_DEFAULT_DIR);
-    snprintf(cfg->ebpf.config_path, sizeof(cfg->ebpf.config_path), "%s/ebpf/rule-config.json", ATP_DEFAULT_DIR);
-
     cfg->service.start_timeout_sec = SERVICE_DEFAULT_START_TIMEOUT_SEC;
     cfg->service.stop_timeout_sec = SERVICE_DEFAULT_STOP_TIMEOUT_SEC;
     cfg->service.grace_period_sec = SERVICE_DEFAULT_GRACE_PERIOD_SEC;
@@ -220,17 +207,6 @@ void config_set_defaults(atp_config_t *cfg) {
 
 static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
     int int_val;
-
-    if (strcmp(k, "CNIP_MODE") == 0) {
-        if (strcmp(v, "ebpf") == 0) {
-            cfg->filter.cnip_mode = 1;
-        } else if (strcmp(v, "ipset") == 0) {
-            cfg->filter.cnip_mode = 0;
-        } else if (config_parse_int(v, &int_val) == 0) {
-            cfg->filter.cnip_mode = int_val;
-        }
-        return;
-    }
 
     if (config_parse_int(v, &int_val) == 0) {
         if (strcmp(k, "PROXY_TCP_PORT") == 0) cfg->network.tcp_port = int_val;
@@ -260,9 +236,6 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
         else if (strcmp(k, "RESTART_DELAY") == 0) cfg->core.restart_delay = int_val;
         else if (strcmp(k, "API_PORT") == 0) cfg->api.port = int_val;
         else if (strcmp(k, "UI_EMOJI_ENABLED") == 0) cfg->core.ui_emoji_enabled = int_val;
-        else if (strcmp(k, "ENABLE_EBPF") == 0) cfg->ebpf.enabled = int_val;
-        else if (strcmp(k, "EBPF_LOAD_RETRY") == 0) cfg->ebpf.load_retry = int_val;
-        else if (strcmp(k, "EBPF_LOAD_DELAY") == 0) cfg->ebpf.load_delay = int_val;
         else if (strcmp(k, "SERVICE_START_TIMEOUT") == 0) cfg->service.start_timeout_sec = int_val;
         else if (strcmp(k, "SERVICE_STOP_TIMEOUT") == 0) cfg->service.stop_timeout_sec = int_val;
         else if (strcmp(k, "SERVICE_GRACE_PERIOD") == 0) cfg->service.grace_period_sec = int_val;
@@ -297,9 +270,6 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
         else if (strcmp(k, "USER_CLASH_MODE") == 0) snprintf(cfg->filter.user_clash_mode, sizeof(cfg->filter.user_clash_mode), "%s", v);
         else if (strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->filter.clash_secret, sizeof(cfg->filter.clash_secret), "%s", v);
         else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", v);
-        else if (strcmp(k, "EBPF_BIN") == 0) snprintf(cfg->ebpf.bin_path, sizeof(cfg->ebpf.bin_path), "%s", v);
-        else if (strcmp(k, "EBPF_PIN_DIR") == 0) snprintf(cfg->ebpf.pin_dir, sizeof(cfg->ebpf.pin_dir), "%s", v);
-        else if (strcmp(k, "EBPF_STATE_DIR") == 0) snprintf(cfg->ebpf.state_dir, sizeof(cfg->ebpf.state_dir), "%s", v);
         else if (strcmp(k, "CNIP_FORCE_PROXY_APPS") == 0) snprintf(cfg->filter.cnip_force_proxy_apps, sizeof(cfg->filter.cnip_force_proxy_apps), "%s", v);
         else if (strcmp(k, "CORE_USER_GROUP") == 0) {
             char val[256]; snprintf(val, sizeof(val), "%s", v); char *colon = strchr(val, ':');
@@ -431,39 +401,8 @@ int config_set_mode(atp_config_t *cfg, const char *mode) {
     return ATP_OK;
 }
 
-static void ebpf_reload(atp_config_t *cfg) {
-    if (!cfg->filter.bypass_cn_ip) {
-        LOG_DEBUG("CNIP bypass disabled, skipping eBPF reload");
-        return;
-    }
-    if (!cfg->ebpf.enabled) {
-        LOG_DEBUG("eBPF disabled, skipping eBPF reload");
-        return;
-    }
-    if (cfg->filter.cnip_mode != 1) {
-        LOG_DEBUG("CNIP_MODE is not ebpf, skipping eBPF reload");
-        return;
-    }
-
-    int ret = boxbpf_reload_from_config(cfg);
-    if (ret == ATP_OK) {
-        cfg->ebpf.ready = 1;
-        atpd_ebpf_state_transition(EBPF_STATE_READY);
-        LOG_INFO("eBPF CNIP reloaded successfully");
-    } else {
-        cfg->ebpf.ready = 0;
-        atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-        LOG_ERROR("eBPF CNIP reload failed");
-    }
-}
-
 static int config_apply_deltas(atp_config_t *cfg, const atp_config_t *old) {
     int ret = ATP_OK;
-
-    if (cfg->filter.cnip_mode != old->filter.cnip_mode ||
-        cfg->ebpf.enabled != old->ebpf.enabled) {
-        ebpf_reload(cfg);
-    }
 
     if (cfg->filter.app_proxy_enable != old->filter.app_proxy_enable ||
         strcmp(cfg->filter.app_proxy_mode, old->filter.app_proxy_mode) != 0 ||
@@ -633,10 +572,9 @@ int config_save_runtime(const char *path, atp_config_t *cfg) {
         return ATP_ERR_IO;
     }
 
-    int ret = fprintf(fp, "# ATP Runtime\nUSE_TPROXY=%d\nTABLE_ID=%d\nMARK_VALUE=%d\nMARK_VALUE6=%d\nEBPF_ENABLED=%d\nCNIP_MODE=%d\nEBPF_READY=%d\nEBPF_PIN_DIR=%s\n",
+    int ret = fprintf(fp, "# ATP Runtime\nUSE_TPROXY=%d\nTABLE_ID=%d\nMARK_VALUE=%d\nMARK_VALUE6=%d\n",
                       local.network.use_tproxy, local.network.table_id, local.network.mark_value,
-                      local.network.mark_value6, local.ebpf.enabled, local.filter.cnip_mode,
-                      local.ebpf.ready, local.ebpf.pin_dir);
+                      local.network.mark_value6);
 
     if (fflush(fp) != 0) {
         fclose(fp);

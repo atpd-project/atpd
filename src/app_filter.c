@@ -276,11 +276,9 @@ int app_filter_setup(atp_config_t *cfg) {
     pthread_rwlock_wrlock(&g_uid_list_lock);
     free(g_current_uids); g_current_uids = uids; g_current_uids_count = c;
     pthread_rwlock_unlock(&g_uid_list_lock);
-    if (!cfg->ebpf.ready) {
-        app_filter_add_uids_to_ipset(cfg, uids, c, cfg->filter.app_proxy_mode);
-        app_filter_configure_chain(cfg, 4);
-        if (cfg->network.proxy_ipv6) app_filter_configure_chain(cfg, 6);
-    }
+    app_filter_add_uids_to_ipset(cfg, uids, c, cfg->filter.app_proxy_mode);
+    app_filter_configure_chain(cfg, 4);
+    if (cfg->network.proxy_ipv6) app_filter_configure_chain(cfg, 6);
     return 0;
 }
 

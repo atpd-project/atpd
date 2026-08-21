@@ -66,7 +66,6 @@ typedef struct {
     bool app_proxy_enable;
     bool mac_filter_enable;
     bool bypass_cn_ip;
-    int cnip_mode;
     char app_proxy_mode[32];
     char mac_proxy_mode[32];
     char user_clash_mode[32];
@@ -89,18 +88,6 @@ typedef struct {
     char proxy_ipv4_list[4096];
     char proxy_ipv6_list[4096];
 } iplist_config_t;
-
-/* eBPF */
-typedef struct {
-    bool enabled;
-    bool ready;
-    int load_retry;
-    int load_delay;
-    char bin_path[PATH_MAX];
-    char config_path[PATH_MAX];
-    char pin_dir[PATH_MAX];
-    char state_dir[PATH_MAX];
-} ebpf_config_t;
 
 /* Service */
 typedef struct {
@@ -128,7 +115,6 @@ typedef struct {
     interface_config_t interface;
     filter_config_t filter;
     iplist_config_t iplist;
-    ebpf_config_t ebpf;
     service_config_t service;
     api_config_t api;
     pthread_mutex_t mutex;

@@ -20,7 +20,6 @@ typedef struct atpd_init_context {
 typedef enum {
     INIT_PHASE_CONFIG = 0,
     INIT_PHASE_LOGGER,
-    INIT_PHASE_EBPF,
     INIT_PHASE_NETLINK,
     INIT_PHASE_FILTER,
     INIT_PHASE_SERVICE,
@@ -41,7 +40,6 @@ typedef struct {
 
 int atpd_init_phase_config(atpd_init_context_t *ctx);
 int atpd_init_phase_logger(atpd_init_context_t *ctx);
-int atpd_init_phase_ebpf(atpd_init_context_t *ctx);
 int atpd_init_phase_netlink(atpd_init_context_t *ctx);
 int atpd_init_phase_filter(atpd_init_context_t *ctx);
 int atpd_init_phase_service(atpd_init_context_t *ctx);

@@ -17,8 +17,6 @@ static const char* error_code_string(atpd_error_code_t code) {
         case ATPD_ERR_NONE: return "NONE";
         case ATPD_ERR_CONFIG_LOAD: return "CONFIG_LOAD";
         case ATPD_ERR_CONFIG_RELOAD: return "CONFIG_RELOAD";
-        case ATPD_ERR_EBPF_INIT: return "EBPF_INIT";
-        case ATPD_ERR_EBPF_RELOAD: return "EBPF_RELOAD";
         case ATPD_ERR_SERVICE_START: return "SERVICE_START";
         case ATPD_ERR_SERVICE_STOP: return "SERVICE_STOP";
         case ATPD_ERR_NETLINK_INIT: return "NETLINK_INIT";

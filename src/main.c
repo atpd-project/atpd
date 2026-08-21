@@ -24,7 +24,6 @@
 #include "version.h"
 #include "tproxy.h"
 #include "geoip.h"
-#include "boxbpf.h"
 #include "cleanup.h"
 #include "reactor.h"
 #include "uds.h"
@@ -63,7 +62,6 @@ static void service_stop_sync(service_ctx_t *ctx);
 static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static void daemonize(void);
-static void cleanup_ebpf(void);
 static int process_is_atpd(pid_t pid);
 static int verify_pid_file_unchanged(int fd, int expected_pid);
 
@@ -241,19 +239,6 @@ static void daemonize(void) {
 
     signal(SIGPIPE, SIG_IGN);
     (void)chdir("/");
-}
-
-static void cleanup_ebpf(void) {
-    if (g_config.ebpf.ready) {
-        LOG_INFO("Cleaning up eBPF CNIP...");
-        int ret = boxbpf_clear();
-        if (ret != ATP_OK) {
-            LOG_ERROR("Failed to clear eBPF: %d", ret);
-        }
-        g_config.ebpf.ready = 0;
-        g_atpd_ctx.ebpf_enabled = false;
-        atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
-    }
 }
 
 static void on_signal(reactor_t *r, int sig, void *userdata) {
@@ -475,7 +460,6 @@ cleanup:
         free(svc);
     }
 
-    cleanup_ebpf();
     tproxy_cleanup_all(&g_config);
     netlink_cleanup();
     uds_cleanup();
@@ -491,7 +475,6 @@ static int do_start(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
     int ret = 0;
     bool pid_written = false;
-    bool ebpf_initialized = false;
     bool tproxy_initialized = false;
 
     atpd_init_context_t init_ctx = {
@@ -504,7 +487,6 @@ static int do_start(atp_options_t *opts) {
     };
 
     LOG_INFO("Cleaning up stale rules before start...");
-    boxbpf_clear();
     tproxy_cleanup_all(&g_config);
 
     resolve_pid_path(opts, pp, sizeof(pp));
@@ -527,8 +509,6 @@ static int do_start(atp_options_t *opts) {
         ret = 1;
         goto cleanup;
     }
-    ebpf_initialized = true;
-
     g_svc = init_ctx.service;
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
 
@@ -552,9 +532,6 @@ cleanup:
     if (ret != 0) {
         if (tproxy_initialized) {
             tproxy_cleanup_all(&g_config);
-        }
-        if (ebpf_initialized) {
-            cleanup_ebpf();
         }
         netlink_cleanup();
         uds_cleanup();
@@ -651,7 +628,6 @@ static int do_stop(atp_options_t *opts) {
         if (kill(pid, 0) < 0) {
             printf("Daemon stopped\n");
             unlink(pp);
-            boxbpf_clear();
             return 0;
         }
         usleep(SERVICE_STOP_INTERVAL_MS * 1000);
@@ -676,7 +652,6 @@ static int do_stop(atp_options_t *opts) {
     }
 
     unlink(pp);
-    boxbpf_clear();
     return ret;
 }
 
@@ -820,80 +795,6 @@ static int do_update_geoip(atp_options_t *opts) {
     }
 }
 
-static int do_ebpf_probe(atp_options_t *opts) {
-    int ret = boxbpf_probe(opts->ipv6);
-    if (ret == ATP_OK) {
-        printf("supported=1\nmessage=ok\nlpm_ipv4=1\nprogram_ipv4=1\npin_ipv4=1\n");
-        if (opts->ipv6) {
-            printf("lpm_ipv6=1\nprogram_ipv6=1\npin_ipv6=1\n");
-        }
-        return ATP_OK;
-    } else {
-        printf("supported=0\nmessage=eBPF xt_bpf unavailable\n");
-        return ATP_ERR_EBPF;
-    }
-}
-
-static int do_ebpf_init(atp_options_t *opts) {
-    atp_config_t cfg;
-    config_set_defaults(&cfg);
-
-    const char *config_path = opts->config_file;
-    if (config_path && config_path[0]) {
-        config_load(config_path, &cfg);
-    } else {
-        const char *default_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
-        if (access(default_path, R_OK) == 0) {
-            config_load(default_path, &cfg);
-        }
-    }
-
-    if (opts->ebpf_config[0] != '\0') {
-        snprintf(cfg.ebpf.config_path, sizeof(cfg.ebpf.config_path),
-                 "%s", opts->ebpf_config);
-    }
-    return boxbpf_init_from_config(&cfg);
-}
-
-static int do_ebpf_apply(atp_options_t *opts) {
-    const char *path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/rule-config.json";
-    return boxbpf_apply(path);
-}
-
-static int do_ebpf_update(atp_options_t *opts) {
-    const char *path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/rule-config.json";
-    return boxbpf_update(path);
-}
-
-static int do_ebpf_clear(atp_options_t *opts) {
-    (void)opts;
-    return boxbpf_clear();
-}
-
-static int do_ebpf_status(atp_options_t *opts) {
-    char state[64] = {0};
-    atp_config_t cfg;
-    config_set_defaults(&cfg);
-
-    const char *config_path = opts->config_file;
-    if (config_path && config_path[0]) {
-        config_load(config_path, &cfg);
-    } else {
-        const char *default_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
-        if (access(default_path, R_OK) == 0) {
-            config_load(default_path, &cfg);
-        }
-    }
-
-    if (boxbpf_status(state, sizeof(state), &cfg) == ATP_OK) {
-        printf("eBPF Status: %s\n", state);
-        return ATP_OK;
-    } else {
-        printf("eBPF Status: UNINITIALIZED\n");
-        return ATP_ERR_EBPF;
-    }
-}
-
 int main(int argc, char *argv[]) {
     atp_options_t opts = {0};
 
@@ -926,18 +827,6 @@ int main(int argc, char *argv[]) {
         case CMD_HELP:
             print_usage(argv[0]);
             return 0;
-        case CMD_EBPF_PROBE:
-            return do_ebpf_probe(&opts);
-        case CMD_EBPF_INIT:
-            return do_ebpf_init(&opts);
-        case CMD_EBPF_APPLY:
-            return do_ebpf_apply(&opts);
-        case CMD_EBPF_UPDATE:
-            return do_ebpf_update(&opts);
-        case CMD_EBPF_CLEAR:
-            return do_ebpf_clear(&opts);
-        case CMD_EBPF_STATUS:
-            return do_ebpf_status(&opts);
         default:
             print_usage(argv[0]);
             return 0;

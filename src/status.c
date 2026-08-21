@@ -16,7 +16,6 @@
 #include "ui.h"
 #include "perf_mode.h"
 #include "atpd_context.h"
-#include "boxbpf.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -176,45 +175,6 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
     } else {
         ui_table_row_color(ui_emoji_info(), cfg->filter.user_clash_mode, COLOR_YELLOW);
         ui_table_warning("API unavailable, using cached value");
-    }
-
-    ui_table_end();
-}
-
-static void status_show_ebpf(void) {
-    char state[64] = {0};
-    char pin_dir[256];
-    struct stat st;
-
-    snprintf(pin_dir, sizeof(pin_dir), "/sys/fs/bpf/box");
-
-    ui_table_begin();
-    ui_table_header("eBPF CNIP");
-
-    if (boxbpf_status(state, sizeof(state), &g_config) == 0) {
-        if (strcmp(state, "ready") == 0) {
-            ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", g_config.ebpf.pin_dir);
-            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
-        } else if (strcmp(state, "failed") == 0) {
-            ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
-            ui_table_subrow("└─", "Fallback", "ipset");
-        } else if (strcmp(state, "disabled") == 0) {
-            ui_table_subrow_color("├─", "State", "DISABLED", COLOR_YELLOW);
-            ui_table_subrow("└─", "CNIP Mode", "ipset");
-        } else {
-            ui_table_subrow_color("└─", "State", state, COLOR_RED);
-        }
-    } else {
-        char pin_path[256];
-        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", pin_dir);
-        if (stat(pin_path, &st) == 0) {
-            ui_table_subrow_color("├─", "State", "READY (pin)", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", pin_dir);
-            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
-        } else {
-            ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
-        }
     }
 
     ui_table_end();
@@ -575,7 +535,6 @@ void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
     status_show_clash_mode(cfg, api, svc);
     ui_blank();
 
-    status_show_ebpf();
     ui_blank();
 
     status_show_monitors();

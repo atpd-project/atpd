@@ -79,12 +79,6 @@ static const char *VALID_CONFIG_KEYS[] = {
     "API_HOST",
     "UI_EMOJI_ENABLED",
     "CORE_USER_GROUP",
-    "ENABLE_EBPF",
-    "EBPF_LOAD_RETRY",
-    "EBPF_LOAD_DELAY",
-    "EBPF_BIN",
-    "EBPF_PIN_DIR",
-    "EBPF_STATE_DIR",
     "SERVICE_START_TIMEOUT",
     "SERVICE_STOP_TIMEOUT",
     "SERVICE_GRACE_PERIOD",
@@ -356,22 +350,6 @@ static int validate_user_group(const char *user_group) {
     return 0;
 }
 
-static int validate_ebpf_params(atp_config_t *cfg) {
-    int errors = 0;
-
-    if (cfg->ebpf.load_retry < 0 || cfg->ebpf.load_retry > 100) {
-        LOG_ERROR("EBPF_LOAD_RETRY must be 0-100, got %d", cfg->ebpf.load_retry);
-        errors++;
-    }
-
-    if (cfg->ebpf.load_delay < 0 || cfg->ebpf.load_delay > 3600) {
-        LOG_ERROR("EBPF_LOAD_DELAY must be 0-3600 seconds, got %d", cfg->ebpf.load_delay);
-        errors++;
-    }
-
-    return errors;
-}
-
 static int validate_service_params(atp_config_t *cfg) {
     int errors = 0;
 
@@ -447,11 +425,6 @@ int config_validate_values(atp_config_t *cfg) {
 
     errors += validate_dns_hijack_mode(cfg->network.dns_hijack) ? 1 : 0;
 
-    if (cfg->filter.cnip_mode != 0 && cfg->filter.cnip_mode != 1) {
-        LOG_ERROR("CNIP_MODE must be 0 (ipset) or 1 (ebpf), got %d", cfg->filter.cnip_mode);
-        errors++;
-    }
-
     if (cfg->filter.app_proxy_enable) {
         errors += validate_app_proxy_mode(cfg->filter.app_proxy_mode) ? 1 : 0;
     }
@@ -486,10 +459,8 @@ int config_validate_values(atp_config_t *cfg) {
     errors += validate_bool(cfg->interface.proxy_wifi, "PROXY_WIFI") ? 1 : 0;
     errors += validate_bool(cfg->interface.proxy_hotspot, "PROXY_HOTSPOT") ? 1 : 0;
     errors += validate_bool(cfg->interface.proxy_usb, "PROXY_USB") ? 1 : 0;
-    errors += validate_bool(cfg->ebpf.enabled, "ENABLE_EBPF") ? 1 : 0;
     errors += validate_bool(cfg->core.ui_emoji_enabled, "UI_EMOJI_ENABLED") ? 1 : 0;
 
-    errors += validate_ebpf_params(cfg);
     errors += validate_service_params(cfg);
 
     size_t cnip_len = strlen(cfg->filter.cnip_force_proxy_apps);

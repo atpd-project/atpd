@@ -125,9 +125,6 @@ static void handle_status(int fd) {
                           "VPN State: %s\n",
                           vpn_state_string(g_atpd_ctx.vpn_state));
     off = append_response(response, sizeof(response), off,
-                          "eBPF State: %s\n",
-                          ebpf_state_string(g_atpd_ctx.ebpf_state));
-    off = append_response(response, sizeof(response), off,
                           "VPN Interface: %s\n",
                           g_atpd_ctx.vpn_iface[0] ? g_atpd_ctx.vpn_iface : "none");
     off = append_response(response, sizeof(response), off,

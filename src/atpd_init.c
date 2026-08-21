@@ -11,7 +11,6 @@
 #include "logger.h"
 #include "config.h"
 #include "utils.h"
-#include "boxbpf.h"
 #include "netlink.h"
 #include "app_filter.h"
 #include "service.h"
@@ -28,7 +27,6 @@
 static init_phase_config_t init_phases[] = {
     {INIT_PHASE_CONFIG, "config", atpd_init_phase_config, 1, 0},
     {INIT_PHASE_LOGGER, "logger", atpd_init_phase_logger, 1, 0},
-    {INIT_PHASE_EBPF, "ebpf", atpd_init_phase_ebpf, 0, 1},
     {INIT_PHASE_NETLINK, "netlink", atpd_init_phase_netlink, 1, 0},
     {INIT_PHASE_FILTER, "filter", atpd_init_phase_filter, 0, 1},
     {INIT_PHASE_SERVICE, "service", atpd_init_phase_service, 1, 0},
@@ -68,43 +66,6 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
     }
     
     return 0;
-}
-
-int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
-    if (!ctx->config->filter.bypass_cn_ip || !ctx->config->ebpf.enabled) {
-        LOG_DEBUG("eBPF disabled, skipping");
-        ctx->config->ebpf.ready = 0;
-        atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
-        return 0;
-    }
-    
-    if (ctx->config->filter.cnip_mode != 1) {
-        LOG_DEBUG("CNIP_MODE is not ebpf, skipping");
-        ctx->config->ebpf.ready = 0;
-        atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
-        return 0;
-    }
-    
-    LOG_INFO("Initializing eBPF CNIP...");
-    atpd_ebpf_state_transition(EBPF_STATE_LOADING);
-    
-    int ret = boxbpf_init_from_config(ctx->config);
-    if (ret == ATP_OK) {
-        ctx->config->ebpf.ready = 1;
-        ctx->ctx->ebpf_enabled = true;
-        ctx->ctx->ebpf_probed = true;
-        strncpy(ctx->ctx->ebpf_pin_dir, ctx->config->ebpf.pin_dir,
-                sizeof(ctx->ctx->ebpf_pin_dir) - 1);
-        atpd_ebpf_state_transition(EBPF_STATE_READY);
-        LOG_INFO("eBPF CNIP ready (pin: %s)", ctx->config->ebpf.pin_dir);
-        return 0;
-    } else {
-        ctx->config->ebpf.ready = 0;
-        ctx->ctx->ebpf_enabled = false;
-        atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-        LOG_WARN("eBPF CNIP init failed, using ipset fallback");
-        return 0;
-    }
 }
 
 int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
@@ -204,12 +165,6 @@ int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
                     service_stop_async(ctx->service, NULL, NULL);
                     free(ctx->service);
                     ctx->service = NULL;
-                }
-                break;
-            case INIT_PHASE_EBPF:
-                if (ctx->config->ebpf.ready) {
-                    boxbpf_clear();
-                    ctx->config->ebpf.ready = 0;
                 }
                 break;
             case INIT_PHASE_NETLINK:

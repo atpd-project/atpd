@@ -16,20 +16,13 @@ typedef enum {
     CMD_RELOAD,
     CMD_CHECK,
     CMD_VERSION,
-    CMD_HELP,
-    CMD_EBPF_PROBE,
-    CMD_EBPF_INIT,
-    CMD_EBPF_APPLY,
-    CMD_EBPF_UPDATE,
-    CMD_EBPF_CLEAR,
-    CMD_EBPF_STATUS
+    CMD_HELP
 } atp_command_t;
 
 typedef struct {
     atp_command_t command;
     char config_file[PATH_MAX];
     char pid_file[PATH_MAX];
-    char ebpf_config[PATH_MAX];
     int foreground;
     int daemon;
     int verbose;
@@ -37,7 +30,6 @@ typedef struct {
     int force;
     int no_color;
     int test_config;
-    int ipv6;
     log_level_t log_level;
 } atp_options_t;
 

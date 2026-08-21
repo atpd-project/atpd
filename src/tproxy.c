@@ -3,7 +3,6 @@
 #include "utils.h"
 #include "config.h"
 #include "atp.h"
-#include "boxbpf.h"
 #include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
@@ -78,8 +77,6 @@ typedef struct {
     const char *(*hotspot_subnet)(atp_config_t *cfg);
     const char *(*bypass_list)(atp_config_t *cfg);
     const char *(*proxy_list)(atp_config_t *cfg);
-    const char *(*pin_out)(atp_config_t *cfg);
-    const char *(*pin_pre)(atp_config_t *cfg);
     const char *(*ipset)(atp_config_t *cfg);
 } tproxy_family_ctx_t;
 
@@ -93,10 +90,6 @@ static const char *family_bypass_4(atp_config_t *cfg) { return cfg->iplist.bypas
 static const char *family_bypass_6(atp_config_t *cfg) { return cfg->iplist.bypass_ipv6_list; }
 static const char *family_proxy_4(atp_config_t *cfg) { return cfg->iplist.proxy_ipv4_list; }
 static const char *family_proxy_6(atp_config_t *cfg) { return cfg->iplist.proxy_ipv6_list; }
-static const char *family_pin_out_4(atp_config_t *cfg) { (void)cfg; return "box_cidr_out4"; }
-static const char *family_pin_out_6(atp_config_t *cfg) { (void)cfg; return "box_cidr_out6"; }
-static const char *family_pin_pre_4(atp_config_t *cfg) { (void)cfg; return "box_cidr_pre4"; }
-static const char *family_pin_pre_6(atp_config_t *cfg) { (void)cfg; return "box_cidr_pre6"; }
 static const char *family_ipset_4(atp_config_t *cfg) { (void)cfg; return "cnip"; }
 static const char *family_ipset_6(atp_config_t *cfg) { (void)cfg; return "cnip6"; }
 
@@ -110,8 +103,6 @@ static const tproxy_family_ctx_t family4 = {
     .hotspot_subnet = family_hotspot_4,
     .bypass_list = family_bypass_4,
     .proxy_list = family_proxy_4,
-    .pin_out = family_pin_out_4,
-    .pin_pre = family_pin_pre_4,
     .ipset = family_ipset_4,
 };
 
@@ -125,8 +116,6 @@ static const tproxy_family_ctx_t family6 = {
     .hotspot_subnet = family_hotspot_6,
     .bypass_list = family_bypass_6,
     .proxy_list = family_proxy_6,
-    .pin_out = family_pin_out_6,
-    .pin_pre = family_pin_pre_6,
     .ipset = family_ipset_6,
 };
 
@@ -860,41 +849,12 @@ static void tproxy_setup_ip_rules(atp_config_t *cfg, int family) {
 
     if (cfg->filter.bypass_cn_ip) {
         char rule[256];
-        if (cfg->ebpf.ready) {
-            const char *pin_dir = boxbpf_pin_dir();
-            const char *pin_out = ctx->pin_out(cfg);
-            const char *pin_pre = ctx->pin_pre(cfg);
-            char bpf_rule[512];
-
-            SAFE_SNPRINTF(bpf_rule, sizeof(bpf_rule),
-                     "-m bpf --object-pinned %s/%s -p udp ! --dport 53 -j ACCEPT",
-                     pin_dir, pin_out);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, bpf_rule);
-
-            SAFE_SNPRINTF(bpf_rule, sizeof(bpf_rule),
-                     "-m bpf --object-pinned %s/%s ! -p udp -j ACCEPT",
-                     pin_dir, pin_out);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, bpf_rule);
-
-            SAFE_SNPRINTF(bpf_rule, sizeof(bpf_rule),
-                     "-m bpf --object-pinned %s/%s -p udp ! --dport 53 -j ACCEPT",
-                     pin_dir, pin_pre);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, bpf_rule);
-
-            SAFE_SNPRINTF(bpf_rule, sizeof(bpf_rule),
-                     "-m bpf --object-pinned %s/%s ! -p udp -j ACCEPT",
-                     pin_dir, pin_pre);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, bpf_rule);
-
-            LOG_DEBUG("CNIP bypass: eBPF");
-        } else {
-            const char *ipset = ctx->ipset(cfg);
-            SAFE_SNPRINTF(rule, sizeof(rule), "-m set --match-set %s dst -p udp ! --dport 53 -j ACCEPT", ipset);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-            SAFE_SNPRINTF(rule, sizeof(rule), "-m set --match-set %s dst ! -p udp -j ACCEPT", ipset);
-            tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
-            LOG_DEBUG("CNIP bypass: ipset (%s)", ipset);
-        }
+        const char *ipset = ctx->ipset(cfg);
+        SAFE_SNPRINTF(rule, sizeof(rule), "-m set --match-set %s dst -p udp ! --dport 53 -j ACCEPT", ipset);
+        tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+        SAFE_SNPRINTF(rule, sizeof(rule), "-m set --match-set %s dst ! -p udp -j ACCEPT", ipset);
+        tproxy_rule_ensure_single(cfg, family, "mangle", bypass_chain, rule);
+        LOG_DEBUG("CNIP bypass: ipset (%s)", ipset);
     }
 }
 
@@ -1645,17 +1605,8 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
         tproxy_chain_create(cfg, 4, "filter", "ATP_QUIC_0");
         tproxy_chain_flush(cfg, 4, "filter", "ATP_QUIC_0");
 
-        if (cfg->ebpf.ready) {
-            const char *pin_dir = boxbpf_pin_dir();
-            char bpf_rule[512];
-            SAFE_SNPRINTF(bpf_rule, sizeof(bpf_rule),
-                     "-m bpf --object-pinned %s/box_cidr_out4 -p udp --dport 443 -j REJECT", pin_dir);
-            tproxy_rule_ensure_single(cfg, 4, "filter", "ATP_QUIC_0", bpf_rule);
-            LOG_DEBUG("QUIC blocking: eBPF");
-        } else {
-            tproxy_reject_or_drop(cfg, 4, "ATP_QUIC_0", "-p udp --dport 443");
-            LOG_DEBUG("QUIC blocking: ipset fallback");
-        }
+        tproxy_reject_or_drop(cfg, 4, "ATP_QUIC_0", "-p udp --dport 443");
+        LOG_DEBUG("QUIC blocking enabled");
 
         tproxy_rule_ensure_single(cfg, 4, "filter", "INPUT", "-j ATP_QUIC_0");
         tproxy_rule_ensure_single(cfg, 4, "filter", "FORWARD", "-j ATP_QUIC_0");
@@ -1665,15 +1616,7 @@ int tproxy_block_quic(atp_config_t *cfg, int enable) {
             tproxy_chain_create(cfg, 6, "filter", "ATP6_QUIC_0");
             tproxy_chain_flush(cfg, 6, "filter", "ATP6_QUIC_0");
 
-            if (cfg->ebpf.ready) {
-                const char *pin_dir = boxbpf_pin_dir();
-                char bpf_rule[512];
-                SAFE_SNPRINTF(bpf_rule, sizeof(bpf_rule),
-                         "-m bpf --object-pinned %s/box_cidr_out6 -p udp --dport 443 -j REJECT", pin_dir);
-                tproxy_rule_ensure_single(cfg, 6, "filter", "ATP6_QUIC_0", bpf_rule);
-            } else {
-                tproxy_reject_or_drop(cfg, 6, "ATP6_QUIC_0", "-p udp --dport 443");
-            }
+            tproxy_reject_or_drop(cfg, 6, "ATP6_QUIC_0", "-p udp --dport 443");
 
             tproxy_rule_ensure_single(cfg, 6, "filter", "INPUT", "-j ATP6_QUIC_0");
             tproxy_rule_ensure_single(cfg, 6, "filter", "FORWARD", "-j ATP6_QUIC_0");

@@ -72,10 +72,6 @@
 #define SERVICE_STOP_INTERVAL_MS  100
 #define SERVICE_STOP_TIMEOUT_MS   5000
 
-#define EBPF_PROBE_TIMEOUT_SEC    10
-#define EBPF_PROBE_RETRY_COUNT    3
-#define EBPF_PROBE_RETRY_DELAY_SEC 2
-
 #define NETLINK_RECV_TIMEOUT_MS   3000
 #define NETLINK_DEBOUNCE_MS       500
 
@@ -155,7 +151,6 @@ typedef enum {
 #define cfg_app_proxy_enable    cfg->filter.app_proxy_enable
 #define cfg_mac_filter_enable   cfg->filter.mac_filter_enable
 #define cfg_bypass_cn_ip        cfg->filter.bypass_cn_ip
-#define cfg_cnip_mode           cfg->filter.cnip_mode
 #define cfg_app_proxy_mode      cfg->filter.app_proxy_mode
 #define cfg_mac_proxy_mode      cfg->filter.mac_proxy_mode
 #define cfg_user_clash_mode     cfg->filter.user_clash_mode
@@ -174,15 +169,6 @@ typedef enum {
 #define cfg_bypass_ipv6_list    cfg->iplist.bypass_ipv6_list
 #define cfg_proxy_ipv4_list     cfg->iplist.proxy_ipv4_list
 #define cfg_proxy_ipv6_list     cfg->iplist.proxy_ipv6_list
-
-#define cfg_ebpf_enabled        cfg->ebpf.enabled
-#define cfg_ebpf_ready          cfg->ebpf.ready
-#define cfg_ebpf_load_retry     cfg->ebpf.load_retry
-#define cfg_ebpf_load_delay     cfg->ebpf.load_delay
-#define cfg_ebpf_bin_path       cfg->ebpf.bin_path
-#define cfg_ebpf_config_path    cfg->ebpf.config_path
-#define cfg_ebpf_pin_dir        cfg->ebpf.pin_dir
-#define cfg_ebpf_state_dir      cfg->ebpf.state_dir
 
 #define cfg_service_start_timeout_sec      cfg->service.start_timeout_sec
 #define cfg_service_stop_timeout_sec       cfg->service.stop_timeout_sec

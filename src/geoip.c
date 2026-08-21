@@ -11,7 +11,6 @@
 #include "atp.h"
 #include "ipset.h"
 #include "api.h"
-#include "boxbpf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -232,35 +231,6 @@ int geoip_atomic_update(atp_config_t *cfg) {
         }
     }
 
-    /* 更新 eBPF */
-    if (cfg->ebpf.ready && cfg->ebpf.enabled && cfg->filter.cnip_mode == 1) {
-        LOG_INFO("GeoIP: updating eBPF CNIP maps...");
-        if (boxbpf_update(cfg->ebpf.config_path) != 0) {
-            LOG_ERROR("GeoIP: eBPF CNIP maps update failed! Rolling back ipset...");
-
-            /* 回滚 IPv4 ipset */
-            if (has_backup && ipset_exists("cnip_backup")) {
-                ipset_swap("cnip_backup", "cnip");
-                ipset_destroy("cnip_backup");
-                LOG_INFO("GeoIP: cnip rolled back to previous version");
-            } else {
-                LOG_WARN("GeoIP: No cnip backup available, ipset may be inconsistent");
-                ret = -1;
-            }
-
-            /* 回滚 IPv6 ipset */
-            if (cfg->network.proxy_ipv6 && ipset_exists("cnip6_backup")) {
-                ipset_swap("cnip6_backup", "cnip6");
-                ipset_destroy("cnip6_backup");
-                LOG_INFO("GeoIP: cnip6 rolled back to previous version");
-            }
-
-            return -1;
-        } else {
-            LOG_INFO("GeoIP: eBPF CNIP maps updated");
-        }
-    }
-
     /* 清理备份 */
     if (ipset_exists("cnip_backup")) {
         ipset_destroy("cnip_backup");
@@ -269,9 +239,8 @@ int geoip_atomic_update(atp_config_t *cfg) {
         ipset_destroy("cnip6_backup");
     }
 
-    LOG_INFO("GeoIP: atomic update completed (ipset_v4=%d, ipset_v6=%d, ebpf_updated=%d)",
-             ipset_v4_updated, ipset_v6_updated,
-             cfg->ebpf.ready && cfg->ebpf.enabled && cfg->filter.cnip_mode == 1);
+    LOG_INFO("GeoIP: atomic update completed (ipset_v4=%d, ipset_v6=%d)",
+             ipset_v4_updated, ipset_v6_updated);
     return ret;
 }
 

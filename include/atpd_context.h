@@ -15,14 +15,6 @@ typedef enum {
 } vpn_state_t;
 
 typedef enum {
-    EBPF_STATE_UNINITIALIZED = 0,
-    EBPF_STATE_LOADING,
-    EBPF_STATE_READY,
-    EBPF_STATE_FAILED,
-    EBPF_STATE_DISABLED
-} ebpf_state_t;
-
-typedef enum {
     ATPD_RUNTIME_STATE_UNINITIALIZED = 0,
     ATPD_RUNTIME_STATE_INITIALIZING,
     ATPD_RUNTIME_STATE_RUNNING,
@@ -47,12 +39,6 @@ typedef struct {
     uint64_t vpn_transitions;
     uint64_t splice_bytes_total;
 
-    /* === eBPF State === */
-    ebpf_state_t ebpf_state;
-    bool ebpf_enabled;
-    bool ebpf_probed;
-    char ebpf_pin_dir[256];
-
     /* === Runtime State === */
     atpd_runtime_state_t runtime_state;
     uint64_t start_time;
@@ -64,7 +50,6 @@ typedef struct {
     /* === Component Status === */
     struct {
         bool netlink_ready;
-        bool ebpf_ready;
         bool service_ready;
         bool api_ready;
         bool reactor_ready;
@@ -96,10 +81,6 @@ void atpd_context_init(void);
 /* VPN State */
 void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char *iface);
 const char* vpn_state_string(vpn_state_t state);
-
-/* eBPF State */
-void atpd_ebpf_state_transition(ebpf_state_t new_state);
-const char* ebpf_state_string(ebpf_state_t state);
 
 /* Runtime State */
 void atpd_runtime_state_transition(atpd_runtime_state_t new_state);

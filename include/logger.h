@@ -124,10 +124,6 @@ void log_write_v(log_level_t level, const char *file, int line, const char *func
     log_write(level, __FILE__, __LINE__, __FUNCTION__, "[REACTOR] " fmt, ##__VA_ARGS__); \
 } while(0)
 
-#define LOG_EBPF(level, fmt, ...) do { \
-    log_write(level, __FILE__, __LINE__, __FUNCTION__, "[EBPF] " fmt, ##__VA_ARGS__); \
-} while(0)
-
 #define LOG_EXEC(cmd) do { \
     log_write(LOG_LEVEL_DEBUG, __FILE__, __LINE__, __FUNCTION__, "EXEC: %s", cmd); \
 } while(0)

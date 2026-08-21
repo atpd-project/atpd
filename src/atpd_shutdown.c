@@ -7,7 +7,6 @@
 
 #include "atpd_global.h"
 #include "logger.h"
-#include "boxbpf.h"
 #include "tproxy.h"
 #include "service.h"
 #include "reactor.h"
@@ -15,14 +14,6 @@
 #include "atpd_context.h"
 
 void atpd_shutdown_cleanup(void) {
-    if (g_config.ebpf.ready) {
-        LOG_INFO("Cleaning up eBPF CNIP...");
-        boxbpf_clear();
-        g_config.ebpf.ready = 0;
-        g_atpd_ctx.ebpf_enabled = false;
-        atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
-    }
-    
     tproxy_cleanup_all(&g_config);
     atp_cleanup_manual(&g_config);
     
