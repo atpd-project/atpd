@@ -9,7 +9,7 @@ RUNDIR = $(PREFIX)/run
 RULESDIR = $(PREFIX)/rules
 SINGBOXDIR = $(PREFIX)/sing-box
 
-CC = clang
+CC = cc
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC
 CFLAGS += -Os -flto
 CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=3

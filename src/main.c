@@ -713,7 +713,6 @@ static int do_check(atp_options_t *opts) {
         return 1;
     }
 
-    config_set_defaults(&g_config);
     if (config_load(config_path, &g_config) != ATP_OK) {
         fprintf(stderr, "Failed to load config\n");
         return 1;
