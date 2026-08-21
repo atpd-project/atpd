@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <limits.h>
 
 typedef enum {
     VPN_STATE_IDLE = 0,
@@ -24,9 +25,6 @@ typedef enum {
     ATPD_RUNTIME_STATE_FAILED
 } atpd_runtime_state_t;
 
-struct atpd_session;
-struct atpd_session_list;
-
 typedef struct {
     /* === VPN State === */
     atomic_int vpn_state;           /* Changed to atomic */
@@ -34,10 +32,23 @@ typedef struct {
     char vpn_iface[32];
     struct timespec vpn_state_since;
     int xfrm_fd;
-    struct atpd_session_list *sessions;
-    void (*vpn_teardown_cb)(void);
     uint64_t vpn_transitions;
-    uint64_t splice_bytes_total;
+
+    /* === VPN Policy Snapshot === */
+    uint32_t vpn_route_table;
+    bool vpn_ipv4_default;
+    bool vpn_ipv6_default;
+    char hotspot_ifaces[256];
+    unsigned hotspot_count;
+    unsigned hotspot_ipv4_active;
+    unsigned hotspot_ipv6_active;
+    uint64_t policy_last_reconcile;
+
+    /* === Clash Mode Snapshot === */
+    char clash_desired_mode[32];
+    char clash_applied_mode[32];
+    char clash_last_error[128];
+    uint64_t clash_last_sync;
 
     /* === Runtime State === */
     atpd_runtime_state_t runtime_state;
@@ -46,6 +57,7 @@ typedef struct {
     uint32_t reload_count;
     uint32_t error_count;
     uint64_t last_activity_time;
+    char config_path[PATH_MAX];
 
     /* === Component Status === */
     struct {
@@ -102,15 +114,5 @@ void atpd_stats_increment_errors(void);
 void atpd_stats_add_bytes(uint64_t rx, uint64_t tx);
 
 /* Error */
-
-/* Session */
-struct atpd_session_list {
-    struct atpd_session *session;
-    struct atpd_session_list *next;
-};
-
-void atpd_session_register_to_ctx(struct atpd_session *s);
-void atpd_session_unregister_from_ctx(struct atpd_session *s);
-void atpd_vpn_killswitch(void);
 
 #endif /* ATPD_CONTEXT_H */

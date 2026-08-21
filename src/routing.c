@@ -1,910 +1,245 @@
 #include "routing.h"
-#include "logger.h"
-#include "utils.h"
-#include "config.h"
 #include "atp.h"
-#include <stdlib.h>
-#include <string.h>
-#include <dirent.h>
-#include <unistd.h>
+#include "atpd_context.h"
+#include "logger.h"
+#include "netlink.h"
+#include "utils.h"
+
+#include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include <arpa/inet.h>
-#include <errno.h>
 #include <pthread.h>
-#include <sys/wait.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 #define IP_CMD "/system/bin/ip"
-#define ATP_PREF_VPN_LOCK 20000
 #define ATP_PREF_HOTSPOT 100
+#define MAX_HOTSPOTS 16
+#define MAX_OWNED_RULES 64
 
 static pthread_mutex_t g_routing_mutex = PTHREAD_MUTEX_INITIALIZER;
-static int g_original_ipv4_forward = -1;
-static int g_original_ipv6_forward = -1;
 
-static int validate_iface_arg(const char *iface) {
-    if (!iface || !*iface) return ATP_ERR_INVAL;
+typedef struct {
+    char iface[IFNAMSIZ];
+    uint32_t table;
+} hotspot_rule_t;
 
-    if (strlen(iface) >= IFNAMSIZ) {
-        LOG_ERROR("Interface name exceeds IFNAMSIZ: %s", iface);
-        return ATP_ERR_INVAL;
-    }
-
+static int valid_iface(const char *iface) {
+    if (!iface || !iface[0] || strlen(iface) >= IFNAMSIZ) return 0;
     for (const char *p = iface; *p; p++) {
-        if (!(*p >= 'a' && *p <= 'z') &&
-            !(*p >= 'A' && *p <= 'Z') &&
-            !(*p >= '0' && *p <= '9') &&
-            *p != '_' && *p != '-' && *p != '+' && *p != '.') {
-            LOG_ERROR("Invalid character in interface name: %s", iface);
-            return ATP_ERR_INVAL;
-        }
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+              (*p >= '0' && *p <= '9') || *p == '_' || *p == '-' ||
+              *p == '+' || *p == '.')) return 0;
     }
-
-    return ATP_OK;
+    return 1;
 }
 
-static int exec_ip(atp_config_t *cfg, const char *cmd, const char *arg) {
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] ip %s %s", cmd, arg ? arg : "");
-        return 0;
+static int hotspot_name_matches(const char *pattern, const char *iface) {
+    size_t len = strlen(pattern);
+    if (len > 0 && (pattern[len - 1] == '+' || pattern[len - 1] == '*')) {
+        return strncmp(pattern, iface, len - 1) == 0;
     }
-
-    char command[MAX_CMD_LEN];
-    int n;
-
-    if (arg) {
-        n = snprintf(command, sizeof(command), "%s %s %s 2>/dev/null", IP_CMD, cmd, arg);
-    } else {
-        n = snprintf(command, sizeof(command), "%s %s 2>/dev/null", IP_CMD, cmd);
-    }
-
-    if (n < 0 || n >= (int)sizeof(command)) {
-        LOG_ERROR("Command buffer truncated");
-        return ATP_ERR_INVAL;
-    }
-
-    return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+    return strcmp(pattern, iface) == 0;
 }
 
-static int exec_ip6(atp_config_t *cfg, const char *cmd, const char *arg) {
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] ip -6 %s %s", cmd, arg ? arg : "");
-        return 0;
-    }
-
-    char command[MAX_CMD_LEN];
-    int n;
-
-    if (arg) {
-        n = snprintf(command, sizeof(command), "%s -6 %s %s 2>/dev/null", IP_CMD, cmd, arg);
-    } else {
-        n = snprintf(command, sizeof(command), "%s -6 %s 2>/dev/null", IP_CMD, cmd);
-    }
-
-    if (n < 0 || n >= (int)sizeof(command)) {
-        LOG_ERROR("Command buffer truncated");
-        return ATP_ERR_INVAL;
-    }
-
-    return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
+static int auto_hotspot_name(const char *iface) {
+    size_t len = strlen(iface);
+    return strncmp(iface, "ap_br_", 6) == 0 || strcmp(iface, "ap0") == 0 ||
+           strncmp(iface, "softap", 6) == 0 || strncmp(iface, "rndis", 5) == 0 ||
+           (strncmp(iface, "wlan", 4) == 0 && len >= 3 &&
+            strcmp(iface + len - 3, "_ap") == 0);
 }
 
-static int exec_cmd_status(const char *cmd, int timeout_sec) {
-    if (!cmd) return -1;
-
-    char timeout_cmd[MAX_CMD_LEN];
-    int n = snprintf(timeout_cmd, sizeof(timeout_cmd), "timeout %d %s", timeout_sec, cmd);
-    if (n < 0 || n >= (int)sizeof(timeout_cmd)) {
-        LOG_ERROR("Command buffer truncated");
-        return -1;
-    }
-
-    FILE *fp = popen(timeout_cmd, "r");
-    if (!fp) {
-        LOG_ERROR("popen failed: %s", strerror(errno));
-        return -1;
-    }
-
-    int status = pclose(fp);
-    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-
-    return exit_code;
+static int managed_hotspot_name(const atp_config_t *cfg, const char *iface) {
+    return cfg->interface.hotspot_iface_explicit
+        ? hotspot_name_matches(cfg->interface.hotspot_iface, iface)
+        : auto_hotspot_name(iface);
 }
 
-static int write_sysctl(const char *path, const char *value) {
-    if (!path || !value) return ATP_ERR_INVAL;
+static int collect_hotspots(const atp_config_t *cfg,
+                            char names[][IFNAMSIZ], int max) {
+    struct ifaddrs *ifaddr;
+    if (getifaddrs(&ifaddr) != 0) return 0;
 
-    FILE *fp = fopen(path, "w");
-    if (!fp) {
-        LOG_ERROR("Failed to open %s: %s", path, strerror(errno));
-        return ATP_ERR_IO;
-    }
-
-    if (fprintf(fp, "%s\n", value) < 0) {
-        fclose(fp);
-        return ATP_ERR_IO;
-    }
-
-    if (fflush(fp) != 0) {
-        fclose(fp);
-        return ATP_ERR_IO;
-    }
-
-    if (fsync(fileno(fp)) != 0) {
-        fclose(fp);
-        return ATP_ERR_IO;
-    }
-
-    if (fclose(fp) != 0) {
-        return ATP_ERR_IO;
-    }
-
-    return ATP_OK;
-}
-
-static int read_sysctl_int(const char *path, int *value) {
-    if (!path || !value) return ATP_ERR_INVAL;
-
-    FILE *fp = fopen(path, "r");
-    if (!fp) {
-        return ATP_ERR_IO;
-    }
-
-    if (fscanf(fp, "%d", value) != 1) {
-        fclose(fp);
-        return ATP_ERR_IO;
-    }
-
-    fclose(fp);
-    return ATP_OK;
-}
-
-int routing_rule_add(atp_config_t *cfg, int family, const char *rule) {
-    if (!rule) return ATP_ERR_INVAL;
-
-    if (family == 4) {
-        return exec_ip(cfg, "rule add", rule);
-    } else {
-        return exec_ip6(cfg, "rule add", rule);
-    }
-}
-
-int routing_rule_del(atp_config_t *cfg, int family, const char *rule) {
-    if (!rule) return ATP_ERR_INVAL;
-
-    if (family == 4) {
-        return exec_ip(cfg, "rule del", rule);
-    } else {
-        return exec_ip6(cfg, "rule del", rule);
-    }
-}
-
-int routing_rule_del_by_pref(atp_config_t *cfg, int family, int pref) {
-    char rule_buf[64];
-    int n = snprintf(rule_buf, sizeof(rule_buf), "pref %d", pref);
-    if (n < 0 || n >= (int)sizeof(rule_buf)) {
-        return ATP_ERR_INVAL;
-    }
-    return routing_rule_del(cfg, family, rule_buf);
-}
-
-int routing_rule_del_all_by_pref(atp_config_t *cfg, int family, int pref) {
     int count = 0;
-    char check_buf[256];
-    int n;
+    for (struct ifaddrs *ifa = ifaddr; ifa && count < max; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || !(ifa->ifa_flags & IFF_UP) ||
+            !managed_hotspot_name(cfg, ifa->ifa_name)) continue;
 
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] Would delete all rules with pref %d", pref);
-        return 0;
-    }
-
-    if (family == 4) {
-        n = snprintf(check_buf, sizeof(check_buf), "%s rule show | grep 'pref %d'", IP_CMD, pref);
-    } else {
-        n = snprintf(check_buf, sizeof(check_buf), "%s -6 rule show | grep 'pref %d'", IP_CMD, pref);
-    }
-
-    if (n < 0 || n >= (int)sizeof(check_buf)) {
-        LOG_ERROR("Buffer truncated for rule check");
-        return ATP_ERR_INVAL;
-    }
-
-    while (count < 100) {
-        int ret = exec_cmd_status(check_buf, 5);
-        if (ret != 0) break;
-
-        int del_ret = routing_rule_del_by_pref(cfg, family, pref);
-        if (del_ret != 0) {
-            LOG_WARN("Failed to delete routing rule pref=%d", pref);
-            break;
+        int duplicate = 0;
+        for (int i = 0; i < count; i++) {
+            if (strcmp(names[i], ifa->ifa_name) == 0) duplicate = 1;
         }
-
-        count++;
+        if (!duplicate) snprintf(names[count++], IFNAMSIZ, "%s", ifa->ifa_name);
     }
+    freeifaddrs(ifaddr);
 
-    if (count >= 100) {
-        LOG_WARN("Delete loop limit reached for pref=%d", pref);
+    if (count == 0 && !cfg->interface.hotspot_iface_explicit &&
+        cfg->interface.hotspot_iface[0] &&
+        if_nametoindex(cfg->interface.hotspot_iface) != 0) {
+        snprintf(names[count++], IFNAMSIZ, "%s", cfg->interface.hotspot_iface);
     }
-
     return count;
 }
 
-int routing_route_add(atp_config_t *cfg, int family, const char *route) {
-    if (!route) return ATP_ERR_INVAL;
+static int read_managed_rules(const atp_config_t *cfg, int family,
+                              hotspot_rule_t *rules, int max) {
+    char command[128];
+    int n = snprintf(command, sizeof(command), "%s %srule show 2>/dev/null",
+                     IP_CMD, family == AF_INET6 ? "-6 " : "");
+    if (n < 0 || n >= (int)sizeof(command)) return 0;
 
-    if (family == 4) {
-        return exec_ip(cfg, "route replace", route);
-    } else {
-        return exec_ip6(cfg, "route replace", route);
+    FILE *fp = popen(command, "r");
+    if (!fp) return 0;
+
+    int count = 0;
+    char line[256];
+    while (count < max && fgets(line, sizeof(line), fp)) {
+        unsigned pref = 0;
+        unsigned table = 0;
+        char iface[IFNAMSIZ] = {0};
+        if (sscanf(line, "%u: from all iif %15s lookup %u",
+                   &pref, iface, &table) != 3 || pref != ATP_PREF_HOTSPOT ||
+            !valid_iface(iface) || !managed_hotspot_name(cfg, iface)) continue;
+        snprintf(rules[count].iface, sizeof(rules[count].iface), "%s", iface);
+        rules[count].table = table;
+        count++;
     }
+    pclose(fp);
+    return count;
 }
 
-int routing_route_del(atp_config_t *cfg, int family, const char *route) {
-    if (!route) return ATP_ERR_INVAL;
+static int run_rule(const atp_config_t *cfg, int family, const char *action,
+                    const char *iface, uint32_t table) {
+    if (!valid_iface(iface)) return ATP_ERR_INVAL;
+    if (cfg->core.dry_run) return ATP_OK;
 
-    if (family == 4) {
-        return exec_ip(cfg, "route del", route);
-    } else {
-        return exec_ip6(cfg, "route del", route);
-    }
+    char command[MAX_CMD_LEN];
+    int n = snprintf(command, sizeof(command),
+                     "%s %srule %s from all iif %s lookup %u pref %d 2>/dev/null",
+                     IP_CMD, family == AF_INET6 ? "-6 " : "", action,
+                     iface, table, ATP_PREF_HOTSPOT);
+    if (n < 0 || n >= (int)sizeof(command)) return ATP_ERR_INVAL;
+    return exec_cmd_simple(command, CMD_TIMEOUT_SEC);
 }
 
-int routing_route_flush_table(atp_config_t *cfg, int family, int table_id) {
-    char flush_buf[64];
-    int n = snprintf(flush_buf, sizeof(flush_buf), "table %d", table_id);
-    if (n < 0 || n >= (int)sizeof(flush_buf)) {
-        return ATP_ERR_INVAL;
+static int rule_exists(const atp_config_t *cfg, int family,
+                       const char *iface, uint32_t table) {
+    hotspot_rule_t rules[MAX_OWNED_RULES];
+    int count = read_managed_rules(cfg, family, rules, MAX_OWNED_RULES);
+    for (int i = 0; i < count; i++) {
+        if (rules[i].table == table && strcmp(rules[i].iface, iface) == 0) return 1;
     }
-
-    if (family == 4) {
-        return exec_ip(cfg, "route flush", flush_buf);
-    } else {
-        return exec_ip6(cfg, "route flush", flush_buf);
-    }
-}
-
-static int routing_rule_exists(atp_config_t *cfg, int family, int mark, int table_id) {
-    char cmd[MAX_CMD_LEN];
-    int n;
-
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] Check routing rule exists: fwmark 0x%x table %d", mark, table_id);
-        return 0;
-    }
-
-    if (family == 4) {
-        n = snprintf(cmd, sizeof(cmd),
-                     "%s rule show | grep -q 'fwmark 0x%x.*lookup %d '", IP_CMD, mark, table_id);
-    } else {
-        n = snprintf(cmd, sizeof(cmd),
-                     "%s -6 rule show | grep -q 'fwmark 0x%x.*lookup %d '", IP_CMD, mark, table_id);
-    }
-
-    if (n < 0 || n >= (int)sizeof(cmd)) {
-        LOG_ERROR("Buffer truncated for rule exists check");
-        return 0;
-    }
-
-    return exec_cmd_status(cmd, 5) == 0;
-}
-
-/*
- * Must be called while g_routing_mutex is held.
- */
-static void save_original_forward_state(void) {
-    if (g_original_ipv4_forward == -1) {
-        int val;
-        if (read_sysctl_int("/proc/sys/net/ipv4/ip_forward", &val) == ATP_OK) {
-            g_original_ipv4_forward = val;
-            LOG_DEBUG("Saved original IPv4 forward: %d", val);
-        } else {
-            g_original_ipv4_forward = 0;
-        }
-    }
-
-    if (g_original_ipv6_forward == -1) {
-        int val;
-        if (read_sysctl_int("/proc/sys/net/ipv6/conf/all/forwarding", &val) == ATP_OK) {
-            g_original_ipv6_forward = val;
-            LOG_DEBUG("Saved original IPv6 forward: %d", val);
-        } else {
-            g_original_ipv6_forward = 0;
-        }
-    }
-}
-
-int routing_setup_ipv4(atp_config_t *cfg) {
-    int ret;
-
-    pthread_mutex_lock(&g_routing_mutex);
-
-    LOG_INFO("Setting up IPv4 policy routing (table=%d, mark=%d)",
-             cfg->network.table_id, cfg->network.mark_value);
-
-    save_original_forward_state();
-
-    routing_rule_del_all_by_pref(cfg, 4, cfg->network.table_id);
-
-    if (!routing_rule_exists(cfg, 4, cfg->network.mark_value, cfg->network.table_id)) {
-        char rule_buf[128];
-        int n = snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x%x table %d pref %d",
-                         cfg->network.mark_value, cfg->network.table_id, cfg->network.table_id);
-        if (n < 0 || n >= (int)sizeof(rule_buf)) {
-            LOG_ERROR("Rule buffer truncated");
-            pthread_mutex_unlock(&g_routing_mutex);
-            return ATP_ERR_INVAL;
-        }
-        ret = routing_rule_add(cfg, 4, rule_buf);
-        if (ret != 0) {
-            LOG_ERROR("Failed to add IPv4 routing rule");
-            pthread_mutex_unlock(&g_routing_mutex);
-            return ret;
-        }
-        LOG_DEBUG("Added IPv4 routing rule");
-    } else {
-        LOG_DEBUG("IPv4 routing rule already exists, skipping");
-    }
-
-    char route_buf[128];
-    int n = snprintf(route_buf, sizeof(route_buf), "local 0.0.0.0/0 dev lo table %d",
-                     cfg->network.table_id);
-    if (n < 0 || n >= (int)sizeof(route_buf)) {
-        LOG_ERROR("Route buffer truncated");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ATP_ERR_INVAL;
-    }
-
-    ret = routing_route_add(cfg, 4, route_buf);
-    if (ret != 0) {
-        LOG_ERROR("Failed to add IPv4 local route");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ret;
-    }
-
-    ret = routing_ip_forward_enable(cfg, 1);
-    if (ret != 0) {
-        LOG_WARN("Failed to enable IPv4 forwarding");
-    }
-
-    LOG_INFO("IPv4 routing setup complete");
-    pthread_mutex_unlock(&g_routing_mutex);
     return 0;
 }
 
-int routing_setup_ipv6(atp_config_t *cfg) {
-    int ret;
-
-    if (!cfg->network.proxy_ipv6) {
-        LOG_DEBUG("IPv6 proxy disabled, skipping routing");
-        return 0;
-    }
-
-    pthread_mutex_lock(&g_routing_mutex);
-
-    LOG_INFO("Setting up IPv6 policy routing (table=%d, mark=%d)",
-             cfg->network.table_id, cfg->network.mark_value6);
-
-    save_original_forward_state();
-
-    routing_rule_del_all_by_pref(cfg, 6, cfg->network.table_id);
-
-    if (!routing_rule_exists(cfg, 6, cfg->network.mark_value6, cfg->network.table_id)) {
-        char rule_buf[128];
-        int n = snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x%x table %d pref %d",
-                         cfg->network.mark_value6, cfg->network.table_id, cfg->network.table_id);
-        if (n < 0 || n >= (int)sizeof(rule_buf)) {
-            LOG_ERROR("Rule buffer truncated");
-            pthread_mutex_unlock(&g_routing_mutex);
-            return ATP_ERR_INVAL;
+static int remove_managed_rules(const atp_config_t *cfg, int family) {
+    hotspot_rule_t rules[MAX_OWNED_RULES];
+    int count = read_managed_rules(cfg, family, rules, MAX_OWNED_RULES);
+    int removed = 0;
+    for (int i = 0; i < count; i++) {
+        if (run_rule(cfg, family, "del", rules[i].iface, rules[i].table) == ATP_OK) {
+            removed++;
         }
-        ret = routing_rule_add(cfg, 6, rule_buf);
-        if (ret != 0) {
-            LOG_ERROR("Failed to add IPv6 routing rule");
-            pthread_mutex_unlock(&g_routing_mutex);
-            return ret;
-        }
-        LOG_DEBUG("Added IPv6 routing rule");
-    } else {
-        LOG_DEBUG("IPv6 routing rule already exists, skipping");
     }
-
-    char route_buf[128];
-    int n = snprintf(route_buf, sizeof(route_buf), "local ::/0 dev lo table %d",
-                     cfg->network.table_id);
-    if (n < 0 || n >= (int)sizeof(route_buf)) {
-        LOG_ERROR("Route buffer truncated");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ATP_ERR_INVAL;
-    }
-
-    ret = routing_route_add(cfg, 6, route_buf);
-    if (ret != 0) {
-        LOG_ERROR("Failed to add IPv6 local route");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ret;
-    }
-
-    ret = routing_ipv6_forward_enable(cfg, 1);
-    if (ret != 0) {
-        LOG_WARN("Failed to enable IPv6 forwarding");
-    }
-
-    LOG_INFO("IPv6 routing setup complete");
-    pthread_mutex_unlock(&g_routing_mutex);
-    return 0;
+    return removed;
 }
 
-int routing_cleanup_ipv4(atp_config_t *cfg) {
-    int ret;
+static void update_snapshot(uint32_t table, int ipv4_default, int ipv6_default,
+                            char names[][IFNAMSIZ], int count,
+                            int ipv4_active, int ipv6_active) {
+    g_atpd_ctx.vpn_route_table = table;
+    g_atpd_ctx.vpn_ipv4_default = ipv4_default != 0;
+    g_atpd_ctx.vpn_ipv6_default = ipv6_default != 0;
+    g_atpd_ctx.hotspot_count = count > 0 ? (unsigned)count : 0;
+    g_atpd_ctx.hotspot_ipv4_active = ipv4_active > 0 ? (unsigned)ipv4_active : 0;
+    g_atpd_ctx.hotspot_ipv6_active = ipv6_active > 0 ? (unsigned)ipv6_active : 0;
+    g_atpd_ctx.hotspot_ifaces[0] = '\0';
 
-    pthread_mutex_lock(&g_routing_mutex);
-
-    LOG_INFO("Cleaning up IPv4 policy routing");
-
-    routing_rule_del_all_by_pref(cfg, 4, cfg->network.table_id);
-
-    char route_buf[128];
-    int n = snprintf(route_buf, sizeof(route_buf), "local 0.0.0.0/0 dev lo table %d",
-                     cfg->network.table_id);
-    if (n < 0 || n >= (int)sizeof(route_buf)) {
-        LOG_ERROR("Route buffer truncated");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ATP_ERR_INVAL;
+    size_t used = 0;
+    for (int i = 0; i < count; i++) {
+        int written = snprintf(g_atpd_ctx.hotspot_ifaces + used,
+                               sizeof(g_atpd_ctx.hotspot_ifaces) - used,
+                               "%s%s", i ? ", " : "", names[i]);
+        if (written < 0 || (size_t)written >= sizeof(g_atpd_ctx.hotspot_ifaces) - used) break;
+        used += (size_t)written;
     }
-
-    routing_route_del(cfg, 4, route_buf);
-    routing_route_flush_table(cfg, 4, cfg->network.table_id);
-
-    if (g_original_ipv4_forward >= 0) {
-        ret = routing_ip_forward_enable(cfg, g_original_ipv4_forward);
-    } else {
-        ret = routing_ip_forward_enable(cfg, 0);
-    }
-    if (ret != 0) {
-        LOG_WARN("Failed to restore IPv4 forwarding");
-    }
-
-    LOG_INFO("IPv4 routing cleanup complete");
-    pthread_mutex_unlock(&g_routing_mutex);
-    return 0;
-}
-
-int routing_cleanup_ipv6(atp_config_t *cfg) {
-    int ret;
-
-    if (!cfg->network.proxy_ipv6) {
-        LOG_DEBUG("IPv6 proxy disabled, skipping cleanup");
-        return 0;
-    }
-
-    pthread_mutex_lock(&g_routing_mutex);
-
-    LOG_INFO("Cleaning up IPv6 policy routing");
-
-    routing_rule_del_all_by_pref(cfg, 6, cfg->network.table_id);
-
-    char route_buf[128];
-    int n = snprintf(route_buf, sizeof(route_buf), "local ::/0 dev lo table %d",
-                     cfg->network.table_id);
-    if (n < 0 || n >= (int)sizeof(route_buf)) {
-        LOG_ERROR("Route buffer truncated");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ATP_ERR_INVAL;
-    }
-
-    routing_route_del(cfg, 6, route_buf);
-    routing_route_flush_table(cfg, 6, cfg->network.table_id);
-
-    if (g_original_ipv6_forward >= 0) {
-        ret = routing_ipv6_forward_enable(cfg, g_original_ipv6_forward);
-    } else {
-        ret = routing_ipv6_forward_enable(cfg, 0);
-    }
-    if (ret != 0) {
-        LOG_WARN("Failed to restore IPv6 forwarding");
-    }
-
-    LOG_INFO("IPv6 routing cleanup complete");
-    pthread_mutex_unlock(&g_routing_mutex);
-    return 0;
-}
-
-int routing_cleanup_all(atp_config_t *cfg) {
-    routing_cleanup_ipv4(cfg);
-    routing_cleanup_ipv6(cfg);
-    return 0;
+    g_atpd_ctx.policy_last_reconcile = (uint64_t)time(NULL);
 }
 
 int routing_add_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
-    int ret;
-
-    if (validate_iface_arg(vpn_iface) != ATP_OK) {
-        LOG_ERROR("Invalid VPN interface: %s", vpn_iface);
-        return ATP_ERR_INVAL;
-    }
-
-    if (validate_iface_arg(cfg->interface.hotspot_iface) != ATP_OK) {
-        LOG_ERROR("Invalid hotspot interface: %s", cfg->interface.hotspot_iface);
-        return ATP_ERR_INVAL;
-    }
-
-    pthread_mutex_lock(&g_routing_mutex);
-
-    LOG_INFO("Adding VPN policy for interface: %s", vpn_iface);
-
-    char rule_buf[128];
-    int n = snprintf(rule_buf, sizeof(rule_buf), "fwmark 0x20000 table %d pref %d",
-                     cfg->network.table_id, ATP_PREF_VPN_LOCK);
-    if (n < 0 || n >= (int)sizeof(rule_buf)) {
-        LOG_ERROR("Rule buffer truncated");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ATP_ERR_INVAL;
-    }
-
-    ret = routing_rule_add(cfg, 4, rule_buf);
-    if (ret != 0) {
-        LOG_ERROR("Failed to add global fwmark lock");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ret;
-    }
-    LOG_DEBUG("Added global fwmark lock (pref %d)", ATP_PREF_VPN_LOCK);
-
-    if (cfg->network.proxy_ipv6) {
-        ret = routing_rule_add(cfg, 6, rule_buf);
-        if (ret != 0) {
-            LOG_ERROR("Failed to add IPv6 global fwmark lock");
-            pthread_mutex_unlock(&g_routing_mutex);
-            return ret;
-        }
-        LOG_DEBUG("Added IPv6 global fwmark lock");
-    }
-
-    n = snprintf(rule_buf, sizeof(rule_buf), "from all iif %s lookup %s pref %d",
-                 cfg->interface.hotspot_iface, vpn_iface, ATP_PREF_HOTSPOT);
-    if (n < 0 || n >= (int)sizeof(rule_buf)) {
-        LOG_ERROR("Rule buffer truncated");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ATP_ERR_INVAL;
-    }
-
-    ret = routing_rule_add(cfg, 4, rule_buf);
-    if (ret != 0) {
-        LOG_ERROR("Failed to add hotspot policy");
-        pthread_mutex_unlock(&g_routing_mutex);
-        return ret;
-    }
-    LOG_DEBUG("Added hotspot policy (iif %s -> %s pref %d)",
-              cfg->interface.hotspot_iface, vpn_iface, ATP_PREF_HOTSPOT);
-
-    if (cfg->network.proxy_ipv6) {
-        ret = routing_rule_add(cfg, 6, rule_buf);
-        if (ret != 0) {
-            LOG_ERROR("Failed to add IPv6 hotspot policy");
-            pthread_mutex_unlock(&g_routing_mutex);
-            return ret;
-        }
-        LOG_DEBUG("Added IPv6 hotspot policy");
-    }
-
-    snprintf(cfg->interface.current_vpn_iface, sizeof(cfg->interface.current_vpn_iface), "%s", vpn_iface);
-
-    LOG_INFO("VPN policy added successfully");
-    pthread_mutex_unlock(&g_routing_mutex);
-    return 0;
-}
-
-int routing_remove_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
-    const char *iface = vpn_iface;
-    if (!iface || !iface[0]) {
-        iface = cfg->interface.current_vpn_iface;
-    }
-
-    if (!iface || !iface[0]) {
-        return 0;
-    }
-
-    pthread_mutex_lock(&g_routing_mutex);
-
-    LOG_INFO("Removing VPN policy for interface: %s", iface);
-
-    routing_rule_del_by_pref(cfg, 4, ATP_PREF_VPN_LOCK);
-    LOG_DEBUG("Removed global fwmark lock");
-
-    if (cfg->network.proxy_ipv6) {
-        routing_rule_del_by_pref(cfg, 6, ATP_PREF_VPN_LOCK);
-        LOG_DEBUG("Removed IPv6 global fwmark lock");
-    }
-
-    routing_rule_del_by_pref(cfg, 4, ATP_PREF_HOTSPOT);
-    LOG_DEBUG("Removed hotspot policy");
-
-    if (cfg->network.proxy_ipv6) {
-        routing_rule_del_by_pref(cfg, 6, ATP_PREF_HOTSPOT);
-        LOG_DEBUG("Removed IPv6 hotspot policy");
-    }
-
-    cfg->interface.current_vpn_iface[0] = '\0';
-
-    LOG_INFO("VPN policy removed successfully");
-    pthread_mutex_unlock(&g_routing_mutex);
-    return 0;
-}
-
-int routing_add_mss_clamp(atp_config_t *cfg, const char *iface) {
-    if (validate_iface_arg(iface) != ATP_OK) {
-        LOG_ERROR("Invalid interface for MSS clamp: %s", iface);
-        return ATP_ERR_INVAL;
-    }
-
-    LOG_INFO("Adding MSS clamp for interface: %s", iface);
-
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] iptables -t mangle -A FORWARD -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu", iface);
-        return 0;
-    }
-
-    char rule_buf[256];
-    int n = snprintf(rule_buf, sizeof(rule_buf),
-                     "-o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
-                     iface);
-    if (n < 0 || n >= (int)sizeof(rule_buf)) {
-        LOG_ERROR("Rule buffer truncated");
-        return ATP_ERR_INVAL;
-    }
-
-    char cmd[MAX_CMD_LEN];
-    n = snprintf(cmd, sizeof(cmd),
-                 "/system/bin/iptables -t mangle -C FORWARD %s 2>/dev/null", rule_buf);
-    if (n < 0 || n >= (int)sizeof(cmd)) {
-        LOG_ERROR("Command buffer truncated");
-        return ATP_ERR_INVAL;
-    }
-
-    if (exec_cmd_simple(cmd, CMD_TIMEOUT_SEC) != 0) {
-        n = snprintf(cmd, sizeof(cmd),
-                     "/system/bin/iptables -t mangle -A FORWARD %s", rule_buf);
-        if (n < 0 || n >= (int)sizeof(cmd)) {
-            LOG_ERROR("Command buffer truncated");
-            return ATP_ERR_INVAL;
-        }
-        exec_cmd_simple(cmd, CMD_TIMEOUT_SEC);
-        LOG_DEBUG("MSS clamp rule added");
-    } else {
-        LOG_DEBUG("MSS clamp rule already exists");
-    }
-
-    return 0;
-}
-
-int routing_remove_mss_clamp(atp_config_t *cfg, const char *iface) {
-    if (validate_iface_arg(iface) != ATP_OK) {
-        LOG_ERROR("Invalid interface for MSS clamp removal: %s", iface);
-        return ATP_ERR_INVAL;
-    }
-
-    LOG_INFO("Removing MSS clamp for interface: %s", iface);
-
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] iptables -t mangle -D FORWARD -o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu", iface);
-        return 0;
-    }
-
-    char rule_buf[256];
-    int n = snprintf(rule_buf, sizeof(rule_buf),
-                     "-o %s -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu",
-                     iface);
-    if (n < 0 || n >= (int)sizeof(rule_buf)) {
-        LOG_ERROR("Rule buffer truncated");
-        return ATP_ERR_INVAL;
-    }
-
-    char cmd[MAX_CMD_LEN];
-    n = snprintf(cmd, sizeof(cmd),
-                 "/system/bin/iptables -t mangle -D FORWARD %s 2>/dev/null", rule_buf);
-    if (n < 0 || n >= (int)sizeof(cmd)) {
-        LOG_ERROR("Command buffer truncated");
-        return ATP_ERR_INVAL;
-    }
-
-    exec_cmd_simple(cmd, CMD_TIMEOUT_SEC);
-
-    LOG_DEBUG("MSS clamp rule removed");
-    return 0;
-}
-
-int routing_ip_forward_enable(atp_config_t *cfg, int enable) {
-    char val[8];
-    snprintf(val, sizeof(val), "%d", enable);
-
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] echo %d > /proc/sys/net/ipv4/ip_forward", enable);
-        return 0;
-    }
-
-    return write_sysctl("/proc/sys/net/ipv4/ip_forward", val);
-}
-
-int routing_ipv6_forward_enable(atp_config_t *cfg, int enable) {
-    char val[8];
-    snprintf(val, sizeof(val), "%d", enable);
-
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] echo %d > /proc/sys/net/ipv6/conf/all/forwarding", enable);
-        return 0;
-    }
-
-    return write_sysctl("/proc/sys/net/ipv6/conf/all/forwarding", val);
-}
-
-int routing_rp_filter_set(atp_config_t *cfg, int value) {
-    char path[256];
-    DIR *dir;
-    struct dirent *entry;
-    char val[8];
-    int ret = ATP_OK;
-
-    snprintf(val, sizeof(val), "%d", value);
-
-    dir = opendir("/proc/sys/net/ipv4/conf");
-    if (!dir) return ATP_ERR_IO;
-
-    while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
-
-        snprintf(path, sizeof(path), "/proc/sys/net/ipv4/conf/%s/rp_filter", entry->d_name);
-
-        if (cfg->core.dry_run) {
-            LOG_DEBUG("[DRY_RUN] echo %d > %s", value, path);
-            continue;
-        }
-
-        if (write_sysctl(path, val) != ATP_OK) {
-            LOG_WARN("Failed to set rp_filter for %s", entry->d_name);
-            ret = ATP_ERR_IO;
-        }
-    }
-
-    closedir(dir);
-    LOG_DEBUG("rp_filter set to %d for all interfaces", value);
-    return ret;
-}
-
-int routing_tcp_stack_tune(atp_config_t *cfg) {
-    if (cfg->core.dry_run) {
-        LOG_DEBUG("[DRY_RUN] TCP stack tuning skipped");
-        return 0;
-    }
-
-    write_sysctl("/proc/sys/net/ipv4/tcp_fastopen", "3");
-    write_sysctl("/proc/sys/net/core/rmem_max", "16777216");
-    write_sysctl("/proc/sys/net/core/wmem_max", "16777216");
-    write_sysctl("/proc/sys/net/ipv4/tcp_rmem", "4096 87380 16777216");
-    write_sysctl("/proc/sys/net/ipv4/tcp_wmem", "4096 65536 16777216");
-
-    if (exec_cmd_status("grep -q bbr /proc/sys/net/ipv4/tcp_allowed_congestion_control 2>/dev/null", 5) != 0) {
-        write_sysctl("/proc/sys/net/ipv4/tcp_congestion_control", "bbr");
-        LOG_DEBUG("TCP congestion control set to BBR");
-    }
-
-    LOG_INFO("TCP stack tuning complete");
-    return 0;
-}
-
-int routing_get_active_interfaces(char *ifaces, size_t size) {
-    if (!ifaces || size == 0) return ATP_ERR_INVAL;
-
-    struct ifaddrs *ifaddr, *ifa;
-    char *ptr = ifaces;
-    size_t remaining = size;
-    int first = 1;
-    char seen[64][IFNAMSIZ];
-    int seen_count = 0;
-
-    if (getifaddrs(&ifaddr) < 0) {
-        LOG_ERROR("getifaddrs failed: %s", strerror(errno));
-        return ATP_ERR_IO;
-    }
-
-    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_name) continue;
-        if (!(ifa->ifa_flags & IFF_UP)) continue;
-        if (strcmp(ifa->ifa_name, "lo") == 0) continue;
-
-        int already_seen = 0;
-        for (int i = 0; i < seen_count; i++) {
-            if (strcmp(seen[i], ifa->ifa_name) == 0) {
-                already_seen = 1;
-                break;
-            }
-        }
-        if (already_seen) continue;
-
-        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET) {
-            char addr[INET_ADDRSTRLEN];
-            struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
-            inet_ntop(AF_INET, &sin->sin_addr, addr, sizeof(addr));
-
-            if (seen_count < 64) {
-                strncpy(seen[seen_count], ifa->ifa_name, IFNAMSIZ - 1);
-                seen[seen_count][IFNAMSIZ - 1] = '\0';
-                seen_count++;
-            }
-
-            if (!first) {
-                if (remaining < 2) break;
-                *ptr++ = ' ';
-                remaining--;
-            }
-            first = 0;
-
-            int n = snprintf(ptr, remaining, "%s:%s", ifa->ifa_name, addr);
-            if (n < 0 || (size_t)n >= remaining) break;
-            ptr += n;
-            remaining -= n;
-        }
-    }
-
-    freeifaddrs(ifaddr);
-    return ATP_OK;
-}
-
-int routing_get_ipv4_addrs(const char *iface, char *output, size_t size) {
-    if (!iface || !*iface || !output || size == 0) return ATP_ERR_INVAL;
-
-    if (validate_iface_arg(iface) != ATP_OK) {
-        LOG_ERROR("Invalid interface: %s", iface);
-        return ATP_ERR_INVAL;
-    }
-
-    struct ifaddrs *ifaddr, *ifa;
-    char *ptr = output;
-    size_t remaining = size;
-    int first = 1;
-    int found = 0;
-
-    if (getifaddrs(&ifaddr) < 0) {
-        LOG_ERROR("getifaddrs failed: %s", strerror(errno));
-        return ATP_ERR_IO;
-    }
-
-    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (!ifa->ifa_name || strcmp(ifa->ifa_name, iface) != 0) continue;
-        if (!(ifa->ifa_flags & IFF_UP)) continue;
-
-        if (ifa->ifa_addr && ifa->ifa_addr->sa_family == AF_INET) {
-            char addr[INET_ADDRSTRLEN];
-            struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
-            inet_ntop(AF_INET, &sin->sin_addr, addr, sizeof(addr));
-
-            struct sockaddr_in *netmask = (struct sockaddr_in *)ifa->ifa_netmask;
-            int prefix = 32;
-            if (netmask) {
-                uint32_t mask = ntohl(netmask->sin_addr.s_addr);
-                prefix = 0;
-                while (mask & 0x80000000) { prefix++; mask <<= 1; }
-            }
-
-            if (!first) {
-                if (remaining < 2) break;
-                *ptr++ = ' ';
-                remaining--;
-            }
-            first = 0;
-            found = 1;
-
-            int n = snprintf(ptr, remaining, "%s/%d", addr, prefix);
-            if (n < 0 || (size_t)n >= remaining) break;
-            ptr += n;
-            remaining -= n;
-        }
-    }
-
-    freeifaddrs(ifaddr);
-
-    if (!found) {
-        output[0] = '\0';
+    if (!cfg || !valid_iface(vpn_iface)) return ATP_ERR_INVAL;
+
+    uint32_t table = 0;
+    char hotspots[MAX_HOTSPOTS][IFNAMSIZ] = {{0}};
+    if (netlink_get_vpn_table(vpn_iface, &table) != 0) {
+        LOG_WARN("VPN policy table not ready for %s", vpn_iface);
+        update_snapshot(0, 0, 0, hotspots, 0, 0, 0);
         return ATP_ERR_NOENT;
     }
 
+    int ipv4_default = netlink_table_has_default_route(table, AF_INET);
+    int ipv6_default = netlink_table_has_default_route(table, AF_INET6);
+    if (!ipv4_default) {
+        LOG_WARN("VPN table %u has no IPv4 default route", table);
+        update_snapshot(table, 0, ipv6_default, hotspots, 0, 0, 0);
+        return ATP_ERR_NOENT;
+    }
+
+    int count = collect_hotspots(cfg, hotspots, MAX_HOTSPOTS);
+    if (count == 0) {
+        update_snapshot(table, ipv4_default, ipv6_default, hotspots, 0, 0, 0);
+        return ATP_OK;
+    }
+
+    pthread_mutex_lock(&g_routing_mutex);
+    int active4 = 0;
+    int active6 = 0;
+    for (int i = 0; i < count; i++) {
+        if (rule_exists(cfg, AF_INET, hotspots[i], table)) active4++;
+        if (ipv6_default && rule_exists(cfg, AF_INET6, hotspots[i], table)) active6++;
+    }
+
+    int healthy = strcmp(cfg->interface.current_vpn_iface, vpn_iface) == 0 &&
+                  active4 == count && (!ipv6_default || active6 == count);
+    if (!healthy) {
+        remove_managed_rules(cfg, AF_INET);
+        remove_managed_rules(cfg, AF_INET6);
+        active4 = 0;
+        active6 = 0;
+        for (int i = 0; i < count; i++) {
+            if (run_rule(cfg, AF_INET, "add", hotspots[i], table) == ATP_OK) active4++;
+            if (ipv6_default &&
+                run_rule(cfg, AF_INET6, "add", hotspots[i], table) == ATP_OK) active6++;
+        }
+    }
+
+    update_snapshot(table, ipv4_default, ipv6_default,
+                    hotspots, count, active4, active6);
+    if (active4 > 0) {
+        snprintf(cfg->interface.current_vpn_iface,
+                 sizeof(cfg->interface.current_vpn_iface), "%s", vpn_iface);
+    }
+    pthread_mutex_unlock(&g_routing_mutex);
+
+    if (active4 == 0) return ATP_ERR_GENERAL;
+    if (!healthy) {
+        LOG_INFO("Hotspot VPN policy synchronized: IPv4=%d IPv6=%d interface(s) -> table %u",
+                 active4, active6, table);
+    }
+    return ATP_OK;
+}
+
+int routing_remove_vpn_policy(atp_config_t *cfg, const char *vpn_iface) {
+    if (!cfg) return ATP_ERR_INVAL;
+    pthread_mutex_lock(&g_routing_mutex);
+    remove_managed_rules(cfg, AF_INET);
+    remove_managed_rules(cfg, AF_INET6);
+    cfg->interface.current_vpn_iface[0] = '\0';
+    char no_hotspots[1][IFNAMSIZ] = {{0}};
+    update_snapshot(0, 0, 0, no_hotspots, 0, 0, 0);
+    pthread_mutex_unlock(&g_routing_mutex);
+    if (vpn_iface && vpn_iface[0]) LOG_INFO("Hotspot VPN policy removed for %s", vpn_iface);
     return ATP_OK;
 }

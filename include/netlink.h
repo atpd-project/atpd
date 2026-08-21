@@ -35,6 +35,9 @@ void netlink_handle_event(int fd, void *data);
 
 int netlink_get_iface_stats(const char *iface, uint64_t *rx_bytes, uint64_t *tx_bytes);
 int netlink_get_active_vpn(char *iface, size_t size);
+int netlink_get_vpn_table(const char *iface, uint32_t *table_id);
+int netlink_table_has_default_route(uint32_t table_id, int family);
+void netlink_refresh_now(void);
 int netlink_get_ipv4_snapshot(char *output, size_t size);
 int netlink_check_rule_exists(int table_id, int mark, const char *iface);
 
@@ -42,7 +45,6 @@ int nl_vpn_detect(void);
 int nl_link_get_vpn_interface(char *iface, size_t size);
 
 void netlink_set_reactor(reactor_t *r);
-void netlink_set_tproxy_ready(void);
 
 /* ========== XFRM Listener (Google VPN Detection) ========== */
 

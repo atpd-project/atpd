@@ -24,6 +24,7 @@ typedef struct async_validate_ctx {
 
 int async_validate_config(async_validate_ctx_t *ctx, reactor_t *r,
                           const char *bin_path, const char *work_dir,
+                          const char *conf_path,
                           validate_callback_t callback, void *userdata);
 
 void async_validate_cleanup(async_validate_ctx_t *ctx);

@@ -25,6 +25,7 @@
 #include <net/if.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
+#include <linux/fib_rules.h>
 #include <linux/xfrm.h>
 #include <pthread.h>
 #include <dirent.h>
@@ -35,36 +36,24 @@
 #define NL_DUMP_SIZE 65536
 #define NL_RECV_TIMEOUT_MS 3000
 
-/* ========== Firewall Self-Healing ========== */
-
-#include "tproxy.h"
-
-static atomic_int g_tproxy_initialized = 0;
-
-void netlink_set_tproxy_ready(void) {
-    atomic_store(&g_tproxy_initialized, 1);
-}
-
 /* ========== Network Refresh Debounce ========== */
 
 static reactor_timer_t *g_debounce_timer = NULL;
 static reactor_t *g_debounce_reactor = NULL;
 static pthread_mutex_t g_debounce_lock = PTHREAD_MUTEX_INITIALIZER;
 
-#define NETLINK_DEBOUNCE_MS 500
-
 static pthread_mutex_t g_nl_mutex = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint g_seq = 1;
 
-#ifndef IPTABLES_CMD
-#define IPTABLES_CMD "/system/bin/iptables"
-#endif
-#ifndef IP6TABLES_CMD
-#define IP6TABLES_CMD "/system/bin/ip6tables"
-#endif
+static nl_callback_t g_callback = NULL;
+static void *g_callback_userdata = NULL;
+static char g_last_vpn_iface[IFNAMSIZ] = {0};
+static int g_network_state_initialized = 0;
 
-static int ip_rule_audit(atp_config_t *cfg);
-static int tproxy_refresh_rules(atp_config_t *cfg);
+static int netlink_send_request(int fd, const void *buf, size_t len);
+static int netlink_recv_all_with_timeout(int fd, uint32_t seq,
+                                         int (*parser)(struct nlmsghdr *, void *),
+                                         void *ctx, int timeout_ms);
 
 static uint64_t get_monotonic_ms(void) {
     struct timespec ts;
@@ -77,12 +66,11 @@ static void debounce_flush_cb(reactor_t *r, reactor_timer_t *timer, void *userda
     (void)timer;
     (void)userdata;
 
-    ip_rule_audit(&g_config);
-    tproxy_refresh_rules(&g_config);
-
     pthread_mutex_lock(&g_debounce_lock);
     g_debounce_timer = NULL;
     pthread_mutex_unlock(&g_debounce_lock);
+
+    netlink_refresh_now();
 }
 
 static void trigger_network_refresh(reactor_t *r) {
@@ -190,21 +178,40 @@ static void netlink_drain_socket(int fd) {
 /* ========== getifaddrs Fallback for XFRM Tunnels ========== */
 
 static int is_proxy_interface(const char *ifname);
-static int getifaddrs_find_vpn(char *output, size_t size) {
+static int iface_has_global_ipv4(const char *ifname) {
     struct ifaddrs *ifaddr, *ifa;
 
     if (getifaddrs(&ifaddr) < 0) return -1;
 
     for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name) continue;
+        if (strcmp(ifa->ifa_name, ifname) != 0) continue;
         if (!(ifa->ifa_flags & IFF_UP)) continue;
-        if (!is_proxy_interface(ifa->ifa_name)) continue;
+        if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
 
+        const struct sockaddr_in *addr = (const struct sockaddr_in *)ifa->ifa_addr;
+        uint32_t ipv4 = ntohl(addr->sin_addr.s_addr);
+        if ((ipv4 >> 24) == 127 || (ipv4 >> 16) == 0xa9fe || ipv4 == 0) continue;
+
+        freeifaddrs(ifaddr);
+        return 1;
+    }
+
+    freeifaddrs(ifaddr);
+    return 0;
+}
+
+static int getifaddrs_find_vpn(char *output, size_t size) {
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) < 0) return -1;
+
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_name || !is_proxy_interface(ifa->ifa_name)) continue;
+        if (!iface_has_global_ipv4(ifa->ifa_name)) continue;
         snprintf(output, size, "%s", ifa->ifa_name);
         freeifaddrs(ifaddr);
         return 0;
     }
-
     freeifaddrs(ifaddr);
     return -1;
 }
@@ -228,6 +235,23 @@ struct nl_parse_ctx {
     int count;
 };
 
+struct nl_route_ctx {
+    int ifindex;
+    int found;
+};
+
+struct nl_table_route_ctx {
+    uint32_t table;
+    int family;
+    int found;
+};
+
+struct nl_rule_ctx {
+    const char *iface;
+    uint32_t table;
+    int found;
+};
+
 static int is_proxy_interface(const char *ifname) {
     if (!ifname) return 0;
 
@@ -237,10 +261,6 @@ static int is_proxy_interface(const char *ifname) {
         return 0;
     }
 
-    static const char *prefixes[] = {"tun", "wg", "vpn", "ppp"};
-    for (size_t i = 0; i < (sizeof(prefixes) / sizeof(prefixes[0])); ++i) {
-        if (strncmp(ifname, prefixes[i], strlen(prefixes[i])) == 0) return 1;
-    }
     return 0;
 }
 
@@ -292,6 +312,101 @@ static int parser_link_sync(struct nlmsghdr *h, void *ctx) {
     }
     if (info->name[0]) pctx->count++;
     return 0;
+}
+
+static int parser_default_route(struct nlmsghdr *h, void *ctx) {
+    struct nl_route_ctx *route = ctx;
+    if (h->nlmsg_type != RTM_NEWROUTE ||
+        h->nlmsg_len < NLMSG_LENGTH(sizeof(struct rtmsg))) return 0;
+
+    struct rtmsg *rtm = NLMSG_DATA(h);
+    if (rtm->rtm_family != AF_INET || rtm->rtm_dst_len != 0 ||
+        rtm->rtm_type != RTN_UNICAST) return 0;
+
+    int len = RTM_PAYLOAD(h);
+    for (struct rtattr *rta = RTM_RTA(rtm); RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
+        if (rta->rta_type == RTA_OIF && RTA_PAYLOAD(rta) >= sizeof(int)) {
+            int ifindex;
+            memcpy(&ifindex, RTA_DATA(rta), sizeof(ifindex));
+            if (ifindex == route->ifindex) route->found = 1;
+        }
+    }
+    return 0;
+}
+
+static int parser_table_default_route(struct nlmsghdr *h, void *ctx) {
+    struct nl_table_route_ctx *route = ctx;
+    if (h->nlmsg_type != RTM_NEWROUTE ||
+        h->nlmsg_len < NLMSG_LENGTH(sizeof(struct rtmsg))) return 0;
+
+    struct rtmsg *rtm = NLMSG_DATA(h);
+    if (rtm->rtm_family != route->family || rtm->rtm_dst_len != 0 ||
+        rtm->rtm_type != RTN_UNICAST) return 0;
+
+    uint32_t table = rtm->rtm_table;
+    int len = RTM_PAYLOAD(h);
+    for (struct rtattr *rta = RTM_RTA(rtm); RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
+        if (rta->rta_type == RTA_TABLE && RTA_PAYLOAD(rta) >= sizeof(table)) {
+            memcpy(&table, RTA_DATA(rta), sizeof(table));
+        }
+    }
+    if (table == route->table) route->found = 1;
+    return 0;
+}
+
+static int parser_vpn_rule(struct nlmsghdr *h, void *ctx) {
+    struct nl_rule_ctx *rule = ctx;
+    if (h->nlmsg_type != RTM_NEWRULE ||
+        h->nlmsg_len < NLMSG_LENGTH(sizeof(struct fib_rule_hdr))) return 0;
+
+    struct fib_rule_hdr *frh = NLMSG_DATA(h);
+    if (frh->family != AF_INET) return 0;
+
+    uint32_t table = frh->table;
+    char oif[IFNAMSIZ] = {0};
+    int len = (int)NLMSG_PAYLOAD(h, sizeof(*frh));
+    struct rtattr *rta = (struct rtattr *)((char *)frh + NLMSG_ALIGN(sizeof(*frh)));
+    for (; RTA_OK(rta, len); rta = RTA_NEXT(rta, len)) {
+        if (rta->rta_type == FRA_OIFNAME) {
+            safe_copy_ifname(oif, RTA_DATA(rta), RTA_PAYLOAD(rta));
+        }
+        else if (rta->rta_type == FRA_TABLE && RTA_PAYLOAD(rta) >= sizeof(table)) {
+            memcpy(&table, RTA_DATA(rta), sizeof(table));
+        }
+    }
+
+    if (oif[0] && strcmp(oif, rule->iface) == 0 && table != RT_TABLE_UNSPEC) {
+        rule->table = table;
+        rule->found = 1;
+    }
+    return 0;
+}
+
+static int netlink_iface_has_default_route(int ifindex) {
+    struct nl_route_ctx ctx = { .ifindex = ifindex, .found = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct rtmsg rtm;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg)),
+            .nlmsg_type = RTM_GETROUTE,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = atomic_fetch_add(&g_seq, 1)
+        },
+        .rtm = { .rtm_family = AF_INET }
+    };
+
+    pthread_mutex_lock(&g_nl_mutex);
+    netlink_drain_socket(g_sync_fd);
+    int ret = netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len);
+    if (ret == 0) {
+        ret = netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                            parser_default_route, &ctx,
+                                            NL_RECV_TIMEOUT_MS);
+    }
+    pthread_mutex_unlock(&g_nl_mutex);
+    return ret == 0 && ctx.found;
 }
 
 static int netlink_send_request(int fd, const void *buf, size_t len) {
@@ -417,8 +532,10 @@ done:
 /* ========== Core Netlink API ========== */
 
 int netlink_init(nl_callback_t callback, void *userdata) {
-    (void)callback;
-    (void)userdata;
+    g_callback = callback;
+    g_callback_userdata = userdata;
+    g_last_vpn_iface[0] = '\0';
+    g_network_state_initialized = 0;
     g_sync_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     g_async_fd = socket(AF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
     if (g_sync_fd < 0 || g_async_fd < 0) {
@@ -487,10 +604,12 @@ void netlink_handle_event(int fd, void *data) {
         if (h->nlmsg_type == NLMSG_DONE) break;
         if (h->nlmsg_type == NLMSG_ERROR) continue;
 
-        if (h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_NEWROUTE) {
+        if (h->nlmsg_type == RTM_NEWLINK || h->nlmsg_type == RTM_DELLINK ||
+            h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_DELADDR ||
+            h->nlmsg_type == RTM_NEWROUTE || h->nlmsg_type == RTM_DELROUTE) {
             char ifname[IFNAMSIZ] = {0};
 
-            if (h->nlmsg_type == RTM_NEWADDR) {
+            if (h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_DELADDR) {
                 if (h->nlmsg_len < NLMSG_LENGTH(sizeof(struct ifaddrmsg))) {
                     LOG_WARN("[NET] RTM_NEWADDR message too short");
                     continue;
@@ -647,13 +766,104 @@ int netlink_get_active_vpn(char *output, size_t size) {
     pthread_mutex_unlock(&g_nl_mutex);
 
     for (int i = 0; i < ctx.count; i++) {
-        if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
+        if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name) &&
+            netlink_iface_has_default_route(links[i].index)) {
+            if (!iface_has_global_ipv4(links[i].name)) continue;
             snprintf(output, size, "%s", links[i].name);
             return 0;
         }
     }
+    output[0] = '\0';
+    return -1;
+}
 
-    return getifaddrs_find_vpn(output, size);
+int netlink_get_vpn_table(const char *iface, uint32_t *table_id) {
+    if (!iface || !table_id || !is_proxy_interface(iface)) return -1;
+
+    struct nl_rule_ctx ctx = { .iface = iface, .table = 0, .found = 0 };
+    struct {
+        struct nlmsghdr nlh;
+        struct fib_rule_hdr frh;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct fib_rule_hdr)),
+            .nlmsg_type = RTM_GETRULE,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = atomic_fetch_add(&g_seq, 1)
+        },
+        .frh = { .family = AF_INET }
+    };
+
+    pthread_mutex_lock(&g_nl_mutex);
+    netlink_drain_socket(g_sync_fd);
+    int ret = netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len);
+    if (ret == 0) {
+        ret = netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                            parser_vpn_rule, &ctx,
+                                            NL_RECV_TIMEOUT_MS);
+    }
+    pthread_mutex_unlock(&g_nl_mutex);
+
+    if (ret != 0 || !ctx.found) return -1;
+    *table_id = ctx.table;
+    return 0;
+}
+
+int netlink_table_has_default_route(uint32_t table_id, int family) {
+    if (table_id == RT_TABLE_UNSPEC || (family != AF_INET && family != AF_INET6) ||
+        g_sync_fd < 0) return 0;
+
+    struct nl_table_route_ctx ctx = {
+        .table = table_id,
+        .family = family,
+        .found = 0
+    };
+    struct {
+        struct nlmsghdr nlh;
+        struct rtmsg rtm;
+    } req = {
+        .nlh = {
+            .nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg)),
+            .nlmsg_type = RTM_GETROUTE,
+            .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP,
+            .nlmsg_seq = atomic_fetch_add(&g_seq, 1)
+        },
+        .rtm = { .rtm_family = family }
+    };
+
+    pthread_mutex_lock(&g_nl_mutex);
+    netlink_drain_socket(g_sync_fd);
+    int ret = netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len);
+    if (ret == 0) {
+        ret = netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                            parser_table_default_route, &ctx,
+                                            NL_RECV_TIMEOUT_MS);
+    }
+    pthread_mutex_unlock(&g_nl_mutex);
+    return ret == 0 && ctx.found;
+}
+
+void netlink_refresh_now(void) {
+    char iface[IFNAMSIZ] = {0};
+    int connected = netlink_get_active_vpn(iface, sizeof(iface)) == 0 && iface[0];
+
+    if (connected) {
+        if (strcmp(g_last_vpn_iface, iface) != 0) {
+            atpd_vpn_state_transition(VPN_STATE_READY, 0, iface);
+            snprintf(g_last_vpn_iface, sizeof(g_last_vpn_iface), "%s", iface);
+        }
+        if (g_callback) g_callback(NL_EVENT_VPN_CONNECTED, iface, g_callback_userdata);
+    } else {
+        int notify = !g_network_state_initialized || g_last_vpn_iface[0];
+        if (g_last_vpn_iface[0]) {
+            atpd_vpn_state_transition(VPN_STATE_IDLE, 0, NULL);
+            g_last_vpn_iface[0] = '\0';
+        }
+        if (notify && g_callback) {
+            g_callback(NL_EVENT_VPN_DISCONNECTED, NULL, g_callback_userdata);
+        }
+    }
+    g_network_state_initialized = 1;
 }
 
 int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
@@ -723,6 +933,9 @@ void netlink_cleanup(void) {
         close(g_async_fd);
         g_async_fd = -1;
     }
+    g_callback = NULL;
+    g_callback_userdata = NULL;
+    g_last_vpn_iface[0] = '\0';
 }
 
 int netlink_get_fd(void) {
@@ -830,97 +1043,3 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
 
     return getifaddrs_find_vpn(iface, size);
 }
-
-/* ========== Firewall Self-Healing ========== */
-
-static int ip_rule_audit(atp_config_t *cfg) {
-    if (!atomic_load(&g_tproxy_initialized)) return 0;
-    if (cfg->core.dry_run) return 0;
-
-    char cmd[MAX_CMD_LEN];
-    int needs_repair = 0;
-
-    snprintf(cmd, sizeof(cmd),
-             "ip rule show | grep -q 'fwmark %d lookup %d' 2>/dev/null",
-             cfg->network.mark_value, cfg->network.table_id);
-
-    if (exec_cmd_simple(cmd, 2) != 0) {
-        LOG_WARN("IPv4 fwmark rule missing, repairing...");
-        snprintf(cmd, sizeof(cmd),
-                 "ip rule add fwmark %d table %d 2>/dev/null",
-                 cfg->network.mark_value, cfg->network.table_id);
-        exec_cmd_simple(cmd, 2);
-        needs_repair = 1;
-    }
-
-    if (cfg->network.proxy_ipv6) {
-        snprintf(cmd, sizeof(cmd),
-                 "ip -6 rule show | grep -q 'fwmark %d lookup %d' 2>/dev/null",
-                 cfg->network.mark_value6, cfg->network.table_id);
-
-        if (exec_cmd_simple(cmd, 2) != 0) {
-            LOG_WARN("IPv6 fwmark rule missing, repairing...");
-            snprintf(cmd, sizeof(cmd),
-                     "ip -6 rule add fwmark %d table %d 2>/dev/null",
-                     cfg->network.mark_value6, cfg->network.table_id);
-            exec_cmd_simple(cmd, 2);
-            needs_repair = 1;
-        }
-    }
-
-    if (needs_repair) {
-        LOG_INFO("IP rule audit: repaired fwmark rules");
-    }
-    return 0;
-}
-
-static int tproxy_refresh_rules(atp_config_t *cfg) {
-    if (!atomic_load(&g_tproxy_initialized)) return 0;
-    if (cfg->core.dry_run) return 0;
-
-    char cmd[MAX_CMD_LEN];
-    int needs_repair_v4 = 0;
-    int needs_repair_v6 = 0;
-
-    snprintf(cmd, sizeof(cmd),
-             "%s -t mangle -L PREROUTING 2>/dev/null | head -2 | grep -q ATP_PRE_0",
-             IPTABLES_CMD);
-    if (exec_cmd_simple(cmd, 2) != 0) {
-        needs_repair_v4 = 1;
-    }
-
-    snprintf(cmd, sizeof(cmd),
-             "%s -t mangle -L OUTPUT 2>/dev/null | head -2 | grep -q ATP_OUT_0",
-             IPTABLES_CMD);
-    if (exec_cmd_simple(cmd, 2) != 0) {
-        needs_repair_v4 = 1;
-    }
-
-    if (needs_repair_v4) {
-        LOG_INFO("TPROXY audit: repairing IPv4 hooks...");
-        tproxy_hook_main_chains(cfg, 4);
-    }
-
-    if (cfg->network.proxy_ipv6 && access(IP6TABLES_CMD, X_OK) == 0) {
-        snprintf(cmd, sizeof(cmd),
-                 "%s -t mangle -L PREROUTING 2>/dev/null | head -2 | grep -q ATP6_PRE_0",
-                 IP6TABLES_CMD);
-        if (exec_cmd_simple(cmd, 2) != 0) {
-            needs_repair_v6 = 1;
-        }
-
-        snprintf(cmd, sizeof(cmd),
-                 "%s -t mangle -L OUTPUT 2>/dev/null | head -2 | grep -q ATP6_OUT_0",
-                 IP6TABLES_CMD);
-        if (exec_cmd_simple(cmd, 2) != 0) {
-            needs_repair_v6 = 1;
-        }
-
-        if (needs_repair_v6) {
-            tproxy_hook_main_chains(cfg, 6);
-        }
-    }
-
-    return 0;
-}
-

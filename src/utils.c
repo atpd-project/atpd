@@ -542,7 +542,10 @@ int get_process_uptime_sec(pid_t pid) {
     if (!fp_uptime) return 0;
 
     double uptime_sec;
-    fscanf(fp_uptime, "%lf", &uptime_sec);
+    if (fscanf(fp_uptime, "%lf", &uptime_sec) != 1) {
+        fclose(fp_uptime);
+        return 0;
+    }
     fclose(fp_uptime);
 
     double process_start = (double)start_time / ticks_per_sec;

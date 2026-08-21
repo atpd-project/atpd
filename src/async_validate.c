@@ -66,12 +66,13 @@ static void validate_cleanup(async_validate_ctx_t *ctx, int result, const char *
 
 int async_validate_config(async_validate_ctx_t *ctx, reactor_t *r,
                           const char *bin_path, const char *work_dir,
+                          const char *conf_path,
                           validate_callback_t callback, void *userdata) {
     int pipe_fds[2] = {-1, -1};
     int timer_fd = -1;
     pid_t pid = -1;
 
-    if (!ctx || !r || !bin_path || !callback) return -1;
+    if (!ctx || !r || !bin_path || !work_dir || !conf_path || !callback) return -1;
 
     memset(ctx, 0, sizeof(async_validate_ctx_t));
     atomic_init(&ctx->completed, 0);
@@ -127,7 +128,8 @@ int async_validate_config(async_validate_ctx_t *ctx, reactor_t *r,
             close(null_fd);
         }
 
-        execl(bin_path, bin_path, "check", "-D", work_dir, NULL);
+        execl(bin_path, bin_path, "check", "-D", work_dir,
+              "-c", conf_path, NULL);
         _exit(127);
     }
 

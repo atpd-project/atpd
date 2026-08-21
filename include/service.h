@@ -75,9 +75,18 @@ struct service_ctx_t {
     int health_check_interval_ms;
     int running_healthy;
     int stop_attempts;
+    time_t started_at;
+    unsigned restart_count;
+    char ebpf_mode[16];
+    char ebpf_network[32];
+    char version[64];
+    char last_error[128];
 };
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
+void service_set_reactor(service_ctx_t *ctx, reactor_t *reactor);
+int service_validate_config(const char *path);
+int service_reload_async(service_ctx_t *ctx, atp_config_t *cfg);
 int service_start_async(service_ctx_t *ctx);
 int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata);
 int service_get_pid(service_ctx_t *ctx);

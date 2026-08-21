@@ -7,6 +7,7 @@
 #include "service.h"
 #include "api.h"
 #include "cli.h"
+#include "netlink.h"
 
 typedef struct atpd_init_context {
     atp_config_t *config;
@@ -15,13 +16,14 @@ typedef struct atpd_init_context {
     service_ctx_t *service;
     api_ctx_t *api;
     atp_options_t *opts;
+    nl_callback_t netlink_callback;
+    void *netlink_userdata;
 } atpd_init_context_t;
 
 typedef enum {
     INIT_PHASE_CONFIG = 0,
     INIT_PHASE_LOGGER,
     INIT_PHASE_NETLINK,
-    INIT_PHASE_FILTER,
     INIT_PHASE_SERVICE,
     INIT_PHASE_API,
     INIT_PHASE_READY,
@@ -41,7 +43,6 @@ typedef struct {
 int atpd_init_phase_config(atpd_init_context_t *ctx);
 int atpd_init_phase_logger(atpd_init_context_t *ctx);
 int atpd_init_phase_netlink(atpd_init_context_t *ctx);
-int atpd_init_phase_filter(atpd_init_context_t *ctx);
 int atpd_init_phase_service(atpd_init_context_t *ctx);
 int atpd_init_phase_api(atpd_init_context_t *ctx);
 int atpd_init_phase_ready(atpd_init_context_t *ctx);

@@ -1541,6 +1541,10 @@ int api_get_mode_async(api_ctx_t *ctx, api_callback_t callback, void *userdata) 
     return api_request_async(ctx, "GET", "/configs", NULL, callback, userdata);
 }
 
+int api_get_version_async(api_ctx_t *ctx, api_callback_t callback, void *userdata) {
+    return api_request_async(ctx, "GET", "/version", NULL, callback, userdata);
+}
+
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata) {
     char json_body[256];
     snprintf(json_body, sizeof(json_body), "{\"mode\":\"%s\"}", mode);

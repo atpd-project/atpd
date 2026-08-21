@@ -134,6 +134,7 @@ void api_cleanup(api_ctx_t *ctx);
 int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r);
 
 int api_get_mode_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
+int api_get_version_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata);
 int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
 int api_get_proxies_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);

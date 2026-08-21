@@ -3,12 +3,11 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * ATPd Global Context (VPN State Machine + Session List + Runtime State)
+ * ATPd Global Context (VPN State Machine + Runtime State)
  */
 
 #include "atpd_context.h"
 #include "logger.h"
-#include "session.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -52,9 +51,9 @@ void atpd_context_init(void) {
     atomic_init(&g_atpd_ctx.vpn_state, VPN_STATE_IDLE);
     g_atpd_ctx.xfrm_fd = -1;
     clock_gettime(CLOCK_MONOTONIC, &g_atpd_ctx.vpn_state_since);
-    g_atpd_ctx.vpn_teardown_cb = atpd_vpn_killswitch;
     g_atpd_ctx.vpn_transitions = 0;
-    g_atpd_ctx.splice_bytes_total = 0;
+    snprintf(g_atpd_ctx.clash_desired_mode,
+             sizeof(g_atpd_ctx.clash_desired_mode), "Rule");
     
     /* Runtime State */
     g_atpd_ctx.runtime_state = ATPD_RUNTIME_STATE_UNINITIALIZED;
@@ -112,10 +111,6 @@ void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char
         snprintf(g_atpd_ctx.vpn_iface, sizeof(g_atpd_ctx.vpn_iface), "%s", iface);
     }
 
-    if (new_state == VPN_STATE_TEARDOWN && g_atpd_ctx.vpn_teardown_cb) {
-        LOG_WARN("VPN_STATE: Kill-switch activated, cleaning up sessions");
-        g_atpd_ctx.vpn_teardown_cb();
-    }
 }
 
 /* === Runtime State Functions === */
@@ -219,73 +214,4 @@ void atpd_error_record(int code, const char *msg) {
 
 uint32_t atpd_error_get_last_code(void) {
     return g_atpd_ctx.last_error.last_error_code;
-}
-
-/* === Session Functions === */
-
-void atpd_session_register_to_ctx(struct atpd_session *s) {
-    if (!s) return;
-
-    struct atpd_session_list *node = calloc(1, sizeof(struct atpd_session_list));
-    if (!node) {
-        LOG_ERROR("ATPd Context: failed to allocate session list node");
-        return;
-    }
-    node->session = s;
-    node->next = g_atpd_ctx.sessions;
-    g_atpd_ctx.sessions = node;
-
-    LOG_DEBUG("ATPd Context: session registered");
-}
-
-void atpd_session_unregister_from_ctx(struct atpd_session *s) {
-    if (!s || !g_atpd_ctx.sessions) return;
-
-    struct atpd_session_list **pp = &g_atpd_ctx.sessions;
-    while (*pp) {
-        if ((*pp)->session == s) {
-            struct atpd_session_list *to_free = *pp;
-            *pp = (*pp)->next;
-            free(to_free);
-            LOG_DEBUG("ATPd Context: session unregistered");
-            return;
-        }
-        pp = &(*pp)->next;
-    }
-}
-
-void atpd_vpn_killswitch(void) {
-    int closed = 0;
-
-    struct atpd_session *session_ptrs[256];
-    int count = 0;
-    struct atpd_session_list *node = g_atpd_ctx.sessions;
-
-    while (node && count < 256) {
-        if (node->session) {
-            session_ptrs[count++] = node->session;
-        }
-        node = node->next;
-    }
-
-    for (int i = 0; i < count; i++) {
-        if (session_ptrs[i]) {
-            atpd_session_destroy(session_ptrs[i]);
-            closed++;
-        }
-    }
-
-    node = g_atpd_ctx.sessions;
-    while (node) {
-        struct atpd_session_list *next = node->next;
-        if (node->session) {
-            atpd_session_destroy(node->session);
-            closed++;
-        }
-        free(node);
-        node = next;
-    }
-    g_atpd_ctx.sessions = NULL;
-
-    LOG_WARN("ATPd Context: Kill-switch destroyed %d sessions", closed);
 }

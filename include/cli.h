@@ -12,7 +12,6 @@ typedef enum {
     CMD_STOP,
     CMD_RESTART,
     CMD_STATUS,
-    CMD_UPDATE_GEOIP,
     CMD_RELOAD,
     CMD_CHECK,
     CMD_VERSION,

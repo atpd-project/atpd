@@ -55,7 +55,6 @@ void print_usage(const char *progname) {
     printf("  status                Show daemon status and statistics\n");
     printf("  reload                Reload configuration without restart\n");
     printf("  check                 Validate configuration and exit\n");
-    printf("  update-geoip          Update GeoIP database\n");
     printf("  version               Print version information\n");
     printf("  help                  Show this help message\n");
     printf("\nExamples:\n");
@@ -72,7 +71,7 @@ void print_help(const char *progname) {
 
 static const char* suggest_command(const char *cmd) {
     const char *commands[] = {"start", "stop", "restart", "status",
-                              "reload", "check", "update-geoip",
+                              "reload", "check",
                               "version", "help", NULL};
     for (int i = 0; commands[i]; i++) {
         if (strncmp(cmd, commands[i], strlen(cmd)) == 0) {
@@ -149,7 +148,6 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
         else if (strcmp(cmd, "stop") == 0) opts->command = CMD_STOP;
         else if (strcmp(cmd, "restart") == 0) opts->command = CMD_RESTART;
         else if (strcmp(cmd, "status") == 0) opts->command = CMD_STATUS;
-        else if (strcmp(cmd, "update-geoip") == 0) opts->command = CMD_UPDATE_GEOIP;
         else if (strcmp(cmd, "reload") == 0) opts->command = CMD_RELOAD;
         else if (strcmp(cmd, "check") == 0) opts->command = CMD_CHECK;
         else if (strcmp(cmd, "help") == 0) opts->command = CMD_HELP;
@@ -179,7 +177,6 @@ const char* command_to_string(atp_command_t cmd) {
         case CMD_STOP:         return "stop";
         case CMD_RESTART:      return "restart";
         case CMD_STATUS:       return "status";
-        case CMD_UPDATE_GEOIP: return "update-geoip";
         case CMD_RELOAD:       return "reload";
         case CMD_CHECK:        return "check";
         case CMD_VERSION:      return "version";

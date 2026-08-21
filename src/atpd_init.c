@@ -12,13 +12,8 @@
 #include "config.h"
 #include "utils.h"
 #include "netlink.h"
-#include "app_filter.h"
 #include "service.h"
 #include "api.h"
-#include "fcm_monitor.h"
-#include "perf_mode.h"
-#include "tproxy.h"
-#include "cleanup.h"
 #include "atpd_context.h"
 #include "cli.h"
 
@@ -28,7 +23,6 @@ static init_phase_config_t init_phases[] = {
     {INIT_PHASE_CONFIG, "config", atpd_init_phase_config, 1, 0},
     {INIT_PHASE_LOGGER, "logger", atpd_init_phase_logger, 1, 0},
     {INIT_PHASE_NETLINK, "netlink", atpd_init_phase_netlink, 1, 0},
-    {INIT_PHASE_FILTER, "filter", atpd_init_phase_filter, 0, 1},
     {INIT_PHASE_SERVICE, "service", atpd_init_phase_service, 1, 0},
     {INIT_PHASE_API, "api", atpd_init_phase_api, 0, 1},
     {INIT_PHASE_READY, "ready", atpd_init_phase_ready, 1, 0},
@@ -45,13 +39,12 @@ int atpd_init_phase_config(atpd_init_context_t *ctx) {
     if (!config_path || !config_path[0]) {
         config_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
     }
+    snprintf(ctx->ctx->config_path, sizeof(ctx->ctx->config_path), "%s", config_path);
     
     if (config_load(config_path, ctx->config) != ATP_OK) {
         LOG_ERROR("Failed to load config: %s", config_path);
         return -1;
     }
-    
-    atp_register_cleanup(ctx->config);
     
     return 0;
 }
@@ -71,27 +64,12 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
 int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing netlink...");
     
-    if (netlink_init(NULL, ctx->config) < 0) {
+    if (netlink_init(ctx->netlink_callback, ctx->netlink_userdata) < 0) {
         LOG_ERROR("Failed to initialize netlink");
         return -1;
     }
     
     netlink_set_reactor(ctx->reactor);
-    
-    return 0;
-}
-
-int atpd_init_phase_filter(atpd_init_context_t *ctx) {
-    if (!ctx->config->filter.app_proxy_enable) {
-        LOG_DEBUG("App filter disabled, skipping");
-        return 0;
-    }
-    
-    LOG_INFO("Initializing app filter...");
-    app_filter_init(ctx->config);
-    app_filter_setup(ctx->config);
-    
-    fcm_monitor_init(ctx->config);
     
     return 0;
 }
@@ -111,6 +89,7 @@ int atpd_init_phase_service(atpd_init_context_t *ctx) {
         ctx->service = NULL;
         return -1;
     }
+    service_set_reactor(ctx->service, ctx->reactor);
     
     return 0;
 }

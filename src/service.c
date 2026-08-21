@@ -27,6 +27,7 @@
 #include <grp.h>
 #include <time.h>
 #include "async_validate.h"
+#include "yyjson.h"
 
 /* Forward declarations */
 void service_schedule_retry(service_ctx_t *ctx);
@@ -280,6 +281,14 @@ static char** build_service_args(service_ctx_t *ctx) {
     if (!arg) { free_service_args(args); return NULL; }
     args[idx++] = arg;
 
+    arg = strdup("-c");
+    if (!arg) { free_service_args(args); return NULL; }
+    args[idx++] = arg;
+
+    arg = strdup(ctx->conf_path);
+    if (!arg) { free_service_args(args); return NULL; }
+    args[idx++] = arg;
+
     if (ctx->service_args[0]) {
         char args_copy[512];
         snprintf(args_copy, sizeof(args_copy), "%s", ctx->service_args);
@@ -408,6 +417,7 @@ static int service_spawn(service_ctx_t *ctx) {
 
     ctx->child_pid = pid;
     ctx->validated_pid = 0;
+    ctx->started_at = time(NULL);
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
     return 0;
 }
@@ -525,7 +535,7 @@ static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void 
     (void)timer;
 
     service_ctx_t *ctx = userdata;
-    if (!ctx || ctx->state == SERVICE_STOPPED || ctx->state == SERVICE_FAILED) return;
+    if (!ctx || ctx->state == SERVICE_STOPPED || ctx->state == SERVICE_STOPPING) return;
 
     if (ctx->retry_timer) {
         reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
@@ -553,6 +563,10 @@ static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void 
 }
 
 void service_schedule_retry(service_ctx_t *ctx) {
+    if (!ctx || !ctx->reactor || ctx->state == SERVICE_STOPPING ||
+        ctx->state == SERVICE_STOPPED || ctx->fail_count >= ctx->max_failures) {
+        return;
+    }
     int delay = backoff_next(&ctx->backoff);
     LOG_INFO("Service: retry in %dms (%d/%d)",
              delay, ctx->fail_count, ctx->max_failures);
@@ -579,8 +593,12 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
         if (pid == ctx->child_pid) {
             if (WIFEXITED(status)) {
                 LOG_WARN("Service: sing-box exited with code %d", WEXITSTATUS(status));
+                snprintf(ctx->last_error, sizeof(ctx->last_error),
+                         "exited with code %d", WEXITSTATUS(status));
             } else if (WIFSIGNALED(status)) {
                 LOG_WARN("Service: sing-box killed by signal %d", WTERMSIG(status));
+                snprintf(ctx->last_error, sizeof(ctx->last_error),
+                         "killed by signal %d", WTERMSIG(status));
             }
 
             ctx->child_pid = -1;
@@ -588,9 +606,15 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
             ctx->running_healthy = 0;
 
             if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
+                ctx->restart_count++;
                 ctx->state = SERVICE_FAILED;
+                ctx->fail_count++;
                 circuit_breaker_record_failure(&ctx->breaker);
-                LOG_INFO("Service: state -> FAILED, will restart on next monitor tick");
+                if (ctx->fail_count < ctx->max_failures) {
+                    service_schedule_retry(ctx);
+                } else {
+                    LOG_ERROR("Service: max failures reached, giving up");
+                }
             }
         }
     }
@@ -737,6 +761,8 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     ctx->last_health_check = 0;
     ctx->retry_timer = NULL;
     ctx->health_timer = NULL;
+    snprintf(ctx->ebpf_mode, sizeof(ctx->ebpf_mode), "local");
+    snprintf(ctx->ebpf_network, sizeof(ctx->ebpf_network), "tcp+udp");
 
     if (cfg->service.args[0]) {
         snprintf(ctx->service_args, sizeof(ctx->service_args), "%s", cfg->service.args);
@@ -754,6 +780,77 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     LOG_DEBUG("Service: initialized (bin=%s, port=%d, timeout=%ds, max_fail=%d)",
               ctx->bin_path, ctx->api_port, ctx->start_timeout_sec, ctx->max_failures);
     return 0;
+}
+
+void service_set_reactor(service_ctx_t *ctx, reactor_t *reactor) {
+    if (ctx) ctx->reactor = reactor;
+}
+
+static int service_inspect_config(const char *path, service_ctx_t *ctx) {
+    yyjson_read_err err;
+    yyjson_doc *doc = yyjson_read_file(path,
+        YYJSON_READ_ALLOW_COMMENTS | YYJSON_READ_ALLOW_TRAILING_COMMAS,
+        NULL, &err);
+    if (!doc) {
+        LOG_ERROR("Service: invalid sing-box JSON at byte %zu: %s",
+                  err.pos, err.msg ? err.msg : "parse error");
+        return -1;
+    }
+
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *inbounds = yyjson_obj_get(root, "inbounds");
+    int has_ebpf = 0;
+    int forbidden = 0;
+
+    if (yyjson_is_arr(inbounds)) {
+        size_t idx, max;
+        yyjson_val *inbound;
+        yyjson_arr_foreach(inbounds, idx, max, inbound) {
+            const char *type = yyjson_get_str(yyjson_obj_get(inbound, "type"));
+            if (!type) continue;
+            if (strcmp(type, "ebpf") == 0) {
+                has_ebpf = 1;
+                if (ctx) {
+                    const char *mode = yyjson_get_str(yyjson_obj_get(inbound, "mode"));
+                    snprintf(ctx->ebpf_mode, sizeof(ctx->ebpf_mode), "%s",
+                             mode && mode[0] ? mode : "local");
+
+                    yyjson_val *network = yyjson_obj_get(inbound, "network");
+                    int tcp = 0;
+                    int udp = 0;
+                    if (!network) {
+                        tcp = udp = 1;
+                    } else if (yyjson_is_str(network)) {
+                        const char *value = yyjson_get_str(network);
+                        tcp = value && strcmp(value, "tcp") == 0;
+                        udp = value && strcmp(value, "udp") == 0;
+                    } else if (yyjson_is_arr(network)) {
+                        size_t network_idx, network_max;
+                        yyjson_val *item;
+                        yyjson_arr_foreach(network, network_idx, network_max, item) {
+                            const char *value = yyjson_get_str(item);
+                            if (value && strcmp(value, "tcp") == 0) tcp = 1;
+                            if (value && strcmp(value, "udp") == 0) udp = 1;
+                        }
+                    }
+                    snprintf(ctx->ebpf_network, sizeof(ctx->ebpf_network), "%s",
+                             tcp && udp ? "tcp+udp" : tcp ? "tcp" : udp ? "udp" : "unknown");
+                }
+            }
+            if (strcmp(type, "tproxy") == 0 || strcmp(type, "redirect") == 0) {
+                LOG_ERROR("Service: forbidden inbound type '%s'", type);
+                forbidden = 1;
+            }
+        }
+    }
+
+    yyjson_doc_free(doc);
+    if (!has_ebpf) LOG_ERROR("Service: config requires an eBPF inbound");
+    return has_ebpf && !forbidden ? 0 : -1;
+}
+
+int service_validate_config(const char *path) {
+    return service_inspect_config(path, NULL);
 }
 
 static void on_validate_complete(int result, const char *output, void *userdata) {
@@ -785,7 +882,7 @@ static void on_validate_complete(int result, const char *output, void *userdata)
 }
 
 int service_start_async(service_ctx_t *ctx) {
-    if (!ctx) return -1;
+    if (!ctx || !ctx->reactor) return -1;
 
     if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
         LOG_WARN("Service: already running or starting");
@@ -809,6 +906,12 @@ int service_start_async(service_ctx_t *ctx) {
         return -1;
     }
 
+    if (service_inspect_config(ctx->conf_path, ctx) != 0) {
+        snprintf(ctx->last_error, sizeof(ctx->last_error), "invalid sing-box configuration");
+        ctx->state = SERVICE_FAILED;
+        return -1;
+    }
+
     ctx->validate_ctx = malloc(sizeof(async_validate_ctx_t));
     if (!ctx->validate_ctx) {
         LOG_ERROR("Service: failed to allocate validate_ctx");
@@ -817,7 +920,7 @@ int service_start_async(service_ctx_t *ctx) {
     }
 
     int ret = async_validate_config(ctx->validate_ctx, ctx->reactor,
-                                    ctx->bin_path, ctx->work_dir,
+                                    ctx->bin_path, ctx->work_dir, ctx->conf_path,
                                     on_validate_complete, ctx);
     if (ret < 0) {
         LOG_ERROR("Service: failed to start async validation");
@@ -885,33 +988,25 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
     return 0;
 }
 
+static void service_reload_done(service_ctx_t *ctx, void *userdata) {
+    atp_config_t *cfg = userdata;
+    reactor_t *reactor = ctx->reactor;
+    unsigned restart_count = ctx->restart_count;
+    service_init(ctx, cfg);
+    ctx->restart_count = restart_count;
+    service_set_reactor(ctx, reactor);
+    if (service_start_async(ctx) != 0) {
+        LOG_ERROR("Service: reload start failed");
+    }
+}
+
+int service_reload_async(service_ctx_t *ctx, atp_config_t *cfg) {
+    if (!ctx || !cfg || service_inspect_config(ctx->conf_path, ctx) != 0) return -1;
+    return service_stop_async(ctx, service_reload_done, cfg);
+}
+
 int service_get_pid(service_ctx_t *ctx) {
-    if (!ctx) return -1;
-
-    if (ctx->child_pid > 0) {
-        return ctx->child_pid;
-    }
-
-    char pid_path[256];
-    snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ATP_DEFAULT_DIR);
-
-    FILE *f = fopen(pid_path, "r");
-    if (f) {
-        int pid;
-        if (fscanf(f, "%d", &pid) == 1 && pid > 0) {
-            if (validate_process(ctx, pid)) {
-                fclose(f);
-                ctx->child_pid = pid;
-                ctx->validated_pid = 1;
-                return pid;
-            } else {
-                LOG_WARN("Service: stale PID file");
-            }
-        }
-        fclose(f);
-    }
-
-    return -1;
+    return ctx && ctx->child_pid > 0 ? ctx->child_pid : -1;
 }
 
 int service_is_running(service_ctx_t *ctx) {
