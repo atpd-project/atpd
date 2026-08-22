@@ -4,7 +4,7 @@ ARG BUILD_FLAGS="-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-table
 ENV EXTRA_CFLAGS="${BUILD_FLAGS}"
 
 RUN apk add --no-cache \
-    clang21 llvm21-static llvm21-dev lld make \
+    build-base gcc clang21 llvm21-static llvm21-dev lld \
     musl-dev linux-headers git file bash dos2unix
 
 WORKDIR /app
