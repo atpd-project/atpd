@@ -38,14 +38,15 @@ int atpd_init_phase_config(atpd_init_context_t *ctx) {
     ctx->config->core.foreground = ctx->opts->foreground;
     ctx->config->core.verbose = ctx->opts->verbose;
     
+    char auto_cfg_path[PATH_MAX];
     const char *config_path = ctx->opts->config_file;
     if (!config_path || !config_path[0]) {
-        config_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+        snprintf(auto_cfg_path, sizeof(auto_cfg_path), "%s/%s", ctx->config->core.data_dir, ATP_CONF_FILE);
+        config_path = auto_cfg_path;
     }
     
     if (config_load(config_path, ctx->config) != ATP_OK) {
-        LOG_ERROR("Failed to load config: %s", config_path);
-        return -1;
+        LOG_WARN("Could not load config from %s, using defaults", config_path);
     }
     
     atp_register_cleanup(ctx->config);

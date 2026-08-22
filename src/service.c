@@ -397,6 +397,12 @@ static int service_spawn(service_ctx_t *ctx) {
 
         set_service_environment(ctx);
 
+        if (ctx->work_dir[0]) {
+            if (chdir(ctx->work_dir) != 0) {
+                LOG_WARN("Service: chdir(%s) failed: %s", ctx->work_dir, strerror(errno));
+            }
+        }
+
         char **args = build_service_args(ctx);
         if (!args) _exit(127);
 
@@ -714,11 +720,45 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     if (!ctx || !cfg) return -1;
     memset(ctx, 0, sizeof(service_ctx_t));
 
-    snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%.4000s/bin/%.63s",
-             cfg->core.data_dir, PROXY_BIN_NAME);
-    snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%.4000s/sing-box", cfg->core.data_dir);
-    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%.4000s/sing-box/config.json", cfg->core.data_dir);
-    snprintf(ctx->log_path, sizeof(ctx->log_path), "%.4000s/run/sing-box.log", cfg->core.data_dir);
+    const char *base_dir = cfg->core.data_dir[0] ? cfg->core.data_dir : ".";
+
+    /* 1. Base directory is the working directory */
+    snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%s", base_dir);
+
+    /* 2. Locate sing-box binary (candidate: base_dir/bin/sing-box -> base_dir/sing-box) */
+    char candidate[PATH_MAX];
+    snprintf(candidate, sizeof(candidate), "%s/bin/%s", base_dir, PROXY_BIN_NAME);
+    if (access(candidate, X_OK) == 0) {
+        snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s", candidate);
+    } else {
+        snprintf(candidate, sizeof(candidate), "%s/%s", base_dir, PROXY_BIN_NAME);
+        if (access(candidate, X_OK) == 0) {
+            snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s", candidate);
+        } else {
+            snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s/bin/%s", base_dir, PROXY_BIN_NAME);
+        }
+    }
+
+    /* 3. Locate configuration (candidate: base_dir/config.json -> base_dir/sing-box.json -> base_dir/sing-box/config.json) */
+    snprintf(candidate, sizeof(candidate), "%s/config.json", base_dir);
+    if (access(candidate, R_OK) == 0) {
+        snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s", candidate);
+    } else {
+        snprintf(candidate, sizeof(candidate), "%s/sing-box.json", base_dir);
+        if (access(candidate, R_OK) == 0) {
+            snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s", candidate);
+        } else {
+            snprintf(candidate, sizeof(candidate), "%s/sing-box/config.json", base_dir);
+            if (access(candidate, R_OK) == 0) {
+                snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s", candidate);
+            } else {
+                snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s/config.json", base_dir);
+            }
+        }
+    }
+
+    /* 4. Logs and user/group */
+    snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/run/sing-box.log", base_dir);
     snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core.core_user);
     snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core.core_group);
 

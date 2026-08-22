@@ -153,9 +153,13 @@ static void log_rotate_file_unlocked(const char *path) {
 
 void log_init(void) {
     char log_path[PATH_MAX];
-    snprintf(log_path, sizeof(log_path), "%s/%s", ATP_DEFAULT_DIR, ATP_LOG_FILE);
+    char app_dir[PATH_MAX];
+    get_app_dir(app_dir, sizeof(app_dir));
+    snprintf(log_path, sizeof(log_path), "%s/%s", app_dir, ATP_LOG_FILE);
 
-    mkdir_recursive(ATP_DEFAULT_DIR "/run", 0755);
+    char run_dir[PATH_MAX];
+    snprintf(run_dir, sizeof(run_dir), "%s/run", app_dir);
+    mkdir_recursive(run_dir, 0755);
 
     pthread_mutex_lock(&g_log_config.mutex);
     strncpy(g_log_config.log_file, log_path, sizeof(g_log_config.log_file) - 1);

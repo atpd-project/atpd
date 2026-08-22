@@ -619,7 +619,12 @@ int main(int argc, char *argv[]) {
     }
 
     config_set_defaults(&g_config);
-    const char *cfg_path = opts.config_file[0] ? opts.config_file : ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+    char auto_cfg_path[PATH_MAX];
+    const char *cfg_path = opts.config_file[0] ? opts.config_file : NULL;
+    if (!cfg_path) {
+        snprintf(auto_cfg_path, sizeof(auto_cfg_path), "%s/%s", g_config.core.data_dir, ATP_CONF_FILE);
+        cfg_path = auto_cfg_path;
+    }
     if (access(cfg_path, R_OK) == 0) {
         config_load(cfg_path, &g_config);
     }

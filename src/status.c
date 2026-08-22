@@ -366,8 +366,15 @@ static int get_iface_traffic(const char *iface, unsigned long long *rx_bytes, un
     return found ? 0 : -1;
 }
 
+static void get_traffic_state_file(char *buf, size_t size) {
+    const char *base_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ".";
+    snprintf(buf, size, "%s/run/traffic.state", base_dir);
+}
+
 static int load_traffic_state(iface_stats_t *stats) {
-    FILE *fp = fopen(TRAFFIC_STATE_FILE, "r");
+    char state_file[PATH_MAX];
+    get_traffic_state_file(state_file, sizeof(state_file));
+    FILE *fp = fopen(state_file, "r");
     if (!fp) return -1;
 
     int ret = fscanf(fp, "%s %llu %llu %ld",
@@ -378,15 +385,17 @@ static int load_traffic_state(iface_stats_t *stats) {
 }
 
 static int save_traffic_state(const iface_stats_t *stats) {
+    char state_file[PATH_MAX];
+    get_traffic_state_file(state_file, sizeof(state_file));
     char dir[PATH_MAX];
-    strncpy(dir, TRAFFIC_STATE_FILE, sizeof(dir) - 1);
+    strncpy(dir, state_file, sizeof(dir) - 1);
     char *slash = strrchr(dir, '/');
     if (slash) {
         *slash = '\0';
         mkdir_recursive(dir, 0755);
     }
 
-    FILE *fp = fopen(TRAFFIC_STATE_FILE, "w");
+    FILE *fp = fopen(state_file, "w");
     if (!fp) return -1;
 
     fprintf(fp, "%s %llu %llu %ld\n", stats->iface, stats->rx_bytes, stats->tx_bytes, (long)stats->timestamp);
