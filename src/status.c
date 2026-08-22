@@ -104,6 +104,10 @@ static int get_cpu_temperature(void) {
 
 static void status_show_proxy_core(service_ctx_t *svc) {
     int pid = service_get_pid(svc);
+    if (pid <= 0) {
+        pid = get_pid_by_name("sing-box");
+    }
+
     char uptime_str[64];
     char mem_str[32];
     char cpu_str[16];
@@ -131,7 +135,13 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     snprintf(cpu_str, sizeof(cpu_str), "%.1f%%", cpu);
     snprintf(threads_str, sizeof(threads_str), "%d", threads);
     snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
-    get_binary_version(PROXY_BIN_PATH, version_str, sizeof(version_str));
+
+    char bin_path[PATH_MAX];
+    if (find_command_path("sing-box", bin_path, sizeof(bin_path)) == 0) {
+        get_binary_version(bin_path, version_str, sizeof(version_str));
+    } else {
+        get_binary_version(PROXY_BIN_PATH, version_str, sizeof(version_str));
+    }
 
     ui_table_row_color(ui_emoji_service(1), "sing-box", COLOR_GREEN);
     ui_table_subrow_int("├─", "PID", pid);
@@ -151,7 +161,12 @@ static void status_show_clash_mode(api_ctx_t *api, service_ctx_t *svc) {
     ui_table_begin();
     ui_table_header("CLASH MODE");
 
-    if (service_get_pid(svc) <= 0) {
+    int pid = service_get_pid(svc);
+    if (pid <= 0) {
+        pid = get_pid_by_name("sing-box");
+    }
+
+    if (pid <= 0) {
         ui_table_row_color("MODE", "N/A (service stopped)", COLOR_YELLOW);
         ui_table_end();
         return;
@@ -305,8 +320,8 @@ static void status_show_vpn(void) {
 
     if (!has_vpn) {
         ui_table_row_color(ui_emoji_info(), "STANDALONE / DIRECT", COLOR_GREEN);
-        ui_table_subrow("├─", "Secondary Tunnel", "None (Direct in-kernel eBPF routing)");
-        ui_table_subrow("└─", "Data Path", "sing-box cgroup socket interception active");
+        ui_table_subrow("├─", "Secondary Tunnel", "None (Direct eBPF)");
+        ui_table_subrow("└─", "Data Path", "cgroup socket interception");
         ui_table_end();
         return;
     }
@@ -404,7 +419,7 @@ static void status_show_engine_v2(void) {
     snprintf(buf, sizeof(buf), "%s  %s", emoji, stage);
     ui_table_row_color("State Machine", buf, color);
 
-    const char *xfrm_status = "IDLE (Direct In-Kernel Routing)";
+    const char *xfrm_status = "IDLE (Direct Routing)";
     const char *xfrm_color = COLOR_GREEN;
 
     if (g_atpd_ctx.xfrm_if_id == 41) {
