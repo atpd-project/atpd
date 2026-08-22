@@ -1,11 +1,7 @@
-name: Build ATPd with Official Clang 21
-description: Build with official LLVM Clang 21 toolchain and Musl libc, extract metadata, upload artifact
+name: Build ATPd with Clang (Docker)
+description: Build with Clang in Docker, extract metadata, upload artifact (requires prior checkout)
 
 inputs:
-  llvm-version:
-    description: 'LLVM/Clang version to install'
-    required: false
-    default: '21'
   build-type:
     description: 'debug or release'
     required: false
@@ -43,86 +39,36 @@ runs:
         ./scripts/gen_version.sh
         cat include/version.h
 
-    - name: Setup Dependencies
-      shell: bash
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq qemu-user-static curl wget tar
-
-    - name: Set up QEMU for Docker
+    - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
 
-    - name: Extract Musl AArch64 Sysroot from Alpine
+    - name: Set up Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Determine Build Flags
+      id: build_flags
       shell: bash
       run: |
-        sudo mkdir -p /opt/musl-aarch64
-        echo "Extracting Musl AArch64 sysroot from official Alpine container..."
-        docker run --rm --platform linux/arm64 -v /opt/musl-aarch64:/out alpine:3.21 sh -c "apk add --no-cache musl-dev linux-headers && cp -a /usr /lib /out/"
-        sudo chmod -R 755 /opt/musl-aarch64
+        if [ "${{ inputs.build-type }}" = "debug" ]; then
+          echo "flags=-O0 -g -fsanitize=address -DATP_DEBUG" >> $GITHUB_OUTPUT
+        else
+          echo "flags=-Os -flto -fstack-protector-strong -D_FORTIFY_SOURCE=3 -ffunction-sections -fdata-sections" >> $GITHUB_OUTPUT
+        fi
 
-    - name: Install Official Clang 21 via apt.llvm.org
-      shell: bash
-      run: |
-        echo "Installing LLVM/Clang ${{ inputs.llvm-version }} from apt.llvm.org..."
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x llvm.sh
-        sudo ./llvm.sh ${{ inputs.llvm-version }} all || sudo ./llvm.sh ${{ inputs.llvm-version }}
-        sudo apt-get install -y -qq clang-${{ inputs.llvm-version }} lld-${{ inputs.llvm-version }} llvm-${{ inputs.llvm-version }} || true
-        clang-${{ inputs.llvm-version }} --version || clang --version
-
-    - name: Build with Clang 21 (Musl Target)
+    - name: Build Docker Image
       id: build
       shell: bash
       run: |
-        VER="${{ inputs.llvm-version }}"
-        CLANG_BIN="clang-${VER}"
-        STRIP_BIN="llvm-strip-${VER}"
-
-        if ! command -v "$CLANG_BIN" >/dev/null 2>&1; then
-          CLANG_BIN="clang"
-        fi
-        if ! command -v "$STRIP_BIN" >/dev/null 2>&1; then
-          STRIP_BIN="llvm-strip"
-        fi
-
-        echo "Using Compiler: $CLANG_BIN"
-        $CLANG_BIN --version
-
-        if [ "${{ inputs.build-type }}" = "debug" ]; then
-          FLAGS="-O0 -g -DATP_DEBUG"
-        else
-          FLAGS="-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -DNDEBUG -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1 -fstack-protector-strong -D_FORTIFY_SOURCE=3"
-        fi
-
-        SYSROOT_ARG=""
-        if [ -d "/opt/musl-aarch64/usr" ]; then
-          SYSROOT_ARG="--sysroot=/opt/musl-aarch64"
-        fi
-
-        echo "Compiling with Clang 21 (target=aarch64-linux-musl)..."
-        $CLANG_BIN --target=aarch64-linux-musl $SYSROOT_ARG \
-          -fuse-ld=lld \
-          -Wall -Wextra -D_GNU_SOURCE -Qunused-arguments \
-          -Iinclude \
-          $FLAGS \
-          -static \
-          -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none \
-          -o ./atpd-clang \
-          $(find src -name "*.c" ! -name "epoll.c") \
-          -lpthread
-
-        if command -v "$STRIP_BIN" >/dev/null 2>&1; then
-          $STRIP_BIN --strip-all --strip-unneeded \
-            --remove-section=.comment \
-            --remove-section=.note* \
-            --remove-section=.ARM.exidx* \
-            --remove-section=.eh_frame* \
-            ./atpd-clang 2>/dev/null || true
-        fi
-
-        RUNTIME_VER=$(qemu-aarch64-static ./atpd-clang -v 2>/dev/null | head -1 || echo "N/A")
+        docker buildx build --platform linux/arm64 \
+          --build-arg BUILD_FLAGS="${{ steps.build_flags.outputs.flags }}" \
+          --target builder -t atp-builder --load .
+        container_id=$(docker create --platform linux/arm64 atp-builder)
+        docker cp $container_id:/app/build/bin/atpd ./atpd-clang
+        docker rm -v $container_id
+        echo "status=success" >> $GITHUB_OUTPUT
+        RUNTIME_VER=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>/dev/null | head -1 || echo "N/A")
         echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
-        COMPILER_VER=$($CLANG_BIN --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "21.0.0")
+        COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
         echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
 
     - name: Verify Binary
