@@ -108,7 +108,7 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->core.dry_run = 0;
     cfg->core.log_timestamp = 1;
     cfg->core.restart_delay = DEFAULT_RESTART_DELAY;
-    snprintf(cfg->core.data_dir, sizeof(cfg->core.data_dir), "%s", ATP_DEFAULT_DIR);
+    get_app_dir(cfg->core.data_dir, sizeof(cfg->core.data_dir));
     snprintf(cfg->core.core_user, sizeof(cfg->core.core_user), "root");
     snprintf(cfg->core.core_group, sizeof(cfg->core.core_group), "net_admin");
 
@@ -158,6 +158,7 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
     } else {
         if (strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", v);
         else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", v);
+        else if (strcmp(k, "DATA_DIR") == 0 || strcmp(k, "WORK_DIR") == 0) snprintf(cfg->core.data_dir, sizeof(cfg->core.data_dir), "%s", v);
         else if (strcmp(k, "CORE_USER_GROUP") == 0) {
             char val[256]; snprintf(val, sizeof(val), "%s", v); char *colon = strchr(val, ':');
             if (colon) {

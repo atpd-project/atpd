@@ -37,6 +37,6 @@ void format_uptime(int seconds, char *buf, size_t size);
 
 int kill_process(pid_t pid, int signal);
 int kill_all_by_name(const char *name, int signal);
-int wait_for_pid_exit(pid_t pid, int timeout_sec);
+int get_app_dir(char *buf, size_t size);
 int check_ip6tables_available(void);
 #endif

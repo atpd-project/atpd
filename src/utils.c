@@ -694,3 +694,32 @@ int wait_for_pid_exit(pid_t pid, int timeout_sec) {
 
     return -1;
 }
+
+int get_app_dir(char *buf, size_t size) {
+    if (!buf || size == 0) return -1;
+
+    char exe_path[PATH_MAX] = {0};
+    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    if (len > 0) {
+        exe_path[len] = '\0';
+        char *slash = strrchr(exe_path, '/');
+        if (slash && slash != exe_path) {
+            *slash = '\0';
+            snprintf(buf, size, "%s", exe_path);
+            return 0;
+        }
+    }
+
+    /* Fallback checks for standard installation paths */
+    if (access("/data/adb/atp", F_OK) == 0) {
+        snprintf(buf, size, "/data/adb/atp");
+        return 0;
+    }
+    if (access("/data/adb/sing-box", F_OK) == 0) {
+        snprintf(buf, size, "/data/adb/sing-box");
+        return 0;
+    }
+
+    snprintf(buf, size, ".");
+    return 0;
+}
