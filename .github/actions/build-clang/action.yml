@@ -47,7 +47,7 @@ runs:
       shell: bash
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y -qq qemu-user-static curl tar xz-utils
+        sudo apt-get install -y -qq qemu-user-static curl tar xz-utils lld
 
     - name: Set up QEMU for Docker
       uses: docker/setup-qemu-action@v4
@@ -65,38 +65,46 @@ runs:
       uses: actions/cache@v6
       with:
         path: /opt/zyc-clang
-        key: zyc-clang-23.0.0git-20260130-${{ runner.os }}
+        key: zyc-clang-23.0.0git-20260130-v3-${{ runner.os }}
 
     - name: Download ZyCromerZ Clang 23
-      if: steps.cache-clang.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        sudo mkdir -p /opt/zyc-clang
-        echo "Downloading ZyCromerZ Clang 23 from ${{ inputs.clang-url }}..."
-        curl -sSL --retry 3 "${{ inputs.clang-url }}" -o /tmp/zyc-clang.tar.gz
-        sudo tar -xzf /tmp/zyc-clang.tar.gz -C /opt/zyc-clang
-        rm -f /tmp/zyc-clang.tar.gz
+        if [ ! -f /opt/zyc-clang/bin/clang ] && [ ! -f /opt/zyc-clang/clang ]; then
+          echo "Downloading ZyCromerZ Clang 23 from ${{ inputs.clang-url }}..."
+          sudo rm -rf /opt/zyc-clang
+          sudo mkdir -p /opt/zyc-clang
+          curl -sSL --retry 3 "${{ inputs.clang-url }}" -o /tmp/zyc-clang.tar.gz
+          sudo tar -xzf /tmp/zyc-clang.tar.gz -C /opt/zyc-clang
+          rm -f /tmp/zyc-clang.tar.gz
+          sudo chmod -R 755 /opt/zyc-clang
+        fi
 
     - name: Build with ZyCromerZ Clang 23 (Musl Target)
       id: build
       shell: bash
       run: |
         sudo chmod -R 755 /opt/zyc-clang
+        
+        # Locate clang and llvm-strip in extracted tree
         CLANG_BIN=$(find /opt/zyc-clang -type f -name "clang" 2>/dev/null | head -1)
         STRIP_BIN=$(find /opt/zyc-clang -type f -name "llvm-strip" 2>/dev/null | head -1)
         
         if [ -z "$CLANG_BIN" ]; then
-          CLANG_BIN="clang"
-        else
-          export PATH="$(dirname "$CLANG_BIN"):$PATH"
+          echo "::error::ZyCromerZ Clang binary not found under /opt/zyc-clang"
+          ls -la /opt/zyc-clang
+          exit 1
         fi
         
+        CLANG_DIR=$(dirname "$CLANG_BIN")
+        export PATH="$CLANG_DIR:$PATH"
+        
         if [ -z "$STRIP_BIN" ]; then
-          STRIP_BIN="llvm-strip"
+          STRIP_BIN="$CLANG_DIR/llvm-strip"
         fi
 
         echo "Using Clang Binary: $CLANG_BIN"
-        $CLANG_BIN --version || true
+        $CLANG_BIN --version
 
         if [ "${{ inputs.build-type }}" = "debug" ]; then
           FLAGS="-O0 -g -DATP_DEBUG"
@@ -111,8 +119,9 @@ runs:
           SYSROOT_ARG="--sysroot=/opt/musl-aarch64/aarch64-linux-musl"
         fi
 
-        echo "Compiling with ZyCromerZ Clang 23 (target=aarch64-linux-musl)..."
+        echo "Compiling with ZyCromerZ Clang 23 (target=aarch64-linux-musl, lld)..."
         $CLANG_BIN --target=aarch64-linux-musl $SYSROOT_ARG \
+          -fuse-ld=lld \
           -Wall -Wextra -D_GNU_SOURCE -Qunused-arguments \
           -Iinclude \
           $FLAGS \
@@ -122,7 +131,7 @@ runs:
           $(find src -name "*.c" ! -name "epoll.c") \
           -lpthread
 
-        if command -v "$STRIP_BIN" >/dev/null 2>&1 || [ -f "$STRIP_BIN" ]; then
+        if [ -f "$STRIP_BIN" ] || command -v "$STRIP_BIN" >/dev/null 2>&1; then
           $STRIP_BIN --strip-all --strip-unneeded \
             --remove-section=.comment \
             --remove-section=.note* \
