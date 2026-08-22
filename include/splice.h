@@ -2,6 +2,7 @@
 #define ATPD_SPLICE_H
 
 #include <sys/types.h>
+#include <stdint.h>
 #include <stdbool.h>
 
 /* Error codes */

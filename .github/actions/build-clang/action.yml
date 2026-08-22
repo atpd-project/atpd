@@ -70,8 +70,9 @@ runs:
       id: build
       shell: bash
       run: |
-        CLANG_BIN=$(find /opt/zyc-clang -name "clang" -type f -perm -111 2>/dev/null | head -1)
-        STRIP_BIN=$(find /opt/zyc-clang -name "llvm-strip" -type f -perm -111 2>/dev/null | head -1)
+        sudo chmod -R 755 /opt/zyc-clang
+        CLANG_BIN=$(find /opt/zyc-clang -type f -name "clang" 2>/dev/null | head -1)
+        STRIP_BIN=$(find /opt/zyc-clang -type f -name "llvm-strip" 2>/dev/null | head -1)
         
         if [ -z "$CLANG_BIN" ]; then
           CLANG_BIN="clang"
@@ -84,6 +85,7 @@ runs:
         fi
 
         echo "Using Clang Binary: $CLANG_BIN"
+        $CLANG_BIN --version || true
 
         if [ "${{ inputs.build-type }}" = "debug" ]; then
           FLAGS="-O0 -g -DATP_DEBUG"
