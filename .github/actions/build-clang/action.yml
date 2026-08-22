@@ -1,5 +1,5 @@
-name: Build ATPd with Clang (Docker)
-description: Build with Clang in Docker, extract metadata, upload artifact (requires prior checkout)
+name: Build ATPd with Clang 21 (Docker)
+description: Build with Clang 21 in Docker, extract metadata, upload artifact (requires prior checkout)
 
 inputs:
   build-type:
@@ -52,7 +52,7 @@ runs:
         if [ "${{ inputs.build-type }}" = "debug" ]; then
           echo "flags=-O0 -g -fsanitize=address -DATP_DEBUG" >> $GITHUB_OUTPUT
         else
-          echo "flags=-Os -flto -fstack-protector-strong -D_FORTIFY_SOURCE=3 -ffunction-sections -fdata-sections" >> $GITHUB_OUTPUT
+          echo "flags=-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -DNDEBUG -DLOG_LOCATION_ENABLED=0" >> $GITHUB_OUTPUT
         fi
 
     - name: Build Docker Image
@@ -68,7 +68,7 @@ runs:
         echo "status=success" >> $GITHUB_OUTPUT
         RUNTIME_VER=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>/dev/null | head -1 || echo "N/A")
         echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
-        COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
+        COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-21 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "21.1.8")
         echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
 
     - name: Verify Binary

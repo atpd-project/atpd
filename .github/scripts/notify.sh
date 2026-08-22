@@ -76,7 +76,7 @@ notify_issue() {
     DISPLAY_MSG="${RAW_MSG:0:42}"
     [ ${#RAW_MSG} -gt 42 ] && DISPLAY_MSG="${DISPLAY_MSG}..."
 
-    SUMMARY_SIZE="${CLANG} (Clang) / ${ZIG} (Zig CC)"
+    SUMMARY_SIZE="${CLANG} (Clang 21) / ${ZIG} (Zig CC)"
 
     TS=$(TZ='Asia/Shanghai' date +"%y%m%d %H:%M")
 
@@ -88,7 +88,7 @@ notify_issue() {
 * 📥 **[Download Build Artifact](${RUN_URL})**
 * 📝 **CI Version:** \`${VER}\`
 * 🔧 **ATPd Version (-v):** \`${RUNTIME}\`
-* ⚙️ **Clang:** \`${COMPILER}\` | 📦 \`${CLANG}\`
+* ⚙️ **Clang 21:** \`${COMPILER}\` | 📦 \`${CLANG}\`
 * ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 \`${ZIG}\`
 * 💬 **Message:** \`${DISPLAY_MSG}\`
 * 🔗 **Source:** Commit [${COMMIT_SHORT}](${COMMIT_LINK})
