@@ -91,7 +91,8 @@ typedef enum {
     MODE_AUTO = 0,
     MODE_TPROXY = 1,
     MODE_REDIRECT = 2,
-    MODE_ENHANCE = 3
+    MODE_ENHANCE = 3,
+    MODE_EBPF = 4
 } proxy_mode_t;
 
 typedef enum {

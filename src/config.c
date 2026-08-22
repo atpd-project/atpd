@@ -3,7 +3,7 @@
 #include "utils.h"
 #include "atp.h"
 #include "atpd_context.h"
-#include "boxbpf.h"
+#include "ebpf.h"
 #include "app_filter.h"
 #include "config_validator.h"
 #include <pwd.h>
@@ -199,7 +199,7 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->ebpf.ready = 0;
     cfg->ebpf.load_retry = 3;
     cfg->ebpf.load_delay = 2;
-    snprintf(cfg->ebpf.bin_path, sizeof(cfg->ebpf.bin_path), "%s/bin/boxbpf", ATP_DEFAULT_DIR);
+    snprintf(cfg->ebpf.bin_path, sizeof(cfg->ebpf.bin_path), "%s/bin/ebpf", ATP_DEFAULT_DIR);
     snprintf(cfg->ebpf.pin_dir, sizeof(cfg->ebpf.pin_dir), "/sys/fs/bpf/box");
     snprintf(cfg->ebpf.state_dir, sizeof(cfg->ebpf.state_dir), "%s/ebpf", ATP_DEFAULT_DIR);
     snprintf(cfg->ebpf.config_path, sizeof(cfg->ebpf.config_path), "%s/ebpf/rule-config.json", ATP_DEFAULT_DIR);
@@ -232,11 +232,20 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
         return;
     }
 
+    if (strcmp(k, "PROXY_MODE") == 0) {
+        if (strcasecmp(v, "auto") == 0) cfg->network.proxy_mode = MODE_AUTO;
+        else if (strcasecmp(v, "tproxy") == 0) cfg->network.proxy_mode = MODE_TPROXY;
+        else if (strcasecmp(v, "redirect") == 0) cfg->network.proxy_mode = MODE_REDIRECT;
+        else if (strcasecmp(v, "enhance") == 0) cfg->network.proxy_mode = MODE_ENHANCE;
+        else if (strcasecmp(v, "ebpf") == 0) cfg->network.proxy_mode = MODE_EBPF;
+        else if (config_parse_int(v, &int_val) == 0) cfg->network.proxy_mode = int_val;
+        return;
+    }
+
     if (config_parse_int(v, &int_val) == 0) {
         if (strcmp(k, "PROXY_TCP_PORT") == 0) cfg->network.tcp_port = int_val;
         else if (strcmp(k, "PROXY_UDP_PORT") == 0) cfg->network.udp_port = int_val;
         else if (strcmp(k, "REDIRECT_TCP_PORT") == 0) cfg->network.redirect_tcp_port = int_val;
-        else if (strcmp(k, "PROXY_MODE") == 0) cfg->network.proxy_mode = int_val;
         else if (strcmp(k, "PERFORMANCE_MODE") == 0) cfg->core.performance_mode = int_val;
         else if (strcmp(k, "PROXY_TCP") == 0) cfg->core.proxy_tcp = int_val;
         else if (strcmp(k, "PROXY_UDP") == 0) cfg->core.proxy_udp = int_val;
@@ -431,29 +440,23 @@ int config_set_mode(atp_config_t *cfg, const char *mode) {
     return ATP_OK;
 }
 
-static void ebpf_reload(atp_config_t *cfg) {
-    if (!cfg->filter.bypass_cn_ip) {
-        LOG_DEBUG("CNIP bypass disabled, skipping eBPF reload");
-        return;
-    }
+static void config_reload_ebpf(atp_config_t *cfg) {
     if (!cfg->ebpf.enabled) {
-        LOG_DEBUG("eBPF disabled, skipping eBPF reload");
-        return;
-    }
-    if (cfg->filter.cnip_mode != 1) {
-        LOG_DEBUG("CNIP_MODE is not ebpf, skipping eBPF reload");
+        LOG_DEBUG("eBPF disabled, skipping eBPF probe");
+        cfg->ebpf.ready = 0;
+        atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
         return;
     }
 
-    int ret = boxbpf_reload_from_config(cfg);
+    int ret = ebpf_probe(cfg->network.proxy_ipv6);
     if (ret == ATP_OK) {
         cfg->ebpf.ready = 1;
         atpd_ebpf_state_transition(EBPF_STATE_READY);
-        LOG_INFO("eBPF CNIP reloaded successfully");
+        LOG_INFO("eBPF kernel support verified");
     } else {
         cfg->ebpf.ready = 0;
         atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-        LOG_ERROR("eBPF CNIP reload failed");
+        LOG_WARN("eBPF kernel support unavailable");
     }
 }
 
@@ -462,7 +465,7 @@ static int config_apply_deltas(atp_config_t *cfg, const atp_config_t *old) {
 
     if (cfg->filter.cnip_mode != old->filter.cnip_mode ||
         cfg->ebpf.enabled != old->ebpf.enabled) {
-        ebpf_reload(cfg);
+        config_reload_ebpf(cfg);
     }
 
     if (cfg->filter.app_proxy_enable != old->filter.app_proxy_enable ||

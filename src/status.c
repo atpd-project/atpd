@@ -16,7 +16,8 @@
 #include "ui.h"
 #include "perf_mode.h"
 #include "atpd_context.h"
-#include "boxbpf.h"
+#include "ebpf.h"
+#include "ebpf_common.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -31,11 +32,15 @@
 #define THERMAL_TEMP_CRITICAL 85000
 
 static const char* proxy_mode_to_string(atp_config_t *cfg) {
+    if (ebpf_is_pure_mode(cfg)) {
+        return "Pure eBPF (Zero iptables - sing-box)";
+    }
     switch (cfg->network.proxy_mode) {
-        case 0: return cfg->network.use_tproxy ? "TPROXY (auto)" : "REDIRECT (auto)";
-        case 1: return "TPROXY (TCP+UDP)";
-        case 2: return "REDIRECT (TCP only)";
-        case 3: return "ENHANCE (TCP=REDIRECT, UDP=TPROXY)";
+        case MODE_AUTO: return "AUTO (Classic TPROXY fallback)";
+        case MODE_TPROXY: return "TPROXY (TCP+UDP iptables)";
+        case MODE_REDIRECT: return "REDIRECT (TCP only iptables)";
+        case MODE_ENHANCE: return "ENHANCE (TCP=REDIRECT, UDP=TPROXY)";
+        case MODE_EBPF: return "Pure eBPF (Zero iptables - sing-box)";
         default: return "UNKNOWN";
     }
 }
@@ -183,38 +188,39 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
 
 static void status_show_ebpf(void) {
     char state[64] = {0};
-    char pin_dir[256];
-    struct stat st;
-
-    snprintf(pin_dir, sizeof(pin_dir), "/sys/fs/bpf/box");
+    ebpf_probe_result_t probe;
+    bool is_pure = ebpf_is_pure_mode(&g_config);
 
     ui_table_begin();
-    ui_table_header("eBPF CNIP");
+    ui_table_header("Dual-Engine Architecture");
 
-    if (boxbpf_status(state, sizeof(state), &g_config) == 0) {
-        if (strcmp(state, "ready") == 0) {
-            ui_table_subrow_color("├─", "State", "READY", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", g_config.ebpf.pin_dir);
-            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
-        } else if (strcmp(state, "failed") == 0) {
-            ui_table_subrow_color("├─", "State", "FAILED", COLOR_RED);
-            ui_table_subrow("└─", "Fallback", "ipset");
-        } else if (strcmp(state, "disabled") == 0) {
-            ui_table_subrow_color("├─", "State", "DISABLED", COLOR_YELLOW);
-            ui_table_subrow("└─", "CNIP Mode", "ipset");
-        } else {
-            ui_table_subrow_color("└─", "State", state, COLOR_RED);
-        }
+    if (is_pure) {
+        ui_table_subrow_color("├─", "Active Engine", "Pure eBPF (Zero iptables)", COLOR_GREEN);
+        ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
     } else {
-        char pin_path[256];
-        snprintf(pin_path, sizeof(pin_path), "%s/box_cidr_out4", pin_dir);
-        if (stat(pin_path, &st) == 0) {
-            ui_table_subrow_color("├─", "State", "READY (pin)", COLOR_GREEN);
-            ui_table_subrow("├─", "Pin Dir", pin_dir);
-            ui_table_subrow("└─", "Rule Action", "ACCEPT (bpf match)");
+        ui_table_subrow_color("├─", "Active Engine", "Classic TPROXY (iptables)", COLOR_CYAN);
+        ui_table_subrow("├─", "Data Path", "Netfilter + Policy Routing");
+    }
+
+    if (ebpf_status(state, sizeof(state), &g_config) == 0 && strcmp(state, "ready") == 0) {
+        ui_table_subrow_color("├─", "eBPF Support", "AVAILABLE", COLOR_GREEN);
+        if (ebpf_probe_detailed(&probe, g_config.network.proxy_ipv6) == 0) {
+            char feat[128];
+            snprintf(feat, sizeof(feat), "%s%s%s%s",
+                     probe.has_cgroup_sock_addr ? "cgroup_sock " : "",
+                     probe.has_sched_cls ? "tc " : "",
+                     probe.has_lpm_trie ? "lpm_trie " : "",
+                     probe.has_lru_hash ? "lru_hash" : "");
+            ui_table_subrow("└─", "Capabilities", feat);
         } else {
-            ui_table_subrow_color("└─", "State", "UNINITIALIZED", COLOR_RED);
+            ui_table_subrow("└─", "Capabilities", "cgroup_sock_addr, tc");
         }
+    } else if (strcmp(state, "disabled") == 0) {
+        ui_table_subrow_color("├─", "eBPF Support", "DISABLED", COLOR_YELLOW);
+        ui_table_subrow("└─", "Fallback Mode", "Classic iptables (Active)");
+    } else {
+        ui_table_subrow_color("├─", "eBPF Support", "UNSUPPORTED", COLOR_RED);
+        ui_table_subrow("└─", "Fallback Mode", "Classic iptables (Active)");
     }
 
     ui_table_end();

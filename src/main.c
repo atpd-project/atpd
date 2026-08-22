@@ -24,7 +24,7 @@
 #include "version.h"
 #include "tproxy.h"
 #include "geoip.h"
-#include "boxbpf.h"
+#include "ebpf.h"
 #include "cleanup.h"
 #include "reactor.h"
 #include "uds.h"
@@ -245,11 +245,6 @@ static void daemonize(void) {
 
 static void cleanup_ebpf(void) {
     if (g_config.ebpf.ready) {
-        LOG_INFO("Cleaning up eBPF CNIP...");
-        int ret = boxbpf_clear();
-        if (ret != ATP_OK) {
-            LOG_ERROR("Failed to clear eBPF: %d", ret);
-        }
         g_config.ebpf.ready = 0;
         g_atpd_ctx.ebpf_enabled = false;
         atpd_ebpf_state_transition(EBPF_STATE_UNINITIALIZED);
@@ -504,7 +499,6 @@ static int do_start(atp_options_t *opts) {
     };
 
     LOG_INFO("Cleaning up stale rules before start...");
-    boxbpf_clear();
     tproxy_cleanup_all(&g_config);
 
     resolve_pid_path(opts, pp, sizeof(pp));
@@ -537,13 +531,17 @@ static int do_start(atp_options_t *opts) {
         perf_mode_setup(&g_config);
     }
 
-    netlink_set_tproxy_ready();
-    if (tproxy_restart(&g_config) != 0) {
-        LOG_ERROR("Failed to initialize transparent proxy rules");
-        ret = 1;
-        goto cleanup;
+    if (ebpf_is_pure_mode(&g_config)) {
+        LOG_INFO("Engine: Pure eBPF active (Zero iptables - managed by sing-box)");
+    } else {
+        netlink_set_tproxy_ready();
+        if (tproxy_restart(&g_config) != 0) {
+            LOG_ERROR("Failed to initialize transparent proxy rules");
+            ret = 1;
+            goto cleanup;
+        }
+        tproxy_initialized = true;
     }
-    tproxy_initialized = true;
 
     run_event_loop();
     ret = 0;
@@ -651,7 +649,6 @@ static int do_stop(atp_options_t *opts) {
         if (kill(pid, 0) < 0) {
             printf("Daemon stopped\n");
             unlink(pp);
-            boxbpf_clear();
             return 0;
         }
         usleep(SERVICE_STOP_INTERVAL_MS * 1000);
@@ -676,7 +673,6 @@ static int do_stop(atp_options_t *opts) {
     }
 
     unlink(pp);
-    boxbpf_clear();
     return ret;
 }
 
@@ -821,53 +817,41 @@ static int do_update_geoip(atp_options_t *opts) {
 }
 
 static int do_ebpf_probe(atp_options_t *opts) {
-    int ret = boxbpf_probe(opts->ipv6);
-    if (ret == ATP_OK) {
-        printf("supported=1\nmessage=ok\nlpm_ipv4=1\nprogram_ipv4=1\npin_ipv4=1\n");
-        if (opts->ipv6) {
-            printf("lpm_ipv6=1\nprogram_ipv6=1\npin_ipv6=1\n");
-        }
-        return ATP_OK;
-    } else {
-        printf("supported=0\nmessage=eBPF xt_bpf unavailable\n");
-        return ATP_ERR_EBPF;
-    }
+    ebpf_probe_result_t res;
+    ebpf_probe_detailed(&res, opts->ipv6);
+    printf("kernel_release=%s\n", res.kernel_release);
+    printf("supported=%d\n", res.supported ? 1 : 0);
+    printf("cgroup_sock_addr=%d\n", res.has_cgroup_sock_addr ? 1 : 0);
+    printf("sched_cls=%d\n", res.has_sched_cls ? 1 : 0);
+    printf("lpm_trie=%d\n", res.has_lpm_trie ? 1 : 0);
+    printf("array=%d\n", res.has_array ? 1 : 0);
+    printf("hash=%d\n", res.has_hash ? 1 : 0);
+    printf("lru_hash=%d\n", res.has_lru_hash ? 1 : 0);
+    return res.supported ? ATP_OK : ATP_ERR_EBPF;
 }
 
 static int do_ebpf_init(atp_options_t *opts) {
-    atp_config_t cfg;
-    config_set_defaults(&cfg);
-
-    const char *config_path = opts->config_file;
-    if (config_path && config_path[0]) {
-        config_load(config_path, &cfg);
-    } else {
-        const char *default_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
-        if (access(default_path, R_OK) == 0) {
-            config_load(default_path, &cfg);
-        }
-    }
-
-    if (opts->ebpf_config[0] != '\0') {
-        snprintf(cfg.ebpf.config_path, sizeof(cfg.ebpf.config_path),
-                 "%s", opts->ebpf_config);
-    }
-    return boxbpf_init_from_config(&cfg);
+    (void)opts;
+    printf("Note: eBPF inbound data path is managed natively by sing-box.\n");
+    return ATP_OK;
 }
 
 static int do_ebpf_apply(atp_options_t *opts) {
-    const char *path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/rule-config.json";
-    return boxbpf_apply(path);
+    (void)opts;
+    printf("Note: eBPF inbound data path is managed natively by sing-box.\n");
+    return ATP_OK;
 }
 
 static int do_ebpf_update(atp_options_t *opts) {
-    const char *path = opts->ebpf_config[0] ? opts->ebpf_config : "/data/adb/atp/ebpf/rule-config.json";
-    return boxbpf_update(path);
+    (void)opts;
+    printf("Note: eBPF inbound data path is managed natively by sing-box.\n");
+    return ATP_OK;
 }
 
 static int do_ebpf_clear(atp_options_t *opts) {
     (void)opts;
-    return boxbpf_clear();
+    printf("Note: eBPF inbound data path is managed natively by sing-box.\n");
+    return ATP_OK;
 }
 
 static int do_ebpf_status(atp_options_t *opts) {
@@ -885,13 +869,10 @@ static int do_ebpf_status(atp_options_t *opts) {
         }
     }
 
-    if (boxbpf_status(state, sizeof(state), &cfg) == ATP_OK) {
-        printf("eBPF Status: %s\n", state);
-        return ATP_OK;
-    } else {
-        printf("eBPF Status: UNINITIALIZED\n");
-        return ATP_ERR_EBPF;
-    }
+    ebpf_status(state, sizeof(state), &cfg);
+    printf("eBPF Data Path: sing-box native\n");
+    printf("eBPF Kernel Support: %s\n", state);
+    return ATP_OK;
 }
 
 int main(int argc, char *argv[]) {

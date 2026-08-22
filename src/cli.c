@@ -98,19 +98,14 @@ void print_usage(const char *progname) {
     printf("  reload                Reload configuration without restart\n");
     printf("  check                 Validate configuration and exit\n");
     printf("  update-geoip          Update GeoIP database\n");
-    printf("  version               Print version information\n");
     printf("  help                  Show this help message\n");
-    printf("\neBPF Commands (boxbpf compatibility):\n");
-    printf("  ebpf probe [--ipv6 1] Detect kernel eBPF support\n");
-    printf("  ebpf init --config FILE Initialize eBPF maps and programs\n");
-    printf("  ebpf apply --config FILE Load eBPF programs and pin\n");
-    printf("  ebpf update --config FILE Hot update CIDR/UID maps\n");
-    printf("  ebpf clear              Remove all eBPF pin files\n");
-    printf("  ebpf status             Show eBPF status\n");
+    printf("\neBPF Commands (Diagnostics & Inspection):\n");
+    printf("  ebpf probe [--ipv6 1] Probe kernel eBPF support for sing-box\n");
+    printf("  ebpf status           Show eBPF kernel support and inbound status\n");
     printf("\nExamples:\n");
     printf("  %s status\n", base);
     printf("  %s ebpf probe --ipv6 1\n", base);
-    printf("  %s ebpf clear\n", base);
+    printf("  %s ebpf status\n", base);
 }
 
 void print_version(void) {

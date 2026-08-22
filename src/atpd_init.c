@@ -11,7 +11,7 @@
 #include "logger.h"
 #include "config.h"
 #include "utils.h"
-#include "boxbpf.h"
+#include "ebpf.h"
 #include "netlink.h"
 #include "app_filter.h"
 #include "service.h"
@@ -71,38 +71,44 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
-    if (!ctx->config->filter.bypass_cn_ip || !ctx->config->ebpf.enabled) {
-        LOG_DEBUG("eBPF disabled, skipping");
+    if (!ctx->config->ebpf.enabled) {
+        LOG_DEBUG("eBPF disabled in config, using Classic TPROXY Engine");
         ctx->config->ebpf.ready = 0;
         atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
+        if (ctx->config->network.proxy_mode == MODE_AUTO) {
+            ctx->config->network.proxy_mode = MODE_ENHANCE;
+        }
         return 0;
     }
     
-    if (ctx->config->filter.cnip_mode != 1) {
-        LOG_DEBUG("CNIP_MODE is not ebpf, skipping");
-        ctx->config->ebpf.ready = 0;
-        atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
-        return 0;
-    }
-    
-    LOG_INFO("Initializing eBPF CNIP...");
+    LOG_INFO("Dual-Engine: probing kernel eBPF support...");
     atpd_ebpf_state_transition(EBPF_STATE_LOADING);
     
-    int ret = boxbpf_init_from_config(ctx->config);
+    int ret = ebpf_probe(ctx->config->network.proxy_ipv6);
     if (ret == ATP_OK) {
         ctx->config->ebpf.ready = 1;
         ctx->ctx->ebpf_enabled = true;
         ctx->ctx->ebpf_probed = true;
-        strncpy(ctx->ctx->ebpf_pin_dir, ctx->config->ebpf.pin_dir,
-                sizeof(ctx->ctx->ebpf_pin_dir) - 1);
         atpd_ebpf_state_transition(EBPF_STATE_READY);
-        LOG_INFO("eBPF CNIP ready (pin: %s)", ctx->config->ebpf.pin_dir);
+        
+        if (ctx->config->network.proxy_mode == MODE_AUTO || ctx->config->network.proxy_mode == MODE_EBPF) {
+            LOG_INFO("Dual-Engine: selected Pure eBPF Engine (Zero iptables - managed by sing-box)");
+        } else {
+            LOG_INFO("Dual-Engine: eBPF available, but Classic Engine forced by config (PROXY_MODE=%d)",
+                     ctx->config->network.proxy_mode);
+        }
         return 0;
     } else {
         ctx->config->ebpf.ready = 0;
         ctx->ctx->ebpf_enabled = false;
         atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-        LOG_WARN("eBPF CNIP init failed, using ipset fallback");
+        
+        if (ctx->config->network.proxy_mode == MODE_AUTO) {
+            LOG_INFO("Dual-Engine: eBPF unsupported, auto-fallback to Classic TPROXY Engine (iptables)");
+            ctx->config->network.proxy_mode = MODE_ENHANCE;
+        } else if (ctx->config->network.proxy_mode == MODE_EBPF) {
+            LOG_WARN("Dual-Engine: Pure eBPF requested, but kernel lacks required eBPF support!");
+        }
         return 0;
     }
 }
@@ -211,10 +217,7 @@ int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
                 }
                 break;
             case INIT_PHASE_EBPF:
-                if (ctx->config->ebpf.ready) {
-                    boxbpf_clear();
-                    ctx->config->ebpf.ready = 0;
-                }
+                ctx->config->ebpf.ready = 0;
                 break;
             case INIT_PHASE_NETLINK:
                 netlink_cleanup();

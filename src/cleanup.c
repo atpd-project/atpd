@@ -1,7 +1,7 @@
 #include "cleanup.h"
 #include "logger.h"
 #include "tproxy.h"
-#include "boxbpf.h"
+#include "ebpf.h"
 #include "atp.h"
 #include <stdlib.h>
 #include <unistd.h>
@@ -12,12 +12,7 @@ static int g_cleanup_registered = 0;
 static void atp_cleanup_handler(void) {
     if (!g_cleanup_cfg) return;
 
-    LOG_INFO("Cleanup: removing iptables rules and eBPF pins");
-
-    if (g_cleanup_cfg->ebpf.ready) {
-        boxbpf_clear();
-        LOG_INFO("Cleanup: eBPF pins removed");
-    }
+    LOG_INFO("Cleanup: removing iptables rules and XFRM bypass");
 
     tproxy_cleanup_all(g_cleanup_cfg);
     LOG_INFO("Cleanup: iptables rules removed");
@@ -42,9 +37,8 @@ void atp_cleanup_all(void) {
 void atp_cleanup_manual(atp_config_t *cfg) {
     if (!cfg) return;
 
-    LOG_INFO("Manual cleanup: removing iptables rules and eBPF pins");
+    LOG_INFO("Manual cleanup: removing iptables rules");
 
-    boxbpf_clear();
     tproxy_cleanup_all(cfg);
     tproxy_cleanup_xfrm_bypass(cfg);
 
