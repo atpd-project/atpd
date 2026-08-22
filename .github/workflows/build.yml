@@ -63,11 +63,10 @@ jobs:
             echo "type=release" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build with Clang 21
+      - name: Build with Clang
         id: clang-build
         uses: ./.github/actions/build-clang
         with:
-          llvm-version: '21'
           build-type: ${{ steps.build_type.outputs.type }}
           artifact-suffix: '-${{ steps.vars.outputs.short_sha }}'
 
