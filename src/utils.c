@@ -334,8 +334,24 @@ char *str_replace(const char *str, const char *old, const char *new_str) {
 int find_command_path(const char *name, char *out_path, size_t out_size) {
     if (!name || !*name || !out_path || out_size == 0) return -1;
 
+    /* 1. Check in dynamic app_dir/bin and app_dir */
+    char app_dir[PATH_MAX];
+    if (get_app_dir(app_dir, sizeof(app_dir)) == 0) {
+        snprintf(out_path, out_size, "%s/bin/%s", app_dir, name);
+        if (access(out_path, X_OK) == 0) return 0;
+
+        snprintf(out_path, out_size, "%s/%s", app_dir, name);
+        if (access(out_path, X_OK) == 0) return 0;
+    }
+
     const char *search_paths[] = {
         "/data/adb/atp/bin",
+        "/data/adb/sing-box/bin",
+        "/data/adb/atp",
+        "/data/adb/sing-box",
+        "/data/adb/ap/bin",
+        "/data/adb/ksu/bin",
+        "/data/adb/magisk",
         "/system/bin",
         "/system/xbin",
         "/vendor/bin",
