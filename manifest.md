@@ -1,75 +1,73 @@
 ## 📂 ATPd 项目架构快照
-生成时间: 2026-04-21 14:46:51
-当前分支: **dev**
+生成时间: 2026-08-22 14:42:29
+当前分支: **pure-ebpf**
 
 ### 🏗️ 目录结构 (Source Only)
 ```text
 src
-src/logger.c
-src/netlink.c
-src/iface_monitor.c
-src/netlink_route.h
-src/config_validator.c
-src/geoip.c
-src/app_filter.c
-src/routing.c
-src/status.c
-src/epoll.c
-src/tproxy.c
-src/perf_mode.c
-src/ui.c
-src/fcm_monitor.c
 src/api.c
-src/version.c
-src/utils.c
-src/netlink_wait.c
-src/service.c
-src/main.c
-src/mac_filter.c
-src/cjson
-src/cjson/cJSON.c
-src/inet_diag.c
+src/api_buffer.c
+src/async_validate.c
+src/atpd_context.c
 src/cli.c
-src/ipv6_manager.c
-src/ipset.c
 src/config.c
+src/config_validator.c
+src/ebpf_common.c
+src/ebpf.c
+src/logger.c
+src/main.c
+src/netlink.c
+src/singbox_api.c
+src/perf_mode.c
+src/reactor.c
+src/service.c
+src/session.c
+src/splice.c
+src/uds.c
+src/status.c
+src/ui.c
+src/utils.c
+src/version.c
+src/atpd_error.c
+src/atpd_global.c
+src/atpd_init.c
+src/cleanup.c
+src/yyjson.c
 ```
 
 ### 📊 模块审计概览
 | 模块 (File) | 行数 | 风险点扫描 (strncpy/realloc) | 状态 |
 | :--- | :--- | :--- | :--- |
-| `logger.c` | 126 | 0 | 🟢 形式合规 |
-| `netlink.c` | 257 | 0 | 🟢 形式合规 |
-| `iface_monitor.c` | 318 | 3 | ⏳ 待审计 |
-| `netlink_route.h` | 35 | 0 | 🟢 形式合规 |
-| `config_validator.c` | 303 | 2 | ⏳ 待审计 |
-| `geoip.c` | 189 | 0 | 🟢 形式合规 |
-| `app_filter.c` | 704 | 4 | ⏳ 待审计 |
-| `routing.c` | 470 | 1 | ⏳ 待审计 |
-| `status.c` | 520 | 2 | ⏳ 待审计 |
-| `epoll.c` | 258 | 1 | ⏳ 待审计 |
-| `tproxy.c` | 872 | 0 | 🟢 形式合规 |
-| `perf_mode.c` | 532 | 0 | 🟢 形式合规 |
+| `api.c` | 1996 | 4 | ⏳ 待审计 |
+| `api_buffer.c` | 249 | 1 | ⏳ 待审计 |
+| `async_validate.c` | 360 | 0 | 🟢 形式合规 |
+| `atpd_context.c` | 323 | 1 | ⏳ 待审计 |
+| `cli.c` | 214 | 2 | ⏳ 待审计 |
+| `config.c` | 337 | 0 | 🟢 形式合规 |
+| `config_validator.c` | 142 | 0 | 🟢 形式合规 |
+| `ebpf_common.c` | 57 | 0 | 🟢 形式合规 |
+| `ebpf.c` | 81 | 0 | 🟢 形式合规 |
+| `logger.c` | 310 | 2 | ⏳ 待审计 |
+| `main.c` | 661 | 1 | ⏳ 待审计 |
+| `netlink.c` | 547 | 0 | 🟢 形式合规 |
+| `singbox_api.c` | 604 | 0 | 🟢 形式合规 |
+| `perf_mode.c` | 515 | 0 | 🟢 形式合规 |
+| `reactor.c` | 637 | 0 | 🟢 形式合规 |
+| `service.c` | 929 | 0 | 🟢 形式合规 |
+| `session.c` | 718 | 0 | 🟢 形式合规 |
+| `splice.c` | 380 | 0 | 🟢 形式合规 |
+| `uds.c` | 483 | 2 | ⏳ 待审计 |
+| `status.c` | 498 | 2 | ⏳ 待审计 |
 | `ui.c` | 473 | 1 | ⏳ 待审计 |
-| `fcm_monitor.c` | 342 | 0 | 🟢 形式合规 |
-| `api.c` | 865 | 15 | ⏳ 待审计 |
-| `version.c` | 29 | 0 | 🟢 形式合规 |
-| `utils.c` | 476 | 3 | ⏳ 待审计 |
-| `netlink_wait.c` | 39 | 0 | 🟢 形式合规 |
-| `service.c` | 454 | 0 | 🟢 形式合规 |
-| `main.c` | 229 | 0 | 🟢 形式合规 |
-| `mac_filter.c` | 216 | 2 | ⏳ 待审计 |
-| `cJSON.c` | 3206 | 18 | ⏳ 待审计 |
-| `inet_diag.c` | 593 | 2 | ⏳ 待审计 |
-| `cli.c` | 173 | 1 | ⏳ 待审计 |
-| `ipv6_manager.c` | 178 | 0 | 🟢 形式合规 |
-| `ipset.c` | 233 | 0 | 🟢 形式合规 |
-| `config.c` | 141 | 0 | 🟢 形式合规 |
+| `utils.c` | 681 | 0 | 🟢 形式合规 |
+| `version.c` | 36 | 0 | 🟢 形式合规 |
+| `atpd_error.c` | 136 | 3 | ⏳ 待审计 |
+| `atpd_global.c` | 9 | 0 | 🟢 形式合规 |
+| `atpd_init.c` | 195 | 0 | 🟢 形式合规 |
+| `cleanup.c` | 30 | 0 | 🟢 形式合规 |
+| `yyjson.c` | 11228 | 26 | ⏳ 待审计 |
 
 ### 🚩 待处理任务 (TODO/FIXME)
-* src/cjson/cJSON.c:1917:    /* FIXME: Can overflow here. Cannot be fixed without breaking the API */
-* src/cjson/cJSON.c:3160:                /* TODO This has O(n^2) runtime, which is horrible! */
-* src/cjson/cJSON.c:3174:             * TODO: Do this the proper way, this is just a fix for now */
 
 ---
 注意：此文件由脚本自动生成，用于同步至 ATPd 专家模式进行审计。
