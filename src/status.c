@@ -24,6 +24,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
 
 #define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
@@ -257,6 +258,50 @@ static void status_show_ebpf(void) {
     ui_table_end();
 }
 
+static int check_fcm_status(char *status_buf, size_t size, int *is_connected) {
+    *is_connected = 0;
+    const char *paths[2] = { "/proc/net/tcp", "/proc/net/tcp6" };
+
+    for (int f = 0; f < 2; f++) {
+        FILE *fp = fopen(paths[f], "r");
+        if (!fp) continue;
+
+        char line[512];
+        if (fgets(line, sizeof(line), fp)) {
+            while (fgets(line, sizeof(line), fp)) {
+                unsigned int rem_ip = 0, rem_port = 0, state = 0;
+                if (f == 0) {
+                    if (sscanf(line, "%*d: %*x:%*x %x:%x %x", &rem_ip, &rem_port, &state) == 3) {
+                        if (state == 1 && (rem_port == 0x146C || rem_port == 0x146D || rem_port == 0x146E)) {
+                            struct in_addr in;
+                            in.s_addr = rem_ip;
+                            char ip_str[INET_ADDRSTRLEN];
+                            inet_ntop(AF_INET, &in, ip_str, sizeof(ip_str));
+                            snprintf(status_buf, size, "ACTIVE (mtalk %s:%d)", ip_str, rem_port);
+                            *is_connected = 1;
+                            fclose(fp);
+                            return 0;
+                        }
+                    }
+                } else {
+                    if (sscanf(line, "%*d: %*s %*[^:]:%x %x", &rem_port, &state) == 2) {
+                        if (state == 1 && (rem_port == 0x146C || rem_port == 0x146D || rem_port == 0x146E)) {
+                            snprintf(status_buf, size, "ACTIVE (mtalk [IPv6]:%d)", rem_port);
+                            *is_connected = 1;
+                            fclose(fp);
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+        fclose(fp);
+    }
+
+    snprintf(status_buf, size, "STANDBY (System Net Sensing)");
+    return 0;
+}
+
 static void status_show_monitors(void) {
     ui_table_begin();
     ui_table_header("MONITORS & SENSING");
@@ -267,12 +312,17 @@ static void status_show_monitors(void) {
     int daemon_running = (access(pid_path, F_OK) == 0);
 
     if (daemon_running || netlink_get_fd() >= 0) {
-        ui_table_subrow_color("├─", "Netlink Listener", "ACTIVE (Event-Driven Link / Route)", COLOR_GREEN);
-        ui_table_subrow_color("└─", "XFRM SA Listener", "ACTIVE (Hardware IPsec Sensing)", COLOR_GREEN);
+        ui_table_subrow_color("├─", "Netlink Listener", "ACTIVE (Link / Route)", COLOR_GREEN);
+        ui_table_subrow_color("├─", "XFRM SA Listener", "ACTIVE (IPsec Sensing)", COLOR_GREEN);
     } else {
-        ui_table_subrow_color("├─", "Netlink Listener", "READY (Direct Kernel Interface)", COLOR_CYAN);
-        ui_table_subrow_color("└─", "XFRM SA Listener", "READY (IPsec SA Trigger)", COLOR_CYAN);
+        ui_table_subrow_color("├─", "Netlink Listener", "READY (Kernel Interface)", COLOR_CYAN);
+        ui_table_subrow_color("├─", "XFRM SA Listener", "READY (IPsec SA Trigger)", COLOR_CYAN);
     }
+
+    char fcm_status[64];
+    int fcm_active = 0;
+    check_fcm_status(fcm_status, sizeof(fcm_status), &fcm_active);
+    ui_table_subrow_color("└─", "FCM Push Sensing", fcm_status, fcm_active ? COLOR_GREEN : COLOR_CYAN);
 
     ui_table_end();
 }
