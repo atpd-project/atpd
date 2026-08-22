@@ -81,6 +81,10 @@ static void free_package_cache_array(package_cache_t *c, int count) {
 }
 
 int app_filter_init(atp_config_t *cfg) {
+    if (ebpf_is_pure_mode(cfg)) {
+        LOG_DEBUG("App filter: Pure eBPF mode active, skipping local filter init");
+        return 0;
+    }
     if (!g_package_cache_loaded) app_filter_load_package_cache();
     if (!cfg->core.dry_run) {
         char cmd[MAX_CMD_LEN];
@@ -303,6 +307,7 @@ static int app_filter_check_connection_cached_v6(const uint8_t *s_ip, uint16_t s
 }
 
 int app_filter_should_proxy(int family, int protocol, void *s_ip, uint16_t s_pt, void *d_ip, uint16_t d_pt) {
+    if (ebpf_is_pure_mode(&g_config)) return 1;
     if (protocol != IPPROTO_TCP) return 1;
     int uid = (family == AF_INET) ? app_filter_check_connection_cached_v4(*(uint32_t*)s_ip, s_pt, *(uint32_t*)d_ip, d_pt) : 
                                     app_filter_check_connection_cached_v6((uint8_t*)s_ip, s_pt, (uint8_t*)d_ip, d_pt);
@@ -325,21 +330,21 @@ static void app_filter_configure_chain(atp_config_t *cfg, int family) {
 }
 
 int app_filter_setup(atp_config_t *cfg) {
+    if (ebpf_is_pure_mode(cfg)) return 0;
     if (!cfg->filter.app_proxy_enable) return 0;
     int *uids, c;
     if (app_filter_resolve_packages(cfg->filter.proxy_apps_list, &uids, &c) < 0) return -1;
     pthread_rwlock_wrlock(&g_uid_list_lock);
     free(g_current_uids); g_current_uids = uids; g_current_uids_count = c;
     pthread_rwlock_unlock(&g_uid_list_lock);
-    if (!ebpf_is_pure_mode(cfg)) {
-        app_filter_add_uids_to_ipset(cfg, uids, c, cfg->filter.app_proxy_mode);
-        app_filter_configure_chain(cfg, 4);
-        if (cfg->network.proxy_ipv6) app_filter_configure_chain(cfg, 6);
-    }
+    app_filter_add_uids_to_ipset(cfg, uids, c, cfg->filter.app_proxy_mode);
+    app_filter_configure_chain(cfg, 4);
+    if (cfg->network.proxy_ipv6) app_filter_configure_chain(cfg, 6);
     return 0;
 }
 
 int app_filter_cleanup(atp_config_t *cfg) {
+    if (ebpf_is_pure_mode(cfg)) return 0;
     char cmd[MAX_CMD_LEN];
     snprintf(cmd, sizeof(cmd), "ipset flush %s 2>/dev/null; ipset destroy %s 2>/dev/null", APP_IPSET_NAME, APP_IPSET_NAME);
     exec_cmd_simple(cmd, 5);
@@ -361,6 +366,7 @@ int app_filter_cleanup(atp_config_t *cfg) {
 }
 
 int app_filter_reload(atp_config_t *cfg) {
+    if (ebpf_is_pure_mode(cfg)) return 0;
     app_filter_refresh_cache();
     pthread_mutex_lock(&g_conn_cache_mutex);
     memset(g_conn_cache, 0, sizeof(g_conn_cache)); memset(g_conn_cache_v6, 0, sizeof(g_conn_cache_v6));

@@ -129,6 +129,11 @@ int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_phase_filter(atpd_init_context_t *ctx) {
+    if (ebpf_is_pure_mode(ctx->config)) {
+        LOG_INFO("Engine: Pure eBPF active - UID/package filtering delegated to sing-box core");
+        return 0;
+    }
+
     if (!ctx->config->filter.app_proxy_enable) {
         LOG_DEBUG("App filter disabled, skipping");
         return 0;
