@@ -52,7 +52,7 @@ runs:
         if [ "${{ inputs.build-type }}" = "debug" ]; then
           echo "flags=-O0 -g -fsanitize=address -DATP_DEBUG" >> $GITHUB_OUTPUT
         else
-          echo "flags=-Os -flto -fstack-protector-strong -D_FORTIFY_SOURCE=3 -ffunction-sections -fdata-sections" >> $GITHUB_OUTPUT
+          echo "flags=-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -DNDEBUG -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1 -fstack-protector-strong -D_FORTIFY_SOURCE=3" >> $GITHUB_OUTPUT
         fi
 
     - name: Build Docker Image

@@ -1,6 +1,6 @@
 FROM alpine:3.21 AS builder
 
-ARG BUILD_FLAGS="-Os -flto"
+ARG BUILD_FLAGS="-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -DNDEBUG"
 ENV EXTRA_CFLAGS="${BUILD_FLAGS}"
 
 RUN apk add --no-cache \

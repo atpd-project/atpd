@@ -59,13 +59,18 @@ runs:
       run: |
         zig cc -target aarch64-linux \
           -s -Oz -flto -ffunction-sections -fdata-sections -static \
+          -fno-unwind-tables -fno-asynchronous-unwind-tables \
+          -fmerge-all-constants -fno-ident \
           -Iinclude \
           -D_GNU_SOURCE \
           -DNDEBUG \
+          -DYYJSON_DISABLE_WRITER=1 \
+          -DYYJSON_DISABLE_FAST_FP_CONV=1 \
+          -DYYJSON_DISABLE_NON_STANDARD=1 \
           -DLOG_LOCATION_ENABLED=0 \
           -o atpd-zig \
           $(find src -name "*.c" ! -path "src/cjson/*" ! -name "epoll.c") \
-          -Wl,--gc-sections -Wl,--strip-all
+          -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
 
     - name: Install QEMU
       shell: bash

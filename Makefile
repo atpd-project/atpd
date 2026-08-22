@@ -1,19 +1,20 @@
 # ATP - Advanced Transparent Proxy
-# Makefile for Android NDK build - Clang 19 Optimized
+# Makefile for Android NDK / Linux build - Pure eBPF Edition (True Native Size-Optimized)
 
-VERSION = 1.0.0
+VERSION = 2.0.0
 
 PREFIX = /data/adb/atp
 BINDIR = $(PREFIX)/bin
 RUNDIR = $(PREFIX)/run
-RULESDIR = $(PREFIX)/rules
 SINGBOXDIR = $(PREFIX)/sing-box
 
 CC = clang
-CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC
-CFLAGS += -Os -flto
+CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC -Qunused-arguments
+CFLAGS += -Oz -flto -ffunction-sections -fdata-sections
+CFLAGS += -fno-unwind-tables -fno-asynchronous-unwind-tables
+CFLAGS += -fmerge-all-constants -fno-ident
 CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=3
-CFLAGS += -ffunction-sections -fdata-sections
+CFLAGS += -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1
 CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"
 CFLAGS += -DATP_CONF_FILE=\"atp.conf\"
 CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
@@ -22,13 +23,13 @@ CFLAGS += -DATP_COMMAND_SOCKET=\"run/atpd.sock\"
 CFLAGS += -Iinclude
 
 ifdef DEBUG
-CFLAGS += -g -DATP_DEBUG -O0 -fsanitize=address
+CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -DATP_DEBUG -O0 -fsanitize=address -Iinclude
 endif
 
-LIBS =
+LIBS = -lpthread
 
 LDFLAGS = -flto
-LDFLAGS += -Wl,--gc-sections -Wl,--strip-all
+LDFLAGS += -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
 
 SRC = $(wildcard src/*.c)
 
@@ -43,11 +44,12 @@ all: $(TARGET)
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
-	@echo "  LD      $@"
+	@strip -s --strip-all --remove-section=.comment --remove-section=.note* --remove-section=.ARM.exidx* --remove-section=.eh_frame* $@ 2>/dev/null || true
+	@echo "  LD (Native Lean) $@"
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
-	@echo "  CC      $<"
+	@echo "  CC       $<"
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
