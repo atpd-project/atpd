@@ -1,5 +1,5 @@
 name: Build ATPd with ZyCromerZ Clang 23
-description: Build with ZyCromerZ Clang 23 cross-compiler and Musl libc, extract metadata, upload artifact
+description: Direct cross-compilation with ZyCromerZ Clang 23 toolchain
 
 inputs:
   clang-url:
@@ -43,29 +43,18 @@ runs:
         ./scripts/gen_version.sh
         cat include/version.h
 
-    - name: Setup Dependencies
+    - name: Setup Runner Utilities
       shell: bash
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y -qq qemu-user-static curl tar xz-utils lld
-
-    - name: Set up QEMU for Docker
-      uses: docker/setup-qemu-action@v4
-
-    - name: Extract Musl AArch64 Sysroot from Alpine
-      shell: bash
-      run: |
-        sudo mkdir -p /opt/musl-aarch64
-        echo "Extracting Musl AArch64 sysroot from official Alpine container..."
-        docker run --rm --platform linux/arm64 -v /opt/musl-aarch64:/out alpine:3.21 sh -c "apk add --no-cache musl-dev linux-headers && cp -a /usr /lib /out/"
-        sudo chmod -R 755 /opt/musl-aarch64
+        sudo apt-get install -y -qq qemu-user-static curl tar xz-utils
 
     - name: Cache ZyCromerZ Clang 23
       id: cache-clang
       uses: actions/cache@v6
       with:
         path: /opt/zyc-clang
-        key: zyc-clang-23.0.0git-20260130-v4-${{ runner.os }}
+        key: zyc-clang-23.0.0git-20260130-v5-${{ runner.os }}
 
     - name: Download ZyCromerZ Clang 23
       shell: bash
@@ -80,38 +69,23 @@ runs:
           sudo chmod -R 755 /opt/zyc-clang
         fi
 
-    - name: Build with ZyCromerZ Clang 23 (Musl Target)
+    - name: Direct Build with ZyCromerZ Clang 23
       id: build
       shell: bash
       run: |
         sudo chmod -R 755 /opt/zyc-clang
         
-        # Locate clang and llvm-strip (supporting both symlinks and regular binaries)
-        if [ -e "/opt/zyc-clang/bin/clang" ]; then
-          CLANG_BIN="/opt/zyc-clang/bin/clang"
-        else
+        CLANG_BIN="/opt/zyc-clang/bin/clang"
+        STRIP_BIN="/opt/zyc-clang/bin/llvm-strip"
+        
+        if [ ! -e "$CLANG_BIN" ]; then
           CLANG_BIN=$(find /opt/zyc-clang \( -type f -o -type l \) -name "clang" 2>/dev/null | head -1)
         fi
-        
-        if [ -e "/opt/zyc-clang/bin/llvm-strip" ]; then
-          STRIP_BIN="/opt/zyc-clang/bin/llvm-strip"
-        else
+        if [ ! -e "$STRIP_BIN" ]; then
           STRIP_BIN=$(find /opt/zyc-clang \( -type f -o -type l \) -name "llvm-strip" 2>/dev/null | head -1)
         fi
         
-        if [ -z "$CLANG_BIN" ]; then
-          echo "::error::ZyCromerZ Clang binary not found under /opt/zyc-clang"
-          ls -la /opt/zyc-clang
-          ls -la /opt/zyc-clang/bin || true
-          exit 1
-        fi
-        
-        CLANG_DIR=$(dirname "$CLANG_BIN")
-        export PATH="$CLANG_DIR:$PATH"
-        
-        if [ -z "$STRIP_BIN" ]; then
-          STRIP_BIN="$CLANG_DIR/llvm-strip"
-        fi
+        export PATH="$(dirname "$CLANG_BIN"):$PATH"
 
         echo "Using Clang Binary: $CLANG_BIN"
         $CLANG_BIN --version
@@ -122,15 +96,9 @@ runs:
           FLAGS="-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -DNDEBUG -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1 -fstack-protector-strong -D_FORTIFY_SOURCE=3"
         fi
 
-        SYSROOT_ARG=""
-        if [ -d "/opt/musl-aarch64/usr" ]; then
-          SYSROOT_ARG="--sysroot=/opt/musl-aarch64"
-        elif [ -d "/opt/musl-aarch64/aarch64-linux-musl" ]; then
-          SYSROOT_ARG="--sysroot=/opt/musl-aarch64/aarch64-linux-musl"
-        fi
-
-        echo "Compiling with ZyCromerZ Clang 23 (target=aarch64-linux-musl, lld)..."
-        $CLANG_BIN --target=aarch64-linux-musl $SYSROOT_ARG \
+        echo "Direct cross-compilation with ZyCromerZ Clang 23..."
+        $CLANG_BIN \
+          --target=aarch64-linux-gnu \
           -fuse-ld=lld \
           -Wall -Wextra -D_GNU_SOURCE -Qunused-arguments \
           -Iinclude \
@@ -141,7 +109,7 @@ runs:
           $(find src -name "*.c" ! -name "epoll.c") \
           -lpthread
 
-        if [ -f "$STRIP_BIN" ] || command -v "$STRIP_BIN" >/dev/null 2>&1; then
+        if [ -e "$STRIP_BIN" ]; then
           $STRIP_BIN --strip-all --strip-unneeded \
             --remove-section=.comment \
             --remove-section=.note* \
