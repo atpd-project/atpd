@@ -2,23 +2,19 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * Initialization phases
+ * Initialization phases - Pure eBPF Architecture
  */
 
 #include "config.h"
 #include "atpd_init.h"
 #include "atpd_global.h"
 #include "logger.h"
-#include "config.h"
 #include "utils.h"
 #include "ebpf.h"
 #include "netlink.h"
-#include "app_filter.h"
 #include "service.h"
 #include "api.h"
-#include "fcm_monitor.h"
 #include "perf_mode.h"
-#include "tproxy.h"
 #include "cleanup.h"
 #include "atpd_context.h"
 #include "cli.h"
@@ -28,9 +24,8 @@
 static init_phase_config_t init_phases[] = {
     {INIT_PHASE_CONFIG, "config", atpd_init_phase_config, 1, 0},
     {INIT_PHASE_LOGGER, "logger", atpd_init_phase_logger, 1, 0},
-    {INIT_PHASE_EBPF, "ebpf", atpd_init_phase_ebpf, 0, 1},
+    {INIT_PHASE_EBPF, "ebpf", atpd_init_phase_ebpf, 1, 0},
     {INIT_PHASE_NETLINK, "netlink", atpd_init_phase_netlink, 1, 0},
-    {INIT_PHASE_FILTER, "filter", atpd_init_phase_filter, 0, 1},
     {INIT_PHASE_SERVICE, "service", atpd_init_phase_service, 1, 0},
     {INIT_PHASE_API, "api", atpd_init_phase_api, 0, 1},
     {INIT_PHASE_READY, "ready", atpd_init_phase_ready, 1, 0},
@@ -71,17 +66,7 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
-    if (!ctx->config->ebpf.enabled) {
-        LOG_DEBUG("eBPF disabled in config, using Classic TPROXY Engine");
-        ctx->config->ebpf.ready = 0;
-        atpd_ebpf_state_transition(EBPF_STATE_DISABLED);
-        if (ctx->config->network.proxy_mode == MODE_AUTO) {
-            ctx->config->network.proxy_mode = MODE_ENHANCE;
-        }
-        return 0;
-    }
-    
-    LOG_INFO("Dual-Engine: probing kernel eBPF support...");
+    LOG_INFO("Pure eBPF Engine: probing kernel eBPF capabilities...");
     atpd_ebpf_state_transition(EBPF_STATE_LOADING);
     
     int ret = ebpf_probe(ctx->config->network.proxy_ipv6);
@@ -90,31 +75,19 @@ int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
         ctx->ctx->ebpf_enabled = true;
         ctx->ctx->ebpf_probed = true;
         atpd_ebpf_state_transition(EBPF_STATE_READY);
-        
-        if (ctx->config->network.proxy_mode == MODE_AUTO || ctx->config->network.proxy_mode == MODE_EBPF) {
-            LOG_INFO("Dual-Engine: selected Pure eBPF Engine (Zero iptables - managed by sing-box)");
-        } else {
-            LOG_INFO("Dual-Engine: eBPF available, but Classic Engine forced by config (PROXY_MODE=%d)",
-                     ctx->config->network.proxy_mode);
-        }
+        LOG_INFO("Pure eBPF Engine: active (Zero-iptables / cgroup kernel interception)");
         return 0;
     } else {
         ctx->config->ebpf.ready = 0;
         ctx->ctx->ebpf_enabled = false;
         atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-        
-        if (ctx->config->network.proxy_mode == MODE_AUTO) {
-            LOG_INFO("Dual-Engine: eBPF unsupported, auto-fallback to Classic TPROXY Engine (iptables)");
-            ctx->config->network.proxy_mode = MODE_ENHANCE;
-        } else if (ctx->config->network.proxy_mode == MODE_EBPF) {
-            LOG_WARN("Dual-Engine: Pure eBPF requested, but kernel lacks required eBPF support!");
-        }
+        LOG_WARN("Pure eBPF Engine: kernel eBPF probe returned warnings or unsupported features");
         return 0;
     }
 }
 
 int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
-    LOG_INFO("Initializing netlink...");
+    LOG_INFO("Initializing Netlink & Multi-VPN tunnel listener...");
     
     if (netlink_init(NULL, ctx->config) < 0) {
         LOG_ERROR("Failed to initialize netlink");
@@ -123,33 +96,14 @@ int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
     
     if (ctx->reactor) {
         netlink_set_reactor(ctx->reactor);
+        netlink_xfrm_init(ctx->reactor);
     }
-    
-    return 0;
-}
-
-int atpd_init_phase_filter(atpd_init_context_t *ctx) {
-    if (ebpf_is_pure_mode(ctx->config)) {
-        LOG_INFO("Engine: Pure eBPF active - UID/package filtering delegated to sing-box core");
-        return 0;
-    }
-
-    if (!ctx->config->filter.app_proxy_enable) {
-        LOG_DEBUG("App filter disabled, skipping");
-        return 0;
-    }
-    
-    LOG_INFO("Initializing app filter...");
-    app_filter_init(ctx->config);
-    app_filter_setup(ctx->config);
-    
-    fcm_monitor_init(ctx->config);
     
     return 0;
 }
 
 int atpd_init_phase_service(atpd_init_context_t *ctx) {
-    LOG_INFO("Initializing service...");
+    LOG_INFO("Initializing sing-box core service supervisor...");
     
     ctx->service = malloc(sizeof(service_ctx_t));
     if (!ctx->service) {
@@ -168,7 +122,7 @@ int atpd_init_phase_service(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_phase_api(atpd_init_context_t *ctx) {
-    LOG_INFO("Initializing API...");
+    LOG_INFO("Initializing Clash REST API client...");
     
     api_init(ctx->api, ctx->config);
     if (ctx->reactor) {
@@ -180,7 +134,7 @@ int atpd_init_phase_api(atpd_init_context_t *ctx) {
 
 int atpd_init_phase_ready(atpd_init_context_t *ctx) {
     (void)ctx;
-    LOG_INFO("All components initialized successfully");
+    LOG_INFO("Pure eBPF Environment ready - all components initialized");
     return 0;
 }
 
@@ -225,9 +179,6 @@ int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
                     free(ctx->service);
                     ctx->service = NULL;
                 }
-                break;
-            case INIT_PHASE_FILTER:
-                app_filter_cleanup(ctx->config);
                 break;
             case INIT_PHASE_EBPF:
                 ctx->config->ebpf.ready = 0;

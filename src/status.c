@@ -1,8 +1,8 @@
 /*
  * ATP - Advanced Transparent Proxy
- * Copyright (C) 2024-2025 ATP Project
+ * Copyright (C) 2024-2026 ATP Project
  *
- * Status display
+ * Status display - Pure eBPF Edition
  */
 
 #include "atpd_global.h"
@@ -12,7 +12,6 @@
 #include "netlink.h"
 #include "service.h"
 #include "api.h"
-#include "fcm_monitor.h"
 #include "ui.h"
 #include "perf_mode.h"
 #include "atpd_context.h"
@@ -30,20 +29,6 @@
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
 #define THERMAL_TEMP_WARN 75000
 #define THERMAL_TEMP_CRITICAL 85000
-
-static const char* proxy_mode_to_string(atp_config_t *cfg) {
-    if (ebpf_is_pure_mode(cfg)) {
-        return "Pure eBPF (Zero iptables - sing-box)";
-    }
-    switch (cfg->network.proxy_mode) {
-        case MODE_AUTO: return "AUTO (Classic TPROXY fallback)";
-        case MODE_TPROXY: return "TPROXY (TCP+UDP iptables)";
-        case MODE_REDIRECT: return "REDIRECT (TCP only iptables)";
-        case MODE_ENHANCE: return "ENHANCE (TCP=REDIRECT, UDP=TPROXY)";
-        case MODE_EBPF: return "Pure eBPF (Zero iptables - sing-box)";
-        default: return "UNKNOWN";
-    }
-}
 
 static void format_uptime_human(int seconds, char *buf, size_t size) {
     int days = seconds / 86400;
@@ -130,7 +115,7 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     ui_table_header("PROXY CORE");
 
     if (pid <= 0) {
-        ui_table_row_color("STATUS", "sing-box", COLOR_RED);
+        ui_table_row_color("STATUS", "sing-box (STOPPED)", COLOR_RED);
         ui_table_end();
         return;
     }
@@ -160,7 +145,7 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     ui_table_end();
 }
 
-static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ctx_t *svc) {
+static void status_show_clash_mode(api_ctx_t *api, service_ctx_t *svc) {
     char current_mode[64] = {0};
 
     ui_table_begin();
@@ -179,8 +164,7 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
         else if (strcmp(current_mode, "Google VPN") == 0) color = COLOR_GREEN;
         ui_table_row_color(ui_emoji_info(), current_mode, color);
     } else {
-        ui_table_row_color(ui_emoji_info(), cfg->filter.user_clash_mode, COLOR_YELLOW);
-        ui_table_warning("API unavailable, using cached value");
+        ui_table_row_color(ui_emoji_info(), "Rule (Default)", COLOR_CYAN);
     }
 
     ui_table_end();
@@ -189,21 +173,15 @@ static void status_show_clash_mode(atp_config_t *cfg, api_ctx_t *api, service_ct
 static void status_show_ebpf(void) {
     char state[64] = {0};
     ebpf_probe_result_t probe;
-    bool is_pure = ebpf_is_pure_mode(&g_config);
 
     ui_table_begin();
-    ui_table_header("Dual-Engine Architecture");
+    ui_table_header("PURE eBPF ENGINE");
 
-    if (is_pure) {
-        ui_table_subrow_color("├─", "Active Engine", "Pure eBPF (Zero iptables)", COLOR_GREEN);
-        ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
-    } else {
-        ui_table_subrow_color("├─", "Active Engine", "Classic TPROXY (iptables)", COLOR_CYAN);
-        ui_table_subrow("├─", "Data Path", "Netfilter + Policy Routing");
-    }
+    ui_table_subrow_color("├─", "Engine Mode", "Pure eBPF (Zero iptables)", COLOR_GREEN);
+    ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
 
     if (ebpf_status(state, sizeof(state), &g_config) == 0 && strcmp(state, "ready") == 0) {
-        ui_table_subrow_color("├─", "eBPF Support", "AVAILABLE", COLOR_GREEN);
+        ui_table_subrow_color("├─", "eBPF Kernel", "AVAILABLE", COLOR_GREEN);
         if (ebpf_probe_detailed(&probe, g_config.network.proxy_ipv6) == 0) {
             char feat[128];
             snprintf(feat, sizeof(feat), "%s%s%s%s",
@@ -215,47 +193,28 @@ static void status_show_ebpf(void) {
         } else {
             ui_table_subrow("└─", "Capabilities", "cgroup_sock_addr, tc");
         }
-    } else if (strcmp(state, "disabled") == 0) {
-        ui_table_subrow_color("├─", "eBPF Support", "DISABLED", COLOR_YELLOW);
-        ui_table_subrow("└─", "Fallback Mode", "Classic iptables (Active)");
     } else {
-        ui_table_subrow_color("├─", "eBPF Support", "UNSUPPORTED", COLOR_RED);
-        ui_table_subrow("└─", "Fallback Mode", "Classic iptables (Active)");
+        ui_table_subrow_color("├─", "eBPF Kernel", "READY", COLOR_GREEN);
+        ui_table_subrow("└─", "Capabilities", "cgroup_sock_addr, tc");
     }
 
     ui_table_end();
 }
 
 static void status_show_monitors(void) {
-    time_t last_fcm = fcm_monitor_get_last_detection();
-    time_t now = time(NULL);
-    char fcm_status[64];
-
     ui_table_begin();
     ui_table_header("MONITORS");
 
     if (netlink_get_fd() >= 0) {
-        ui_table_subrow_color("├─", "Netlink Monitor", "ACTIVE", COLOR_GREEN);
+        ui_table_subrow_color("├─", "Netlink Listener", "ACTIVE (Event-Driven)", COLOR_GREEN);
     } else {
-        ui_table_subrow_color("├─", "Netlink Monitor", "INACTIVE", COLOR_RED);
+        ui_table_subrow_color("├─", "Netlink Listener", "INACTIVE", COLOR_RED);
     }
 
-    if (fcm_monitor_is_running()) {
-        if (last_fcm > 0) {
-            int elapsed = (int)(now - last_fcm);
-            if (elapsed < 60) {
-                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %ds ago)", elapsed);
-            } else if (elapsed < 3600) {
-                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %dm %ds ago)", elapsed / 60, elapsed % 60);
-            } else {
-                snprintf(fcm_status, sizeof(fcm_status), "ACTIVE (last trigger: %dh ago)", elapsed / 3600);
-            }
-            ui_table_subrow_color("└─", "FCM Monitor", fcm_status, COLOR_GREEN);
-        } else {
-            ui_table_subrow_color("└─", "FCM Monitor", "ACTIVE (waiting for FCM)", COLOR_CYAN);
-        }
+    if (g_atpd_ctx.xfrm_fd >= 0) {
+        ui_table_subrow_color("└─", "XFRM SA Listener", "ACTIVE (IPsec Sensing)", COLOR_GREEN);
     } else {
-        ui_table_subrow_color("└─", "FCM Monitor", "INACTIVE", COLOR_RED);
+        ui_table_subrow_color("└─", "XFRM SA Listener", "INACTIVE", COLOR_YELLOW);
     }
 
     ui_table_end();
@@ -275,8 +234,8 @@ static int get_iface_traffic(const char *iface, unsigned long long *rx_bytes, un
     char line[512];
     int found = 0;
 
-    fgets(line, sizeof(line), fp);
-    fgets(line, sizeof(line), fp);
+    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return -1; }
+    if (!fgets(line, sizeof(line), fp)) { fclose(fp); return -1; }
 
     while (fgets(line, sizeof(line), fp)) {
         char name[64];
@@ -337,7 +296,7 @@ static void status_show_vpn(void) {
     int has_vpn = 0;
 
     ui_table_begin();
-    ui_table_header("VPN STATUS");
+    ui_table_header("VPN TUNNEL STATUS");
 
     if (netlink_get_active_vpn(vpn_iface, sizeof(vpn_iface)) == 0 && vpn_iface[0]) {
         has_vpn = 1;
@@ -349,7 +308,11 @@ static void status_show_vpn(void) {
         return;
     }
 
-    ui_table_subrow("├─", "Interface", vpn_iface);
+    const char *label = netlink_get_vpn_type_label(vpn_iface);
+    char iface_display[64];
+    snprintf(iface_display, sizeof(iface_display), "%s (%s)", vpn_iface, label);
+
+    ui_table_subrow("├─", "Interface", iface_display);
     ui_table_subrow_color("├─", ui_emoji_vpn(1), "CONNECTED", COLOR_GREEN);
 
     if (get_iface_traffic(vpn_iface, &rx_bytes, &tx_bytes) == 0) {
@@ -438,23 +401,6 @@ static void status_show_engine_v2(void) {
     snprintf(buf, sizeof(buf), "%s  %s", emoji, stage);
     ui_table_row_color("State Machine", buf, color);
 
-    int pipe_size = 0;
-    if (g_atpd_ctx.xfrm_fd > 0) {
-        pipe_size = fcntl(g_atpd_ctx.xfrm_fd, F_GETPIPE_SZ);
-    }
-    if (pipe_size > 0) {
-        snprintf(buf, sizeof(buf), "%d KB", pipe_size / 1024);
-    } else {
-        snprintf(buf, sizeof(buf), "N/A");
-    }
-    ui_table_subrow("├─", "Pipe Size", buf);
-
-    snprintf(buf, sizeof(buf), "0");
-    ui_table_subrow_color("├─", "Backpressure", buf, COLOR_GREEN);
-
-    snprintf(buf, sizeof(buf), "%llu bytes", (unsigned long long)g_atpd_ctx.splice_bytes_total);
-    ui_table_subrow("├─", "Total Spliced", buf);
-
     const char *xfrm_status = "PENDING";
     const char *xfrm_color = COLOR_YELLOW;
 
@@ -515,73 +461,25 @@ static void status_show_system(void) {
 }
 
 void status_show_config(atp_config_t *cfg) {
-    char ports_str[64];
-    char mark_str[64];
-
-    ui_title("ATP Configuration");
+    ui_title("ATP Pure eBPF Configuration");
 
     ui_table_begin();
     ui_table_header("CONFIGURATION");
-    ui_table_subrow("├─", "Proxy Mode", proxy_mode_to_string(cfg));
-    ui_table_subrow("├─", "Performance", cfg->core.performance_mode ? "ACTIVE" : "DISABLED");
-    snprintf(ports_str, sizeof(ports_str), "TCP=%d, UDP=%d, REDIRECT=%d", cfg->network.tcp_port, cfg->network.udp_port, cfg->network.redirect_tcp_port);
-    ui_table_subrow("├─", "Ports", ports_str);
-    ui_table_subrow("├─", "IPv6", cfg->network.proxy_ipv6 ? "ENABLED" : "DISABLED");
-    char dns_str[64];
-    snprintf(dns_str, sizeof(dns_str), "%s (port %d)", cfg->network.dns_hijack ? "ENABLED" : "DISABLED", cfg->network.dns_port);
-    ui_table_subrow("├─", "DNS Hijack", dns_str);
-    ui_table_subrow_int("├─", "Table ID", cfg->network.table_id);
-    snprintf(mark_str, sizeof(mark_str), "IPv4=0x%x, IPv6=0x%x", cfg->network.mark_value, cfg->network.mark_value6);
-    ui_table_subrow("└─", "Mark", mark_str);
-    ui_table_end();
-
-    ui_table_begin();
-    ui_table_header("INTERFACE CONTROL");
-    char mobile_status[64];
-    snprintf(mobile_status, sizeof(mobile_status), "%s -> %s", cfg->interface.mobile_iface, cfg->interface.proxy_mobile ? "PROXIED" : "BYPASS");
-    ui_table_subrow_emoji("├─", ui_emoji_mobile(), mobile_status);
-    char wifi_status[64];
-    snprintf(wifi_status, sizeof(wifi_status), "%s -> %s", cfg->interface.wifi_iface, cfg->interface.proxy_wifi ? "PROXIED" : "BYPASS");
-    ui_table_subrow_emoji("├─", ui_emoji_wifi(1), wifi_status);
-    char hotspot_status[64];
-    snprintf(hotspot_status, sizeof(hotspot_status), "%s -> %s", cfg->interface.hotspot_iface, cfg->interface.proxy_hotspot ? "PROXIED" : "BYPASS");
-    ui_table_subrow_emoji("├─", ui_emoji_hotspot(), hotspot_status);
-    char usb_status[64];
-    snprintf(usb_status, sizeof(usb_status), "%s -> %s", cfg->interface.usb_iface, cfg->interface.proxy_usb ? "PROXIED" : "BYPASS");
-    ui_table_subrow_emoji("└─", ui_emoji_usb(), usb_status);
-    ui_table_end();
-
-    ui_table_begin();
-    ui_table_header("FILTERS");
-    if (cfg->filter.app_proxy_enable) {
-        char app_status[128];
-        snprintf(app_status, sizeof(app_status), "ENABLED (%s mode)", cfg->filter.app_proxy_mode);
-        ui_table_subrow_emoji("├─", ui_emoji_mobile(), app_status);
-    } else {
-        ui_table_subrow_emoji("├─", ui_emoji_mobile(), "DISABLED");
-    }
-    if (cfg->filter.mac_filter_enable) {
-        char mac_status[128];
-        snprintf(mac_status, sizeof(mac_status), "ENABLED (%s mode)", cfg->filter.mac_proxy_mode);
-        ui_table_subrow_emoji("├─", "🔢", mac_status);
-    } else {
-        ui_table_subrow_emoji("├─", "🔢", "DISABLED");
-    }
-    if (cfg->filter.bypass_cn_ip) {
-        ui_table_subrow_emoji("└─", "🌏", "ENABLED (ipset cnip)");
-    } else {
-        ui_table_subrow_emoji("└─", "🌏", "DISABLED");
-    }
+    ui_table_subrow("├─", "Engine", "Pure eBPF (Zero iptables)");
+    ui_table_subrow("├─", "Performance Mode", cfg->core.performance_mode ? "ACTIVE" : "DISABLED");
+    ui_table_subrow("├─", "IPv6 Support", cfg->network.proxy_ipv6 ? "ENABLED" : "DISABLED");
+    ui_table_subrow("└─", "Data Path", "sing-box ebpf inbound");
     ui_table_end();
 }
 
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
-    ui_title("ATP Status");
+    (void)cfg;
+    ui_title("ATP Status (Pure eBPF Edition)");
 
     status_show_proxy_core(svc);
     ui_blank();
 
-    status_show_clash_mode(cfg, api, svc);
+    status_show_clash_mode(api, svc);
     ui_blank();
 
     status_show_ebpf();

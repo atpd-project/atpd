@@ -1,8 +1,8 @@
 /*
  * ATP - Advanced Transparent Proxy
- * Copyright (C) 2024-2025 ATP Project
+ * Copyright (C) 2024-2026 ATP Project
  *
- * Command line interface implementation
+ * Command line interface implementation - Pure eBPF Edition
  */
 
 #include "cli.h"
@@ -24,7 +24,6 @@ static const struct option long_options[] = {
     {"test",      no_argument,       0, 't'},
     {"no-color",  no_argument,       0, 'n'},
     {"ipv6",      required_argument, 0, '6'},
-    {"config",    required_argument, 0, 'c'},
     {"help",      no_argument,       0, 'h'},
     {"version",   no_argument,       0, 'v'},
     {0, 0, 0, 0}
@@ -35,35 +34,24 @@ static const char *short_options = "c:p:fdqFtn6:hv";
 static int parse_ebpf_command(int argc, char *argv[], atp_options_t *opts) {
     if (argc < 3) {
         fprintf(stderr, "ebpf: missing subcommand\n");
-        fprintf(stderr, "Usage: atpd ebpf {probe|init|apply|update|clear|status}\n");
+        fprintf(stderr, "Usage: atpd ebpf {probe|status}\n");
         return -1;
     }
 
     const char *sub = argv[2];
     if (strcmp(sub, "probe") == 0) {
         opts->command = CMD_EBPF_PROBE;
-    } else if (strcmp(sub, "init") == 0) {
-        opts->command = CMD_EBPF_INIT;
-    } else if (strcmp(sub, "apply") == 0) {
-        opts->command = CMD_EBPF_APPLY;
-    } else if (strcmp(sub, "update") == 0) {
-        opts->command = CMD_EBPF_UPDATE;
-    } else if (strcmp(sub, "clear") == 0) {
-        opts->command = CMD_EBPF_CLEAR;
     } else if (strcmp(sub, "status") == 0) {
         opts->command = CMD_EBPF_STATUS;
     } else {
         fprintf(stderr, "ebpf: unknown subcommand '%s'\n", sub);
-        fprintf(stderr, "Usage: atpd ebpf {probe|init|apply|update|clear|status}\n");
+        fprintf(stderr, "Usage: atpd ebpf {probe|status}\n");
         return -1;
     }
 
     for (int i = 3; i < argc; i++) {
         if (strcmp(argv[i], "--ipv6") == 0 && i + 1 < argc) {
             opts->ipv6 = atoi(argv[i + 1]);
-            i++;
-        } else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
-            strncpy(opts->ebpf_config, argv[i + 1], sizeof(opts->ebpf_config) - 1);
             i++;
         }
     }
@@ -75,7 +63,7 @@ void print_usage(const char *progname) {
     const char *base = strrchr(progname, '/');
     base = base ? base + 1 : progname;
 
-    printf(ATP_NAME " v" ATP_VERSION_STRING "\n\n");
+    printf(ATP_NAME " v" ATP_VERSION_STRING " (Pure eBPF Edition)\n\n");
     printf("Usage: %s [options] command [subcommand] [args]\n\n", base);
     printf("Options:\n");
     printf("  -c, --config FILE     Specify configuration file\n");
@@ -91,41 +79,27 @@ void print_usage(const char *progname) {
     printf("  -h, --help            Show this help\n");
     printf("  -v, --version         Print version and exit\n");
     printf("\nCommands:\n");
-    printf("  start                 Start daemon\n");
+    printf("  start                 Start daemon (Pure eBPF mode)\n");
     printf("  stop                  Stop daemon\n");
     printf("  restart               Restart daemon\n");
-    printf("  status                Show daemon status and statistics\n");
+    printf("  status                Show daemon, VPN tunnel, and traffic status\n");
     printf("  reload                Reload configuration without restart\n");
     printf("  check                 Validate configuration and exit\n");
-    printf("  update-geoip          Update GeoIP database\n");
     printf("  help                  Show this help message\n");
-    printf("\neBPF Commands (Diagnostics & Inspection):\n");
+    printf("\neBPF Diagnostic Commands:\n");
     printf("  ebpf probe [--ipv6 1] Probe kernel eBPF support for sing-box\n");
     printf("  ebpf status           Show eBPF kernel support and inbound status\n");
     printf("\nExamples:\n");
     printf("  %s status\n", base);
     printf("  %s ebpf probe --ipv6 1\n", base);
-    printf("  %s ebpf status\n", base);
 }
 
 void print_version(void) {
-    printf("atpd %s\n", ATP_VERSION_STRING);
+    printf("atpd %s (Pure eBPF)\n", ATP_VERSION_STRING);
 }
 
 void print_help(const char *progname) {
     print_usage(progname);
-}
-
-static const char* suggest_command(const char *cmd) {
-    const char *commands[] = {"start", "stop", "restart", "status",
-                              "reload", "check", "update-geoip",
-                              "version", "help", "ebpf", NULL};
-    for (int i = 0; commands[i]; i++) {
-        if (strncmp(cmd, commands[i], strlen(cmd)) == 0) {
-            return commands[i];
-        }
-    }
-    return NULL;
 }
 
 int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
@@ -172,7 +146,6 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
                 break;
             case 't':
                 opts->test_config = 1;
-                opts->command = CMD_CHECK;
                 break;
             case 'n':
                 opts->no_color = 1;
@@ -182,40 +155,37 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
                 break;
             case 'h':
                 opts->command = CMD_HELP;
-                break;
+                return 0;
             case 'v':
                 opts->command = CMD_VERSION;
-                break;
-            case '?':
-                return -1;
+                return 0;
             default:
-                break;
+                return -1;
         }
     }
 
-    if (opts->command == CMD_NONE && optind < argc) {
+    if (optind < argc) {
         const char *cmd = argv[optind];
-        if (strcmp(cmd, "start") == 0) opts->command = CMD_START;
-        else if (strcmp(cmd, "stop") == 0) opts->command = CMD_STOP;
-        else if (strcmp(cmd, "restart") == 0) opts->command = CMD_RESTART;
-        else if (strcmp(cmd, "status") == 0) opts->command = CMD_STATUS;
-        else if (strcmp(cmd, "update-geoip") == 0) opts->command = CMD_UPDATE_GEOIP;
-        else if (strcmp(cmd, "reload") == 0) opts->command = CMD_RELOAD;
-        else if (strcmp(cmd, "check") == 0) opts->command = CMD_CHECK;
-        else if (strcmp(cmd, "help") == 0) opts->command = CMD_HELP;
-        else if (strcmp(cmd, "version") == 0) opts->command = CMD_VERSION;
-        else if (strcmp(cmd, "ebpf") == 0) {
-            if (parse_ebpf_command(argc, argv, opts) != 0) {
-                return -1;
-            }
+        if (strcmp(cmd, "start") == 0) {
+            opts->command = CMD_START;
+        } else if (strcmp(cmd, "stop") == 0) {
+            opts->command = CMD_STOP;
+        } else if (strcmp(cmd, "restart") == 0) {
+            opts->command = CMD_RESTART;
+        } else if (strcmp(cmd, "status") == 0) {
+            opts->command = CMD_STATUS;
+        } else if (strcmp(cmd, "reload") == 0) {
+            opts->command = CMD_RELOAD;
+        } else if (strcmp(cmd, "check") == 0) {
+            opts->command = CMD_CHECK;
+        } else if (strcmp(cmd, "version") == 0) {
+            opts->command = CMD_VERSION;
+        } else if (strcmp(cmd, "help") == 0) {
+            opts->command = CMD_HELP;
+        } else if (strcmp(cmd, "ebpf") == 0) {
+            return parse_ebpf_command(argc - optind + 1, &argv[optind - 1], opts);
         } else {
-            const char *suggestion = suggest_command(cmd);
-            if (suggestion) {
-                fprintf(stderr, "atpd: unknown command '%s'. Did you mean '%s'?\n", cmd, suggestion);
-            } else {
-                fprintf(stderr, "atpd: unknown command '%s'\n", cmd);
-            }
-            fprintf(stderr, "Try 'atpd --help' for all commands.\n");
+            fprintf(stderr, "Unknown command: %s\n", cmd);
             return -1;
         }
     }
@@ -229,21 +199,16 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
 
 const char* command_to_string(atp_command_t cmd) {
     switch (cmd) {
-        case CMD_START:        return "start";
-        case CMD_STOP:         return "stop";
-        case CMD_RESTART:      return "restart";
-        case CMD_STATUS:       return "status";
-        case CMD_UPDATE_GEOIP: return "update-geoip";
-        case CMD_RELOAD:       return "reload";
-        case CMD_CHECK:        return "check";
-        case CMD_VERSION:      return "version";
-        case CMD_HELP:         return "help";
-        case CMD_EBPF_PROBE:   return "ebpf probe";
-        case CMD_EBPF_INIT:    return "ebpf init";
-        case CMD_EBPF_APPLY:   return "ebpf apply";
-        case CMD_EBPF_UPDATE:  return "ebpf update";
-        case CMD_EBPF_CLEAR:   return "ebpf clear";
-        case CMD_EBPF_STATUS:  return "ebpf status";
-        default:               return "unknown";
+        case CMD_START: return "start";
+        case CMD_STOP: return "stop";
+        case CMD_RESTART: return "restart";
+        case CMD_STATUS: return "status";
+        case CMD_RELOAD: return "reload";
+        case CMD_CHECK: return "check";
+        case CMD_VERSION: return "version";
+        case CMD_HELP: return "help";
+        case CMD_EBPF_PROBE: return "ebpf probe";
+        case CMD_EBPF_STATUS: return "ebpf status";
+        default: return "unknown";
     }
 }

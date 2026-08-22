@@ -75,15 +75,7 @@ int ebpf_status(char *state, size_t size, atp_config_t *cfg) {
 }
 
 bool ebpf_is_pure_mode(const atp_config_t *cfg) {
-    if (!cfg) return false;
-    if (cfg->network.proxy_mode == MODE_EBPF) {
-        return true;
-    }
-    if (cfg->network.proxy_mode == MODE_AUTO) {
-        if (cfg->ebpf.enabled && cfg->ebpf.ready) {
-            return true;
-        }
-    }
-    return false;
+    (void)cfg;
+    return true;
 }
 

@@ -325,8 +325,8 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     snprintf(ctx->base_url, sizeof(ctx->base_url), "http://%s:%d",
              cfg->api.host, cfg->api.port);
 
-    if (cfg->filter.clash_secret[0] != '\0') {
-        snprintf(ctx->secret, sizeof(ctx->secret), "%s", cfg->filter.clash_secret);
+    if (cfg->api.secret[0] != '\0') {
+        snprintf(ctx->secret, sizeof(ctx->secret), "%s", cfg->api.secret);
     }
 
     ctx->timeout_sec = 2;
