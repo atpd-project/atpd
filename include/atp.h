@@ -36,11 +36,29 @@
 #define _FORTIFY_SOURCE 3
 #endif
 
+#ifndef ATP_DEFAULT_DIR
 #define ATP_DEFAULT_DIR     "/data/adb/atp"
+#endif
+
+#ifndef ATP_CONF_FILE
 #define ATP_CONF_FILE       "atp.conf"
+#endif
+
+#ifndef ATP_PID_FILE
 #define ATP_PID_FILE        "run/atpd.pid"
+#endif
+
+#ifndef ATP_LOG_FILE
 #define ATP_LOG_FILE        "run/atp.log"
+#endif
+
+#ifndef ATP_COMMAND_SOCKET
+#define ATP_COMMAND_SOCKET  "run/atpd.sock"
+#endif
+
+#ifndef ATP_RUNTIME_CONF
 #define ATP_RUNTIME_CONF    "run/runtime_atp.conf"
+#endif
 
 #define PROXY_BIN_NAME      "sing-box"
 #define PROXY_BIN_PATH      ATP_DEFAULT_DIR "/bin/sing-box"
