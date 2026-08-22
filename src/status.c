@@ -89,10 +89,14 @@ static int get_cpu_temperature(void) {
             FILE *fp = fopen(path, "r");
             if (fp) {
                 if (fgets(temp_str, sizeof(temp_str), fp)) {
-                    temp = atoi(temp_str) / 1000;
-                    fclose(fp);
-                    closedir(dir);
-                    return temp;
+                    int val = atoi(temp_str);
+                    if (val > 1000) temp = val / 1000;
+                    else if (val > 0) temp = val;
+                    if (temp > 0) {
+                        fclose(fp);
+                        closedir(dir);
+                        return temp;
+                    }
                 }
                 fclose(fp);
             }
@@ -108,12 +112,33 @@ static void status_show_proxy_core(service_ctx_t *svc) {
         pid = get_pid_by_name("sing-box");
     }
 
-    char uptime_str[64];
-    char mem_str[32];
-    char cpu_str[16];
-    char threads_str[16];
-    char fds_str[16];
+    char uptime_str[64] = "N/A";
+    char mem_str[32] = "N/A";
+    char cpu_str[16] = "0.0%";
+    char threads_str[16] = "0";
+    char fds_str[16] = "0";
     char version_str[64] = "unknown";
+
+    ui_table_begin();
+    ui_table_header("PROXY CORE");
+
+    if (pid <= 0) {
+        ui_table_row_color("STATUS", "sing-box (STOPPED)", COLOR_RED);
+        ui_table_end();
+        return;
+    }
+
+    long mem_kb = get_process_memory_kb(pid);
+    double cpu = get_process_cpu_percent(pid);
+    int threads = get_process_threads(pid);
+    int fd_count = get_process_fd_count(pid);
+    int uptime_sec = get_process_uptime_sec(pid);
+
+    format_uptime_human(uptime_sec, uptime_str, sizeof(uptime_str));
+    format_bytes(mem_str, sizeof(mem_str), (unsigned long long)mem_kb * 1024);
+    snprintf(cpu_str, sizeof(cpu_str), "%.1f%%", cpu);
+    snprintf(threads_str, sizeof(threads_str), "%d", threads);
+    snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
 
     /* 1. Try reading real binary path via /proc/<pid>/exe */
     char bin_path[PATH_MAX] = {0};

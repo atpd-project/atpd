@@ -100,9 +100,7 @@ static int process_is_atpd(pid_t pid) {
     char *base = basename(exe_copy);
     if (!base) return 0;
 
-    return strcmp(base, "atpd") == 0 ||
-           strcmp(base, "atpd-ebpf") == 0 ||
-           strcmp(base, "atpd.bin") == 0;
+    return strncmp(base, "atpd", 4) == 0;
 }
 
 static int verify_pid_file_unchanged(int fd, int expected_pid) {
