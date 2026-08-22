@@ -119,7 +119,9 @@ static void safe_copy_ifname(char *dest, const void *src, size_t src_len) {
 static int open_netlink_socket(int groups) {
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
     if (fd < 0) {
-        LOG_ERROR("Netlink: socket() failed: %s", strerror(errno));
+        if (groups != 0) {
+            LOG_ERROR("Netlink: socket() failed: %s", strerror(errno));
+        }
         return -1;
     }
 
@@ -129,7 +131,9 @@ static int open_netlink_socket(int groups) {
     };
 
     if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        LOG_ERROR("Netlink: bind() failed: %s", strerror(errno));
+        if (groups != 0) {
+            LOG_ERROR("Netlink: bind() failed: %s", strerror(errno));
+        }
         close(fd);
         return -1;
     }
@@ -147,6 +151,7 @@ static void netlink_drain_socket(int fd) {
 }
 
 static int netlink_send_request(int fd, const void *req, size_t len) {
+    if (fd < 0) return -1;
     struct sockaddr_nl sa = { .nl_family = AF_NETLINK };
     ssize_t sent = sendto(fd, req, len, 0, (struct sockaddr *)&sa, sizeof(sa));
     if (sent < 0 || (size_t)sent != len) {
@@ -373,6 +378,25 @@ void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata
 }
 
 int netlink_get_active_vpn(char *output, size_t size) {
+    if (!output || size == 0) return -1;
+    output[0] = '\0';
+
+    /* 1. Fast path: getifaddrs */
+    if (getifaddrs_find_vpn(output, size) == 0 && output[0] != '\0') {
+        return 0;
+    }
+
+    /* 2. Fast path: Netlink dump with auto-opened socket */
+    int temp_fd = -1;
+    int sync_fd = g_sync_fd;
+    if (sync_fd < 0) {
+        temp_fd = open_netlink_socket(0);
+        sync_fd = temp_fd;
+    }
+    if (sync_fd < 0) {
+        return -1;
+    }
+
     struct nl_link_info links[32] = {{0}};
     struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
     struct {
@@ -388,27 +412,66 @@ int netlink_get_active_vpn(char *output, size_t size) {
         .ifi = { .ifi_family = AF_PACKET }
     };
 
+    int res = -1;
     pthread_mutex_lock(&g_nl_mutex);
-    netlink_drain_socket(g_sync_fd);
-    if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
-        pthread_mutex_unlock(&g_nl_mutex);
-        return -1;
-    }
-    netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                  parser_link_sync, &ctx, NETLINK_RECV_TIMEOUT_MS);
-    pthread_mutex_unlock(&g_nl_mutex);
-
-    for (int i = 0; i < ctx.count; i++) {
-        if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
-            snprintf(output, size, "%s", links[i].name);
-            return 0;
+    netlink_drain_socket(sync_fd);
+    if (netlink_send_request(sync_fd, &req, req.nlh.nlmsg_len) == 0) {
+        if (netlink_recv_all_with_timeout(sync_fd, req.nlh.nlmsg_seq,
+                                          parser_link_sync, &ctx, 500) == 0) {
+            for (int i = 0; i < ctx.count; i++) {
+                if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
+                    snprintf(output, size, "%s", links[i].name);
+                    res = 0;
+                    break;
+                }
+            }
         }
     }
+    pthread_mutex_unlock(&g_nl_mutex);
 
-    return getifaddrs_find_vpn(output, size);
+    if (temp_fd >= 0) {
+        close(temp_fd);
+    }
+
+    return res;
 }
 
 int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
+    if (!iface || !iface[0] || !rx || !tx) return -1;
+
+    /* 1. Fast direct read from /proc/net/dev */
+    FILE *fp = fopen("/proc/net/dev", "r");
+    if (fp) {
+        char line[512];
+        if (fgets(line, sizeof(line), fp) && fgets(line, sizeof(line), fp)) {
+            while (fgets(line, sizeof(line), fp)) {
+                char name[64];
+                unsigned long long rx_val = 0, tx_val = 0;
+                if (sscanf(line, "%63[^:]: %llu %*u %*u %*u %*u %*u %*u %*u %llu",
+                           name, &rx_val, &tx_val) >= 3) {
+                    char *p = name;
+                    while (*p == ' ') p++;
+                    if (strcmp(p, iface) == 0) {
+                        *rx = (uint64_t)rx_val;
+                        *tx = (uint64_t)tx_val;
+                        fclose(fp);
+                        return 0;
+                    }
+                }
+            }
+        }
+        fclose(fp);
+    }
+
+    /* 2. Fallback to netlink */
+    int temp_fd = -1;
+    int sync_fd = g_sync_fd;
+    if (sync_fd < 0) {
+        temp_fd = open_netlink_socket(0);
+        sync_fd = temp_fd;
+    }
+    if (sync_fd < 0) return -1;
+
     struct nl_link_info links[1] = {{0}};
     struct nl_parse_ctx ctx = { .links = links, .max_count = 1, .count = 0 };
     struct {
@@ -424,24 +487,28 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
         .ifi = { .ifi_index = if_nametoindex(iface) }
     };
 
-    if (req.ifi.ifi_index == 0) return -1;
-
-    pthread_mutex_lock(&g_nl_mutex);
-    netlink_drain_socket(g_sync_fd);
-    if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0) {
-        pthread_mutex_unlock(&g_nl_mutex);
+    if (req.ifi.ifi_index == 0) {
+        if (temp_fd >= 0) close(temp_fd);
         return -1;
     }
-    netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                  parser_link_sync, &ctx, NETLINK_RECV_TIMEOUT_MS);
+
+    int res = -1;
+    pthread_mutex_lock(&g_nl_mutex);
+    netlink_drain_socket(sync_fd);
+    if (netlink_send_request(sync_fd, &req, req.nlh.nlmsg_len) == 0) {
+        if (netlink_recv_all_with_timeout(sync_fd, req.nlh.nlmsg_seq,
+                                          parser_link_sync, &ctx, 500) == 0) {
+            if (ctx.count > 0) {
+                *rx = links[0].rx_bytes;
+                *tx = links[0].tx_bytes;
+                res = 0;
+            }
+        }
+    }
     pthread_mutex_unlock(&g_nl_mutex);
 
-    if (ctx.count > 0) {
-        *rx = links[0].rx_bytes;
-        *tx = links[0].tx_bytes;
-        return 0;
-    }
-    return -1;
+    if (temp_fd >= 0) close(temp_fd);
+    return res;
 }
 
 void netlink_cleanup(void) {

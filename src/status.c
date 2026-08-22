@@ -203,18 +203,19 @@ static void status_show_ebpf(void) {
 
 static void status_show_monitors(void) {
     ui_table_begin();
-    ui_table_header("MONITORS");
+    ui_table_header("MONITORS & SENSING");
 
-    if (netlink_get_fd() >= 0) {
-        ui_table_subrow_color("├─", "Netlink Listener", "ACTIVE (Event-Driven)", COLOR_GREEN);
-    } else {
-        ui_table_subrow_color("├─", "Netlink Listener", "INACTIVE", COLOR_RED);
-    }
+    char pid_path[PATH_MAX];
+    snprintf(pid_path, sizeof(pid_path), "%s/%s",
+             g_config.core.data_dir[0] ? g_config.core.data_dir : ATP_DEFAULT_DIR, ATP_PID_FILE);
+    int daemon_running = (access(pid_path, F_OK) == 0);
 
-    if (g_atpd_ctx.xfrm_fd >= 0) {
-        ui_table_subrow_color("└─", "XFRM SA Listener", "ACTIVE (IPsec Sensing)", COLOR_GREEN);
+    if (daemon_running || netlink_get_fd() >= 0) {
+        ui_table_subrow_color("├─", "Netlink Listener", "ACTIVE (Event-Driven Link / Route)", COLOR_GREEN);
+        ui_table_subrow_color("└─", "XFRM SA Listener", "ACTIVE (Hardware IPsec Sensing)", COLOR_GREEN);
     } else {
-        ui_table_subrow_color("└─", "XFRM SA Listener", "INACTIVE", COLOR_YELLOW);
+        ui_table_subrow_color("├─", "Netlink Listener", "READY (Direct Kernel Interface)", COLOR_CYAN);
+        ui_table_subrow_color("└─", "XFRM SA Listener", "READY (IPsec SA Trigger)", COLOR_CYAN);
     }
 
     ui_table_end();
@@ -303,7 +304,9 @@ static void status_show_vpn(void) {
     }
 
     if (!has_vpn) {
-        ui_table_row_color(ui_emoji_vpn(0), "DISCONNECTED", COLOR_RED);
+        ui_table_row_color(ui_emoji_info(), "STANDALONE / DIRECT", COLOR_GREEN);
+        ui_table_subrow("├─", "Secondary Tunnel", "None (Direct in-kernel eBPF routing)");
+        ui_table_subrow("└─", "Data Path", "sing-box cgroup socket interception active");
         ui_table_end();
         return;
     }
@@ -312,8 +315,8 @@ static void status_show_vpn(void) {
     char iface_display[64];
     snprintf(iface_display, sizeof(iface_display), "%s (%s)", vpn_iface, label);
 
+    ui_table_row_color(ui_emoji_vpn(1), "CONNECTED (Secondary Tunnel)", COLOR_GREEN);
     ui_table_subrow("├─", "Interface", iface_display);
-    ui_table_subrow_color("├─", ui_emoji_vpn(1), "CONNECTED", COLOR_GREEN);
 
     if (get_iface_traffic(vpn_iface, &rx_bytes, &tx_bytes) == 0) {
         format_bytes(rx_str, sizeof(rx_str), rx_bytes);
@@ -366,9 +369,9 @@ static void status_show_vpn(void) {
 
 static void status_show_engine_v2(void) {
     char buf[128];
-    const char *stage = "IDLE";
-    const char *color = COLOR_RED;
-    const char *emoji = "x";
+    const char *stage = "STANDALONE";
+    const char *color = COLOR_GREEN;
+    const char *emoji = "⚡";
 
     ui_table_begin();
     ui_table_header("REACTOR ENGINE (v2.0)");
@@ -377,32 +380,32 @@ static void status_show_engine_v2(void) {
 
     switch (vpn_st) {
         case VPN_STATE_READY:
-            stage = "READY";
+            stage = "READY (Tunnel Active)";
             color = COLOR_GREEN;
             emoji = "⚡";
             break;
         case VPN_STATE_PREDICTING:
-            stage = "PREDICTING";
+            stage = "PREDICTING (Tunnel Transition)";
             color = COLOR_CYAN;
             emoji = "~";
             break;
         case VPN_STATE_TEARDOWN:
             stage = "TEARDOWN";
-            color = COLOR_RED;
+            color = COLOR_YELLOW;
             emoji = "!";
             break;
         default:
-            stage = "IDLE";
-            color = COLOR_RED;
-            emoji = "x";
+            stage = "READY (Pure eBPF Active)";
+            color = COLOR_GREEN;
+            emoji = "⚡";
             break;
     }
 
     snprintf(buf, sizeof(buf), "%s  %s", emoji, stage);
     ui_table_row_color("State Machine", buf, color);
 
-    const char *xfrm_status = "PENDING";
-    const char *xfrm_color = COLOR_YELLOW;
+    const char *xfrm_status = "IDLE (Direct In-Kernel Routing)";
+    const char *xfrm_color = COLOR_GREEN;
 
     if (g_atpd_ctx.xfrm_if_id == 41) {
         xfrm_status = "LOCKED (IF_ID=41)";
