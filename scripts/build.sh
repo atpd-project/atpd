@@ -41,14 +41,16 @@ $CC -Wall -Wextra -Oz -flto -D_GNU_SOURCE -DNDEBUG -Qunused-arguments \
     -ffunction-sections -fdata-sections \
     -fno-unwind-tables -fno-asynchronous-unwind-tables \
     -fmerge-all-constants -fno-ident \
+    -fvisibility=hidden -fomit-frame-pointer -fno-math-errno \
     -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1 \
+    -DYYJSON_DISABLE_UTF8_VALIDATION=1 -DYYJSON_DISABLE_COMMENT=1 -DYYJSON_DISABLE_INF_AND_NAN=1 -DYYJSON_DISABLE_NUM_FORMAT_CHECK=1 \
     -DLOG_LOCATION_ENABLED=0 \
     -Iinclude \
     ${EXTRA_CFLAGS:-} \
     -fuse-ld=lld \
     -static \
     -s \
-    -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none \
+    -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,--icf=all -Wl,--as-needed \
     -o build/bin/atpd \
     $SRC_FILES \
     -lpthread
