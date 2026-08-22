@@ -599,7 +599,8 @@ static int do_ebpf_status(atp_options_t *opts) {
     if (config_path && config_path[0]) {
         config_load(config_path, &cfg);
     } else {
-        const char *default_path = ATP_DEFAULT_DIR "/" ATP_CONF_FILE;
+        char default_path[PATH_MAX];
+        snprintf(default_path, sizeof(default_path), "%s/%s", cfg.core.data_dir, ATP_CONF_FILE);
         if (access(default_path, R_OK) == 0) {
             config_load(default_path, &cfg);
         }

@@ -26,7 +26,6 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 
-#define TRAFFIC_STATE_FILE "/data/adb/atp/run/traffic.state"
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
 #define THERMAL_TEMP_WARN 75000
 #define THERMAL_TEMP_CRITICAL 85000
