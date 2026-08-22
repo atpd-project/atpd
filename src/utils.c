@@ -582,18 +582,30 @@ int get_process_user_group(pid_t pid, char *user, char *group, size_t size) {
 }
 
 int get_binary_version(const char *bin_path, char *version, size_t size) {
-    char cmd[MAX_CMD_LEN];
-    int n = snprintf(cmd, sizeof(cmd), "%s version 2>/dev/null | head -1", bin_path);
-    if (n < 0 || n >= (int)sizeof(cmd)) {
+    if (!bin_path || !bin_path[0]) {
         snprintf(version, size, "%s", "unknown");
         return -1;
     }
 
-    char output[256];
-    if (exec_cmd(cmd, output, sizeof(output), 5) == 0 && output[0]) {
-        char *p = strrchr(output, ' ');
+    char cmd[MAX_CMD_LEN];
+    snprintf(cmd, sizeof(cmd), "%s version", bin_path);
+
+    char output[256] = {0};
+    if (exec_cmd(cmd, output, sizeof(output), 3) == 0 && output[0]) {
+        trim(output);
+        char *p = strstr(output, "version ");
         if (p) {
-            snprintf(version, size, "%s", p + 1);
+            p += 8;
+            char *space = strchr(p, ' ');
+            if (space) *space = '\0';
+            char *nl = strchr(p, '\n');
+            if (nl) *nl = '\0';
+            snprintf(version, size, "%s", p);
+            return 0;
+        }
+        char *last_space = strrchr(output, ' ');
+        if (last_space) {
+            snprintf(version, size, "%s", last_space + 1);
         } else {
             snprintf(version, size, "%s", output);
         }

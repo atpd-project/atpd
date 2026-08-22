@@ -113,34 +113,50 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     char cpu_str[16];
     char threads_str[16];
     char fds_str[16];
-    char version_str[64];
+    char version_str[64] = "unknown";
 
-    ui_table_begin();
-    ui_table_header("PROXY CORE");
-
-    if (pid <= 0) {
-        ui_table_row_color("STATUS", "sing-box (STOPPED)", COLOR_RED);
-        ui_table_end();
-        return;
+    /* 1. Try reading real binary path via /proc/<pid>/exe */
+    char bin_path[PATH_MAX] = {0};
+    char exe_link[64];
+    snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
+    ssize_t rlen = readlink(exe_link, bin_path, sizeof(bin_path) - 1);
+    if (rlen > 0) {
+        bin_path[rlen] = '\0';
+        get_binary_version(bin_path, version_str, sizeof(version_str));
     }
 
-    long mem_kb = get_process_memory_kb(pid);
-    double cpu = get_process_cpu_percent(pid);
-    int threads = get_process_threads(pid);
-    int fd_count = get_process_fd_count(pid);
-    int uptime_sec = get_process_uptime_sec(pid);
+    /* 2. Fallback to command path / PROXY_BIN_PATH */
+    if (strcmp(version_str, "unknown") == 0) {
+        if (find_command_path("sing-box", bin_path, sizeof(bin_path)) == 0) {
+            get_binary_version(bin_path, version_str, sizeof(version_str));
+        } else {
+            get_binary_version(PROXY_BIN_PATH, version_str, sizeof(version_str));
+        }
+    }
 
-    format_uptime_human(uptime_sec, uptime_str, sizeof(uptime_str));
-    format_bytes(mem_str, sizeof(mem_str), mem_kb * 1024);
-    snprintf(cpu_str, sizeof(cpu_str), "%.1f%%", cpu);
-    snprintf(threads_str, sizeof(threads_str), "%d", threads);
-    snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
-
-    char bin_path[PATH_MAX];
-    if (find_command_path("sing-box", bin_path, sizeof(bin_path)) == 0) {
-        get_binary_version(bin_path, version_str, sizeof(version_str));
-    } else {
-        get_binary_version(PROXY_BIN_PATH, version_str, sizeof(version_str));
+    /* 3. Fallback to Clash REST API /version */
+    if (strcmp(version_str, "unknown") == 0) {
+        char api_resp[512] = {0};
+        char api_url[256];
+        snprintf(api_url, sizeof(api_url), "http://%s:%d/version",
+                 g_config.api.host[0] ? g_config.api.host : "127.0.0.1",
+                 g_config.api.port > 0 ? g_config.api.port : 9090);
+        if (api_get_sync(api_url, api_resp, sizeof(api_resp)) == 0 && api_resp[0]) {
+            char *v = strstr(api_resp, "\"version\"");
+            if (v) {
+                char *colon = strchr(v, ':');
+                if (colon) {
+                    char *q1 = strchr(colon, '"');
+                    if (q1) {
+                        char *q2 = strchr(q1 + 1, '"');
+                        if (q2) {
+                            *q2 = '\0';
+                            snprintf(version_str, sizeof(version_str), "%s", q1 + 1);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     ui_table_row_color(ui_emoji_service(1), "sing-box", COLOR_GREEN);
