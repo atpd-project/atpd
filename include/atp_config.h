@@ -53,8 +53,8 @@ typedef struct {
     char hotspot_subnet_ipv4[64];
     char hotspot_subnet_ipv6[64];
     char current_vpn_iface[IFNAMSIZ];
-    char other_proxy[4096];
-    char other_bypass[4096];
+    char other_proxy[1024];
+    char other_bypass[1024];
     int proxy_mobile;
     int proxy_wifi;
     int proxy_hotspot;
@@ -71,11 +71,11 @@ typedef struct {
     char mac_proxy_mode[32];
     char user_clash_mode[32];
     char clash_secret[128];
-    char proxy_apps_list[4096];
-    char bypass_apps_list[4096];
-    char proxy_macs_list[4096];
-    char bypass_macs_list[4096];
-    char cnip_force_proxy_apps[4096];
+    char proxy_apps_list[2048];
+    char bypass_apps_list[2048];
+    char proxy_macs_list[1024];
+    char bypass_macs_list[1024];
+    char cnip_force_proxy_apps[1024];
     char cn_ip_url[256];
     char cn_ip_file[64];
     char cn_ipv6_url[256];
@@ -84,10 +84,10 @@ typedef struct {
 
 /* IP Lists */
 typedef struct {
-    char bypass_ipv4_list[4096];
-    char bypass_ipv6_list[4096];
-    char proxy_ipv4_list[4096];
-    char proxy_ipv6_list[4096];
+    char bypass_ipv4_list[1024];
+    char bypass_ipv6_list[1024];
+    char proxy_ipv4_list[1024];
+    char proxy_ipv6_list[1024];
 } iplist_config_t;
 
 /* eBPF */
@@ -96,10 +96,6 @@ typedef struct {
     bool ready;
     int load_retry;
     int load_delay;
-    char bin_path[PATH_MAX];
-    char config_path[PATH_MAX];
-    char pin_dir[PATH_MAX];
-    char state_dir[PATH_MAX];
 } ebpf_config_t;
 
 /* Service */
@@ -111,8 +107,8 @@ typedef struct {
     int circuit_threshold;
     int circuit_cooldown_sec;
     int health_check_interval_ms;
-    char args[512];
-    char env[512];
+    char args[256];
+    char env[256];
 } service_config_t;
 
 /* API */

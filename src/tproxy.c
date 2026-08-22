@@ -28,7 +28,7 @@ static pthread_mutex_t g_avail_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define IP6TABLES_SAVE_CMD "/system/bin/ip6tables-save"
 
 #define MAX_ORPHAN_CHAINS 128
-#define BATCH_BUF_SIZE (256 * 1024)
+#define BATCH_BUF_SIZE (16 * 1024)
 
 #define APPEND_RULE(buf, pos, size, ...) do { \
     int _n = snprintf((buf) + (pos), (size) - (pos), __VA_ARGS__); \

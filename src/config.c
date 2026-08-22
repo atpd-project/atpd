@@ -199,10 +199,6 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->ebpf.ready = 0;
     cfg->ebpf.load_retry = 3;
     cfg->ebpf.load_delay = 2;
-    snprintf(cfg->ebpf.bin_path, sizeof(cfg->ebpf.bin_path), "%s/bin/ebpf", ATP_DEFAULT_DIR);
-    snprintf(cfg->ebpf.pin_dir, sizeof(cfg->ebpf.pin_dir), "/sys/fs/bpf/box");
-    snprintf(cfg->ebpf.state_dir, sizeof(cfg->ebpf.state_dir), "%s/ebpf", ATP_DEFAULT_DIR);
-    snprintf(cfg->ebpf.config_path, sizeof(cfg->ebpf.config_path), "%s/ebpf/rule-config.json", ATP_DEFAULT_DIR);
 
     cfg->service.start_timeout_sec = SERVICE_DEFAULT_START_TIMEOUT_SEC;
     cfg->service.stop_timeout_sec = SERVICE_DEFAULT_STOP_TIMEOUT_SEC;
@@ -306,9 +302,6 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
         else if (strcmp(k, "USER_CLASH_MODE") == 0) snprintf(cfg->filter.user_clash_mode, sizeof(cfg->filter.user_clash_mode), "%s", v);
         else if (strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->filter.clash_secret, sizeof(cfg->filter.clash_secret), "%s", v);
         else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", v);
-        else if (strcmp(k, "EBPF_BIN") == 0) snprintf(cfg->ebpf.bin_path, sizeof(cfg->ebpf.bin_path), "%s", v);
-        else if (strcmp(k, "EBPF_PIN_DIR") == 0) snprintf(cfg->ebpf.pin_dir, sizeof(cfg->ebpf.pin_dir), "%s", v);
-        else if (strcmp(k, "EBPF_STATE_DIR") == 0) snprintf(cfg->ebpf.state_dir, sizeof(cfg->ebpf.state_dir), "%s", v);
         else if (strcmp(k, "CNIP_FORCE_PROXY_APPS") == 0) snprintf(cfg->filter.cnip_force_proxy_apps, sizeof(cfg->filter.cnip_force_proxy_apps), "%s", v);
         else if (strcmp(k, "CORE_USER_GROUP") == 0) {
             char val[256]; snprintf(val, sizeof(val), "%s", v); char *colon = strchr(val, ':');

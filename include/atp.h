@@ -180,10 +180,6 @@ typedef enum {
 #define cfg_ebpf_ready          cfg->ebpf.ready
 #define cfg_ebpf_load_retry     cfg->ebpf.load_retry
 #define cfg_ebpf_load_delay     cfg->ebpf.load_delay
-#define cfg_ebpf_bin_path       cfg->ebpf.bin_path
-#define cfg_ebpf_config_path    cfg->ebpf.config_path
-#define cfg_ebpf_pin_dir        cfg->ebpf.pin_dir
-#define cfg_ebpf_state_dir      cfg->ebpf.state_dir
 
 #define cfg_service_start_timeout_sec      cfg->service.start_timeout_sec
 #define cfg_service_stop_timeout_sec       cfg->service.stop_timeout_sec

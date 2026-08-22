@@ -368,7 +368,7 @@ void api_cleanup(api_ctx_t *ctx) {
 }
 
 static int api_build_http_request(api_request_t *req) {
-    char headers[4096];
+    char headers[1024];
     size_t used = 0;
     size_t remain = sizeof(headers);
     int ret;

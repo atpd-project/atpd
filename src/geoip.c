@@ -24,7 +24,7 @@
 
 #define GEOIP_TIMEOUT_SEC 30
 #define SAFE_PATH_MAX (PATH_MAX + 256)
-#define GEOIP_RESPONSE_MAX (4 * 1024 * 1024)
+#define GEOIP_RESPONSE_MAX (512 * 1024)
 
 static pthread_t geoip_thread;
 static int geoip_async_running = 0;

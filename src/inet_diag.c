@@ -17,8 +17,8 @@
 #include <stdatomic.h>
 
 #define INET_DIAG_SOCKET_TIMEOUT_MS 3000
-#define INET_DIAG_RESPONSE_BUFFER_SIZE (64 * 1024)
-#define INET_DIAG_RESPONSE_MAX_SIZE (4 * 1024 * 1024)
+#define INET_DIAG_RESPONSE_BUFFER_SIZE (8 * 1024)
+#define INET_DIAG_RESPONSE_MAX_SIZE (1 * 1024 * 1024)
 
 /* Fallback definitions for older kernels */
 #ifndef SOCK_DIAG_BY_FAMILY
@@ -292,7 +292,7 @@ static int send_diag_request_exact(struct inet_diag_req_v2 *req, char **response
     int done = 0;
     
     while (!done) {
-        char recv_buf[16384];
+        char recv_buf[4096];
         struct iovec recv_iov = { recv_buf, sizeof(recv_buf) };
         struct msghdr recv_msg = {
             .msg_name = &addr,
@@ -432,7 +432,7 @@ static int send_diag_request_dump(struct inet_diag_req_v2 *req, char **response,
     int done = 0;
     
     while (!done) {
-        char recv_buf[16384];
+        char recv_buf[4096];
         struct iovec recv_iov = { recv_buf, sizeof(recv_buf) };
         struct msghdr recv_msg = {
             .msg_name = &addr,
