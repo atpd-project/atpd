@@ -65,7 +65,7 @@ static void validate_cleanup(async_validate_ctx_t *ctx, int result, const char *
 /* ========== Public API ========== */
 
 int async_validate_config(async_validate_ctx_t *ctx, reactor_t *r,
-                          const char *bin_path, const char *work_dir,
+                          const char *bin_path, const char *conf_path, const char *work_dir,
                           validate_callback_t callback, void *userdata) {
     int pipe_fds[2] = {-1, -1};
     int timer_fd = -1;
@@ -127,7 +127,11 @@ int async_validate_config(async_validate_ctx_t *ctx, reactor_t *r,
             close(null_fd);
         }
 
-        execl(bin_path, bin_path, "check", "-D", work_dir, NULL);
+        if (conf_path && conf_path[0]) {
+            execl(bin_path, bin_path, "check", "-D", work_dir, "-c", conf_path, NULL);
+        } else {
+            execl(bin_path, bin_path, "check", "-D", work_dir, NULL);
+        }
         _exit(127);
     }
 

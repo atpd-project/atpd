@@ -12,6 +12,7 @@
 #include "atpd_context.h"
 #include "ebpf.h"
 #include "config_validator.h"
+#include <yyjson.h>
 #include <pwd.h>
 #include <grp.h>
 #include <arpa/inet.h>
@@ -33,6 +34,8 @@ static config_snapshot_t g_snapshot = {
 };
 
 static pthread_mutex_t g_snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void config_sync_from_singbox_json(atp_config_t *cfg);
 
 static void config_copy_content(atp_config_t *dst, const atp_config_t *src) {
     dst->core = src->core;
@@ -134,6 +137,75 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->api.port = DEFAULT_API_PORT;
     snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", DEFAULT_API_HOST);
     cfg->api.secret[0] = '\0';
+
+    config_sync_from_singbox_json(cfg);
+}
+
+static void config_sync_from_singbox_json(atp_config_t *cfg) {
+    if (!cfg) return;
+
+    char conf_candidates[3][PATH_MAX];
+    snprintf(conf_candidates[0], sizeof(conf_candidates[0]), "%s/config.json", cfg->core.data_dir);
+    snprintf(conf_candidates[1], sizeof(conf_candidates[1]), "%s/sing-box.json", cfg->core.data_dir);
+    snprintf(conf_candidates[2], sizeof(conf_candidates[2]), "%s/sing-box/config.json", cfg->core.data_dir);
+
+    const char *conf_path = NULL;
+    for (int i = 0; i < 3; i++) {
+        if (access(conf_candidates[i], R_OK) == 0) {
+            conf_path = conf_candidates[i];
+            break;
+        }
+    }
+    if (!conf_path) return;
+
+    yyjson_read_err err;
+    yyjson_doc *doc = yyjson_read_file(conf_path, 0, NULL, &err);
+    if (!doc) return;
+
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    if (root) {
+        yyjson_val *exp = yyjson_obj_get(root, "experimental");
+        yyjson_val *clash_api = NULL;
+        if (exp) {
+            clash_api = yyjson_obj_get(exp, "clash_api");
+        }
+        if (!clash_api) {
+            clash_api = yyjson_obj_get(root, "clash_api");
+        }
+
+        if (clash_api) {
+            yyjson_val *ext_ctrl = yyjson_obj_get(clash_api, "external_controller");
+            if (ext_ctrl && yyjson_is_str(ext_ctrl)) {
+                const char *ctrl = yyjson_get_str(ext_ctrl);
+                if (ctrl && ctrl[0]) {
+                    const char *colon = strrchr(ctrl, ':');
+                    if (colon) {
+                        int port = atoi(colon + 1);
+                        if (port > 0) {
+                            cfg->api.port = port;
+                        }
+                        if (colon != ctrl) {
+                            size_t host_len = (size_t)(colon - ctrl);
+                            if (host_len < sizeof(cfg->api.host)) {
+                                strncpy(cfg->api.host, ctrl, host_len);
+                                cfg->api.host[host_len] = '\0';
+                            }
+                        }
+                    }
+                }
+            }
+
+            yyjson_val *secret = yyjson_obj_get(clash_api, "secret");
+            if (secret && yyjson_is_str(secret)) {
+                const char *sec = yyjson_get_str(secret);
+                if (sec && sec[0] && cfg->api.secret[0] == '\0') {
+                    snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", sec);
+                }
+            }
+        }
+    }
+
+    yyjson_doc_free(doc);
 }
 
 static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
@@ -209,6 +281,8 @@ int config_load(const char *path, atp_config_t *cfg) {
         pthread_mutex_destroy(&tmp.mutex);
         return ret;
     }
+
+    config_sync_from_singbox_json(&tmp);
 
     pthread_mutex_lock(&cfg->mutex);
     config_copy_content(cfg, &tmp);

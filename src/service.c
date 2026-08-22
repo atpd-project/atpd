@@ -259,7 +259,7 @@ static void free_service_args(char **args) {
 }
 
 static char** build_service_args(service_ctx_t *ctx) {
-    char **args = calloc(20, sizeof(char *));
+    char **args = calloc(30, sizeof(char *));
     if (!args) return NULL;
 
     int idx = 0;
@@ -272,13 +272,28 @@ static char** build_service_args(service_ctx_t *ctx) {
     if (!arg) { free_service_args(args); return NULL; }
     args[idx++] = arg;
 
-    arg = strdup("-D");
-    if (!arg) { free_service_args(args); return NULL; }
-    args[idx++] = arg;
+    /* Respect working directory */
+    if (ctx->work_dir[0]) {
+        arg = strdup("-D");
+        if (!arg) { free_service_args(args); return NULL; }
+        args[idx++] = arg;
 
-    arg = strdup(ctx->work_dir);
-    if (!arg) { free_service_args(args); return NULL; }
-    args[idx++] = arg;
+        arg = strdup(ctx->work_dir);
+        if (!arg) { free_service_args(args); return NULL; }
+        args[idx++] = arg;
+    }
+
+    /* Check if user already provided -c / -C in service_args */
+    int has_custom_c = (ctx->service_args[0] && (strstr(ctx->service_args, "-c") || strstr(ctx->service_args, "-C")));
+    if (!has_custom_c && ctx->conf_path[0]) {
+        arg = strdup("-c");
+        if (!arg) { free_service_args(args); return NULL; }
+        args[idx++] = arg;
+
+        arg = strdup(ctx->conf_path);
+        if (!arg) { free_service_args(args); return NULL; }
+        args[idx++] = arg;
+    }
 
     if (ctx->service_args[0]) {
         char args_copy[512];
@@ -287,7 +302,7 @@ static char** build_service_args(service_ctx_t *ctx) {
         char *saveptr = NULL;
         char *token = strtok_r(args_copy, " ", &saveptr);
 
-        while (token && idx < 18) {
+        while (token && idx < 28) {
             arg = strdup(token);
             if (!arg) { free_service_args(args); return NULL; }
             args[idx++] = arg;
@@ -857,7 +872,7 @@ int service_start_async(service_ctx_t *ctx) {
     }
 
     int ret = async_validate_config(ctx->validate_ctx, ctx->reactor,
-                                    ctx->bin_path, ctx->work_dir,
+                                    ctx->bin_path, ctx->conf_path, ctx->work_dir,
                                     on_validate_complete, ctx);
     if (ret < 0) {
         LOG_ERROR("Service: failed to start async validation");
