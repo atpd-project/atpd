@@ -43,11 +43,22 @@ runs:
         ./scripts/gen_version.sh
         cat include/version.h
 
-    - name: Setup Cross Compilation Environment
+    - name: Setup Dependencies
       shell: bash
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y -qq qemu-user-static curl tar xz-utils
+
+    - name: Set up QEMU for Docker
+      uses: docker/setup-qemu-action@v4
+
+    - name: Extract Musl AArch64 Sysroot from Alpine
+      shell: bash
+      run: |
+        sudo mkdir -p /opt/musl-aarch64
+        echo "Extracting Musl AArch64 sysroot from official Alpine container..."
+        docker run --rm --platform linux/arm64 -v /opt/musl-aarch64:/out alpine:3.21 sh -c "apk add --no-cache musl-dev linux-headers && cp -a /usr /lib /out/"
+        sudo chmod -R 755 /opt/musl-aarch64
 
     - name: Cache ZyCromerZ Clang 23
       id: cache-clang
@@ -62,30 +73,15 @@ runs:
       run: |
         sudo mkdir -p /opt/zyc-clang
         echo "Downloading ZyCromerZ Clang 23 from ${{ inputs.clang-url }}..."
-        curl -sSL "${{ inputs.clang-url }}" -o /tmp/zyc-clang.tar.gz
+        curl -sSL --retry 3 "${{ inputs.clang-url }}" -o /tmp/zyc-clang.tar.gz
         sudo tar -xzf /tmp/zyc-clang.tar.gz -C /opt/zyc-clang
         rm -f /tmp/zyc-clang.tar.gz
-
-    - name: Cache Musl AArch64 Sysroot
-      id: cache-musl
-      uses: actions/cache@v6
-      with:
-        path: /opt/musl-aarch64
-        key: musl-aarch64-cross-sysroot-v1
-
-    - name: Download Musl AArch64 Sysroot
-      if: steps.cache-musl.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        sudo mkdir -p /opt/musl-aarch64
-        echo "Downloading lightweight Musl AArch64 Sysroot..."
-        curl -sSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar -xz -C /opt/musl-aarch64 --strip-components=1
 
     - name: Build with ZyCromerZ Clang 23 (Musl Target)
       id: build
       shell: bash
       run: |
-        sudo chmod -R 755 /opt/zyc-clang /opt/musl-aarch64
+        sudo chmod -R 755 /opt/zyc-clang
         CLANG_BIN=$(find /opt/zyc-clang -type f -name "clang" 2>/dev/null | head -1)
         STRIP_BIN=$(find /opt/zyc-clang -type f -name "llvm-strip" 2>/dev/null | head -1)
         
@@ -109,11 +105,13 @@ runs:
         fi
 
         SYSROOT_ARG=""
-        if [ -d "/opt/musl-aarch64/aarch64-linux-musl" ]; then
+        if [ -d "/opt/musl-aarch64/usr" ]; then
+          SYSROOT_ARG="--sysroot=/opt/musl-aarch64"
+        elif [ -d "/opt/musl-aarch64/aarch64-linux-musl" ]; then
           SYSROOT_ARG="--sysroot=/opt/musl-aarch64/aarch64-linux-musl"
         fi
 
-        echo "Compiling with ZyCromerZ Clang 23 against Musl Sysroot..."
+        echo "Compiling with ZyCromerZ Clang 23 (target=aarch64-linux-musl)..."
         $CLANG_BIN --target=aarch64-linux-musl $SYSROOT_ARG \
           -Wall -Wextra -D_GNU_SOURCE -Qunused-arguments \
           -Iinclude \
