@@ -240,19 +240,19 @@ static void status_show_ebpf(void) {
     if (ebpf_status(state, sizeof(state), &g_config) == 0 && strcmp(state, "ready") == 0) {
         ui_table_subrow_color("├─", "eBPF Kernel", "AVAILABLE", COLOR_GREEN);
         if (ebpf_probe_detailed(&probe, g_config.network.proxy_ipv6) == 0) {
-            char feat[128];
-            snprintf(feat, sizeof(feat), "%s%s%s%s",
-                     probe.has_cgroup_sock_addr ? "cgroup_sock " : "",
-                     probe.has_sched_cls ? "tc " : "",
-                     probe.has_lpm_trie ? "lpm_trie " : "",
-                     probe.has_lru_hash ? "lru_hash" : "");
-            ui_table_subrow("└─", "Capabilities", feat);
+            char feat[128] = {0};
+            int pos = 0;
+            if (probe.has_cgroup_sock_addr) pos += snprintf(feat + pos, sizeof(feat) - pos, "cgroup_sock%s", (probe.has_sched_cls || probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
+            if (probe.has_sched_cls) pos += snprintf(feat + pos, sizeof(feat) - pos, "tc%s", (probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
+            if (probe.has_lpm_trie) pos += snprintf(feat + pos, sizeof(feat) - pos, "lpm_trie%s", probe.has_lru_hash ? ", " : "");
+            if (probe.has_lru_hash) pos += snprintf(feat + pos, sizeof(feat) - pos, "lru_hash");
+            ui_table_subrow("└─", "Capabilities", feat[0] ? feat : "None");
         } else {
-            ui_table_subrow("└─", "Capabilities", "cgroup_sock_addr, tc");
+            ui_table_subrow("└─", "Capabilities", "Basic");
         }
     } else {
-        ui_table_subrow_color("├─", "eBPF Kernel", "READY", COLOR_GREEN);
-        ui_table_subrow("└─", "Capabilities", "cgroup_sock_addr, tc");
+        ui_table_subrow_color("├─", "eBPF Kernel", "UNSUPPORTED", COLOR_RED);
+        ui_table_subrow("└─", "Capabilities", "None");
     }
 
     ui_table_end();
@@ -482,29 +482,48 @@ static void status_show_engine_v2(void) {
     ui_table_begin();
     ui_table_header("REACTOR ENGINE (v2.0)");
 
+    char pid_path[PATH_MAX];
+    snprintf(pid_path, sizeof(pid_path), "%s/%s",
+             g_config.core.data_dir[0] ? g_config.core.data_dir : ATP_DEFAULT_DIR, ATP_PID_FILE);
+    FILE *fp_pid = fopen(pid_path, "r");
+    int daemon_pid = 0;
+    int daemon_alive = 0;
+    if (fp_pid) {
+        if (fscanf(fp_pid, "%d", &daemon_pid) == 1 && daemon_pid > 0 && kill(daemon_pid, 0) == 0) {
+            daemon_alive = 1;
+        }
+        fclose(fp_pid);
+    }
+
     vpn_state_t vpn_st = (vpn_state_t)atomic_load(&g_atpd_ctx.vpn_state);
 
-    switch (vpn_st) {
-        case VPN_STATE_READY:
-            stage = "READY (Tunnel Active)";
-            color = COLOR_GREEN;
-            emoji = "⚡";
-            break;
-        case VPN_STATE_PREDICTING:
-            stage = "PREDICTING (Tunnel Transition)";
-            color = COLOR_CYAN;
-            emoji = "~";
-            break;
-        case VPN_STATE_TEARDOWN:
-            stage = "TEARDOWN";
-            color = COLOR_YELLOW;
-            emoji = "!";
-            break;
-        default:
-            stage = "READY (Pure eBPF Active)";
-            color = COLOR_GREEN;
-            emoji = "⚡";
-            break;
+    if (daemon_alive) {
+        switch (vpn_st) {
+            case VPN_STATE_READY:
+                stage = "READY (Tunnel Active)";
+                color = COLOR_GREEN;
+                emoji = "⚡";
+                break;
+            case VPN_STATE_PREDICTING:
+                stage = "PREDICTING (Transition)";
+                color = COLOR_CYAN;
+                emoji = "~";
+                break;
+            case VPN_STATE_TEARDOWN:
+                stage = "TEARDOWN";
+                color = COLOR_YELLOW;
+                emoji = "!";
+                break;
+            default:
+                stage = "READY (Pure eBPF Active)";
+                color = COLOR_GREEN;
+                emoji = "⚡";
+                break;
+        }
+    } else {
+        stage = "STANDALONE (CLI Query)";
+        color = COLOR_GREEN;
+        emoji = "⚡";
     }
 
     snprintf(buf, sizeof(buf), "%s  %s", emoji, stage);
@@ -533,7 +552,6 @@ static void status_show_engine_v2(void) {
 static void status_show_system(void) {
     int temp = get_cpu_temperature();
     char pid_path[PATH_MAX];
-    struct stat st;
     char uptime_str[64];
 
     ui_table_begin();
@@ -557,13 +575,19 @@ static void status_show_system(void) {
 
     snprintf(pid_path, sizeof(pid_path), "%s/%s",
              g_config.core.data_dir[0] ? g_config.core.data_dir : ATP_DEFAULT_DIR, ATP_PID_FILE);
-    if (stat(pid_path, &st) == 0) {
-        time_t now = time(NULL);
-        int elapsed = (int)(now - st.st_mtime);
-        format_uptime_human(elapsed, uptime_str, sizeof(uptime_str));
-        ui_table_subrow("└─", "⏱️ Daemon Uptime", uptime_str);
+    FILE *fp_pid = fopen(pid_path, "r");
+    int daemon_pid = 0;
+    if (fp_pid) {
+        if (fscanf(fp_pid, "%d", &daemon_pid) == 1 && daemon_pid > 0 && kill(daemon_pid, 0) == 0) {
+            int elapsed = get_process_uptime_sec(daemon_pid);
+            format_uptime_human(elapsed, uptime_str, sizeof(uptime_str));
+            ui_table_subrow("└─", "⏱️ Daemon Uptime", uptime_str);
+        } else {
+            ui_table_subrow("└─", "⏱️ Daemon Uptime", "N/A (Daemon stopped)");
+        }
+        fclose(fp_pid);
     } else {
-        ui_table_subrow("└─", "⏱️ Daemon Uptime", "N/A");
+        ui_table_subrow("└─", "⏱️ Daemon Uptime", "N/A (Daemon stopped)");
     }
 
     ui_table_end();
