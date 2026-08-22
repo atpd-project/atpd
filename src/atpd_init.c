@@ -209,12 +209,20 @@ int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
     
     for (int i = phase; i >= 0; i--) {
         switch (init_phases[i].phase) {
+            case INIT_PHASE_API:
+                if (ctx->api) {
+                    api_cleanup(ctx->api);
+                }
+                break;
             case INIT_PHASE_SERVICE:
                 if (ctx->service) {
                     service_stop_async(ctx->service, NULL, NULL);
                     free(ctx->service);
                     ctx->service = NULL;
                 }
+                break;
+            case INIT_PHASE_FILTER:
+                app_filter_cleanup(ctx->config);
                 break;
             case INIT_PHASE_EBPF:
                 ctx->config->ebpf.ready = 0;

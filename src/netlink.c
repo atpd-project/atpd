@@ -11,6 +11,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "atpd_context.h"
+#include "ebpf.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -834,6 +835,7 @@ int nl_link_get_vpn_interface(char *iface, size_t size) {
 /* ========== Firewall Self-Healing ========== */
 
 static int ip_rule_audit(atp_config_t *cfg) {
+    if (ebpf_is_pure_mode(cfg)) return 0;
     if (!atomic_load(&g_tproxy_initialized)) return 0;
     if (cfg->core.dry_run) return 0;
 
@@ -875,6 +877,7 @@ static int ip_rule_audit(atp_config_t *cfg) {
 }
 
 static int tproxy_refresh_rules(atp_config_t *cfg) {
+    if (ebpf_is_pure_mode(cfg)) return 0;
     if (!atomic_load(&g_tproxy_initialized)) return 0;
     if (cfg->core.dry_run) return 0;
 

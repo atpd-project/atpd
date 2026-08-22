@@ -547,25 +547,23 @@ static int do_start(atp_options_t *opts) {
     ret = 0;
 
 cleanup:
-    if (ret != 0) {
-        if (tproxy_initialized) {
-            tproxy_cleanup_all(&g_config);
-        }
-        if (ebpf_initialized) {
-            cleanup_ebpf();
-        }
-        netlink_cleanup();
-        uds_cleanup();
-        api_cleanup(&g_api_ctx);
-        if (g_svc) {
-            service_stop_sync(g_svc);
-            free(g_svc);
-            g_svc = NULL;
-        }
+    if (tproxy_initialized) {
+        tproxy_cleanup_all(&g_config);
+    }
+    if (ebpf_initialized) {
+        cleanup_ebpf();
+    }
+    netlink_cleanup();
+    uds_cleanup();
+    api_cleanup(&g_api_ctx);
+    if (g_svc) {
+        service_stop_async(g_svc, NULL, NULL);
+        free(g_svc);
+        g_svc = NULL;
     }
 
 cleanup_return:
-    if (pid_written && ret != 0) {
+    if (pid_written) {
         unlink(pp);
     }
     return ret;

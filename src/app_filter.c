@@ -103,12 +103,25 @@ static int app_filter_load_package_cache(void) {
     if (fstat(fileno(fp), &st) == 0) g_package_cache_mtime = st.st_mtime;
     int cap = 1000, cnt = 0;
     package_cache_t *c = malloc(sizeof(package_cache_t) * cap);
+    if (!c) {
+        fclose(fp);
+        return -1;
+    }
     char buf[1024];
-    while (fgets(buf, 1024, fp)) {
+    while (fgets(buf, sizeof(buf), fp)) {
         char name[256]; int uid;
         if (sscanf(buf, "%255s %d", name, &uid) == 2) {
-            if (cnt >= cap) c = realloc(c, sizeof(package_cache_t) * (cap *= 2));
-            snprintf(c[cnt].package_name, 256, "%s", name);
+            if (cnt >= cap) {
+                cap *= 2;
+                package_cache_t *new_c = realloc(c, sizeof(package_cache_t) * cap);
+                if (!new_c) {
+                    free(c);
+                    fclose(fp);
+                    return -1;
+                }
+                c = new_c;
+            }
+            snprintf(c[cnt].package_name, sizeof(c[cnt].package_name), "%s", name);
             c[cnt].uid = uid;
             c[cnt].user_id = parse_user_id_from_line(buf);
             cnt++;

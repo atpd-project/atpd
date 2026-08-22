@@ -123,7 +123,7 @@ static void handle_status(int fd) {
                           atpd_runtime_state_string(g_atpd_ctx.runtime_state));
     off = append_response(response, sizeof(response), off,
                           "VPN State: %s\n",
-                          vpn_state_string(g_atpd_ctx.vpn_state));
+                          vpn_state_string(atomic_load(&g_atpd_ctx.vpn_state)));
     off = append_response(response, sizeof(response), off,
                           "eBPF State: %s\n",
                           ebpf_state_string(g_atpd_ctx.ebpf_state));

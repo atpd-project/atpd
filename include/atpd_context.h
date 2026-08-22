@@ -51,7 +51,6 @@ typedef struct {
     ebpf_state_t ebpf_state;
     bool ebpf_enabled;
     bool ebpf_probed;
-    char ebpf_pin_dir[256];
 
     /* === Runtime State === */
     atpd_runtime_state_t runtime_state;

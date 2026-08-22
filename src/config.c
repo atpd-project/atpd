@@ -636,10 +636,10 @@ int config_save_runtime(const char *path, atp_config_t *cfg) {
         return ATP_ERR_IO;
     }
 
-    int ret = fprintf(fp, "# ATP Runtime\nUSE_TPROXY=%d\nTABLE_ID=%d\nMARK_VALUE=%d\nMARK_VALUE6=%d\nEBPF_ENABLED=%d\nCNIP_MODE=%d\nEBPF_READY=%d\nEBPF_PIN_DIR=%s\n",
-                      local.network.use_tproxy, local.network.table_id, local.network.mark_value,
+    int ret = fprintf(fp, "# ATP Runtime\nPROXY_MODE=%d\nUSE_TPROXY=%d\nTABLE_ID=%d\nMARK_VALUE=%d\nMARK_VALUE6=%d\nEBPF_ENABLED=%d\nCNIP_MODE=%d\nEBPF_READY=%d\n",
+                      local.network.proxy_mode, local.network.use_tproxy, local.network.table_id, local.network.mark_value,
                       local.network.mark_value6, local.ebpf.enabled, local.filter.cnip_mode,
-                      local.ebpf.ready, local.ebpf.pin_dir);
+                      local.ebpf.ready);
 
     if (fflush(fp) != 0) {
         fclose(fp);

@@ -71,7 +71,6 @@ void atpd_context_init(void) {
     g_atpd_ctx.ebpf_state = EBPF_STATE_UNINITIALIZED;
     g_atpd_ctx.ebpf_enabled = false;
     g_atpd_ctx.ebpf_probed = false;
-    g_atpd_ctx.ebpf_pin_dir[0] = '\0';
     
     /* Runtime State */
     g_atpd_ctx.runtime_state = ATPD_RUNTIME_STATE_UNINITIALIZED;

@@ -410,7 +410,9 @@ static void status_show_engine_v2(void) {
     ui_table_begin();
     ui_table_header("REACTOR ENGINE (v2.0)");
 
-    switch (g_atpd_ctx.vpn_state) {
+    vpn_state_t vpn_st = (vpn_state_t)atomic_load(&g_atpd_ctx.vpn_state);
+
+    switch (vpn_st) {
         case VPN_STATE_READY:
             stage = "READY";
             color = COLOR_GREEN;
@@ -459,10 +461,10 @@ static void status_show_engine_v2(void) {
     if (g_atpd_ctx.xfrm_if_id == 41) {
         xfrm_status = "LOCKED (IF_ID=41)";
         xfrm_color = COLOR_GREEN;
-    } else if (g_atpd_ctx.vpn_state == VPN_STATE_READY) {
+    } else if (vpn_st == VPN_STATE_READY) {
         xfrm_status = "LOCKED";
         xfrm_color = COLOR_GREEN;
-    } else if (g_atpd_ctx.vpn_state == VPN_STATE_PREDICTING) {
+    } else if (vpn_st == VPN_STATE_PREDICTING) {
         xfrm_status = "PREDICTING";
         xfrm_color = COLOR_CYAN;
     }
