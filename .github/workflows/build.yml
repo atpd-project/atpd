@@ -8,6 +8,8 @@ on:
       - main
       - dev
       - staging
+      - ebpf
+      - 'ebpf/**'
       - 'feat-*'
       - 'feat/**'
       - 'test/**'
@@ -21,7 +23,7 @@ on:
       - 'Dockerfile'
       - '.github/workflows/build.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main, dev, ebpf]
   workflow_dispatch:
 
 concurrency:
@@ -33,6 +35,8 @@ jobs:
     if: |
       github.ref_name == 'main' ||
       github.ref_name == 'dev' ||
+      github.ref_name == 'ebpf' ||
+      startsWith(github.ref_name, 'ebpf/') ||
       startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     outputs:
