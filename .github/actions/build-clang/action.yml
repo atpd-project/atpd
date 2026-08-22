@@ -1,7 +1,11 @@
-name: Build ATPd with Clang (Docker)
-description: Build with Clang in Docker, extract metadata, upload artifact (requires prior checkout)
+name: Build ATPd with ZyCromerZ Clang 23
+description: Build with ZyCromerZ Clang 23 cross-compiler, extract metadata, upload artifact
 
 inputs:
+  clang-url:
+    description: 'URL of ZyCromerZ Clang release tarball'
+    required: false
+    default: 'https://github.com/ZyCromerZ/Clang/releases/download/23.0.0git-20260130-release/Clang-23.0.0git-20260130.tar.gz'
   build-type:
     description: 'debug or release'
     required: false
@@ -39,36 +43,76 @@ runs:
         ./scripts/gen_version.sh
         cat include/version.h
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v4
-
-    - name: Set up Buildx
-      uses: docker/setup-buildx-action@v4
-
-    - name: Determine Build Flags
-      id: build_flags
+    - name: Setup Cross Compilation Environment
       shell: bash
       run: |
-        if [ "${{ inputs.build-type }}" = "debug" ]; then
-          echo "flags=-O0 -g -fsanitize=address -DATP_DEBUG" >> $GITHUB_OUTPUT
-        else
-          echo "flags=-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -DNDEBUG -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1 -fstack-protector-strong -D_FORTIFY_SOURCE=3" >> $GITHUB_OUTPUT
-        fi
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-static curl tar xz-utils
 
-    - name: Build Docker Image
+    - name: Cache ZyCromerZ Clang 23
+      id: cache-clang
+      uses: actions/cache@v6
+      with:
+        path: /opt/zyc-clang
+        key: zyc-clang-23.0.0git-20260130-${{ runner.os }}
+
+    - name: Download ZyCromerZ Clang 23
+      if: steps.cache-clang.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        sudo mkdir -p /opt/zyc-clang
+        echo "Downloading ZyCromerZ Clang 23 from ${{ inputs.clang-url }}..."
+        curl -sSL "${{ inputs.clang-url }}" -o /tmp/zyc-clang.tar.gz
+        sudo tar -xzf /tmp/zyc-clang.tar.gz -C /opt/zyc-clang
+        rm -f /tmp/zyc-clang.tar.gz
+
+    - name: Build with ZyCromerZ Clang 23
       id: build
       shell: bash
       run: |
-        docker buildx build --platform linux/arm64 \
-          --build-arg BUILD_FLAGS="${{ steps.build_flags.outputs.flags }}" \
-          --target builder -t atp-builder --load .
-        container_id=$(docker create --platform linux/arm64 atp-builder)
-        docker cp $container_id:/app/build/bin/atpd ./atpd-clang
-        docker rm -v $container_id
-        echo "status=success" >> $GITHUB_OUTPUT
-        RUNTIME_VER=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atp-builder -v 2>/dev/null | head -1 || echo "N/A")
+        CLANG_BIN=$(find /opt/zyc-clang -name "clang" -type f -perm -111 2>/dev/null | head -1)
+        STRIP_BIN=$(find /opt/zyc-clang -name "llvm-strip" -type f -perm -111 2>/dev/null | head -1)
+        
+        if [ -z "$CLANG_BIN" ]; then
+          CLANG_BIN="clang"
+        else
+          export PATH="$(dirname "$CLANG_BIN"):$PATH"
+        fi
+        
+        if [ -z "$STRIP_BIN" ]; then
+          STRIP_BIN="llvm-strip"
+        fi
+
+        echo "Using Clang Binary: $CLANG_BIN"
+
+        if [ "${{ inputs.build-type }}" = "debug" ]; then
+          FLAGS="-O0 -g -DATP_DEBUG"
+        else
+          FLAGS="-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -DNDEBUG -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1 -fstack-protector-strong -D_FORTIFY_SOURCE=3"
+        fi
+
+        $CLANG_BIN --target=aarch64-linux-gnu \
+          -Wall -Wextra -D_GNU_SOURCE -Qunused-arguments \
+          -Iinclude \
+          $FLAGS \
+          -static \
+          -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none \
+          -o ./atpd-clang \
+          $(find src -name "*.c" ! -name "epoll.c") \
+          -lpthread
+
+        if command -v "$STRIP_BIN" >/dev/null 2>&1 || [ -f "$STRIP_BIN" ]; then
+          $STRIP_BIN --strip-all --strip-unneeded \
+            --remove-section=.comment \
+            --remove-section=.note* \
+            --remove-section=.ARM.exidx* \
+            --remove-section=.eh_frame* \
+            ./atpd-clang 2>/dev/null || true
+        fi
+
+        RUNTIME_VER=$(qemu-aarch64-static ./atpd-clang -v 2>/dev/null | head -1 || echo "N/A")
         echo "runtime_ver=$RUNTIME_VER" >> $GITHUB_OUTPUT
-        COMPILER_VER=$(docker run --rm --platform linux/arm64 --entrypoint clang-19 atp-builder --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "19.1.4")
+        COMPILER_VER=$($CLANG_BIN --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "23.0.0")
         echo "compiler_ver=$COMPILER_VER" >> $GITHUB_OUTPUT
 
     - name: Verify Binary

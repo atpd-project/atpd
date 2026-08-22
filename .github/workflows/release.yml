@@ -90,7 +90,7 @@ jobs:
           echo "" >> /tmp/changelog.md
           echo "| Toolchain | Size |" >> /tmp/changelog.md
           echo "|-----------|------|" >> /tmp/changelog.md
-          echo "| Clang 19 | ${{ needs.build-clang.outputs.binary_size }} |" >> /tmp/changelog.md
+          echo "| Clang 23 (ZyCromerZ) | ${{ needs.build-clang.outputs.binary_size }} |" >> /tmp/changelog.md
           echo "| Zig CC | ${{ needs.build-zig.outputs.zig_binary_size }} |" >> /tmp/changelog.md
           echo "" >> /tmp/changelog.md
           echo "### 🔧 Usage" >> /tmp/changelog.md
