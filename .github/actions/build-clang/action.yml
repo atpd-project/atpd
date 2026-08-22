@@ -65,12 +65,12 @@ runs:
       uses: actions/cache@v6
       with:
         path: /opt/zyc-clang
-        key: zyc-clang-23.0.0git-20260130-v3-${{ runner.os }}
+        key: zyc-clang-23.0.0git-20260130-v4-${{ runner.os }}
 
     - name: Download ZyCromerZ Clang 23
       shell: bash
       run: |
-        if [ ! -f /opt/zyc-clang/bin/clang ] && [ ! -f /opt/zyc-clang/clang ]; then
+        if [ ! -e /opt/zyc-clang/bin/clang ]; then
           echo "Downloading ZyCromerZ Clang 23 from ${{ inputs.clang-url }}..."
           sudo rm -rf /opt/zyc-clang
           sudo mkdir -p /opt/zyc-clang
@@ -86,13 +86,23 @@ runs:
       run: |
         sudo chmod -R 755 /opt/zyc-clang
         
-        # Locate clang and llvm-strip in extracted tree
-        CLANG_BIN=$(find /opt/zyc-clang -type f -name "clang" 2>/dev/null | head -1)
-        STRIP_BIN=$(find /opt/zyc-clang -type f -name "llvm-strip" 2>/dev/null | head -1)
+        # Locate clang and llvm-strip (supporting both symlinks and regular binaries)
+        if [ -e "/opt/zyc-clang/bin/clang" ]; then
+          CLANG_BIN="/opt/zyc-clang/bin/clang"
+        else
+          CLANG_BIN=$(find /opt/zyc-clang \( -type f -o -type l \) -name "clang" 2>/dev/null | head -1)
+        fi
+        
+        if [ -e "/opt/zyc-clang/bin/llvm-strip" ]; then
+          STRIP_BIN="/opt/zyc-clang/bin/llvm-strip"
+        else
+          STRIP_BIN=$(find /opt/zyc-clang \( -type f -o -type l \) -name "llvm-strip" 2>/dev/null | head -1)
+        fi
         
         if [ -z "$CLANG_BIN" ]; then
           echo "::error::ZyCromerZ Clang binary not found under /opt/zyc-clang"
           ls -la /opt/zyc-clang
+          ls -la /opt/zyc-clang/bin || true
           exit 1
         fi
         
