@@ -12,10 +12,9 @@ CC = clang
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC -Qunused-arguments
 CFLAGS += -Oz -flto -ffunction-sections -fdata-sections
 CFLAGS += -fno-unwind-tables -fno-asynchronous-unwind-tables
-CFLAGS += -fmerge-all-constants -fno-ident -fomit-frame-pointer -fno-math-errno -fvisibility=hidden
-CFLAGS += -DLOG_LOCATION_ENABLED=0
+CFLAGS += -fmerge-all-constants -fno-ident
+CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=3
 CFLAGS += -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1
-CFLAGS += -DYYJSON_DISABLE_UTF8_VALIDATION=1 -DYYJSON_DISABLE_COMMENT=1 -DYYJSON_DISABLE_INF_AND_NAN=1 -DYYJSON_DISABLE_NUM_FORMAT_CHECK=1
 CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"
 CFLAGS += -DATP_CONF_FILE=\"atp.conf\"
 CFLAGS += -DATP_PID_FILE=\"run/atpd.pid\"
@@ -30,7 +29,7 @@ endif
 LIBS = -lpthread
 
 LDFLAGS = -flto
-LDFLAGS += -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,--icf=all -Wl,--as-needed
+LDFLAGS += -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
 
 SRC = $(wildcard src/*.c)
 
