@@ -1,5 +1,5 @@
 name: Build ATPd with ZyCromerZ Clang 23
-description: Build with ZyCromerZ Clang 23 cross-compiler, extract metadata, upload artifact
+description: Build with ZyCromerZ Clang 23 cross-compiler and Musl libc, extract metadata, upload artifact
 
 inputs:
   clang-url:
@@ -47,7 +47,7 @@ runs:
       shell: bash
       run: |
         sudo apt-get update -qq
-        sudo apt-get install -y -qq gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-static curl tar xz-utils
+        sudo apt-get install -y -qq qemu-user-static curl tar xz-utils
 
     - name: Cache ZyCromerZ Clang 23
       id: cache-clang
@@ -66,11 +66,26 @@ runs:
         sudo tar -xzf /tmp/zyc-clang.tar.gz -C /opt/zyc-clang
         rm -f /tmp/zyc-clang.tar.gz
 
-    - name: Build with ZyCromerZ Clang 23
+    - name: Cache Musl AArch64 Sysroot
+      id: cache-musl
+      uses: actions/cache@v6
+      with:
+        path: /opt/musl-aarch64
+        key: musl-aarch64-cross-sysroot-v1
+
+    - name: Download Musl AArch64 Sysroot
+      if: steps.cache-musl.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        sudo mkdir -p /opt/musl-aarch64
+        echo "Downloading lightweight Musl AArch64 Sysroot..."
+        curl -sSL https://musl.cc/aarch64-linux-musl-cross.tgz | sudo tar -xz -C /opt/musl-aarch64 --strip-components=1
+
+    - name: Build with ZyCromerZ Clang 23 (Musl Target)
       id: build
       shell: bash
       run: |
-        sudo chmod -R 755 /opt/zyc-clang
+        sudo chmod -R 755 /opt/zyc-clang /opt/musl-aarch64
         CLANG_BIN=$(find /opt/zyc-clang -type f -name "clang" 2>/dev/null | head -1)
         STRIP_BIN=$(find /opt/zyc-clang -type f -name "llvm-strip" 2>/dev/null | head -1)
         
@@ -93,7 +108,13 @@ runs:
           FLAGS="-Oz -flto -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables -fmerge-all-constants -fno-ident -DNDEBUG -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1 -fstack-protector-strong -D_FORTIFY_SOURCE=3"
         fi
 
-        $CLANG_BIN --target=aarch64-linux-gnu \
+        SYSROOT_ARG=""
+        if [ -d "/opt/musl-aarch64/aarch64-linux-musl" ]; then
+          SYSROOT_ARG="--sysroot=/opt/musl-aarch64/aarch64-linux-musl"
+        fi
+
+        echo "Compiling with ZyCromerZ Clang 23 against Musl Sysroot..."
+        $CLANG_BIN --target=aarch64-linux-musl $SYSROOT_ARG \
           -Wall -Wextra -D_GNU_SOURCE -Qunused-arguments \
           -Iinclude \
           $FLAGS \
