@@ -98,12 +98,26 @@ notify_issue() {
 
 </details>"
 
+    # Retain at most 20 previous entries to prevent hitting GitHub's 65KB issue body limit
+    CLEAN_BODY=$(echo "$ISSUE_BODY" | awk 'BEGIN{c=0} /<details>/{c++} c<=20{print}')
     FINAL_BODY="${NEW_ENTRY}
 
-${ISSUE_BODY}"
+${CLEAN_BODY}"
 
-    echo "$FINAL_BODY" | gh issue edit 6 --body-file -
-    echo "  Issue #6: updated (ver: $VER, runtime: $RUNTIME)"
+    # Hard length safeguard (under 55KB)
+    if [ ${#FINAL_BODY} -gt 55000 ]; then
+        FINAL_BODY="${FINAL_BODY:0:50000}
+
+... (older build logs trimmed)"
+    fi
+
+    if echo "$FINAL_BODY" | gh issue edit 6 --body-file - 2>/dev/null; then
+        echo "  Issue #6: updated (ver: $VER, runtime: $RUNTIME)"
+    else
+        echo "  Warning: Full history update failed, resetting to latest 5 entries..."
+        FALLBACK_BODY="${NEW_ENTRY}"
+        echo "$FALLBACK_BODY" | gh issue edit 6 --body-file - || echo "  Issue #6 update skipped"
+    fi
 }
 
 echo "=== ATP Notification: $CHANNEL ==="
