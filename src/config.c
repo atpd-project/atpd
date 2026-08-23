@@ -113,7 +113,16 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->core.restart_delay = DEFAULT_RESTART_DELAY;
     get_app_dir(cfg->core.data_dir, sizeof(cfg->core.data_dir));
     snprintf(cfg->core.core_user, sizeof(cfg->core.core_user), "root");
+#ifdef __ANDROID__
     snprintf(cfg->core.core_group, sizeof(cfg->core.core_group), "net_admin");
+#else
+    struct group *g_chk = getgrnam("net_admin");
+    if (g_chk) {
+        snprintf(cfg->core.core_group, sizeof(cfg->core.core_group), "net_admin");
+    } else {
+        snprintf(cfg->core.core_group, sizeof(cfg->core.core_group), "root");
+    }
+#endif
 
     cfg->network.proxy_mode = MODE_EBPF;
     cfg->network.proxy_ipv6 = 1;

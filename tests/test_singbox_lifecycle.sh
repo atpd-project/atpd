@@ -84,11 +84,12 @@ EOJSON
 
 # 5. Generate atp.conf
 cat > "${TEST_DIR}/atp.conf" << 'EOCONF'
-PERFORMANCE_MODE=1
+PERFORMANCE_MODE=0
 LOG_TIMESTAMP=1
 API_PORT=9090
 SERVICE_START_TIMEOUT=15
 SERVICE_STOP_TIMEOUT=10
+CORE_USER_GROUP=root:root
 EOCONF
 
 log_pass "Test environment initialized."
