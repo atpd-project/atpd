@@ -44,11 +44,12 @@ int ebpf_probe_detailed(ebpf_probe_result_t *res, bool ipv6) {
 
     /* 3. Fallback sensing for unprivileged CLI inspection on modern Linux / GKI kernels */
     if (!res->has_hash && !res->has_array && !res->has_cgroup_sock_addr) {
+        bool has_btf = (access("/sys/kernel/btf/vmlinux", F_OK) == 0);
         bool has_sys_bpf = (access("/sys/fs/bpf", F_OK) == 0);
         bool has_jit = (access("/proc/sys/net/core/bpf_jit_enable", F_OK) == 0);
         bool is_modern_kernel = (k_major >= 5 || (k_major == 4 && k_minor >= 19));
 
-        if (is_modern_kernel || has_sys_bpf || has_jit) {
+        if (is_modern_kernel || has_btf || has_sys_bpf || has_jit) {
             res->has_hash = 1;
             res->has_array = 1;
             res->has_lru_hash = 1;
