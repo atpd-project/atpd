@@ -112,6 +112,9 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->core.log_timestamp = 1;
     cfg->core.restart_delay = DEFAULT_RESTART_DELAY;
     get_app_dir(cfg->core.data_dir, sizeof(cfg->core.data_dir));
+    snprintf(cfg->core.run_dir, sizeof(cfg->core.run_dir), "%s", ATP_RUN_DIR);
+    snprintf(cfg->core.pid_file, sizeof(cfg->core.pid_file), "%s", ATP_PID_FILE);
+    snprintf(cfg->core.log_file, sizeof(cfg->core.log_file), "%s", ATP_LOG_FILE);
     snprintf(cfg->core.core_user, sizeof(cfg->core.core_user), "root");
 #ifdef __ANDROID__
     snprintf(cfg->core.core_group, sizeof(cfg->core.core_group), "net_admin");
@@ -240,6 +243,9 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
         if (strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", v);
         else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", v);
         else if (strcmp(k, "DATA_DIR") == 0 || strcmp(k, "WORK_DIR") == 0) snprintf(cfg->core.data_dir, sizeof(cfg->core.data_dir), "%s", v);
+        else if (strcmp(k, "RUN_DIR") == 0) snprintf(cfg->core.run_dir, sizeof(cfg->core.run_dir), "%s", v);
+        else if (strcmp(k, "PID_FILE") == 0) snprintf(cfg->core.pid_file, sizeof(cfg->core.pid_file), "%s", v);
+        else if (strcmp(k, "LOG_FILE") == 0) snprintf(cfg->core.log_file, sizeof(cfg->core.log_file), "%s", v);
         else if (strcmp(k, "CORE_USER_GROUP") == 0) {
             char val[256]; snprintf(val, sizeof(val), "%s", v); char *colon = strchr(val, ':');
             if (colon) {

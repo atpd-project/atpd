@@ -367,7 +367,7 @@ static int get_iface_traffic(const char *iface, unsigned long long *rx_bytes, un
 
 static void get_traffic_state_file(char *buf, size_t size) {
     const char *base_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ".";
-    snprintf(buf, size, "%s/run/traffic.state", base_dir);
+    snprintf(buf, size, "%s/%s", base_dir, TRAFFIC_STATE_FILE);
 }
 
 static int load_traffic_state(iface_stats_t *stats) {

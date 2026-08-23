@@ -44,23 +44,30 @@
 #define ATP_CONF_FILE       "atp.conf"
 #endif
 
+#ifndef ATP_RUN_DIR
+#define ATP_RUN_DIR         "run"
+#endif
+
 #ifndef ATP_PID_FILE
-#define ATP_PID_FILE        "run/atpd.pid"
+#define ATP_PID_FILE        ATP_RUN_DIR "/atpd.pid"
 #endif
 
 #ifndef ATP_LOG_FILE
-#define ATP_LOG_FILE        "run/atp.log"
+#define ATP_LOG_FILE        ATP_RUN_DIR "/atp.log"
 #endif
 
 #ifndef ATP_COMMAND_SOCKET
-#define ATP_COMMAND_SOCKET  "run/atpd.sock"
+#define ATP_COMMAND_SOCKET  ATP_RUN_DIR "/atpd.sock"
 #endif
 
 #ifndef ATP_RUNTIME_CONF
-#define ATP_RUNTIME_CONF    "run/runtime_atp.conf"
+#define ATP_RUNTIME_CONF    ATP_RUN_DIR "/runtime_atp.conf"
 #endif
 
 #define PROXY_BIN_NAME      "sing-box"
+#define PROXY_PID_FILE      ATP_RUN_DIR "/sing-box.pid"
+#define PROXY_LOG_FILE      ATP_RUN_DIR "/sing-box.log"
+#define TRAFFIC_STATE_FILE  ATP_RUN_DIR "/traffic.state"
 #define PROXY_BIN_PATH      ATP_DEFAULT_DIR "/bin/sing-box"
 
 #define DEFAULT_RESTART_DELAY 2

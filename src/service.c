@@ -459,9 +459,9 @@ static int service_spawn(service_ctx_t *ctx) {
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
 
     char pid_path[PATH_MAX];
-    snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ctx->work_dir[0] ? ctx->work_dir : ".");
+    snprintf(pid_path, sizeof(pid_path), "%s/%s", ctx->work_dir[0] ? ctx->work_dir : ".", PROXY_PID_FILE);
     char run_dir[PATH_MAX];
-    snprintf(run_dir, sizeof(run_dir), "%s/run", ctx->work_dir[0] ? ctx->work_dir : ".");
+    snprintf(run_dir, sizeof(run_dir), "%s/%s", ctx->work_dir[0] ? ctx->work_dir : ".", ATP_RUN_DIR);
     mkdir_recursive(run_dir, 0755);
     FILE *pfp = fopen(pid_path, "w");
     if (pfp) {
@@ -647,7 +647,7 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
             ctx->running_healthy = 0;
 
             char pid_path[PATH_MAX];
-            snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ctx->work_dir[0] ? ctx->work_dir : ".");
+            snprintf(pid_path, sizeof(pid_path), "%s/%s", ctx->work_dir[0] ? ctx->work_dir : ".", PROXY_PID_FILE);
             unlink(pid_path);
 
             if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
@@ -815,7 +815,7 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     }
 
     /* 4. Logs and user/group */
-    snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/run/sing-box.log", base_dir);
+    snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/%s", base_dir, PROXY_LOG_FILE);
     snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core.core_user);
     snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core.core_group);
 
@@ -972,7 +972,7 @@ int service_get_pid(service_ctx_t *ctx) {
         snprintf(dot, sizeof(pid_path) - (dot - pid_path), ".pid");
     } else {
         const char *base_dir = ctx->work_dir[0] ? ctx->work_dir : ".";
-        snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", base_dir);
+        snprintf(pid_path, sizeof(pid_path), "%s/%s", base_dir, PROXY_PID_FILE);
     }
 
     FILE *f = fopen(pid_path, "r");

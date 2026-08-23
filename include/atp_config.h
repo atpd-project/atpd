@@ -17,9 +17,11 @@ typedef struct {
     bool log_timestamp;
     int restart_delay;
     char data_dir[PATH_MAX];
+    char run_dir[PATH_MAX];
     char core_user[64];
     char core_group[64];
     char pid_file[PATH_MAX];
+    char log_file[PATH_MAX];
 } core_config_t;
 
 /* Network */
