@@ -220,8 +220,8 @@ static void status_show_clash_mode(api_ctx_t *api, service_ctx_t *svc) {
 }
 
 static void status_show_ebpf(void) {
-    char state[64] = {0};
     ebpf_probe_result_t probe;
+    memset(&probe, 0, sizeof(probe));
 
     ui_table_begin();
     ui_table_header("PURE eBPF ENGINE");
@@ -229,19 +229,15 @@ static void status_show_ebpf(void) {
     ui_table_subrow_color("├─", "Engine Mode", "Pure eBPF (Zero iptables)", COLOR_GREEN);
     ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
 
-    if (ebpf_status(state, sizeof(state), &g_config) == 0 && strcmp(state, "ready") == 0) {
+    if (ebpf_probe_detailed(&probe, g_config.network.proxy_ipv6) == 0 && probe.supported) {
         ui_table_subrow_color("├─", "eBPF Kernel", "AVAILABLE", COLOR_GREEN);
-        if (ebpf_probe_detailed(&probe, g_config.network.proxy_ipv6) == 0) {
-            char feat[128] = {0};
-            int pos = 0;
-            if (probe.has_cgroup_sock_addr) pos += snprintf(feat + pos, sizeof(feat) - pos, "cgroup_sock%s", (probe.has_sched_cls || probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
-            if (probe.has_sched_cls) pos += snprintf(feat + pos, sizeof(feat) - pos, "tc%s", (probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
-            if (probe.has_lpm_trie) pos += snprintf(feat + pos, sizeof(feat) - pos, "lpm_trie%s", probe.has_lru_hash ? ", " : "");
-            if (probe.has_lru_hash) pos += snprintf(feat + pos, sizeof(feat) - pos, "lru_hash");
-            ui_table_subrow("└─", "Capabilities", feat[0] ? feat : "None");
-        } else {
-            ui_table_subrow("└─", "Capabilities", "Basic");
-        }
+        char feat[128] = {0};
+        int pos = 0;
+        if (probe.has_cgroup_sock_addr) pos += snprintf(feat + pos, sizeof(feat) - pos, "cgroup_sock%s", (probe.has_sched_cls || probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
+        if (probe.has_sched_cls) pos += snprintf(feat + pos, sizeof(feat) - pos, "tc%s", (probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
+        if (probe.has_lpm_trie) pos += snprintf(feat + pos, sizeof(feat) - pos, "lpm_trie%s", probe.has_lru_hash ? ", " : "");
+        if (probe.has_lru_hash) pos += snprintf(feat + pos, sizeof(feat) - pos, "lru_hash");
+        ui_table_subrow("└─", "Capabilities", feat[0] ? feat : "Basic");
     } else {
         ui_table_subrow_color("├─", "eBPF Kernel", "UNSUPPORTED", COLOR_RED);
         ui_table_subrow("└─", "Capabilities", "None");
