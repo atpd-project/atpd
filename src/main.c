@@ -419,53 +419,31 @@ cleanup_return:
 
 static int do_stop(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
-    int ret = 0;
-    int pid_file_fd = -1;
-
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    pid_file_fd = open(pp, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-    if (pid_file_fd < 0) {
+    FILE *fp = fopen(pp, "r");
+    if (!fp) {
         fprintf(stderr, "Daemon is not running (no PID file)\n");
         return 1;
     }
 
-    struct flock fl = {
-        .l_type = F_RDLCK,
-        .l_whence = SEEK_SET,
-        .l_start = 0,
-        .l_len = 0
-    };
-
-    if (fcntl(pid_file_fd, F_SETLKW, &fl) < 0) {
-        close(pid_file_fd);
-        fprintf(stderr, "Failed to lock PID file\n");
-        return 1;
-    }
-
     char buf[32] = {0};
-    ssize_t n = read(pid_file_fd, buf, sizeof(buf) - 1);
-    if (n <= 0) {
-        fl.l_type = F_UNLCK;
-        fcntl(pid_file_fd, F_SETLK, &fl);
-        close(pid_file_fd);
+    if (!fgets(buf, sizeof(buf), fp)) {
+        fclose(fp);
         fprintf(stderr, "Failed to read PID from file\n");
+        unlink(pp);
         return 1;
     }
+    fclose(fp);
 
     pid_t pid = (pid_t)atoi(buf);
     if (pid <= 0) {
-        fl.l_type = F_UNLCK;
-        fcntl(pid_file_fd, F_SETLK, &fl);
-        close(pid_file_fd);
         fprintf(stderr, "Invalid PID: %d\n", pid);
+        unlink(pp);
         return 1;
     }
 
     if (!process_is_atpd(pid)) {
-        fl.l_type = F_UNLCK;
-        fcntl(pid_file_fd, F_SETLK, &fl);
-        close(pid_file_fd);
         fprintf(stderr, "Process %d is not atpd (stale PID file)\n", pid);
         unlink(pp);
         return 1;
@@ -475,19 +453,12 @@ static int do_stop(atp_options_t *opts) {
         if (errno == ESRCH) {
             fprintf(stderr, "Process %d not found (stale PID file)\n", pid);
             unlink(pp);
-            ret = 1;
+            return 1;
         } else {
             perror("kill");
-            ret = 1;
+            return 1;
         }
-        fl.l_type = F_UNLCK;
-        fcntl(pid_file_fd, F_SETLK, &fl);
-        close(pid_file_fd);
-        return ret;
     }
-
-    fl.l_type = F_UNLCK;
-    fcntl(pid_file_fd, F_SETLK, &fl);
 
     int stopped = 0;
     for (int i = 0; i < 50; i++) {
@@ -499,18 +470,12 @@ static int do_stop(atp_options_t *opts) {
     }
 
     if (!stopped) {
-        if (verify_pid_file_unchanged(pid_file_fd, pid) == 0) {
-            fprintf(stderr, "Process %d did not terminate gracefully, sending SIGKILL\n", pid);
-            kill(pid, SIGKILL);
-            usleep(100000);
-        } else {
-            fprintf(stderr, "PID file was modified, aborting SIGKILL\n");
-        }
+        fprintf(stderr, "Process %d did not terminate gracefully, sending SIGKILL\n", pid);
+        kill(pid, SIGKILL);
+        usleep(100000);
     }
 
-    close(pid_file_fd);
     unlink(pp);
-
     printf("Daemon stopped successfully\n");
     return 0;
 }
