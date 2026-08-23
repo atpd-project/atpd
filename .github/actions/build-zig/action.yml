@@ -69,7 +69,7 @@ runs:
           -DYYJSON_DISABLE_NON_STANDARD=1 \
           -DLOG_LOCATION_ENABLED=0 \
           -o atpd-zig \
-          $(find src -name "*.c" ! -path "src/cjson/*" ! -name "epoll.c") \
+          $(find src -name "*.c") \
           -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
 
     - name: Install QEMU
