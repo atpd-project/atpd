@@ -68,6 +68,11 @@ runs:
           -DYYJSON_DISABLE_FAST_FP_CONV=1 \
           -DYYJSON_DISABLE_NON_STANDARD=1 \
           -DLOG_LOCATION_ENABLED=0 \
+          -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
+          -DATP_CONF_FILE=\"atp.conf\" \
+          -DATP_PID_FILE=\"run/atpd.pid\" \
+          -DATP_LOG_FILE=\"run/atp.log\" \
+          -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
           -o atpd-zig \
           $(find src -name "*.c") \
           -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none

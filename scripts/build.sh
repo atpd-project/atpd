@@ -43,6 +43,11 @@ $CC -Wall -Wextra -Oz -flto -D_GNU_SOURCE -DNDEBUG -Qunused-arguments \
     -fmerge-all-constants -fno-ident \
     -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1 \
     -DLOG_LOCATION_ENABLED=0 \
+    -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
+    -DATP_CONF_FILE=\"atp.conf\" \
+    -DATP_PID_FILE=\"run/atpd.pid\" \
+    -DATP_LOG_FILE=\"run/atp.log\" \
+    -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
     -Iinclude \
     ${EXTRA_CFLAGS:-} \
     -fuse-ld=lld \
