@@ -78,6 +78,7 @@ struct service_ctx_t {
 };
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);
+int service_set_reactor(service_ctx_t *ctx, reactor_t *r);
 int service_start_async(service_ctx_t *ctx);
 int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata);
 int service_get_pid(service_ctx_t *ctx);

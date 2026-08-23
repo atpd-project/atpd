@@ -811,6 +811,19 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     return 0;
 }
 
+int service_set_reactor(service_ctx_t *ctx, reactor_t *r) {
+    if (!ctx) return -1;
+    ctx->reactor = r;
+    if (r) {
+        if (ctx->monitor_timer) {
+            reactor_cancel_timer(r, ctx->monitor_timer);
+            ctx->monitor_timer = NULL;
+        }
+        ctx->monitor_timer = reactor_add_timer(r, 1000, 1000, service_monitor_cb, ctx);
+    }
+    return 0;
+}
+
 static void on_validate_complete(int result, const char *output, void *userdata) {
     service_ctx_t *ctx = userdata;
 

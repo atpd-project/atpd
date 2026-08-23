@@ -318,9 +318,14 @@ static void run_event_loop(void) {
     }
 
     netlink_set_reactor(g_reactor);
+    netlink_xfrm_init(g_reactor);
+
+    if (g_svc) {
+        service_set_reactor(g_svc, g_reactor);
+    }
 
     char uds_path[SAFE_PATH_MAX];
-    const char *data_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ATP_DEFAULT_DIR;
+    const char *data_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ".";
     snprintf(uds_path, sizeof(uds_path), "%s/%s", data_dir, ATP_COMMAND_SOCKET);
     if (uds_init(g_reactor, uds_path) < 0) {
         LOG_WARN("Failed to initialize UDS command socket");
