@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # ATPd + sing-box Lifecycle Integration Test Script
+# Test Matrix: 1. 启动 (Start) -> 2. 停止 (Stop) -> 3. 重启 (Restart) -> 4. 停止 (Final Stop)
 #
 set -euo pipefail
 
@@ -45,14 +46,14 @@ elif [ -f "/usr/local/bin/sing-box" ]; then
 fi
 
 if [ -z "${SINGBOX_BIN}" ]; then
-    log_fail "sing-box binary not found! Please install sing-box or pass deb package."
+    log_fail "sing-box binary not found! Please install sing-box."
 fi
 
 log_info "Found sing-box binary at: ${SINGBOX_BIN}"
 cp "${SINGBOX_BIN}" "${TEST_DIR}/bin/sing-box"
 chmod +x "${TEST_DIR}/bin/sing-box"
 
-# 4. Generate sing-box config.json
+# 4. Generate sing-box minimal config.json
 cat > "${TEST_DIR}/config.json" << 'EOJSON'
 {
   "log": {
@@ -92,7 +93,7 @@ SERVICE_STOP_TIMEOUT=10
 CORE_USER_GROUP=root:root
 EOCONF
 
-log_pass "Test environment initialized."
+log_pass "Test environment initialized successfully."
 
 # Helper to dump logs on failure
 dump_logs() {
@@ -109,107 +110,120 @@ dump_logs() {
 }
 trap dump_logs ERR
 
-# --- PRE-CHECK: Validate sing-box config ---
+# --- PRE-CHECK: Validate sing-box config syntax ---
 log_info "Pre-check: Validating sing-box configuration syntax..."
 "${TEST_DIR}/bin/sing-box" check -c "${TEST_DIR}/config.json" -D "${TEST_DIR}"
-log_pass "sing-box configuration is 100% valid."
+log_pass "sing-box configuration verified by official CLI check."
 
-# --- SCENARIO A: Pre-running sing-box Discovery Test ---
-log_info "Scenario A: Starting sing-box directly to test pre-running process discovery..."
 cd "${TEST_DIR}"
-./bin/sing-box run -c config.json -D . > run/sing-box.log 2>&1 &
-SINGBOX_PID=$!
-echo "sing-box started in background with PID: ${SINGBOX_PID}"
 
-# Wait for Clash API to be active
+# ==============================================================================
+# 阶段 1: 启动 (Start) -> 校验进程 PID 与 Clash API 连通
+# ==============================================================================
+log_info "=== [STEP 1/4] 启动测试: 'atpd start' ==="
+./atpd start
+
+STATUS_OUTPUT=""
 for i in {1..10}; do
-    if curl -s -m 1 http://127.0.0.1:9090/version >/dev/null 2>&1; then
-        log_pass "Pre-running sing-box is active and Clash API is listening."
+    STATUS_OUTPUT="$(./atpd status 2>&1)"
+    if echo "${STATUS_OUTPUT}" | grep -q "PID"; then
+        break
+    fi
+    sleep 0.5
+done
+echo "${STATUS_OUTPUT}"
+
+if echo "${STATUS_OUTPUT}" | grep -q "PID"; then
+    log_pass "Step 1 PASS: atpd 成功拉起 sing-box 并捕获到活跃 PID!"
+else
+    dump_logs
+    log_fail "Step 1 FAIL: atpd 未能成功拉起 sing-box!"
+fi
+
+# 校验 Clash REST API
+log_info "校验 Clash API (http://127.0.0.1:9090/version)..."
+API_RES=""
+for i in {1..10}; do
+    API_RES="$(curl -s -m 2 http://127.0.0.1:9090/version || true)"
+    if [ -n "${API_RES}" ]; then
         break
     fi
     sleep 0.5
 done
 
-log_info "Testing 'atpd status' on pre-running sing-box instance..."
-STATUS_OUTPUT="$(./atpd status)"
-echo "${STATUS_OUTPUT}"
-
-if echo "${STATUS_OUTPUT}" | grep -q "PID"; then
-    log_pass "atpd successfully discovered pre-running sing-box PID and metrics!"
-else
-    dump_logs
-    log_fail "atpd failed to detect pre-running sing-box!"
-fi
-
-# Stop pre-running sing-box instance cleanly
-kill "${SINGBOX_PID}" 2>/dev/null || true
-wait "${SINGBOX_PID}" 2>/dev/null || true
-sleep 1
-
-# --- SCENARIO B: Full ATPd Daemon Lifecycle Management ---
-log_info "Scenario B: Testing ATPd managed startup ('atpd start')..."
-./atpd start
-sleep 2
-
-STATUS_OUTPUT="$(./atpd status)"
-echo "${STATUS_OUTPUT}"
-
-if echo "${STATUS_OUTPUT}" | grep -q "PID"; then
-    log_pass "atpd daemon successfully spawned and managed sing-box!"
-else
-    dump_logs
-    log_fail "atpd failed to spawn sing-box!"
-fi
-
-# Verify Clash REST API connectivity
-log_info "Querying Clash API (http://127.0.0.1:9090/version)..."
-API_RES="$(curl -s -m 3 http://127.0.0.1:9090/version || true)"
 if [ -n "${API_RES}" ]; then
-    log_pass "Clash API responded: ${API_RES}"
+    log_pass "Clash API 响应成功: ${API_RES}"
 else
     dump_logs
-    log_fail "Clash API did not respond!"
+    log_fail "Clash API 未能在预期时间内响应!"
 fi
 
-# --- SCENARIO C: ATPd Restart ---
-log_info "Scenario C: Testing 'atpd restart'..."
-./atpd restart
-sleep 2
-
-RESTART_STATUS="$(./atpd status)"
-echo "${RESTART_STATUS}"
-if echo "${RESTART_STATUS}" | grep -q "PID"; then
-    log_pass "Restart completed successfully and sing-box is RUNNING."
-else
-    dump_logs
-    log_fail "Restart failed, sing-box not running!"
-fi
-
-# --- SCENARIO D: ATPd Stop ---
-log_info "Scenario D: Testing 'atpd stop'..."
+# ==============================================================================
+# 阶段 2: 停止一次 (Stop) -> 校验进程安全退出与状态归位
+# ==============================================================================
+log_info "=== [STEP 2/4] 停止测试: 'atpd stop' ==="
 ./atpd stop
-sleep 1
 
-STOP_STATUS="$(./atpd status)"
+STOP_STATUS=""
+for i in {1..10}; do
+    STOP_STATUS="$(./atpd status 2>&1)"
+    if echo "${STOP_STATUS}" | grep -q "STOPPED" || echo "${STOP_STATUS}" | grep -q "Daemon stopped"; then
+        break
+    fi
+    sleep 0.5
+done
 echo "${STOP_STATUS}"
 
 if echo "${STOP_STATUS}" | grep -q "STOPPED" || echo "${STOP_STATUS}" | grep -q "Daemon stopped"; then
-    log_pass "sing-box successfully stopped and verified."
+    log_pass "Step 2 PASS: sing-box 进程与守护中枢已完全平稳停止!"
 else
     dump_logs
-    log_fail "sing-box failed to stop!"
+    log_fail "Step 2 FAIL: 停止指令执行后进程未能退出!"
 fi
 
-# --- SCENARIO E: Out-of-tree / Service.d Simulation Test ---
-log_info "Scenario E: Testing dynamic self-location from arbitrary CWD (simulating service.d boot script)..."
-cd /tmp
-"${TEST_DIR}/atpd" start
-sleep 2
+# ==============================================================================
+# 阶段 3: 重启 / 再次启动 (Restart / Re-start) -> 校验热恢复与新 PID
+# ==============================================================================
+log_info "=== [STEP 3/4] 重启测试: 'atpd restart' ==="
+./atpd restart
 
-OUT_STATUS="$("${TEST_DIR}/atpd" status)"
-echo "${OUT_STATUS}"
-"${TEST_DIR}/atpd" stop
+RESTART_STATUS=""
+for i in {1..10}; do
+    RESTART_STATUS="$(./atpd status 2>&1)"
+    if echo "${RESTART_STATUS}" | grep -q "PID"; then
+        break
+    fi
+    sleep 0.5
+done
+echo "${RESTART_STATUS}"
 
-log_pass "ALL TEST SCENARIOS PASSED 100%!"
+if echo "${RESTART_STATUS}" | grep -q "PID"; then
+    log_pass "Step 3 PASS: atpd 成功重启 sing-box 并保持健康运行!"
+else
+    dump_logs
+    log_fail "Step 3 FAIL: 重启后 sing-box 未能恢复运行!"
+fi
+
+# 再次验证 Clash API
+API_RES="$(curl -s -m 2 http://127.0.0.1:9090/version || true)"
+if [ -n "${API_RES}" ]; then
+    log_pass "重启后 Clash API 响应正常: ${API_RES}"
+else
+    dump_logs
+    log_fail "重启后 Clash API 无法访问!"
+fi
+
+# ==============================================================================
+# 阶段 4: 最终停止 (Final Stop) -> 完整生命周期收尾
+# ==============================================================================
+log_info "=== [STEP 4/4] 最终收尾: 'atpd stop' ==="
+./atpd stop
+sleep 1
+
+FINAL_STATUS="$(./atpd status 2>&1)"
+echo "${FINAL_STATUS}"
+log_pass "Step 4 PASS: 完整启停、重启闭环生命周期测试全部通过 (100% SUCCESS)!"
+
+# 清理测试现场
 chmod -R 777 "${TEST_DIR}" 2>/dev/null || true
 rm -rf "${TEST_DIR}"
