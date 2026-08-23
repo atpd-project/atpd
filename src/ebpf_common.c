@@ -37,7 +37,6 @@ int ebpf_probe_prog_type(enum bpf_prog_type type) {
         { .code = 0xb7, .dst_reg = 0, .src_reg = 0, .off = 0, .imm = ret_val }, /* BPF_MOV64_IMM(BPF_REG_0, ret_val) */
         { .code = 0x95, .dst_reg = 0, .src_reg = 0, .off = 0, .imm = 0 }        /* BPF_EXIT_INSN() */
     };
-    char log_buf[512] = {0};
 
     union bpf_attr attr;
     memset(&attr, 0, sizeof(attr));
@@ -48,8 +47,8 @@ int ebpf_probe_prog_type(enum bpf_prog_type type) {
     attr.insns = (uint64_t)(uintptr_t)insns;
     attr.insn_cnt = sizeof(insns) / sizeof(insns[0]);
     attr.license = (uint64_t)(uintptr_t)"GPL";
-    attr.log_buf = (uint64_t)(uintptr_t)log_buf;
-    attr.log_size = sizeof(log_buf);
+    attr.log_buf = 0;
+    attr.log_size = 0;
     attr.log_level = 0;
 
     long ret = ebpf_call(BPF_PROG_LOAD, &attr);

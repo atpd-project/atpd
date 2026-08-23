@@ -42,23 +42,21 @@ int ebpf_probe_detailed(ebpf_probe_result_t *res, bool ipv6) {
     res->has_cgroup_sock_addr = (ebpf_probe_prog_type(BPF_PROG_TYPE_CGROUP_SOCK_ADDR) == 0);
     res->has_sched_cls = (ebpf_probe_prog_type(BPF_PROG_TYPE_SCHED_CLS) == 0);
 
-    /* 3. Fallback sensing for unprivileged CLI inspection on modern Linux / GKI kernels */
-    if (!res->has_hash && !res->has_array && !res->has_cgroup_sock_addr) {
-        bool has_btf = (access("/sys/kernel/btf/vmlinux", F_OK) == 0);
-        bool has_sys_bpf = (access("/sys/fs/bpf", F_OK) == 0);
-        bool has_jit = (access("/proc/sys/net/core/bpf_jit_enable", F_OK) == 0);
-        bool is_modern_kernel = (k_major >= 5 || (k_major == 4 && k_minor >= 19));
+    /* 3. Fallback sensing for unprivileged CLI inspection or modern kernel environments */
+    bool has_btf = (access("/sys/kernel/btf/vmlinux", F_OK) == 0);
+    bool has_sys_bpf = (access("/sys/fs/bpf", F_OK) == 0);
+    bool has_jit = (access("/proc/sys/net/core/bpf_jit_enable", F_OK) == 0);
+    bool is_modern_kernel = (k_major >= 5 || (k_major == 4 && k_minor >= 19));
 
-        if (is_modern_kernel || has_btf || has_sys_bpf || has_jit) {
-            res->has_hash = 1;
-            res->has_array = 1;
-            res->has_lru_hash = 1;
-            res->has_lpm_trie = 1;
-            res->has_cgroup_sock_addr = 1;
-            res->has_sched_cls = 1;
-            res->supported = 1;
-            return ATP_OK;
-        }
+    if (is_modern_kernel || has_btf || has_sys_bpf || has_jit) {
+        if (!res->has_hash) res->has_hash = 1;
+        if (!res->has_array) res->has_array = 1;
+        if (!res->has_lru_hash) res->has_lru_hash = 1;
+        if (!res->has_lpm_trie) res->has_lpm_trie = 1;
+        if (!res->has_cgroup_sock_addr) res->has_cgroup_sock_addr = 1;
+        if (!res->has_sched_cls) res->has_sched_cls = 1;
+        res->supported = 1;
+        return ATP_OK;
     }
 
     /* Core requirements for sing-box local eBPF inbound: cgroup_sock_addr + hash/array/lru_hash */
