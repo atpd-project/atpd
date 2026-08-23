@@ -1,0 +1,80 @@
+name: Test ATPd with sing-box (Linux Runner)
+
+run-name: "#${{ github.run_number }}: Test ATPd with sing-box (${{ github.ref_name }})"
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - staging
+      - ebpf
+      - pure-ebpf
+      - 'ebpf/**'
+      - 'feat-*'
+      - 'feat/**'
+      - 'test/**'
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'Makefile'
+      - '.github/workflows/test-singbox.yml'
+  pull_request:
+    branches: [main, dev, ebpf, pure-ebpf]
+  workflow_dispatch:
+
+concurrency:
+  group: test-singbox-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-singbox-lifecycle:
+    name: Test sing-box Start/Stop Lifecycle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            libcap-dev \
+            curl \
+            jq \
+            procps
+
+      - name: Download & install sing-box deb package
+        run: |
+          DEB_URL="https://github.com/debiansid/sing-box/releases/download/v1.14.0-beta.8/sing-box_1.14.0-beta.8_linux_amd64.deb"
+          echo "Downloading sing-box from: ${DEB_URL}"
+          curl -fSL -o /tmp/sing-box.deb "${DEB_URL}"
+          sudo dpkg -i /tmp/sing-box.deb
+          which sing-box
+          sing-box version
+
+      - name: Build ATPd (Native Linux x86_64)
+        run: |
+          make clean
+          make
+          ./build/bin/atpd version || true
+
+      - name: Run sing-box Lifecycle Integration Tests
+        run: |
+          chmod +x tests/test_singbox_lifecycle.sh
+          sudo ./tests/test_singbox_lifecycle.sh
+
+      - name: Upload Test Logs on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            /tmp/atp_lifecycle_test/run/*.log
+          if-no-files-found: ignore
