@@ -584,7 +584,7 @@ static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void 
     (void)timer;
 
     service_ctx_t *ctx = userdata;
-    if (!ctx || ctx->state == SERVICE_STOPPED || ctx->state == SERVICE_FAILED) return;
+    if (!ctx || ctx->state == SERVICE_STOPPED) return;
 
     if (ctx->retry_timer) {
         reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
@@ -866,34 +866,6 @@ int service_set_reactor(service_ctx_t *ctx, reactor_t *r) {
     return 0;
 }
 
-static void on_validate_complete(int result, const char *output, void *userdata) {
-    service_ctx_t *ctx = userdata;
-
-    if (result) {
-        LOG_INFO("Service: config validation passed");
-        if (!circuit_breaker_should_allow(&ctx->breaker)) {
-            LOG_WARN("Circuit breaker: open, delaying start");
-            service_schedule_retry(ctx);
-            return;
-        }
-        if (service_spawn(ctx) == 0) {
-            ctx->state = SERVICE_STARTING;
-            ctx->fail_count = 0;
-            backoff_reset(&ctx->backoff);
-        } else {
-            ctx->state = SERVICE_FAILED;
-            circuit_breaker_record_failure(&ctx->breaker);
-        }
-    } else {
-        LOG_ERROR("Service: config validation failed: %s", output ? output : "unknown error");
-        ctx->state = SERVICE_FAILED;
-        circuit_breaker_record_failure(&ctx->breaker);
-    }
-
-    free(ctx->validate_ctx);
-    ctx->validate_ctx = NULL;
-}
-
 int service_start_async(service_ctx_t *ctx) {
     if (!ctx) return -1;
 
@@ -919,25 +891,16 @@ int service_start_async(service_ctx_t *ctx) {
         return -1;
     }
 
-    ctx->validate_ctx = malloc(sizeof(async_validate_ctx_t));
-    if (!ctx->validate_ctx) {
-        LOG_ERROR("Service: failed to allocate validate_ctx");
+    if (service_spawn(ctx) == 0) {
+        ctx->state = SERVICE_STARTING;
+        ctx->fail_count = 0;
+        backoff_reset(&ctx->backoff);
+        return 0;
+    } else {
         ctx->state = SERVICE_FAILED;
+        circuit_breaker_record_failure(&ctx->breaker);
         return -1;
     }
-
-    int ret = async_validate_config(ctx->validate_ctx, ctx->reactor,
-                                    ctx->bin_path, ctx->conf_path, ctx->work_dir,
-                                    on_validate_complete, ctx);
-    if (ret < 0) {
-        LOG_ERROR("Service: failed to start async validation");
-        free(ctx->validate_ctx);
-        ctx->validate_ctx = NULL;
-        ctx->state = SERVICE_FAILED;
-        return -1;
-    }
-
-    return 0;
 }
 
 int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata) {
