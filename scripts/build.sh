@@ -34,7 +34,7 @@ make clean
 mkdir -p build/bin
 
 # 5. 执行手动编译链接 (完全原生，零 UPX 壳)
-SRC_FILES=$(find src -name "*.c" ! -name "epoll.c")
+SRC_FILES=$(find src -name "*.c")
 
 echo "Compiling with native instruction optimizations..."
 $CC -Wall -Wextra -Oz -flto -D_GNU_SOURCE -DNDEBUG -Qunused-arguments \
