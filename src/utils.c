@@ -388,6 +388,7 @@ int get_pid_by_name(const char *name) {
         char path[PATH_MAX];
         char line[256];
 
+        /* 1. Check comm */
         snprintf(path, sizeof(path), "/proc/%d/comm", pid);
         FILE *fp = fopen(path, "r");
         if (fp) {
@@ -400,6 +401,36 @@ int get_pid_by_name(const char *name) {
                 }
             }
             fclose(fp);
+        }
+
+        /* 2. Check exe link */
+        snprintf(path, sizeof(path), "/proc/%d/exe", pid);
+        ssize_t len = readlink(path, line, sizeof(line) - 1);
+        if (len > 0) {
+            line[len] = '\0';
+            char exe_copy[PATH_MAX];
+            strncpy(exe_copy, line, sizeof(exe_copy) - 1);
+            exe_copy[sizeof(exe_copy) - 1] = '\0';
+            char *base = basename(exe_copy);
+            if (base && strcmp(base, name) == 0) {
+                found_pid = pid;
+                break;
+            }
+        }
+
+        /* 3. Check cmdline */
+        snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+        fp = fopen(path, "r");
+        if (fp) {
+            size_t n = fread(line, 1, sizeof(line) - 1, fp);
+            fclose(fp);
+            if (n > 0) {
+                line[n] = '\0';
+                if (strstr(line, name) != NULL) {
+                    found_pid = pid;
+                    break;
+                }
+            }
         }
     }
 

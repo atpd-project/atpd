@@ -116,38 +116,52 @@ static int wait_connect_result(int sock, int timeout_ms) {
 }
 
 static int validate_process(service_ctx_t *ctx, pid_t pid) {
-    char path[256];
-    char exe_buf[256];
-    char cwd_buf[PATH_MAX];
+    if (kill(pid, 0) != 0) return 0;
+
+    char path[PATH_MAX];
+    char exe_buf[PATH_MAX];
     ssize_t len;
 
     snprintf(path, sizeof(path), "/proc/%d/exe", pid);
     len = readlink(path, exe_buf, sizeof(exe_buf) - 1);
-    if (len < 0) {
-        LOG_DEBUG("Service: readlink failed for PID %d: %s", pid, strerror(errno));
-        return 0;
+    if (len > 0) {
+        exe_buf[len] = '\0';
+        char exe_copy[PATH_MAX];
+        strncpy(exe_copy, exe_buf, sizeof(exe_copy) - 1);
+        exe_copy[sizeof(exe_copy) - 1] = '\0';
+
+        char bin_copy[PATH_MAX];
+        strncpy(bin_copy, ctx->bin_path, sizeof(bin_copy) - 1);
+        bin_copy[sizeof(bin_copy) - 1] = '\0';
+
+        char *b1 = basename(exe_copy);
+        char *b2 = basename(bin_copy);
+
+        if (b1 && b2 && strcmp(b1, b2) == 0) {
+            return 1;
+        }
+
+        if (strstr(exe_buf, PROXY_BIN_NAME) != NULL) {
+            return 1;
+        }
     }
-    exe_buf[len] = '\0';
 
-    if (strcmp(exe_buf, ctx->bin_path) != 0) {
-        LOG_WARN("Service: PID %d exe mismatch: expected %s, got %s",
-                 pid, ctx->bin_path, exe_buf);
-        return 0;
+    /* Fallback to /proc/<pid>/comm */
+    snprintf(path, sizeof(path), "/proc/%d/comm", pid);
+    FILE *fp = fopen(path, "r");
+    if (fp) {
+        char comm[64] = {0};
+        if (fgets(comm, sizeof(comm), fp)) {
+            trim(comm);
+            if (strstr(comm, PROXY_BIN_NAME) != NULL || strcmp(comm, "sing-box") == 0) {
+                fclose(fp);
+                return 1;
+            }
+        }
+        fclose(fp);
     }
 
-    snprintf(path, sizeof(path), "/proc/%d/cwd", pid);
-    len = readlink(path, cwd_buf, sizeof(cwd_buf) - 1);
-    if (len < 0) return 0;
-    cwd_buf[len] = '\0';
-
-    if (strcmp(cwd_buf, ctx->work_dir) != 0) {
-        LOG_WARN("Service: PID %d cwd mismatch: expected %s, got %s",
-                 pid, ctx->work_dir, cwd_buf);
-        return 0;
-    }
-
-    LOG_INFO("Service: PID %d validated successfully", pid);
-    return 1;
+    return 0;
 }
 
 static int service_is_alive(service_ctx_t *ctx) {
@@ -428,8 +442,19 @@ static int service_spawn(service_ctx_t *ctx) {
     }
 
     ctx->child_pid = pid;
-    ctx->validated_pid = 0;
+    ctx->validated_pid = 1;
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
+
+    char pid_path[PATH_MAX];
+    snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ctx->work_dir[0] ? ctx->work_dir : ".");
+    char run_dir[PATH_MAX];
+    snprintf(run_dir, sizeof(run_dir), "%s/run", ctx->work_dir[0] ? ctx->work_dir : ".");
+    mkdir_recursive(run_dir, 0755);
+    FILE *pfp = fopen(pid_path, "w");
+    if (pfp) {
+        fprintf(pfp, "%d\n", pid);
+        fclose(pfp);
+    }
     return 0;
 }
 
@@ -607,6 +632,10 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
             ctx->child_pid = -1;
             ctx->validated_pid = 0;
             ctx->running_healthy = 0;
+
+            char pid_path[PATH_MAX];
+            snprintf(pid_path, sizeof(pid_path), "%s/run/sing-box.pid", ctx->work_dir[0] ? ctx->work_dir : ".");
+            unlink(pid_path);
 
             if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
                 ctx->state = SERVICE_FAILED;
