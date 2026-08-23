@@ -13,7 +13,6 @@
 #include "service.h"
 #include "api.h"
 #include "ui.h"
-#include "perf_mode.h"
 #include "atpd_context.h"
 #include "ebpf.h"
 #include "ebpf_common.h"
@@ -229,7 +228,7 @@ static void status_show_ebpf(void) {
     ui_table_subrow_color("├─", "Engine Mode", "Pure eBPF (Zero iptables)", COLOR_GREEN);
     ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
 
-    if (ebpf_probe_detailed(&probe, g_config.network.proxy_ipv6) == 0 && probe.supported) {
+    if (ebpf_probe_detailed(&probe) == 0 && probe.supported) {
         ui_table_subrow_color("├─", "eBPF Kernel", "AVAILABLE", COLOR_GREEN);
         char feat[128] = {0};
         int pos = 0;
@@ -591,14 +590,14 @@ static void status_show_system(void) {
 }
 
 void status_show_config(atp_config_t *cfg) {
+    (void)cfg;
     ui_title("ATP Pure eBPF Configuration");
 
     ui_table_begin();
     ui_table_header("CONFIGURATION");
     ui_table_subrow("├─", "Engine", "Pure eBPF (Zero iptables)");
-    ui_table_subrow("├─", "Performance Mode", cfg->core.performance_mode ? "ACTIVE" : "DISABLED");
-    ui_table_subrow("├─", "IPv6 Support", cfg->network.proxy_ipv6 ? "ENABLED" : "DISABLED");
-    ui_table_subrow("└─", "Data Path", "sing-box ebpf inbound");
+    ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
+    ui_table_subrow("└─", "Supervisor", "Active (Circuit Breaker)");
     ui_table_end();
 }
 

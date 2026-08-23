@@ -1,6 +1,6 @@
 # =============================================================================
 # ATP (Advanced Transparent Proxy) Configuration File - Pure eBPF Edition
-# Default Location: /data/adb/atp/atp.conf (or /data/adb/sing-box/atp.conf)
+# Location: <MODULE_DIR>/atp.conf (Auto-detected from /proc/self/exe parent directory)
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -8,7 +8,7 @@
 # -----------------------------------------------------------------------------
 
 # Working root directory containing atpd, atp.conf, config.json, and bin/
-# Default: automatically derived from /proc/self/exe (e.g., /data/adb/atp or /data/adb/sing-box)
+# Default: dynamically resolved from binary location (e.g. /data/adb/atp)
 # DATA_DIR="/data/adb/atp"
 
 # Runtime transient directory (stores PID files, UDS sockets, logs, state)
@@ -23,12 +23,6 @@
 # 2. Core & Supervisor Settings
 # -----------------------------------------------------------------------------
 
-# Performance mode: 1=on (TCP BBR & Kernel Scheduler optimization), 0=off
-PERFORMANCE_MODE=1
-
-# Include timestamp in log outputs: 1=yes, 0=no
-LOG_TIMESTAMP=1
-
 # Process user and group for child supervision
 # Android default: "root:net_admin" (AID_NET_ADMIN=3005 for network socket capabilities)
 # Linux default:   "root:root"
@@ -37,21 +31,14 @@ CORE_USER_GROUP="root:net_admin"
 # Restart delay in seconds after abnormal child exit
 RESTART_DELAY=2
 
-# -----------------------------------------------------------------------------
-# 3. eBPF & Inbound Configuration
-# -----------------------------------------------------------------------------
+# Include timestamp in log outputs: 1=yes, 0=no
+LOG_TIMESTAMP=1
 
-# Enable kernel eBPF engine (cgroup socket interception)
-ENABLE_EBPF=1
-
-# IPv6 proxy support: 1=enable, 0=disable
-PROXY_IPV6=1
-
-# DNS hijacking via eBPF: 1=enable, 0=disable
-DNS_HIJACK_ENABLE=0
+# UI Emoji symbols in CLI output: 1=enable, 0=disable
+UI_EMOJI_ENABLED=1
 
 # -----------------------------------------------------------------------------
-# 4. External API Configuration (Clash REST API)
+# 3. External API Configuration (Clash REST API)
 # Note: Automatically auto-synced from config.json if experimental.clash_api exists
 # -----------------------------------------------------------------------------
 
@@ -63,7 +50,7 @@ API_PORT=9090
 CLASH_SECRET=""
 
 # -----------------------------------------------------------------------------
-# 5. Service Supervisor Parameters
+# 4. Service Supervisor & Circuit Breaker Parameters
 # -----------------------------------------------------------------------------
 
 # Service start timeout in seconds
@@ -72,11 +59,20 @@ SERVICE_START_TIMEOUT=30
 # Service stop timeout in seconds
 SERVICE_STOP_TIMEOUT=10
 
+# Grace period in seconds before SIGKILL on shutdown
+SERVICE_GRACE_PERIOD=5
+
 # Maximum consecutive failures before circuit breaker opens
 SERVICE_MAX_FAILURES=5
 
+# Failure count threshold within sliding window to trip circuit breaker
+SERVICE_CIRCUIT_THRESHOLD=3
+
 # Circuit breaker cooldown in seconds
 SERVICE_CIRCUIT_COOLDOWN=60
+
+# Background proxy health check interval in milliseconds (default: 5000)
+SERVICE_HEALTH_CHECK_INTERVAL=5000
 
 # Optional custom arguments for sing-box execution
 # SERVICE_ARGS=""

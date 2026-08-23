@@ -12,7 +12,6 @@ typedef struct {
     bool verbose;
     bool no_color;
     bool ui_emoji_enabled;
-    bool performance_mode;
     bool dry_run;
     bool log_timestamp;
     int restart_delay;
@@ -23,13 +22,6 @@ typedef struct {
     char pid_file[PATH_MAX];
     char log_file[PATH_MAX];
 } core_config_t;
-
-/* Network */
-typedef struct {
-    int proxy_mode;
-    int proxy_ipv6;
-    int dns_hijack;
-} network_config_t;
 
 /* Interface & VPN Sensing */
 typedef struct {
@@ -65,7 +57,6 @@ typedef struct {
 /* Complete config */
 typedef struct {
     core_config_t core;
-    network_config_t network;
     interface_config_t interface;
     ebpf_config_t ebpf;
     service_config_t service;

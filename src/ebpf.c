@@ -15,8 +15,7 @@ static void raise_memlock(void) {
     setrlimit(RLIMIT_MEMLOCK, &unlimited);
 }
 
-int ebpf_probe_detailed(ebpf_probe_result_t *res, bool ipv6) {
-    (void)ipv6;
+int ebpf_probe_detailed(ebpf_probe_result_t *res) {
     if (!res) return ATP_ERR_INVAL;
 
     memset(res, 0, sizeof(*res));
@@ -65,9 +64,9 @@ int ebpf_probe_detailed(ebpf_probe_result_t *res, bool ipv6) {
     return ATP_OK;
 }
 
-int ebpf_probe(bool ipv6) {
+int ebpf_probe(void) {
     ebpf_probe_result_t res;
-    if (ebpf_probe_detailed(&res, ipv6) != ATP_OK) {
+    if (ebpf_probe_detailed(&res) != ATP_OK) {
         return ATP_ERR_EBPF;
     }
     return res.supported ? ATP_OK : ATP_ERR_EBPF;
@@ -84,7 +83,7 @@ int ebpf_status(char *state, size_t size, atp_config_t *cfg) {
     }
 
     ebpf_probe_result_t res;
-    if (ebpf_probe_detailed(&res, cfg->network.proxy_ipv6) == ATP_OK && res.supported) {
+    if (ebpf_probe_detailed(&res) == ATP_OK && res.supported) {
         snprintf(state, size, "%s", "ready");
         return ATP_OK;
     }

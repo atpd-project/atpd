@@ -18,7 +18,6 @@ src/logger.c
 src/main.c
 src/netlink.c
 src/singbox_api.c
-src/perf_mode.c
 src/reactor.c
 src/service.c
 src/session.c
@@ -51,7 +50,6 @@ src/yyjson.c
 | `main.c` | 661 | 1 | ⏳ 待审计 |
 | `netlink.c` | 547 | 0 | 🟢 形式合规 |
 | `singbox_api.c` | 604 | 0 | 🟢 形式合规 |
-| `perf_mode.c` | 515 | 0 | 🟢 形式合规 |
 | `reactor.c` | 637 | 0 | 🟢 形式合规 |
 | `service.c` | 929 | 0 | 🟢 形式合规 |
 | `session.c` | 718 | 0 | 🟢 形式合规 |

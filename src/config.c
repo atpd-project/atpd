@@ -39,7 +39,6 @@ static void config_sync_from_singbox_json(atp_config_t *cfg);
 
 static void config_copy_content(atp_config_t *dst, const atp_config_t *src) {
     dst->core = src->core;
-    dst->network = src->network;
     dst->interface = src->interface;
     dst->ebpf = src->ebpf;
     dst->service = src->service;
@@ -49,7 +48,6 @@ static void config_copy_content(atp_config_t *dst, const atp_config_t *src) {
 static void config_snapshot_content(atp_config_t *dst, const atp_config_t *src) {
     memset(dst, 0, sizeof(*dst));
     dst->core = src->core;
-    dst->network = src->network;
     dst->interface = src->interface;
     dst->ebpf = src->ebpf;
     dst->service = src->service;
@@ -107,7 +105,6 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->core.verbose = 0;
     cfg->core.no_color = 0;
     cfg->core.ui_emoji_enabled = 1;
-    cfg->core.performance_mode = 1;
     cfg->core.dry_run = 0;
     cfg->core.log_timestamp = 1;
     cfg->core.restart_delay = DEFAULT_RESTART_DELAY;
@@ -126,10 +123,6 @@ void config_set_defaults(atp_config_t *cfg) {
         snprintf(cfg->core.core_group, sizeof(cfg->core.core_group), "root");
     }
 #endif
-
-    cfg->network.proxy_mode = MODE_EBPF;
-    cfg->network.proxy_ipv6 = 1;
-    cfg->network.dns_hijack = 0;
 
     cfg->interface.current_vpn_iface[0] = '\0';
 
@@ -224,10 +217,7 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
     int int_val;
 
     if (config_parse_int(v, &int_val) == 0) {
-        if (strcmp(k, "PERFORMANCE_MODE") == 0) cfg->core.performance_mode = int_val;
-        else if (strcmp(k, "PROXY_IPV6") == 0) cfg->network.proxy_ipv6 = int_val;
-        else if (strcmp(k, "DNS_HIJACK_ENABLE") == 0) cfg->network.dns_hijack = int_val;
-        else if (strcmp(k, "LOG_TIMESTAMP") == 0) cfg->core.log_timestamp = int_val;
+        if (strcmp(k, "LOG_TIMESTAMP") == 0) cfg->core.log_timestamp = int_val;
         else if (strcmp(k, "RESTART_DELAY") == 0) cfg->core.restart_delay = int_val;
         else if (strcmp(k, "API_PORT") == 0) cfg->api.port = int_val;
         else if (strcmp(k, "UI_EMOJI_ENABLED") == 0) cfg->core.ui_emoji_enabled = int_val;
@@ -317,7 +307,7 @@ int config_set_mode(atp_config_t *cfg, const char *mode) {
 static int config_apply_deltas(atp_config_t *cfg, const atp_config_t *old) {
     (void)old;
     if (cfg->ebpf.enabled) {
-        ebpf_probe(cfg->network.proxy_ipv6);
+        ebpf_probe();
     }
     return ATP_OK;
 }

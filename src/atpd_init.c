@@ -14,7 +14,6 @@
 #include "netlink.h"
 #include "service.h"
 #include "api.h"
-#include "perf_mode.h"
 #include "cleanup.h"
 #include "atpd_context.h"
 #include "cli.h"
@@ -70,7 +69,7 @@ int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
     LOG_INFO("Pure eBPF Engine: probing kernel eBPF capabilities...");
     atpd_ebpf_state_transition(EBPF_STATE_LOADING);
     
-    int ret = ebpf_probe(ctx->config->network.proxy_ipv6);
+    int ret = ebpf_probe();
     if (ret == ATP_OK) {
         ctx->config->ebpf.ready = 1;
         ctx->ctx->ebpf_enabled = true;

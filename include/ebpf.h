@@ -17,8 +17,8 @@ typedef struct {
     char kernel_release[64];
 } ebpf_probe_result_t;
 
-int ebpf_probe(bool ipv6);
-int ebpf_probe_detailed(ebpf_probe_result_t *res, bool ipv6);
+int ebpf_probe(void);
+int ebpf_probe_detailed(ebpf_probe_result_t *res);
 int ebpf_status(char *state, size_t size, atp_config_t *cfg);
 bool ebpf_is_pure_mode(const atp_config_t *cfg);
 

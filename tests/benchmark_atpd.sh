@@ -5,7 +5,7 @@
 # ==============================================================================
 set -euo pipefail
 
-BENCH_DIR="/tmp/atp_bench"
+BENCH_DIR="${TMPDIR:-/tmp}/atp_bench"
 ATP_BIN="${1:-./build/bin/atpd}"
 SINGBOX_BIN="${2:-$(command -v sing-box || echo "")}"
 
@@ -47,7 +47,6 @@ EOF
 cat << EOF > "${BENCH_DIR}/atp.conf"
 DATA_DIR="${BENCH_DIR}"
 RUN_DIR="run"
-PERFORMANCE_MODE=1
 CORE_USER_GROUP="root:root"
 API_PORT=9090
 EOF

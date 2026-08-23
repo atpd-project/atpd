@@ -23,9 +23,11 @@
 #define MAX_SUGGESTION_KEY 64
 
 static const char *VALID_CONFIG_KEYS[] = {
-    "PERFORMANCE_MODE",
-    "PROXY_IPV6",
-    "DNS_HIJACK_ENABLE",
+    "DATA_DIR",
+    "WORK_DIR",
+    "RUN_DIR",
+    "PID_FILE",
+    "LOG_FILE",
     "LOG_TIMESTAMP",
     "RESTART_DELAY",
     "CLASH_SECRET",

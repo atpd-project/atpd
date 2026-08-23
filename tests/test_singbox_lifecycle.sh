@@ -16,7 +16,7 @@ log_pass() { echo -e "${GREEN}[TEST-PASS]${NC} $*"; }
 log_fail() { echo -e "${RED}[TEST-FAIL]${NC} $*" >&2; exit 1; }
 log_warn() { echo -e "${YELLOW}[TEST-WARN]${NC} $*"; }
 
-TEST_DIR="/tmp/atp_lifecycle_test"
+TEST_DIR="${TMPDIR:-/tmp}/atp_lifecycle_test"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log_info "Project Root: ${PROJECT_ROOT}"
@@ -85,7 +85,6 @@ EOJSON
 
 # 5. Generate atp.conf
 cat > "${TEST_DIR}/atp.conf" << 'EOCONF'
-PERFORMANCE_MODE=0
 LOG_TIMESTAMP=1
 API_PORT=9090
 SERVICE_START_TIMEOUT=15

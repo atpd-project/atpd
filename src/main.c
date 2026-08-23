@@ -15,7 +15,6 @@
 #include "service.h"
 #include "api.h"
 #include "netlink.h"
-#include "perf_mode.h"
 #include "status.h"
 #include "ui.h"
 #include "cli.h"
@@ -370,11 +369,6 @@ static int do_start(atp_options_t *opts) {
     g_svc = init_ctx.service;
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
 
-    if (g_config.core.performance_mode) {
-        perf_mode_init(&g_config);
-        perf_mode_setup(&g_config);
-    }
-
     LOG_INFO("Engine: Pure eBPF active (Zero iptables / sing-box native inbound)");
 
     run_event_loop();
@@ -527,8 +521,9 @@ static int do_check(atp_options_t *opts) {
 }
 
 static int do_ebpf_probe(atp_options_t *opts) {
+    (void)opts;
     ebpf_probe_result_t res;
-    ebpf_probe_detailed(&res, opts->ipv6);
+    ebpf_probe_detailed(&res);
     printf("kernel_release=%s\n", res.kernel_release);
     printf("supported=%d\n", res.supported ? 1 : 0);
     printf("cgroup_sock_addr=%d\n", res.has_cgroup_sock_addr ? 1 : 0);
