@@ -108,26 +108,56 @@ dump_logs() {
 }
 trap dump_logs ERR
 
-# --- TEST 1: Start sing-box ---
-log_info "Step 1: Testing 'atpd start'..."
+# --- PRE-CHECK: Validate sing-box config ---
+log_info "Pre-check: Validating sing-box configuration syntax..."
+"${TEST_DIR}/bin/sing-box" check -c "${TEST_DIR}/config.json" -D "${TEST_DIR}"
+log_pass "sing-box configuration is 100% valid."
+
+# --- SCENARIO A: Pre-running sing-box Discovery Test ---
+log_info "Scenario A: Starting sing-box directly to test pre-running process discovery..."
 cd "${TEST_DIR}"
-./atpd start
+./bin/sing-box run -c config.json -D . > run/sing-box.log 2>&1 &
+SINGBOX_PID=$!
+echo "sing-box started in background with PID: ${SINGBOX_PID}"
 
-# Allow background daemon and sing-box to initialize
-sleep 2
+# Wait for Clash API to be active
+for i in {1..10}; do
+    if curl -s -m 1 http://127.0.0.1:9090/version >/dev/null 2>&1; then
+        log_pass "Pre-running sing-box is active and Clash API is listening."
+        break
+    fi
+    sleep 0.5
+done
 
-# --- TEST 2: Check status & API ---
-log_info "Step 2: Testing 'atpd status' & Clash API verification..."
+log_info "Testing 'atpd status' on pre-running sing-box instance..."
 STATUS_OUTPUT="$(./atpd status)"
 echo "${STATUS_OUTPUT}"
 
-if echo "${STATUS_OUTPUT}" | grep -q "sing-box" && ! echo "${STATUS_OUTPUT}" | grep -q "sing-box (STOPPED)"; then
-    log_pass "sing-box is actively RUNNING!"
-elif echo "${STATUS_OUTPUT}" | grep -q "PID"; then
-    log_pass "sing-box process is RUNNING with PID!"
+if echo "${STATUS_OUTPUT}" | grep -q "PID"; then
+    log_pass "atpd successfully discovered pre-running sing-box PID and metrics!"
 else
     dump_logs
-    log_fail "sing-box failed to start (reported STOPPED)!"
+    log_fail "atpd failed to detect pre-running sing-box!"
+fi
+
+# Stop pre-running sing-box instance cleanly
+kill "${SINGBOX_PID}" 2>/dev/null || true
+wait "${SINGBOX_PID}" 2>/dev/null || true
+sleep 1
+
+# --- SCENARIO B: Full ATPd Daemon Lifecycle Management ---
+log_info "Scenario B: Testing ATPd managed startup ('atpd start')..."
+./atpd start
+sleep 2
+
+STATUS_OUTPUT="$(./atpd status)"
+echo "${STATUS_OUTPUT}"
+
+if echo "${STATUS_OUTPUT}" | grep -q "PID"; then
+    log_pass "atpd daemon successfully spawned and managed sing-box!"
+else
+    dump_logs
+    log_fail "atpd failed to spawn sing-box!"
 fi
 
 # Verify Clash REST API connectivity
@@ -136,25 +166,26 @@ API_RES="$(curl -s -m 3 http://127.0.0.1:9090/version || true)"
 if [ -n "${API_RES}" ]; then
     log_pass "Clash API responded: ${API_RES}"
 else
-    log_warn "Clash API did not respond directly, checking status details..."
+    dump_logs
+    log_fail "Clash API did not respond!"
 fi
 
-# --- TEST 3: Restart sing-box ---
-log_info "Step 3: Testing 'atpd restart'..."
+# --- SCENARIO C: ATPd Restart ---
+log_info "Scenario C: Testing 'atpd restart'..."
 ./atpd restart
 sleep 2
 
 RESTART_STATUS="$(./atpd status)"
 echo "${RESTART_STATUS}"
-if echo "${RESTART_STATUS}" | grep -q "sing-box" && ! echo "${RESTART_STATUS}" | grep -q "sing-box (STOPPED)"; then
+if echo "${RESTART_STATUS}" | grep -q "PID"; then
     log_pass "Restart completed successfully and sing-box is RUNNING."
 else
     dump_logs
     log_fail "Restart failed, sing-box not running!"
 fi
 
-# --- TEST 4: Stop sing-box ---
-log_info "Step 4: Testing 'atpd stop'..."
+# --- SCENARIO D: ATPd Stop ---
+log_info "Scenario D: Testing 'atpd stop'..."
 ./atpd stop
 sleep 1
 
@@ -168,8 +199,8 @@ else
     log_fail "sing-box failed to stop!"
 fi
 
-# --- TEST 5: Out-of-tree / Service.d Simulation Test ---
-log_info "Step 5: Testing dynamic self-location from arbitrary CWD (simulating service.d boot script)..."
+# --- SCENARIO E: Out-of-tree / Service.d Simulation Test ---
+log_info "Scenario E: Testing dynamic self-location from arbitrary CWD (simulating service.d boot script)..."
 cd /tmp
 "${TEST_DIR}/atpd" start
 sleep 2
@@ -178,6 +209,6 @@ OUT_STATUS="$("${TEST_DIR}/atpd" status)"
 echo "${OUT_STATUS}"
 "${TEST_DIR}/atpd" stop
 
-log_pass "ALL TESTS PASSED! ATPd + sing-box lifecycle verified 100%."
+log_pass "ALL TEST SCENARIOS PASSED 100%!"
 chmod -R 777 "${TEST_DIR}" 2>/dev/null || true
 rm -rf "${TEST_DIR}"
