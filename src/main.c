@@ -61,7 +61,6 @@ static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static void daemonize(void);
 static int process_is_atpd(pid_t pid);
-static int verify_pid_file_unchanged(int fd, int expected_pid);
 
 static int g_pid_fd = -1;
 
@@ -101,33 +100,6 @@ static int process_is_atpd(pid_t pid) {
     if (!base) return 0;
 
     return strncmp(base, "atpd", 4) == 0;
-}
-
-static int verify_pid_file_unchanged(int fd, int expected_pid) {
-    struct flock fl = {
-        .l_type = F_RDLCK,
-        .l_whence = SEEK_SET,
-        .l_start = 0,
-        .l_len = 0
-    };
-
-    if (fcntl(fd, F_SETLKW, &fl) < 0) {
-        return -1;
-    }
-
-    char buf[32] = {0};
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    int current_pid = 0;
-
-    if (n > 0 && sscanf(buf, "%d", &current_pid) == 1) {
-        fl.l_type = F_UNLCK;
-        fcntl(fd, F_SETLK, &fl);
-        return (current_pid == expected_pid) ? 0 : -1;
-    }
-
-    fl.l_type = F_UNLCK;
-    fcntl(fd, F_SETLK, &fl);
-    return -1;
 }
 
 static int write_pid_file(const char *pid_file) {
