@@ -3,10 +3,10 @@
 
 VERSION = 2.0.0
 
-PREFIX = /data/adb/atp
-BINDIR = $(PREFIX)/bin
-RUNDIR = $(PREFIX)/run
-SINGBOXDIR = $(PREFIX)/sing-box
+PREFIX ?= /data/adb/atp
+BINDIR ?= $(PREFIX)/bin
+RUNDIR ?= $(PREFIX)/run
+SINGBOXDIR ?= $(PREFIX)/sing-box
 
 CC = clang
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC -Qunused-arguments
@@ -37,9 +37,17 @@ OBJDIR = build/obj
 OBJ = $(SRC:%.c=$(OBJDIR)/%.o)
 TARGET = build/bin/atpd
 
-.PHONY: all clean distclean
+.PHONY: all clean distclean install uninstall
 
 all: $(TARGET)
+
+install: $(TARGET)
+	install -d $(DESTDIR)$(BINDIR)
+	install -d $(DESTDIR)$(RUNDIR)
+	install -m 755 $(TARGET) $(DESTDIR)$(BINDIR)/atpd
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/atpd
 
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)

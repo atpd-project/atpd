@@ -766,6 +766,11 @@ int get_app_dir(char *buf, size_t size) {
         char *slash = strrchr(exe_path, '/');
         if (slash && slash != exe_path) {
             *slash = '\0';
+            /* If the binary resides in a 'bin' subdirectory, point to its parent module root */
+            char *sub = strrchr(exe_path, '/');
+            if (sub && strcmp(sub + 1, "bin") == 0 && sub != exe_path) {
+                *sub = '\0';
+            }
             snprintf(buf, size, "%s", exe_path);
             return 0;
         }
