@@ -93,12 +93,27 @@ EOCONF
 
 log_pass "Test environment initialized."
 
+# Helper to dump logs on failure
+dump_logs() {
+    log_warn "--- DUMPING RUN LOGS ---"
+    if [ -f "${TEST_DIR}/run/atp.log" ]; then
+        echo "=== atp.log ==="
+        cat "${TEST_DIR}/run/atp.log" || true
+    fi
+    if [ -f "${TEST_DIR}/run/sing-box.log" ]; then
+        echo "=== sing-box.log ==="
+        cat "${TEST_DIR}/run/sing-box.log" || true
+    fi
+    chmod -R 777 "${TEST_DIR}" 2>/dev/null || true
+}
+trap dump_logs ERR
+
 # --- TEST 1: Start sing-box ---
 log_info "Step 1: Testing 'atpd start'..."
 cd "${TEST_DIR}"
 ./atpd start
 
-# Allow background process to initialize
+# Allow background daemon and sing-box to initialize
 sleep 2
 
 # --- TEST 2: Check status & API ---
@@ -106,10 +121,13 @@ log_info "Step 2: Testing 'atpd status' & Clash API verification..."
 STATUS_OUTPUT="$(./atpd status)"
 echo "${STATUS_OUTPUT}"
 
-if echo "${STATUS_OUTPUT}" | grep -q "sing-box"; then
-    log_pass "Proxy core identified in status."
+if echo "${STATUS_OUTPUT}" | grep -q "sing-box" && ! echo "${STATUS_OUTPUT}" | grep -q "sing-box (STOPPED)"; then
+    log_pass "sing-box is actively RUNNING!"
+elif echo "${STATUS_OUTPUT}" | grep -q "PID"; then
+    log_pass "sing-box process is RUNNING with PID!"
 else
-    log_fail "sing-box NOT found in status output!"
+    dump_logs
+    log_fail "sing-box failed to start (reported STOPPED)!"
 fi
 
 # Verify Clash REST API connectivity
@@ -128,7 +146,12 @@ sleep 2
 
 RESTART_STATUS="$(./atpd status)"
 echo "${RESTART_STATUS}"
-log_pass "Restart completed successfully."
+if echo "${RESTART_STATUS}" | grep -q "sing-box" && ! echo "${RESTART_STATUS}" | grep -q "sing-box (STOPPED)"; then
+    log_pass "Restart completed successfully and sing-box is RUNNING."
+else
+    dump_logs
+    log_fail "Restart failed, sing-box not running!"
+fi
 
 # --- TEST 4: Stop sing-box ---
 log_info "Step 4: Testing 'atpd stop'..."
@@ -138,10 +161,11 @@ sleep 1
 STOP_STATUS="$(./atpd status)"
 echo "${STOP_STATUS}"
 
-if echo "${STOP_STATUS}" | grep -q "STOPPED"; then
+if echo "${STOP_STATUS}" | grep -q "STOPPED" || echo "${STOP_STATUS}" | grep -q "Daemon stopped"; then
     log_pass "sing-box successfully stopped and verified."
 else
-    log_warn "sing-box stop state received."
+    dump_logs
+    log_fail "sing-box failed to stop!"
 fi
 
 # --- TEST 5: Out-of-tree / Service.d Simulation Test ---
@@ -155,4 +179,5 @@ echo "${OUT_STATUS}"
 "${TEST_DIR}/atpd" stop
 
 log_pass "ALL TESTS PASSED! ATPd + sing-box lifecycle verified 100%."
+chmod -R 777 "${TEST_DIR}" 2>/dev/null || true
 rm -rf "${TEST_DIR}"
