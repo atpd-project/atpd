@@ -31,16 +31,20 @@ int ebpf_probe_map_type(enum bpf_map_type type, size_t key_size, size_t value_si
 }
 
 int ebpf_probe_prog_type(enum bpf_prog_type type) {
-    /* Minimal BPF program: r0 = 0; exit */
+    /* Minimal valid BPF program */
+    int ret_val = (type == BPF_PROG_TYPE_CGROUP_SOCK_ADDR) ? 1 : 0;
     struct bpf_insn insns[] = {
-        { .code = 0xb7, .dst_reg = 0, .src_reg = 0, .off = 0, .imm = 0 }, /* BPF_MOV64_IMM(BPF_REG_0, 0) */
-        { .code = 0x95, .dst_reg = 0, .src_reg = 0, .off = 0, .imm = 0 }  /* BPF_EXIT_INSN() */
+        { .code = 0xb7, .dst_reg = 0, .src_reg = 0, .off = 0, .imm = ret_val }, /* BPF_MOV64_IMM(BPF_REG_0, ret_val) */
+        { .code = 0x95, .dst_reg = 0, .src_reg = 0, .off = 0, .imm = 0 }        /* BPF_EXIT_INSN() */
     };
-    char log_buf[256] = {0};
+    char log_buf[512] = {0};
 
     union bpf_attr attr;
     memset(&attr, 0, sizeof(attr));
     attr.prog_type = type;
+    if (type == BPF_PROG_TYPE_CGROUP_SOCK_ADDR) {
+        attr.expected_attach_type = BPF_CGROUP_INET4_CONNECT;
+    }
     attr.insns = (uint64_t)(uintptr_t)insns;
     attr.insn_cnt = sizeof(insns) / sizeof(insns[0]);
     attr.license = (uint64_t)(uintptr_t)"GPL";
