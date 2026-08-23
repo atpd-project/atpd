@@ -26,6 +26,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <time.h>
+#include <libgen.h>
 #include "async_validate.h"
 
 /* Forward declarations */
