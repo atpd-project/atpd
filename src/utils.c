@@ -629,9 +629,17 @@ int get_process_user_group(pid_t pid, char *user, char *group, size_t size) {
 }
 
 int get_binary_version(const char *bin_path, char *version, size_t size) {
-    if (!bin_path || !bin_path[0]) {
-        snprintf(version, size, "%s", "unknown");
+    if (!bin_path || !bin_path[0] || !version || size == 0) {
+        if (version && size > 0) snprintf(version, size, "%s", "unknown");
         return -1;
+    }
+
+    static char s_cached_path[PATH_MAX] = {0};
+    static char s_cached_ver[64] = {0};
+
+    if (s_cached_path[0] && strcmp(s_cached_path, bin_path) == 0 && s_cached_ver[0]) {
+        snprintf(version, size, "%s", s_cached_ver);
+        return 0;
     }
 
     char cmd[MAX_CMD_LEN];
@@ -648,13 +656,19 @@ int get_binary_version(const char *bin_path, char *version, size_t size) {
             char *nl = strchr(p, '\n');
             if (nl) *nl = '\0';
             snprintf(version, size, "%s", p);
+            snprintf(s_cached_path, sizeof(s_cached_path), "%s", bin_path);
+            snprintf(s_cached_ver, sizeof(s_cached_ver), "%s", p);
             return 0;
         }
         char *last_space = strrchr(output, ' ');
         if (last_space) {
             snprintf(version, size, "%s", last_space + 1);
+            snprintf(s_cached_path, sizeof(s_cached_path), "%s", bin_path);
+            snprintf(s_cached_ver, sizeof(s_cached_ver), "%s", last_space + 1);
         } else {
             snprintf(version, size, "%s", output);
+            snprintf(s_cached_path, sizeof(s_cached_path), "%s", bin_path);
+            snprintf(s_cached_ver, sizeof(s_cached_ver), "%s", output);
         }
         return 0;
     }

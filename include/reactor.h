@@ -14,9 +14,9 @@
 #include <sys/epoll.h>
 
 /* ========== Constants ========== */
-#define REACTOR_MAX_EVENTS       1024
-#define REACTOR_MAX_FD           65536
-#define REACTOR_TIMER_WHEEL_SIZE 256
+#define REACTOR_MAX_EVENTS       128
+#define REACTOR_MAX_FD           1024
+#define REACTOR_TIMER_WHEEL_SIZE 64
 
 /* ========== Event Types ========== */
 typedef enum {

@@ -37,6 +37,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <libgen.h>
+#if defined(__GLIBC__) && !defined(__ANDROID__)
+#include <malloc.h>
+#endif
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 #define SIGNAL_RETRY_MAX 5
@@ -311,6 +314,9 @@ static void run_event_loop(void) {
     }
 
     g_running = 1;
+#if defined(__GLIBC__) && !defined(__ANDROID__)
+    malloc_trim(0);
+#endif
     LOG_INFO("Pure eBPF Reactor running, entering event loop");
     reactor_run(g_reactor);
 
