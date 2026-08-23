@@ -344,25 +344,39 @@ int find_command_path(const char *name, char *out_path, size_t out_size) {
         if (access(out_path, X_OK) == 0) return 0;
     }
 
-    const char *search_paths[] = {
-        "/data/adb/atp/bin",
-        "/data/adb/sing-box/bin",
-        "/data/adb/atp",
-        "/data/adb/sing-box",
-        "/data/adb/ap/bin",
-        "/data/adb/ksu/bin",
-        "/data/adb/magisk",
-        "/system/bin",
-        "/system/xbin",
-        "/vendor/bin",
-        NULL
-    };
+#ifdef ATP_DEFAULT_DIR
+    snprintf(out_path, out_size, "%s/bin/%s", ATP_DEFAULT_DIR, name);
+    if (access(out_path, X_OK) == 0) return 0;
+    snprintf(out_path, out_size, "%s/%s", ATP_DEFAULT_DIR, name);
+    if (access(out_path, X_OK) == 0) return 0;
+#endif
 
-    for (int i = 0; search_paths[i] != NULL; i++) {
-        snprintf(out_path, out_size, "%s/%s", search_paths[i], name);
-        if (access(out_path, X_OK) == 0) {
-            return 0;
+    /* 2. Check in system PATH environment */
+    const char *path_env = getenv("PATH");
+    if (path_env && *path_env) {
+        char path_copy[PATH_MAX * 2];
+        strncpy(path_copy, path_env, sizeof(path_copy) - 1);
+        path_copy[sizeof(path_copy) - 1] = '\0';
+
+        char *saveptr = NULL;
+        char *token = strtok_r(path_copy, ":", &saveptr);
+        while (token) {
+            if (*token) {
+                snprintf(out_path, out_size, "%s/%s", token, name);
+                if (access(out_path, X_OK) == 0) return 0;
+            }
+            token = strtok_r(NULL, ":", &saveptr);
         }
+    }
+
+    /* 3. Fallback standard system binary locations */
+    const char *sys_paths[] = {
+        "/system/bin", "/system/xbin", "/vendor/bin",
+        "/usr/local/bin", "/usr/bin", "/bin", NULL
+    };
+    for (int i = 0; sys_paths[i] != NULL; i++) {
+        snprintf(out_path, out_size, "%s/%s", sys_paths[i], name);
+        if (access(out_path, X_OK) == 0) return 0;
     }
 
     return -1;
@@ -776,15 +790,13 @@ int get_app_dir(char *buf, size_t size) {
         }
     }
 
-    /* Fallback checks for standard installation paths */
-    if (access("/data/adb/atp", F_OK) == 0) {
-        snprintf(buf, size, "/data/adb/atp");
+    /* Fallback checks for standard configurable installation prefix */
+#ifdef ATP_DEFAULT_DIR
+    if (access(ATP_DEFAULT_DIR, F_OK) == 0) {
+        snprintf(buf, size, "%s", ATP_DEFAULT_DIR);
         return 0;
     }
-    if (access("/data/adb/sing-box", F_OK) == 0) {
-        snprintf(buf, size, "/data/adb/sing-box");
-        return 0;
-    }
+#endif
 
     snprintf(buf, size, ".");
     return 0;
