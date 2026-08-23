@@ -1,0 +1,44 @@
+name: Benchmark & Performance Regression
+
+on:
+  push:
+    branches: [ pure-ebpf, main ]
+  pull_request:
+    branches: [ pure-ebpf, main ]
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    name: ATPd Performance Benchmark (Linux Runner)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang llvm libbpf-dev iproute2 curl
+
+      - name: Download & Install sing-box official package
+        run: |
+          wget -q https://github.com/debiansid/sing-box/releases/download/v1.14.0-beta.8/sing-box_1.14.0-beta.8_linux_amd64.deb
+          sudo dpkg -i sing-box_1.14.0-beta.8_linux_amd64.deb
+          sing-box version
+
+      - name: Build Native ATPd
+        run: |
+          make clean && make
+
+      - name: Run Benchmark Suite
+        run: |
+          chmod +x tests/benchmark_atpd.sh
+          sudo ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
+
+      - name: Publish Performance Summary to GitHub UI
+        if: always()
+        run: |
+          echo "## 🚀 ATPd Performance & Benchmark Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          cat bench_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
