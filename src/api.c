@@ -1731,37 +1731,79 @@ int api_get_sync(const char *url, char *response, size_t response_size) {
         return -1;
     }
 
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = AI_ADDRCONFIG;
+    struct sockaddr_in sin4;
+    struct sockaddr_in6 sin6;
+    struct sockaddr *sa = NULL;
+    socklen_t sa_len = 0;
+    int domain = AF_INET;
 
-    char port_str[16];
-    snprintf(port_str, sizeof(port_str), "%d", port);
-
-    if (getaddrinfo(host, port_str, &hints, &ai) != 0) {
-        LOG_ERROR("API sync: getaddrinfo failed for %s", host);
-        return -1;
+    if (inet_pton(AF_INET, host, &sin4.sin_addr) == 1) {
+        memset(&sin4, 0, sizeof(sin4));
+        sin4.sin_family = AF_INET;
+        sin4.sin_port = htons((uint16_t)port);
+        inet_pton(AF_INET, host, &sin4.sin_addr);
+        sa = (struct sockaddr *)&sin4;
+        sa_len = sizeof(sin4);
+        domain = AF_INET;
+    } else if (inet_pton(AF_INET6, host, &sin6.sin6_addr) == 1) {
+        memset(&sin6, 0, sizeof(sin6));
+        sin6.sin6_family = AF_INET6;
+        sin6.sin6_port = htons((uint16_t)port);
+        inet_pton(AF_INET6, host, &sin6.sin6_addr);
+        sa = (struct sockaddr *)&sin6;
+        sa_len = sizeof(sin6);
+        domain = AF_INET6;
     }
 
-    sock_fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
-    if (sock_fd < 0) {
-        LOG_ERROR("API sync: socket failed: %s", strerror(errno));
-        goto cleanup;
+    if (sa != NULL) {
+        sock_fd = socket(domain, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (sock_fd < 0) {
+            LOG_ERROR("API sync: socket failed: %s", strerror(errno));
+            return -1;
+        }
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+        setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        if (connect(sock_fd, sa, sa_len) < 0) {
+            close(sock_fd);
+            return -1;
+        }
+    } else {
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = AI_ADDRCONFIG;
+
+        char port_str[16];
+        snprintf(port_str, sizeof(port_str), "%d", port);
+
+        if (getaddrinfo(host, port_str, &hints, &ai) != 0) {
+            LOG_ERROR("API sync: getaddrinfo failed for %s", host);
+            return -1;
+        }
+
+        sock_fd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
+        if (sock_fd < 0) {
+            LOG_ERROR("API sync: socket failed: %s", strerror(errno));
+            freeaddrinfo(ai);
+            return -1;
+        }
+
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+        setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        if (connect(sock_fd, ai->ai_addr, ai->ai_addrlen) < 0) {
+            LOG_ERROR("API sync: connect failed: %s", strerror(errno));
+            freeaddrinfo(ai);
+            close(sock_fd);
+            return -1;
+        }
+
+        freeaddrinfo(ai);
+        ai = NULL;
     }
-
-    struct timeval tv = { .tv_sec = 30, .tv_usec = 0 };
-    setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(sock_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-    if (connect(sock_fd, ai->ai_addr, ai->ai_addrlen) < 0) {
-        LOG_ERROR("API sync: connect failed: %s", strerror(errno));
-        goto cleanup;
-    }
-
-    freeaddrinfo(ai);
-    ai = NULL;
 
     char host_header[256];
     api_build_host_header(host_header, sizeof(host_header), host, port);

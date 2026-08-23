@@ -34,6 +34,8 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <libgen.h>
@@ -467,6 +469,38 @@ static int do_restart(atp_options_t *opts) {
 
 static int do_status(atp_options_t *opts) {
     (void)opts;
+    char uds_path[SAFE_PATH_MAX];
+    const char *data_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ".";
+    snprintf(uds_path, sizeof(uds_path), "%s/%s", data_dir, ATP_COMMAND_SOCKET);
+
+    /* 1. Fast path: If daemon is running, query pre-computed status via UDS socket (< 0.2ms) */
+    int sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (sock >= 0) {
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, uds_path, sizeof(addr.sun_path) - 1);
+
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 100000 };
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            if (write(sock, "status\n", 7) == 7) {
+                char buf[8192];
+                ssize_t n = read(sock, buf, sizeof(buf) - 1);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    printf("%s", buf);
+                    close(sock);
+                    return 0;
+                }
+            }
+        }
+        close(sock);
+    }
+
+    /* 2. Standalone fallback if daemon is not active */
     service_ctx_t local_svc;
     memset(&local_svc, 0, sizeof(local_svc));
     service_init(&local_svc, &g_config);
