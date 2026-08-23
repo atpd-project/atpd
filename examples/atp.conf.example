@@ -1,24 +1,44 @@
+# =============================================================================
 # ATP (Advanced Transparent Proxy) Configuration File - Pure eBPF Edition
-# Location: /data/adb/atp/atp.conf
+# Default Location: /data/adb/atp/atp.conf (or /data/adb/sing-box/atp.conf)
+# =============================================================================
 
 # -----------------------------------------------------------------------------
-# Core & Supervisor Settings
+# 1. Directory & Path Configuration (Self-Adaptive / Zero-Config by default)
 # -----------------------------------------------------------------------------
 
-# Performance mode: 1=on (TCP BBR & Kernel Scheduler optimization)
+# Working root directory containing atpd, atp.conf, config.json, and bin/
+# Default: automatically derived from /proc/self/exe (e.g., /data/adb/atp or /data/adb/sing-box)
+# DATA_DIR="/data/adb/atp"
+
+# Runtime transient directory (stores PID files, UDS sockets, logs, state)
+# Default: "run" (resolves to <DATA_DIR>/run)
+# RUN_DIR="run"
+
+# Optional fine-grained path overrides
+# PID_FILE="run/atpd.pid"
+# LOG_FILE="run/atp.log"
+
+# -----------------------------------------------------------------------------
+# 2. Core & Supervisor Settings
+# -----------------------------------------------------------------------------
+
+# Performance mode: 1=on (TCP BBR & Kernel Scheduler optimization), 0=off
 PERFORMANCE_MODE=1
 
-# Include timestamp in logs: 1=yes, 0=no
+# Include timestamp in log outputs: 1=yes, 0=no
 LOG_TIMESTAMP=1
 
 # Process user and group for child supervision
+# Android default: "root:net_admin" (AID_NET_ADMIN=3005 for network socket capabilities)
+# Linux default:   "root:root"
 CORE_USER_GROUP="root:net_admin"
 
-# Restart delay in seconds after abnormal service exit
+# Restart delay in seconds after abnormal child exit
 RESTART_DELAY=2
 
 # -----------------------------------------------------------------------------
-# eBPF & Inbound Configuration
+# 3. eBPF & Inbound Configuration
 # -----------------------------------------------------------------------------
 
 # Enable kernel eBPF engine (cgroup socket interception)
@@ -28,10 +48,11 @@ ENABLE_EBPF=1
 PROXY_IPV6=1
 
 # DNS hijacking via eBPF: 1=enable, 0=disable
-DNS_HIJACK_ENABLE=1
+DNS_HIJACK_ENABLE=0
 
 # -----------------------------------------------------------------------------
-# External API Configuration (sing-box / Clash REST API)
+# 4. External API Configuration (Clash REST API)
+# Note: Automatically auto-synced from config.json if experimental.clash_api exists
 # -----------------------------------------------------------------------------
 
 # API host and port (default: 127.0.0.1:9090)
@@ -42,7 +63,7 @@ API_PORT=9090
 CLASH_SECRET=""
 
 # -----------------------------------------------------------------------------
-# Service Supervisor Parameters
+# 5. Service Supervisor Parameters
 # -----------------------------------------------------------------------------
 
 # Service start timeout in seconds
@@ -57,5 +78,8 @@ SERVICE_MAX_FAILURES=5
 # Circuit breaker cooldown in seconds
 SERVICE_CIRCUIT_COOLDOWN=60
 
-# Optional custom arguments for sing-box
-# SERVICE_ARGS="run -c /data/adb/atp/sing-box/config.json"
+# Optional custom arguments for sing-box execution
+# SERVICE_ARGS=""
+
+# Optional custom environment variables (space-separated KEY=VALUE pairs)
+# SERVICE_ENV=""

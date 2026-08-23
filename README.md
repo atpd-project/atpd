@@ -67,33 +67,88 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 
 ---
 
+## 📁 Workspace Directory Structure (Unified & Self-Adaptive)
+
+ATPd automatically derives its root working directory from its own binary path (`/proc/self/exe`), allowing arbitrary installation paths (`/data/adb/atp`, `/data/adb/sing-box`, etc.) with zero hardcoding:
+
+```text
+/data/adb/atp/ (or /data/adb/sing-box/)
+├── atpd                 ── ATP Daemon (C11 + Pure eBPF Reactor)
+├── atp.conf             ── ATP Framework Configuration
+├── config.json          ── sing-box Core Configuration
+├── cache.db             ── sing-box cache & rule-sets (auto-stored here via -D .)
+├── bin/
+│   └── sing-box         ── Proxy Core Binary (or at root ./sing-box)
+└── run/                 ── Isolated Runtime Directory (auto-created)
+    ├── atpd.pid         ── ATPd Daemon PID
+    ├── atpd.sock        ── UDS Local Control Socket (0600)
+    ├── atp.log          ── ATPd System Log
+    ├── sing-box.pid     ── sing-box Process PID
+    ├── sing-box.log     ── sing-box Process Log
+    └── traffic.state    ── Persistent Traffic Statistics
+```
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Installation
 
+Deploy `atpd`, `atp.conf`, and `sing-box` directly to your root directory:
+
 ```bash
 mkdir -p /data/adb/atp/bin /data/adb/atp/run
-cp build/bin/atpd /data/adb/atp/bin/
-chmod 755 /data/adb/atp/bin/atpd
+cp build/bin/atpd /data/adb/atp/
+cp examples/atp.conf.example /data/adb/atp/atp.conf
+cp /path/to/sing-box /data/adb/atp/bin/sing-box
+chmod 755 /data/adb/atp/atpd /data/adb/atp/bin/sing-box
 ```
 
 ### 2. Basic Commands
 
 ```bash
-# Start Pure eBPF daemon
-/data/adb/atp/bin/atpd start
+# Start daemon and proxy core (auto-daemonize)
+/data/adb/atp/atpd start
 
-# Check real-time status & VPN tunnel
-/data/adb/atp/bin/atpd status
+# Inspect live status, memory, CPU, threads, and VPN sensing
+/data/adb/atp/atpd status
+
+# Restart daemon and proxy core
+/data/adb/atp/atpd restart
+
+# Hot-reload configuration (SIGHUP)
+/data/adb/atp/atpd reload
+
+# Stop daemon and proxy core cleanly
+/data/adb/atp/atpd stop
 
 # Probe kernel eBPF capabilities
-/data/adb/atp/bin/atpd ebpf probe
+/data/adb/atp/atpd ebpf probe
+```
 
-# Reload configuration
-/data/adb/atp/bin/atpd reload
+### 3. Boot Service Setup (`service.d`)
 
-# Stop daemon
-/data/adb/atp/bin/atpd stop
+Create `/data/adb/service.d/atpd_service.sh` for automatic boot execution under Magisk, KernelSU, or APatch:
+
+```bash
+mkdir -p /data/adb/service.d
+cat << 'EOF' > /data/adb/service.d/atpd_service.sh
+#!/system/bin/sh
+until [ "$(getprop sys.boot_completed)" = "1" ]; do
+    sleep 3
+done
+sleep 2
+
+for candidate in /data/adb/atp/atpd /data/adb/sing-box/atpd; do
+    if [ -f "${candidate}" ]; then
+        chmod +x "${candidate}"
+        "${candidate}" start
+        break
+    fi
+done
+exit 0
+EOF
+chmod 755 /data/adb/service.d/atpd_service.sh
 ```
 
 ---
@@ -112,7 +167,7 @@ chmod 755 /data/adb/atp/bin/atpd
 │ ├─ CPU             │ 0.2%                                  │
 │ ├─ Threads         │ 14                                    │
 │ ├─ FDs             │ 32                                    │
-│ └─ Version         │ sing-box 1.11.0                       │
+│ └─ Version         │ sing-box 1.14.0-beta.8                │
 └────────────────────────────────────────────────────────────┘
 
 ┌──────────────────── PURE eBPF ENGINE ──────────────────────┐
@@ -142,17 +197,21 @@ chmod 755 /data/adb/atp/bin/atpd
 ## ⚙️ Configuration (`atp.conf`)
 
 ```ini
+# Directory Customization (Optional, auto-detected by default)
+# DATA_DIR="/data/adb/atp"
+# RUN_DIR="run"
+
 # Performance Mode (TCP BBR & Kernel Scheduler)
 PERFORMANCE_MODE=1
 
 # Log timestamping
 LOG_TIMESTAMP=1
 
-# Process user and group
-CORE_USER_GROUP=root:net_admin
+# Process user and group (Android: root:net_admin, Linux: root:root)
+CORE_USER_GROUP="root:net_admin"
 
-# Clash REST API connection
-API_HOST=127.0.0.1
+# Clash REST API connection (Auto-synced from config.json if available)
+API_HOST="127.0.0.1"
 API_PORT=9090
 CLASH_SECRET=""
 
@@ -160,7 +219,6 @@ CLASH_SECRET=""
 SERVICE_START_TIMEOUT=30
 SERVICE_STOP_TIMEOUT=10
 SERVICE_MAX_FAILURES=5
-SERVICE_CIRCUIT_THRESHOLD=5
 SERVICE_CIRCUIT_COOLDOWN=60
 ```
 
@@ -172,7 +230,8 @@ SERVICE_CIRCUIT_COOLDOWN=60
 # Clean & Build with Clang (LTO & Strip)
 make clean && make
 
-# Build artifact located at: build/bin/atpd (158 KB)
+# Run automated CI lifecycle tests (requires sing-box binary)
+sudo ./tests/test_singbox_lifecycle.sh
 ```
 
 ---
