@@ -403,25 +403,38 @@ static int service_spawn(service_ctx_t *ctx) {
             }
         }
 
-        struct passwd *pwd = getpwnam(ctx->user);
-        struct group *grp = getgrnam(ctx->group);
+        uid_t target_uid = getuid();
+        gid_t target_gid = getgid();
 
-        if (!pwd || !grp) {
-            LOG_ERROR("Service: invalid user/group: %s:%s", ctx->user, ctx->group);
-            _exit(127);
+        if (ctx->user[0]) {
+            struct passwd *pwd = getpwnam(ctx->user);
+            if (pwd) {
+                target_uid = pwd->pw_uid;
+                target_gid = pwd->pw_gid;
+            } else if (is_number(ctx->user)) {
+                target_uid = (uid_t)atoi(ctx->user);
+            }
         }
 
-        if (initgroups(ctx->user, grp->gr_gid) != 0) {
-            LOG_ERROR("Service: initgroups failed: %s", strerror(errno));
-            _exit(127);
+        if (ctx->group[0]) {
+            struct group *grp = getgrnam(ctx->group);
+            if (grp) {
+                target_gid = grp->gr_gid;
+            } else if (is_number(ctx->group)) {
+                target_gid = (gid_t)atoi(ctx->group);
+            }
         }
-        if (setgid(grp->gr_gid) != 0) {
-            LOG_ERROR("Service: setgid failed: %s", strerror(errno));
-            _exit(127);
-        }
-        if (setuid(pwd->pw_uid) != 0) {
-            LOG_ERROR("Service: setuid failed: %s", strerror(errno));
-            _exit(127);
+
+        if (getuid() == 0) {
+            if (ctx->user[0] && getpwnam(ctx->user)) {
+                initgroups(ctx->user, target_gid);
+            }
+            if (target_gid > 0) {
+                setgid(target_gid);
+            }
+            if (target_uid > 0) {
+                setuid(target_uid);
+            }
         }
 
         set_service_environment(ctx);
