@@ -145,15 +145,6 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
     if (!goroutines_out) return -1;
     *goroutines_out = -1;
 
-    static int s_cached_goroutines = 0;
-    static time_t s_last_cached = 0;
-    time_t now = time(NULL);
-
-    if (s_cached_goroutines > 0 && (now - s_last_cached) < 2) {
-        *goroutines_out = s_cached_goroutines;
-        return 0;
-    }
-
     int port = (ctx && ctx->debug_port > 0) ? ctx->debug_port : 0;
     const char *host = (ctx && ctx->debug_host[0]) ? ctx->debug_host : "127.0.0.1";
     if (port <= 0) return -1;
@@ -238,8 +229,6 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
                     if (doc) yyjson_doc_free(doc);
                     if (count > 0) {
                         close(sock);
-                        s_cached_goroutines = count;
-                        s_last_cached = now;
                         *goroutines_out = count;
                         return 0;
                     }

@@ -152,7 +152,7 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
     snprintf(threads_str, sizeof(threads_str), "%d", threads);
     snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
 
-    /* 1. Goroutines count from sing-box Native API / Runtime telemetry */
+    /* 1. Goroutines count from sing-box's debug runtime endpoint. */
     int gr = api ? api_get_goroutines_count(api) : api_get_goroutines_count(&g_api_ctx);
     if (gr > 0) {
         snprintf(goroutines_str, sizeof(goroutines_str), "%d", gr);
