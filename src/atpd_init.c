@@ -142,6 +142,7 @@ int atpd_init_phase_api(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing sing-box Native API client...");
     
     api_init(ctx->api, ctx->config);
+    atpd_set_vpn_mode_callback(api_vpn_mode_callback, ctx->api);
     if (ctx->reactor) {
         api_start_with_reactor(ctx->api, ctx->reactor);
     }

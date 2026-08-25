@@ -4,6 +4,7 @@
 #include "atp.h"
 #include "reactor.h"
 #include "singbox_api.h"
+#include "atpd_context.h"
 #include <sys/types.h>
 #include <time.h>
 
@@ -28,5 +29,6 @@ int api_check_health_sync(api_ctx_t *ctx);
 int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size);
 int api_get_status_sync(api_ctx_t *ctx, singbox_status_t *status);
 int api_get_goroutines_count(api_ctx_t *ctx);
+void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata);
 
 #endif

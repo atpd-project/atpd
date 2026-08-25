@@ -52,8 +52,8 @@ UI_EMOJI_ENABLED=1
 
 # Go runtime telemetry is read from the Native API SubscribeStatus stream.
 # No separate sing-box debug listener is required.
-# The dashboard status compares the live mode with
-# experimental.clash_api.default_mode from sing-box config.json.
+# Clash mode is read live from the optional sing-box Native API service.
+# No local default is used when the Clash mode service is unavailable.
 
 # -----------------------------------------------------------------------------
 # 4. Service Supervisor & Circuit Breaker Parameters

@@ -12,10 +12,9 @@
     }
   ],
   experimental: {
-    clash_api: {
-      # Optional. Empty uses sing-box's built-in default: Rule.
-      default_mode: Rule
-    }
+    # Enables the optional Clash-mode RPCs used for Google VPN handover.
+    # Add a route rule with clash_mode: Google VPN to make that mode valid.
+    clash_api: {}
   },
   inbounds: [
     {
@@ -61,6 +60,10 @@
       },
       {
         ip_is_private: true,
+        outbound: direct
+      },
+      {
+        clash_mode: Google VPN,
         outbound: direct
       },
       {

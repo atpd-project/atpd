@@ -159,7 +159,6 @@ void config_set_defaults(atp_config_t *cfg) {
     snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", DEFAULT_API_HOST);
     cfg->api.secret[0] = '\0';
 
-    config_sync_from_singbox_json(cfg);
 }
 
 static void config_sync_from_singbox_json(atp_config_t *cfg) {
@@ -230,10 +229,10 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
                     const char *colon = strrchr(listen_str, ':');
                     if (colon) {
                         int port = atoi(colon + 1);
-                        if (port > 0) {
+                        if (port > 0 && cfg->api.port == DEFAULT_API_PORT) {
                             cfg->api.port = port;
                         }
-                        if (colon != listen_str) {
+                        if (colon != listen_str && strcmp(cfg->api.host, DEFAULT_API_HOST) == 0) {
                             size_t host_len = (size_t)(colon - listen_str);
                             if (host_len < sizeof(cfg->api.host)) {
                                 strncpy(cfg->api.host, listen_str, host_len);
@@ -241,7 +240,9 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
                             }
                         }
                     } else {
-                        snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", listen_str);
+                        if (strcmp(cfg->api.host, DEFAULT_API_HOST) == 0) {
+                            snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", listen_str);
+                        }
                     }
                 }
             }
@@ -252,7 +253,7 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
             }
             if (port_val && yyjson_is_num(port_val)) {
                 int p = yyjson_get_int(port_val);
-                if (p > 0) {
+                if (p > 0 && cfg->api.port == DEFAULT_API_PORT) {
                     cfg->api.port = p;
                 }
             }
@@ -262,23 +263,6 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
                 const char *sec = yyjson_get_str(secret_val);
                 if (sec && sec[0] && cfg->api.secret[0] == '\0') {
                     snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", sec);
-                }
-            }
-        }
-
-        /* Keep sing-box Clash API's configured default mode for status
-         * comparison. An empty value intentionally means sing-box's own
-         * default (Rule), as defined by experimental/clashapi.Server. */
-        yyjson_val *experimental = yyjson_obj_get(root, "experimental");
-        if (experimental && yyjson_is_obj(experimental)) {
-            yyjson_val *clash_api = yyjson_obj_get(experimental, "clash_api");
-            if (clash_api && yyjson_is_obj(clash_api)) {
-                yyjson_val *default_mode = yyjson_obj_get(clash_api, "default_mode");
-                if (default_mode && yyjson_is_str(default_mode)) {
-                    const char *mode = yyjson_get_str(default_mode);
-                    if (mode && mode[0]) {
-                        snprintf(cfg->api.default_mode, sizeof(cfg->api.default_mode), "%s", mode);
-                    }
                 }
             }
         }
@@ -405,6 +389,7 @@ int config_reload(atp_config_t *cfg) {
         pthread_mutex_destroy(&new_config.mutex);
         return ret;
     }
+    config_sync_from_singbox_json(&new_config);
 
     atp_config_t old_config;
     memset(&old_config, 0, sizeof(old_config));

@@ -300,9 +300,13 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
 and dashboard control (port 9080 in this example). ATPd reads the same
 `SubscribeStatus` gRPC-Web stream used by the sing-box dashboard; its status
 message supplies memory, goroutines, connection counts, traffic rates, and
-traffic totals. No separate debug listener is required. The displayed Clash mode is compared with
-`experimental.clash_api.default_mode`; when omitted, sing-box defines the
-default as `Rule`.
+traffic totals. No separate debug listener is required. Clash mode is queried
+live through the optional Native API Clash-mode RPC; if that service is not
+enabled, ATPd displays `N/A` rather than inferring a mode from configuration.
+When an `ipsecN` Google VPN interface reaches the debounced `READY` state,
+ATPd requests `Google VPN` through the same Native API and verifies the live
+mode. On teardown or return to `IDLE`, it requests `Rule`. The mode must be
+present in sing-box's calculated Clash mode list.
 
 ---
 

@@ -33,6 +33,7 @@
 #define NL_DUMP_SIZE 32768
 #define NETLINK_RECV_TIMEOUT_MS 3000
 #define NETLINK_DEBOUNCE_MS 500
+#define NETLINK_VPN_SETTLE_MS 6000
 
 #ifndef XFRMA_RTA
 #define XFRMA_RTA(r) ((struct rtattr*)((char*)(r) + NLMSG_ALIGN(sizeof(struct xfrm_usersa_info))))
@@ -54,6 +55,7 @@ static nl_callback_t g_callback = NULL;
 static void *g_userdata = NULL;
 static atomic_uint g_seq = 0;
 static pthread_mutex_t g_nl_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void trigger_network_refresh_delay(reactor_t *r, int delay_ms);
 
 static reactor_t *g_debounce_reactor = NULL;
 static reactor_timer_t *g_debounce_timer = NULL;
@@ -296,6 +298,15 @@ int netlink_init(nl_callback_t callback, void *userdata) {
 }
 
 int netlink_xfrm_init(reactor_t *r) {
+    if (g_xfrm_fd >= 0) {
+        if (r && !atomic_load(&g_xfrm_registered)) {
+            reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
+            g_xfrm_reactor = r;
+            atomic_store(&g_xfrm_registered, 1);
+        }
+        return g_xfrm_fd;
+    }
+
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_XFRM);
     if (fd < 0) {
         LOG_WARN("[XFRM] socket(NETLINK_XFRM) failed: %s (Google VPN auto-detection disabled)", strerror(errno));
@@ -366,13 +377,13 @@ void netlink_xfrm_event_cb(reactor_t *r, int fd, uint32_t events, void *userdata
                     snprintf(ifname, sizeof(ifname), "ipsec%u", if_id - 1);
 
                     atpd_vpn_state_transition(VPN_STATE_PREDICTING, if_id, ifname);
-                    trigger_network_refresh(g_debounce_reactor);
+                    trigger_network_refresh_delay(g_debounce_reactor, NETLINK_VPN_SETTLE_MS);
                     break;
                 }
             }
         } else if (h->nlmsg_type == XFRM_MSG_DELSA) {
             atpd_vpn_state_transition(VPN_STATE_TEARDOWN, 0, NULL);
-            trigger_network_refresh(g_debounce_reactor);
+            trigger_network_refresh_delay(g_debounce_reactor, NETLINK_VPN_SETTLE_MS);
         }
     }
 }
@@ -572,7 +583,7 @@ static void debounce_timer_cb(reactor_t *r, reactor_timer_t *timer, void *userda
     }
 }
 
-static void trigger_network_refresh(reactor_t *r) {
+static void trigger_network_refresh_delay(reactor_t *r, int delay_ms) {
     if (!r) return;
 
     pthread_mutex_lock(&g_debounce_lock);
@@ -580,8 +591,17 @@ static void trigger_network_refresh(reactor_t *r) {
         reactor_cancel_timer(r, g_debounce_timer);
         g_debounce_timer = NULL;
     }
-    g_debounce_timer = reactor_add_timer(r, NETLINK_DEBOUNCE_MS, 0, debounce_timer_cb, NULL);
+    g_debounce_timer = reactor_add_timer(r, delay_ms, 0, debounce_timer_cb, NULL);
     pthread_mutex_unlock(&g_debounce_lock);
+}
+
+static void trigger_network_refresh(reactor_t *r) {
+    trigger_network_refresh_delay(r, NETLINK_DEBOUNCE_MS);
+}
+
+void netlink_refresh_state(reactor_t *r) {
+    /* Match the shell sentinel's initial/transition settle window. */
+    trigger_network_refresh_delay(r, NETLINK_VPN_SETTLE_MS);
 }
 
 void netlink_handle_event(reactor_t *r, int fd, uint32_t events, void *data) {

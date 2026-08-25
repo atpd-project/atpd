@@ -204,7 +204,6 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
 
 static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_config_t *cfg) {
     char current_mode[64] = {0};
-    char default_mode[64];
 
     ui_table_begin();
     ui_table_header("NATIVE API & MODE");
@@ -228,9 +227,6 @@ static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_confi
     snprintf(api_info, sizeof(api_info), "Native API (Port %d)", port);
     ui_table_subrow_color("├─", "API Engine", api_info, COLOR_GREEN);
 
-    snprintf(default_mode, sizeof(default_mode), "%s",
-             (cfg && cfg->api.default_mode[0]) ? cfg->api.default_mode : "Rule");
-
     api_ctx_t *mode_api = api ? api : &g_api_ctx;
     if (api_get_mode_sync(mode_api, current_mode, sizeof(current_mode)) == 0 && current_mode[0]) {
         const char *color = COLOR_GREEN;
@@ -238,16 +234,10 @@ static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_confi
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
         else if (strcmp(current_mode, "Google VPN") == 0) color = COLOR_GREEN;
         char mode_display[128];
-        if (strcmp(current_mode, default_mode) == 0) {
-            snprintf(mode_display, sizeof(mode_display), "%s (default)", current_mode);
-        } else {
-            snprintf(mode_display, sizeof(mode_display), "%s (default: %s)", current_mode, default_mode);
-        }
+        snprintf(mode_display, sizeof(mode_display), "%s", current_mode);
         ui_table_subrow_color("└─", "Clash Mode", mode_display, color);
     } else {
-        char mode_display[128];
-        snprintf(mode_display, sizeof(mode_display), "%s (configured default)", default_mode);
-        ui_table_subrow_color("└─", "Clash Mode", mode_display, COLOR_YELLOW);
+        ui_table_subrow_color("└─", "Clash Mode", "N/A (service unavailable)", COLOR_YELLOW);
     }
 
     ui_table_end();

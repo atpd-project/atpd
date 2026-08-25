@@ -35,6 +35,10 @@ typedef enum {
 struct atpd_session;
 struct atpd_session_list;
 
+typedef void (*atpd_vpn_mode_callback_t)(vpn_state_t state,
+                                         const char *iface,
+                                         void *userdata);
+
 typedef struct {
     /* === VPN State === */
     atomic_int vpn_state;           /* Changed to atomic */
@@ -46,6 +50,8 @@ typedef struct {
     void (*vpn_teardown_cb)(void);
     uint64_t vpn_transitions;
     uint64_t splice_bytes_total;
+    atpd_vpn_mode_callback_t vpn_mode_callback;
+    void *vpn_mode_userdata;
 
     /* === eBPF State === */
     ebpf_state_t ebpf_state;
@@ -95,6 +101,7 @@ void atpd_context_init(void);
 /* VPN State */
 void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char *iface);
 const char* vpn_state_string(vpn_state_t state);
+void atpd_set_vpn_mode_callback(atpd_vpn_mode_callback_t callback, void *userdata);
 
 /* eBPF State */
 void atpd_ebpf_state_transition(ebpf_state_t new_state);

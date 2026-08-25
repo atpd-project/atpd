@@ -41,6 +41,7 @@ int nl_vpn_detect(void);
 int nl_link_get_vpn_interface(char *iface, size_t size);
 
 void netlink_set_reactor(reactor_t *r);
+void netlink_refresh_state(reactor_t *r);
 
 /* ========== XFRM Listener (Google VPN Detection) ========== */
 int netlink_xfrm_init(reactor_t *r);

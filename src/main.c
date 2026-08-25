@@ -355,6 +355,9 @@ static void run_event_loop(void) {
         return;
     }
 
+    /* Reconcile an already-present VPN after sing-box has been spawned. */
+    netlink_refresh_state(g_reactor);
+
     g_running = 1;
 #if defined(__GLIBC__) && !defined(__ANDROID__)
     malloc_trim(0);

@@ -66,6 +66,8 @@ void atpd_context_init(void) {
     g_atpd_ctx.vpn_teardown_cb = atpd_vpn_killswitch;
     g_atpd_ctx.vpn_transitions = 0;
     g_atpd_ctx.splice_bytes_total = 0;
+    g_atpd_ctx.vpn_mode_callback = NULL;
+    g_atpd_ctx.vpn_mode_userdata = NULL;
     
     /* eBPF State */
     g_atpd_ctx.ebpf_state = EBPF_STATE_UNINITIALIZED;
@@ -109,8 +111,10 @@ void atpd_context_init(void) {
 void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char *iface) {
     int old_int = atomic_exchange_explicit(&g_atpd_ctx.vpn_state, (int)new_state, memory_order_acq_rel);
     vpn_state_t old_state = (vpn_state_t)old_int;
+    bool iface_changed = iface && iface[0] &&
+                         strcmp(g_atpd_ctx.vpn_iface, iface) != 0;
 
-    if (old_state == new_state) return;
+    if (old_state == new_state && !iface_changed) return;
 
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -128,12 +132,23 @@ void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char
 
     if (iface && iface[0]) {
         snprintf(g_atpd_ctx.vpn_iface, sizeof(g_atpd_ctx.vpn_iface), "%s", iface);
+    } else if (new_state == VPN_STATE_IDLE || new_state == VPN_STATE_TEARDOWN) {
+        g_atpd_ctx.vpn_iface[0] = '\0';
+    }
+
+    if (g_atpd_ctx.vpn_mode_callback) {
+        g_atpd_ctx.vpn_mode_callback(new_state, iface, g_atpd_ctx.vpn_mode_userdata);
     }
 
     if (new_state == VPN_STATE_TEARDOWN && g_atpd_ctx.vpn_teardown_cb) {
         LOG_WARN("VPN_STATE: Kill-switch activated, cleaning up sessions");
         g_atpd_ctx.vpn_teardown_cb();
     }
+}
+
+void atpd_set_vpn_mode_callback(atpd_vpn_mode_callback_t callback, void *userdata) {
+    g_atpd_ctx.vpn_mode_callback = callback;
+    g_atpd_ctx.vpn_mode_userdata = userdata;
 }
 
 void atpd_ebpf_state_transition(ebpf_state_t new_state) {
