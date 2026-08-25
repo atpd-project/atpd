@@ -280,7 +280,7 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
             "Content-Type: application/grpc-web+proto\r\n"
             "X-Grpc-Web: 1\r\n"
             "Accept: application/grpc-web+proto\r\n"
-            "Content-Length: 5\r\n"
+            "Content-Length: 11\r\n"
             "User-Agent: ATPd-Native/2.0\r\n"
             "Authorization: Bearer %s\r\n"
             "Connection: close\r\n\r\n",
@@ -292,7 +292,7 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
             "Content-Type: application/grpc-web+proto\r\n"
             "X-Grpc-Web: 1\r\n"
             "Accept: application/grpc-web+proto\r\n"
-            "Content-Length: 5\r\n"
+            "Content-Length: 11\r\n"
             "User-Agent: ATPd-Native/2.0\r\n"
             "Connection: close\r\n\r\n",
             host, port);
@@ -312,17 +312,21 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
         if (n <= 0) break;
         sent += (size_t)n;
     }
-    unsigned char frame[5] = {0, 0, 0, 0, 0};
+    /* Match the official dashboard: SubscribeStatusRequest.interval = 1s
+     * (1,000,000,000 nanoseconds, protobuf field 1). */
+    const unsigned char request_frame[] = {0x00, 0x00, 0x00, 0x00, 0x06,
+                                           0x08, 0x80, 0x94, 0xeb, 0xdc, 0x03};
     if (sent == (size_t)req_len) {
         sent = 0;
-        while (sent < sizeof(frame)) {
-            ssize_t n = send(sock, frame + sent, sizeof(frame) - sent, MSG_NOSIGNAL);
+        while (sent < sizeof(request_frame)) {
+            ssize_t n = send(sock, request_frame + sent,
+                             sizeof(request_frame) - sent, MSG_NOSIGNAL);
             if (n < 0 && errno == EINTR) continue;
             if (n <= 0) break;
             sent += (size_t)n;
         }
     }
-    if (sent != sizeof(frame)) {
+    if (sent != sizeof(request_frame)) {
         close(sock);
         return -1;
     }
