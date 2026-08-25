@@ -237,7 +237,7 @@ static int service_binary_exists(service_ctx_t *ctx) {
     return access(ctx->bin_path, X_OK) == 0;
 }
 
-static void service_pid_path(service_ctx_t *ctx, char *path, size_t size) {
+void service_pid_path(service_ctx_t *ctx, char *path, size_t size) {
     if (!ctx || !path || size == 0) return;
     snprintf(path, size, "%s", ctx->log_path);
     char *slash = strrchr(path, '/');

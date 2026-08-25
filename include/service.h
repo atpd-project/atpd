@@ -91,5 +91,6 @@ void service_health_check_cb(reactor_t *r, reactor_timer_t *timer, void *userdat
 void service_sigchld_cb(reactor_t *r, int signo, void *userdata);
 const char* service_state_string(service_state_t state);
 void service_rotate_log(service_ctx_t *ctx);
+void service_pid_path(service_ctx_t *ctx, char *path, size_t size);
 
 #endif
