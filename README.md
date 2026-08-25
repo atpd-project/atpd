@@ -294,7 +294,9 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
 and dashboard control (port 9080 in this example). ATPd reads the same
 `SubscribeStatus` gRPC-Web stream used by the sing-box dashboard; its status
 message contains the current `runtime.NumGoroutine()` value. No separate debug
-listener is required.
+listener is required. The displayed Clash mode is compared with
+`experimental.clash_api.default_mode`; when omitted, sing-box defines the
+default as `Rule`.
 
 ---
 

@@ -11,6 +11,12 @@
       listen_port: 9080
     }
   ],
+  experimental: {
+    clash_api: {
+      # Optional. Empty uses sing-box's built-in default: Rule.
+      default_mode: Rule
+    }
+  },
   inbounds: [
     {
       type: ebpf,

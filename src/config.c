@@ -266,6 +266,23 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
             }
         }
 
+        /* Keep sing-box Clash API's configured default mode for status
+         * comparison. An empty value intentionally means sing-box's own
+         * default (Rule), as defined by experimental/clashapi.Server. */
+        yyjson_val *experimental = yyjson_obj_get(root, "experimental");
+        if (experimental && yyjson_is_obj(experimental)) {
+            yyjson_val *clash_api = yyjson_obj_get(experimental, "clash_api");
+            if (clash_api && yyjson_is_obj(clash_api)) {
+                yyjson_val *default_mode = yyjson_obj_get(clash_api, "default_mode");
+                if (default_mode && yyjson_is_str(default_mode)) {
+                    const char *mode = yyjson_get_str(default_mode);
+                    if (mode && mode[0]) {
+                        snprintf(cfg->api.default_mode, sizeof(cfg->api.default_mode), "%s", mode);
+                    }
+                }
+            }
+        }
+
     }
 
     yyjson_doc_free(doc);
