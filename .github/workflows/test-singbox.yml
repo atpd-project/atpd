@@ -10,6 +10,7 @@ on:
       - staging
       - ebpf
       - pure-ebpf
+      - ebpf-native-api
       - 'ebpf/**'
       - 'feat-*'
       - 'feat/**'
@@ -21,7 +22,7 @@ on:
       - 'Makefile'
       - '.github/workflows/test-singbox.yml'
   pull_request:
-    branches: [main, dev, ebpf, pure-ebpf]
+    branches: [main, dev, ebpf, pure-ebpf, ebpf-native-api]
   workflow_dispatch:
 
 concurrency:
