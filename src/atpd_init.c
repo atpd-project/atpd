@@ -57,6 +57,24 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing logger...");
     
     logger_init();
+    if (ctx->config->core.log_file[0]) {
+        char log_path[PATH_MAX];
+        if (ctx->config->core.log_file[0] == '/') {
+            snprintf(log_path, sizeof(log_path), "%s", ctx->config->core.log_file);
+        } else {
+            snprintf(log_path, sizeof(log_path), "%s/%s",
+                     ctx->config->core.data_dir[0] ? ctx->config->core.data_dir : ".",
+                     ctx->config->core.log_file);
+        }
+        char log_dir[PATH_MAX];
+        snprintf(log_dir, sizeof(log_dir), "%s", log_path);
+        char *slash = strrchr(log_dir, '/');
+        if (slash) {
+            *slash = '\0';
+            mkdir_recursive(log_dir, 0755);
+        }
+        log_set_file(log_path);
+    }
     log_set_level(ctx->opts->log_level);
     if (ctx->opts->no_color) {
         log_set_color(0);

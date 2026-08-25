@@ -237,6 +237,17 @@ static int service_binary_exists(service_ctx_t *ctx) {
     return access(ctx->bin_path, X_OK) == 0;
 }
 
+static void service_pid_path(service_ctx_t *ctx, char *path, size_t size) {
+    if (!ctx || !path || size == 0) return;
+    snprintf(path, size, "%s", ctx->log_path);
+    char *slash = strrchr(path, '/');
+    if (slash) {
+        snprintf(slash + 1, size - (size_t)(slash + 1 - path), "sing-box.pid");
+    } else {
+        snprintf(path, size, "sing-box.pid");
+    }
+}
+
 void service_rotate_log(service_ctx_t *ctx) {
     struct stat st;
     char backup_path[512];
@@ -431,10 +442,16 @@ static int service_spawn(service_ctx_t *ctx) {
                 initgroups(ctx->user, target_gid);
             }
             if (target_gid > 0) {
-                setgid(target_gid);
+                if (setgid(target_gid) != 0) {
+                    LOG_ERROR("Service: setgid failed: %s", strerror(errno));
+                    _exit(127);
+                }
             }
             if (target_uid > 0) {
-                setuid(target_uid);
+                if (setuid(target_uid) != 0) {
+                    LOG_ERROR("Service: setuid failed: %s", strerror(errno));
+                    _exit(127);
+                }
             }
         }
 
@@ -460,9 +477,11 @@ static int service_spawn(service_ctx_t *ctx) {
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
 
     char pid_path[PATH_MAX];
-    snprintf(pid_path, sizeof(pid_path), "%s/%s", ctx->work_dir[0] ? ctx->work_dir : ".", PROXY_PID_FILE);
+    service_pid_path(ctx, pid_path, sizeof(pid_path));
     char run_dir[PATH_MAX];
-    snprintf(run_dir, sizeof(run_dir), "%s/%s", ctx->work_dir[0] ? ctx->work_dir : ".", ATP_RUN_DIR);
+    snprintf(run_dir, sizeof(run_dir), "%s", ctx->log_path);
+    char *run_slash = strrchr(run_dir, '/');
+    if (run_slash) *run_slash = '\0';
     mkdir_recursive(run_dir, 0755);
     FILE *pfp = fopen(pid_path, "w");
     if (pfp) {
@@ -648,7 +667,7 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
             ctx->running_healthy = 0;
 
             char pid_path[PATH_MAX];
-            snprintf(pid_path, sizeof(pid_path), "%s/%s", ctx->work_dir[0] ? ctx->work_dir : ".", PROXY_PID_FILE);
+            service_pid_path(ctx, pid_path, sizeof(pid_path));
             unlink(pid_path);
 
             if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
@@ -816,7 +835,12 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     }
 
     /* 4. Logs and user/group */
-    snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/%s", base_dir, PROXY_LOG_FILE);
+    const char *run_dir = cfg->core.run_dir[0] ? cfg->core.run_dir : ATP_RUN_DIR;
+    if (run_dir[0] == '/') {
+        snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/sing-box.log", run_dir);
+    } else {
+        snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/%s/sing-box.log", base_dir, run_dir);
+    }
     snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core.core_user);
     snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core.core_group);
 
@@ -967,14 +991,7 @@ int service_get_pid(service_ctx_t *ctx) {
     }
 
     char pid_path[PATH_MAX];
-    snprintf(pid_path, sizeof(pid_path), "%s", ctx->log_path);
-    char *dot = strrchr(pid_path, '.');
-    if (dot) {
-        snprintf(dot, sizeof(pid_path) - (dot - pid_path), ".pid");
-    } else {
-        const char *base_dir = ctx->work_dir[0] ? ctx->work_dir : ".";
-        snprintf(pid_path, sizeof(pid_path), "%s/%s", base_dir, PROXY_PID_FILE);
-    }
+    service_pid_path(ctx, pid_path, sizeof(pid_path));
 
     FILE *f = fopen(pid_path, "r");
     if (f) {

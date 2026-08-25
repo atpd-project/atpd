@@ -239,16 +239,23 @@ static void atpd_session_destroy_internal(atpd_session_t *s) {
 /* ========== Session Registration ========== */
 
 int atpd_session_register(reactor_t *r, atpd_session_t *s) {
-    if (!s) return -1;
+    if (!r || !s) return -1;
     
     /* Hold reference for each callback */
     atpd_session_get(s);
-    reactor_add_fd_ex(r, s->fd_in, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
-                      session_in_cb, session_free_cb, s);
-    
+    if (reactor_add_fd_ex(r, s->fd_in, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
+                          session_in_cb, session_free_cb, s) != 0) {
+        atpd_session_put(s);
+        return -1;
+    }
+
     atpd_session_get(s);
-    reactor_add_fd_ex(r, s->fd_out, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
-                      session_out_cb, session_free_cb, s);
+    if (reactor_add_fd_ex(r, s->fd_out, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE,
+                          session_out_cb, session_free_cb, s) != 0) {
+        reactor_remove_fd(r, s->fd_in);
+        atpd_session_put(s);
+        return -1;
+    }
     
     atomic_store(&s->state, ATPD_SESSION_ACTIVE);
     LOG_DEBUG("SESSION[%lu]: registered, ref=%u", s->session_id, atomic_load(&s->ref_count));

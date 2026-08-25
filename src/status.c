@@ -29,6 +29,18 @@
 #define THERMAL_TEMP_WARN 75000
 #define THERMAL_TEMP_CRITICAL 85000
 
+static void get_daemon_pid_path(char *path, size_t size) {
+    const char *configured = g_config.core.pid_file[0] ?
+        g_config.core.pid_file : ATP_PID_FILE;
+    if (configured[0] == '/') {
+        snprintf(path, size, "%s", configured);
+    } else {
+        snprintf(path, size, "%s/%s",
+                 g_config.core.data_dir[0] ? g_config.core.data_dir : ".",
+                 configured);
+    }
+}
+
 static void format_uptime_human(int seconds, char *buf, size_t size) {
     int days = seconds / 86400;
     int hours = (seconds % 86400) / 3600;
@@ -321,8 +333,7 @@ static void status_show_monitors(void) {
     ui_table_header("MONITORS & SENSING");
 
     char pid_path[PATH_MAX];
-    snprintf(pid_path, sizeof(pid_path), "%s/%s",
-             g_config.core.data_dir[0] ? g_config.core.data_dir : ATP_DEFAULT_DIR, ATP_PID_FILE);
+    get_daemon_pid_path(pid_path, sizeof(pid_path));
     int daemon_running = (access(pid_path, F_OK) == 0);
 
     if (daemon_running || netlink_get_fd() >= 0) {
@@ -506,8 +517,7 @@ static void status_show_engine_v2(void) {
     ui_table_header("REACTOR ENGINE (v2.0)");
 
     char pid_path[PATH_MAX];
-    snprintf(pid_path, sizeof(pid_path), "%s/%s",
-             g_config.core.data_dir[0] ? g_config.core.data_dir : ATP_DEFAULT_DIR, ATP_PID_FILE);
+    get_daemon_pid_path(pid_path, sizeof(pid_path));
     FILE *fp_pid = fopen(pid_path, "r");
     int daemon_pid = 0;
     int daemon_alive = 0;
@@ -596,8 +606,7 @@ static void status_show_system(void) {
         ui_table_subrow("├─", "🌡️ CPU Temp", "N/A");
     }
 
-    snprintf(pid_path, sizeof(pid_path), "%s/%s",
-             g_config.core.data_dir[0] ? g_config.core.data_dir : ATP_DEFAULT_DIR, ATP_PID_FILE);
+    get_daemon_pid_path(pid_path, sizeof(pid_path));
     FILE *fp_pid = fopen(pid_path, "r");
     int daemon_pid = 0;
     if (fp_pid) {

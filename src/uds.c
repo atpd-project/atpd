@@ -142,6 +142,10 @@ static void handle_stop(int fd) {
     atpd_session_emergency_drain_all();
 
     g_uds_stop_requested = 1;
+    g_running = 0;
+    if (g_uds_reactor) {
+        reactor_stop(g_uds_reactor);
+    }
 }
 
 static void handle_ping(int fd) {

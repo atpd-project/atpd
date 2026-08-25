@@ -397,7 +397,7 @@ int netlink_get_active_vpn(char *output, size_t size) {
         return -1;
     }
 
-    struct nl_link_info links[32] = {{0}};
+    struct nl_link_info links[32] = {0};
     struct nl_parse_ctx ctx = { .links = links, .max_count = 32, .count = 0 };
     struct {
         struct nlmsghdr nlh;
@@ -472,7 +472,7 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
     }
     if (sync_fd < 0) return -1;
 
-    struct nl_link_info links[1] = {{0}};
+    struct nl_link_info links[1] = {0};
     struct nl_parse_ctx ctx = { .links = links, .max_count = 1, .count = 0 };
     struct {
         struct nlmsghdr nlh;

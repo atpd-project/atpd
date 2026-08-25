@@ -64,6 +64,22 @@ static int config_parse_int(const char *str, int *out) {
     return 0;
 }
 
+static void config_apply_run_dir_defaults(atp_config_t *cfg) {
+    if (!cfg || !cfg->core.run_dir[0] || strcmp(cfg->core.run_dir, ATP_RUN_DIR) == 0) {
+        return;
+    }
+
+    /* Keep explicit PID_FILE/LOG_FILE overrides; only move untouched defaults. */
+    if (strcmp(cfg->core.pid_file, ATP_PID_FILE) == 0) {
+        snprintf(cfg->core.pid_file, sizeof(cfg->core.pid_file),
+                 "%s/atpd.pid", cfg->core.run_dir);
+    }
+    if (strcmp(cfg->core.log_file, ATP_LOG_FILE) == 0) {
+        snprintf(cfg->core.log_file, sizeof(cfg->core.log_file),
+                 "%s/atp.log", cfg->core.run_dir);
+    }
+}
+
 static __attribute__((unused)) uint64_t snapshot_update(const char *backup_path, int has_backup) {
     uint64_t version = 0;
     pthread_mutex_lock(&g_snapshot_mutex);
@@ -315,6 +331,7 @@ int config_load_file(const char *path, atp_config_t *cfg) {
         parse_key_value(k, v, cfg);
     }
     fclose(fp);
+    config_apply_run_dir_defaults(cfg);
     return ATP_OK;
 }
 

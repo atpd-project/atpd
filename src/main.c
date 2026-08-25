@@ -23,6 +23,7 @@
 #include "cleanup.h"
 #include "reactor.h"
 #include "uds.h"
+#include "session.h"
 #include "singbox_api.h"
 #include "config_validator.h"
 
@@ -54,9 +55,6 @@
 #define g_reload g_atpd.reload
 #define g_show_status g_atpd.show_status
 
-static volatile sig_atomic_t g_signal_pending = 0;
-static volatile sig_atomic_t g_signal_code = 0;
-
 static void run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
 static void on_idle(reactor_t *r, void *userdata);
@@ -68,13 +66,29 @@ static int process_is_atpd(pid_t pid);
 
 static int g_pid_fd = -1;
 
+static void resolve_socket_path(char *path, size_t size) {
+    const char *run_dir = g_config.core.run_dir[0] ? g_config.core.run_dir : ATP_RUN_DIR;
+    if (run_dir[0] == '/') {
+        snprintf(path, size, "%s/atpd.sock", run_dir);
+    } else {
+        snprintf(path, size, "%s/%s/atpd.sock",
+                 g_config.core.data_dir[0] ? g_config.core.data_dir : ".", run_dir);
+    }
+}
+
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
         snprintf(pp, size, "%s", opts->pid_file);
-    } else if (g_config.core.data_dir[0]) {
-        snprintf(pp, size, "%s/%s", g_config.core.data_dir, ATP_PID_FILE);
     } else {
-        snprintf(pp, size, "./atpd.pid");
+        const char *configured = g_config.core.pid_file[0] ?
+            g_config.core.pid_file : ATP_PID_FILE;
+        if (configured[0] == '/') {
+            snprintf(pp, size, "%s", configured);
+        } else {
+            snprintf(pp, size, "%s/%s",
+                     g_config.core.data_dir[0] ? g_config.core.data_dir : ".",
+                     configured);
+        }
     }
 }
 
@@ -204,31 +218,25 @@ static void daemonize(void) {
 }
 
 static void on_signal(reactor_t *r, int sig, void *userdata) {
-    (void)r;
     (void)userdata;
-    g_signal_pending = 1;
-    g_signal_code = sig;
+    if (sig == SIGCHLD) {
+        service_sigchld_cb(r, sig, g_svc);
+    } else if (sig == SIGHUP) {
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING);
+        g_reload = 1;
+    } else if (sig == SIGUSR1) {
+        g_show_status = 1;
+    } else {
+        g_running = 0;
+        reactor_stop(r);
+    }
 }
 
 static void on_idle(reactor_t *r, void *userdata) {
     (void)r;
     (void)userdata;
 
-    if (g_signal_pending) {
-        int sig = g_signal_code;
-        g_signal_pending = 0;
-
-        if (sig == SIGCHLD) {
-            service_sigchld_cb(r, sig, g_svc);
-        } else if (sig == SIGHUP) {
-            atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING);
-            g_reload = 1;
-        } else if (sig == SIGUSR1) {
-            g_show_status = 1;
-        } else {
-            g_running = 0;
-        }
-    }
+    atpd_session_gc_process(r);
 
     if (g_reload) {
         g_reload = 0;
@@ -288,6 +296,13 @@ static void run_event_loop(void) {
     reactor_set_signal_cb(g_reactor, on_signal);
     reactor_set_idle_cb(g_reactor, on_idle);
 
+    const int watched_signals[] = { SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGCHLD };
+    for (size_t i = 0; i < sizeof(watched_signals) / sizeof(watched_signals[0]); i++) {
+        if (reactor_watch_signal(g_reactor, watched_signals[i]) != 0) {
+            LOG_WARN("Failed to watch signal %d", watched_signals[i]);
+        }
+    }
+
     int nl_fd = netlink_get_fd();
     if (nl_fd >= 0) {
         reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_handle_event, NULL);
@@ -301,8 +316,7 @@ static void run_event_loop(void) {
     }
 
     char uds_path[SAFE_PATH_MAX];
-    const char *data_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ".";
-    snprintf(uds_path, sizeof(uds_path), "%s/%s", data_dir, ATP_COMMAND_SOCKET);
+    resolve_socket_path(uds_path, sizeof(uds_path));
     if (uds_init(g_reactor, uds_path) < 0) {
         LOG_WARN("Failed to initialize UDS command socket");
     }
@@ -322,6 +336,7 @@ static void run_event_loop(void) {
     reactor_run(g_reactor);
 
     LOG_INFO("Reactor exited, cleaning up...");
+    atpd_session_gc_process(g_reactor);
     uds_cleanup();
     service_stop_sync(g_svc);
 
@@ -464,8 +479,7 @@ static int do_restart(atp_options_t *opts) {
 static int do_status(atp_options_t *opts) {
     (void)opts;
     char uds_path[SAFE_PATH_MAX];
-    const char *data_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ".";
-    snprintf(uds_path, sizeof(uds_path), "%s/%s", data_dir, ATP_COMMAND_SOCKET);
+    resolve_socket_path(uds_path, sizeof(uds_path));
 
     /* 1. Fast-Path: Query running daemon over Unix Domain Socket (< 0.5 ms) */
     int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
