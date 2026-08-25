@@ -81,14 +81,25 @@ int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback
 
 int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size) {
     if (!ctx || !version || size == 0) return -1;
-    return singbox_api_get_version(&ctx->native_ctx, version, size);
+    for (int attempt = 0; attempt < 20; attempt++) {
+        if (singbox_api_get_version(&ctx->native_ctx, version, size) == 0 && version[0]) {
+            return 0;
+        }
+        if (attempt < 19) usleep(100 * 1000);
+    }
+    LOG_WARN("sing-box GetVersion gRPC-Web query unavailable after startup retries");
+    return -1;
 }
 
 int api_get_goroutines_count(api_ctx_t *ctx) {
     if (!ctx) return -1;
-    int count = -1;
-    if (singbox_api_get_goroutines(&ctx->native_ctx, &count) == 0 && count >= 0) {
-        return count;
+    for (int attempt = 0; attempt < 20; attempt++) {
+        int count = -1;
+        if (singbox_api_get_goroutines(&ctx->native_ctx, &count) == 0 && count > 0) {
+            return count;
+        }
+        if (attempt < 19) usleep(100 * 1000);
     }
+    LOG_WARN("sing-box SubscribeStatus gRPC-Web query unavailable after startup retries");
     return -1;
 }
