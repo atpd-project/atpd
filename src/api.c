@@ -83,40 +83,56 @@ void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata)
     api_ctx_t *ctx = userdata;
     if (!ctx) return;
 
-    if (state == VPN_STATE_PREDICTING) {
-        /* XFRM announces the tunnel before the interface is usable. Wait for
-         * the debounced READY transition before changing routing policy. */
+    if (state == VPN_STATE_PREDICTING || state == VPN_STATE_TEARDOWN) {
+        /* The debounced READY/IDLE transition is the stable sync point. */
         return;
     }
 
-    /* Only the Google VPN/IPsec tunnel has a dedicated Clash mode. Other
-     * VPNs remain under normal rule-based routing. */
-    const char *mode = "Rule";
-    if (state == VPN_STATE_READY && iface && strncmp(iface, "ipsec", 5) == 0) {
-        mode = "Google VPN";
-    }
-
-    char current[64] = {0};
-    if (api_get_mode_sync(ctx, current, sizeof(current)) == 0 &&
-        strcmp(current, mode) == 0) {
+    if (state == VPN_STATE_READY && (!iface || strncmp(iface, "ipsec", 5) != 0)) {
         return;
     }
 
-    if (api_set_mode_async(ctx, mode, NULL, NULL) != 0) {
-        LOG_WARN("Native API: failed to switch Clash mode to %s", mode);
+    singbox_clash_mode_status_t status;
+    if (singbox_api_get_clash_mode_status(&ctx->native_ctx, &status) != 0) {
+        LOG_WARN("Native API: Clash mode service unavailable during VPN sync");
         return;
     }
 
-    /* SetClashMode intentionally accepts unknown modes in sing-box. Verify
-     * the live value so a missing Google VPN rule cannot look successful. */
-    memset(current, 0, sizeof(current));
-    if (api_get_mode_sync(ctx, current, sizeof(current)) != 0 ||
-        strcmp(current, mode) != 0) {
-        LOG_WARN("Native API: Clash mode %s is unavailable or was not applied", mode);
+    if (state == VPN_STATE_IDLE) {
+        if (!ctx->default_mode[0] || strcmp(status.current_mode, ctx->default_mode) == 0) {
+            return;
+        }
+        if (api_set_mode_async(ctx, ctx->default_mode, NULL, NULL) != 0) {
+            LOG_WARN("Native API: failed to restore Clash mode to %s", ctx->default_mode);
+            return;
+        }
+        LOG_INFO("Native API: VPN state IDLE restored Clash mode %s", ctx->default_mode);
         return;
     }
-    LOG_INFO("Native API: VPN state %s selected Clash mode %s",
-             vpn_state_string(state), mode);
+
+    if (!ctx->default_mode[0] && strcmp(status.current_mode, "Google VPN") != 0) {
+        snprintf(ctx->default_mode, sizeof(ctx->default_mode), "%s", status.current_mode);
+    }
+
+    int google_vpn_available = 0;
+    for (size_t i = 0; i < status.mode_count; ++i) {
+        if (strcmp(status.modes[i], "Google VPN") == 0) {
+            google_vpn_available = 1;
+            break;
+        }
+    }
+    if (!google_vpn_available) {
+        LOG_WARN("Native API: Google VPN Clash mode is not present in the calculated mode list");
+        return;
+    }
+
+    if (strcmp(status.current_mode, "Google VPN") == 0) return;
+    if (api_set_mode_async(ctx, "Google VPN", NULL, NULL) != 0) {
+        LOG_WARN("Native API: failed to switch Clash mode to Google VPN");
+        return;
+    }
+    LOG_INFO("Native API: VPN state READY selected Clash mode Google VPN (restore=%s)",
+             ctx->default_mode[0] ? ctx->default_mode : "unavailable");
 }
 
 int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size) {

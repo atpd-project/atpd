@@ -20,13 +20,16 @@
     {
       type: ebpf,
       tag: ebpf-in,
-      auto_redirect: true,
-      cgroup_path: /sys/fs/cgroup,
-      include_package: [],
-      exclude_package: [
-        com.google.android.gms,
-        com.android.vending
-      ]
+      mode: local,
+      network: [tcp, udp],
+      local: {
+        cgroup_path: /sys/fs/cgroup,
+        exclude_package: [
+          com.google.android.gms,
+          com.android.vending
+        ],
+        exclude_interface: [tun+, ipsec+]
+      }
     }
   ],
   outbounds: [

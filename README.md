@@ -286,8 +286,12 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
     {
       "type": "ebpf",
       "tag": "ebpf-in",
-      "auto_redirect": true,
-      "cgroup_path": "/sys/fs/cgroup"
+      "mode": "local",
+      "network": ["tcp", "udp"],
+      "local": {
+        "cgroup_path": "/sys/fs/cgroup",
+        "exclude_interface": ["tun+", "ipsec+"]
+      }
     }
   ],
   "route": {
@@ -304,9 +308,12 @@ traffic totals. No separate debug listener is required. Clash mode is queried
 live through the optional Native API Clash-mode RPC; if that service is not
 enabled, ATPd displays `N/A` rather than inferring a mode from configuration.
 When an `ipsecN` Google VPN interface reaches the debounced `READY` state,
-ATPd requests `Google VPN` through the same Native API and verifies the live
-mode. On teardown or return to `IDLE`, it requests `Rule`. The mode must be
-present in sing-box's calculated Clash mode list.
+ATPd first verifies that `Google VPN` is in sing-box's calculated mode list,
+saves the current live mode, and requests `Google VPN` through the same Native
+API. After the interface reaches `IDLE`, ATPd restores that saved mode instead
+of assuming `Rule`. The empty `experimental.clash_api` object enables the mode
+engine only; status and control traffic still use the Native API gRPC-Web
+service, and no Clash REST listener is required.
 
 ---
 

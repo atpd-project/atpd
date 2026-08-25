@@ -29,6 +29,15 @@ typedef struct {
     int64_t downlink_total;
 } singbox_status_t;
 
+#define SINGBOX_MAX_CLASH_MODES 32
+#define SINGBOX_CLASH_MODE_SIZE 64
+
+typedef struct {
+    char modes[SINGBOX_MAX_CLASH_MODES][SINGBOX_CLASH_MODE_SIZE];
+    size_t mode_count;
+    char current_mode[SINGBOX_CLASH_MODE_SIZE];
+} singbox_clash_mode_status_t;
+
 /* Lifecycle */
 int singbox_api_init(singbox_api_ctx_t *ctx, const atp_config_t *cfg);
 void singbox_api_cleanup(singbox_api_ctx_t *ctx);
@@ -38,6 +47,8 @@ int singbox_api_health_check(singbox_api_ctx_t *ctx);
 int singbox_api_get_status(singbox_api_ctx_t *ctx, singbox_status_t *status_out);
 int singbox_api_get_version(singbox_api_ctx_t *ctx, char *version_buf, size_t buf_size);
 int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out);
+int singbox_api_get_clash_mode_status(singbox_api_ctx_t *ctx,
+                                      singbox_clash_mode_status_t *status_out);
 int singbox_api_get_clash_mode(singbox_api_ctx_t *ctx, char *mode_buf, size_t buf_size);
 int singbox_api_set_clash_mode(singbox_api_ctx_t *ctx, const char *mode);
 int singbox_api_reload(singbox_api_ctx_t *ctx);

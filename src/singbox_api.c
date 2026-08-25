@@ -541,6 +541,51 @@ static int parse_string_field(const unsigned char *frame, size_t frame_len,
     return -1;
 }
 
+static int parse_clash_mode_status(const unsigned char *frame, size_t frame_len,
+                                   singbox_clash_mode_status_t *status_out) {
+    if (!frame || frame_len < 5 || !status_out || (frame[0] & 0x80)) return -1;
+    memset(status_out, 0, sizeof(*status_out));
+    uint32_t message_len = ((uint32_t)frame[1] << 24) | ((uint32_t)frame[2] << 16) |
+                           ((uint32_t)frame[3] << 8) | (uint32_t)frame[4];
+    if (message_len > frame_len - 5) return -1;
+
+    size_t pos = 5, end = 5 + message_len;
+    while (pos < end) {
+        uint64_t key, size;
+        if (read_varint(frame, end, &pos, &key) != 0) return -1;
+        unsigned int field = (unsigned int)(key >> 3), wire = (unsigned int)(key & 7);
+        if (wire == 2) {
+            if (read_varint(frame, end, &pos, &size) != 0 || size > end - pos) return -1;
+            char *target = NULL;
+            size_t target_size = 0;
+            if (field == 1 && status_out->mode_count < SINGBOX_MAX_CLASH_MODES) {
+                target = status_out->modes[status_out->mode_count++];
+                target_size = SINGBOX_CLASH_MODE_SIZE;
+            } else if (field == 2) {
+                target = status_out->current_mode;
+                target_size = sizeof(status_out->current_mode);
+            }
+            if (target) {
+                size_t copy_len = size < target_size - 1 ? (size_t)size : target_size - 1;
+                memcpy(target, frame + pos, copy_len);
+                target[copy_len] = '\0';
+            }
+            pos += (size_t)size;
+        } else if (wire == 0) {
+            if (read_varint(frame, end, &pos, &size) != 0) return -1;
+        } else if (wire == 1) {
+            if (end - pos < 8) return -1;
+            pos += 8;
+        } else if (wire == 5) {
+            if (end - pos < 4) return -1;
+            pos += 4;
+        } else {
+            return -1;
+        }
+    }
+    return status_out->current_mode[0] ? 0 : -1;
+}
+
 int singbox_api_get_version(singbox_api_ctx_t *ctx, char *version_buf, size_t buf_size) {
     if (!version_buf || buf_size == 0) return -1;
     version_buf[0] = '\0';
@@ -554,11 +599,20 @@ int singbox_api_get_version(singbox_api_ctx_t *ctx, char *version_buf, size_t bu
 int singbox_api_get_clash_mode(singbox_api_ctx_t *ctx, char *mode_buf, size_t buf_size) {
     if (!mode_buf || buf_size == 0) return -1;
     mode_buf[0] = '\0';
+    singbox_clash_mode_status_t status;
+    if (singbox_api_get_clash_mode_status(ctx, &status) != 0) return -1;
+    snprintf(mode_buf, buf_size, "%s", status.current_mode);
+    return 0;
+}
+
+int singbox_api_get_clash_mode_status(singbox_api_ctx_t *ctx,
+                                      singbox_clash_mode_status_t *status_out) {
+    if (!status_out) return -1;
     unsigned char response[2048];
     size_t response_len;
     if (grpc_web_unary_call(ctx, "/daemon.StartedService/GetClashModeStatus", NULL, 0,
                             response, sizeof(response), &response_len) != 0) return -1;
-    return parse_string_field(response, response_len, 2, mode_buf, buf_size);
+    return parse_clash_mode_status(response, response_len, status_out);
 }
 
 int singbox_api_set_clash_mode(singbox_api_ctx_t *ctx, const char *mode) {

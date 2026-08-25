@@ -256,17 +256,21 @@ static int getifaddrs_find_vpn(char *iface, size_t size) {
     struct ifaddrs *ifaddr, *ifa;
     if (getifaddrs(&ifaddr) == -1) return -1;
 
+    const char *fallback = NULL;
     for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
         if (!ifa->ifa_name || !(ifa->ifa_flags & IFF_UP)) continue;
         if (!is_proxy_interface(ifa->ifa_name)) continue;
-
-        snprintf(iface, size, "%s", ifa->ifa_name);
-        freeifaddrs(ifaddr);
-        return 0;
+        if (strncmp(ifa->ifa_name, "ipsec", 5) == 0) {
+            snprintf(iface, size, "%s", ifa->ifa_name);
+            freeifaddrs(ifaddr);
+            return 0;
+        }
+        if (!fallback) fallback = ifa->ifa_name;
     }
 
+    if (fallback) snprintf(iface, size, "%s", fallback);
     freeifaddrs(ifaddr);
-    return -1;
+    return fallback ? 0 : -1;
 }
 
 int netlink_init(nl_callback_t callback, void *userdata) {
@@ -429,12 +433,20 @@ int netlink_get_active_vpn(char *output, size_t size) {
     if (netlink_send_request(sync_fd, &req, req.nlh.nlmsg_len) == 0) {
         if (netlink_recv_all_with_timeout(sync_fd, req.nlh.nlmsg_seq,
                                           parser_link_sync, &ctx, 500) == 0) {
+            int fallback = -1;
             for (int i = 0; i < ctx.count; i++) {
                 if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
-                    snprintf(output, size, "%s", links[i].name);
-                    res = 0;
-                    break;
+                    if (strncmp(links[i].name, "ipsec", 5) == 0) {
+                        snprintf(output, size, "%s", links[i].name);
+                        res = 0;
+                        break;
+                    }
+                    if (fallback < 0) fallback = i;
                 }
+            }
+            if (res != 0 && fallback >= 0) {
+                snprintf(output, size, "%s", links[fallback].name);
+                res = 0;
             }
         }
     }

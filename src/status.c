@@ -136,11 +136,6 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
     char downlink_str[32] = "N/A";
     char uplink_total_str[32] = "N/A";
     char downlink_total_str[32] = "N/A";
-    singbox_status_t core_status;
-    memset(&core_status, 0, sizeof(core_status));
-    api_ctx_t *status_api = api ? api : &g_api_ctx;
-    int core_status_ok = api_get_status_sync(status_api, &core_status) == 0;
-
     ui_table_begin();
     ui_table_header("PROXY CORE");
 
@@ -149,6 +144,11 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
         ui_table_end();
         return;
     }
+
+    singbox_status_t core_status;
+    memset(&core_status, 0, sizeof(core_status));
+    api_ctx_t *status_api = api ? api : &g_api_ctx;
+    int core_status_ok = api_get_status_sync(status_api, &core_status) == 0;
 
     double cpu = get_process_cpu_percent(pid);
     int threads = get_process_threads(pid);

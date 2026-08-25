@@ -39,7 +39,9 @@ chmod +x "${TEST_DIR}/atpd"
 
 # 3. Locate sing-box binary
 SINGBOX_BIN=""
-if command -v sing-box >/dev/null 2>&1; then
+if [ -n "${SINGBOX_BIN_OVERRIDE:-}" ] && [ -x "${SINGBOX_BIN_OVERRIDE}" ]; then
+    SINGBOX_BIN="${SINGBOX_BIN_OVERRIDE}"
+elif command -v sing-box >/dev/null 2>&1; then
     SINGBOX_BIN="$(command -v sing-box)"
 elif [ -f "/usr/bin/sing-box" ]; then
     SINGBOX_BIN="/usr/bin/sing-box"
@@ -71,6 +73,9 @@ cat > "${TEST_DIR}/config.json" << EOJSON
       "listen_port": ${TEST_API_PORT}
     }
   ],
+  "experimental": {
+    "clash_api": {}
+  },
   "inbounds": [
     {
       "type": "mixed",
@@ -84,7 +89,14 @@ cat > "${TEST_DIR}/config.json" << EOJSON
       "type": "direct",
       "tag": "direct"
     }
-  ]
+  ],
+  "route": {
+    "rules": [
+      { "clash_mode": "Google VPN", "outbound": "direct" },
+      { "clash_mode": "Global", "outbound": "direct" },
+      { "clash_mode": "Direct", "outbound": "direct" }
+    ]
+  }
 }
 EOJSON
 
@@ -154,6 +166,21 @@ if echo "${STATUS_OUTPUT}" | grep -q "PID"; then
 else
     dump_logs
     log_fail "Step 1 FAIL: atpd 未能成功拉起 sing-box!"
+fi
+
+GOROUTINES_VALUE="$(echo "${STATUS_OUTPUT}" | awk '/Goroutines/{print $NF; exit}')"
+if [[ "${GOROUTINES_VALUE}" =~ ^[1-9][0-9]*$ ]]; then
+    log_pass "Native API SubscribeStatus 返回实时 Goroutines=${GOROUTINES_VALUE}"
+else
+    dump_logs
+    log_fail "Goroutines 未从 Native API 返回整数值: ${GOROUTINES_VALUE:-N/A}"
+fi
+
+if echo "${STATUS_OUTPUT}" | grep -qE 'Clash Mode[[:space:]]+Rule'; then
+    log_pass "Native API GetClashModeStatus 返回默认模式 Rule"
+else
+    dump_logs
+    log_fail "未能通过 Native API 读取默认 Clash mode"
 fi
 
 # 校验 sing-box Native API
