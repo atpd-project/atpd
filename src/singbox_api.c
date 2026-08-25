@@ -123,7 +123,7 @@ int singbox_api_health_check(singbox_api_ctx_t *ctx) {
     if (ret == 0) {
         ok = 1;
     } else if (errno == EINPROGRESS) {
-        ok = wait_connect_ready(sock, 50);
+        ok = wait_connect_ready(sock, 1000);
     }
 
     close(sock);
@@ -239,7 +239,7 @@ static int parse_grpc_web_response(const unsigned char *buf, size_t len,
         if (*endptr != '\0' || chunk_len > SIZE_MAX) return -1;
         body += line_len + 2;
         if (chunk_len == 0) return -1;
-        if (chunk_len > len - body || len - body - chunk_len < 2) return 0;
+        if (chunk_len > len - body) return 0;
         int parsed = parse_status_frame(buf + body, (size_t)chunk_len, status_out);
         if (parsed != 0) return parsed;
         body += (size_t)chunk_len + 2;
@@ -267,7 +267,7 @@ int singbox_api_get_status(singbox_api_ctx_t *ctx, singbox_status_t *status_out)
     }
 
     int ret = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
-    int ok = (ret == 0) || (errno == EINPROGRESS && wait_connect_ready(sock, 30));
+    int ok = (ret == 0) || (errno == EINPROGRESS && wait_connect_ready(sock, 1000));
     if (!ok) {
         close(sock);
         return -1;
@@ -384,7 +384,7 @@ static int grpc_web_unary_call(const singbox_api_ctx_t *ctx, const char *path,
     sa.sin_port = htons((uint16_t)port);
     if (inet_pton(AF_INET, host, &sa.sin_addr) <= 0) sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     int ret = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
-    if (!(ret == 0 || (errno == EINPROGRESS && wait_connect_ready(sock, 30)))) {
+    if (!(ret == 0 || (errno == EINPROGRESS && wait_connect_ready(sock, 1000)))) {
         close(sock);
         return -1;
     }
@@ -495,9 +495,12 @@ static int grpc_web_unary_call(const singbox_api_ctx_t *ctx, const char *path,
                                ((uint32_t)buf[frame_offset + 2] << 16) |
                                ((uint32_t)buf[frame_offset + 3] << 8) |
                                (uint32_t)buf[frame_offset + 4];
-        if (message_len > frame_size - 5 || (size_t)message_len + 5 > response_cap) {
+        if ((size_t)message_len + 5 > response_cap) {
             close(sock);
             return -1;
+        }
+        if (message_len > frame_size - 5) {
+            continue;
         }
         memcpy(response, buf + frame_offset, (size_t)message_len + 5);
         *response_len = (size_t)message_len + 5;

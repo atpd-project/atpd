@@ -299,6 +299,9 @@ static void service_stop_sync(service_ctx_t *ctx) {
             ctx->child_pid = -1;
             ctx->validated_pid = 0;
             ctx->state = SERVICE_STOPPED;
+            char pid_path[PATH_MAX];
+            service_pid_path(ctx, pid_path, sizeof(pid_path));
+            unlink(pid_path);
             return;
         }
     }
@@ -309,6 +312,9 @@ static void service_stop_sync(service_ctx_t *ctx) {
     ctx->child_pid = -1;
     ctx->validated_pid = 0;
     ctx->state = SERVICE_STOPPED;
+    char pid_path[PATH_MAX];
+    service_pid_path(ctx, pid_path, sizeof(pid_path));
+    unlink(pid_path);
 }
 
 static void run_event_loop(void) {
@@ -518,7 +524,7 @@ static int do_status(atp_options_t *opts) {
         sun.sun_family = AF_UNIX;
         strncpy(sun.sun_path, uds_path, sizeof(sun.sun_path) - 1);
 
-        struct timeval tv = { .tv_sec = 0, .tv_usec = 80000 };
+        struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
