@@ -29,6 +29,7 @@ int process_exists(pid_t pid);
 long get_process_memory_kb(pid_t pid);
 int get_process_threads(pid_t pid);
 int get_process_fd_count(pid_t pid);
+int get_process_socket_count(pid_t pid);
 double get_process_cpu_percent(pid_t pid);
 int get_process_uptime_sec(pid_t pid);
 int get_process_user_group(pid_t pid, char *user, char *group, size_t size);

@@ -513,6 +513,33 @@ int get_process_fd_count(pid_t pid) {
     return count;
 }
 
+int get_process_socket_count(pid_t pid) {
+    char path[PATH_MAX];
+    int count = 0;
+
+    snprintf(path, sizeof(path), "/proc/%d/fd", pid);
+    DIR *dir = opendir(path);
+    if (!dir) return 0;
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char link_path[PATH_MAX];
+        char target[256];
+        snprintf(link_path, sizeof(link_path), "/proc/%d/fd/%s", pid, entry->d_name);
+        ssize_t len = readlink(link_path, target, sizeof(target) - 1);
+        if (len > 0) {
+            target[len] = '\0';
+            if (strncmp(target, "socket:[", 8) == 0) {
+                count++;
+            }
+        }
+    }
+
+    closedir(dir);
+    return count;
+}
+
 double get_process_cpu_percent(pid_t pid) {
     char path[PATH_MAX];
     char line[256];

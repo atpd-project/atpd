@@ -40,6 +40,9 @@ int ui_get_width(void);
 /* Force set terminal width (for testing) */
 void ui_set_width(int width);
 
+/* Set custom output stream (default: stdout) */
+void ui_set_output_file(FILE *fp);
+
 /* ============================================ */
 /* Basic output functions (auto-formatted)     */
 /* ============================================ */

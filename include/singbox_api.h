@@ -1,55 +1,34 @@
 #ifndef ATP_SINGBOX_API_H
 #define ATP_SINGBOX_API_H
 
+#include "atp.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 
-#define MAX_PROXY_ITEMS 1024
-#define MAX_RULE_ITEMS 1024
-#define MAX_ALL_ITEMS 256
-
 typedef struct {
-    char *name;
-    char *type;
-    int delay;
-    bool udp;
-    char *now;
-    char **all;
-    int all_count;
-    uint64_t updated_at;
-} proxy_info_t;
+    char host[64];
+    int port;
+    char secret[128];
+    int timeout_sec;
+    int connected;
+    time_t last_check;
+} singbox_api_ctx_t;
 
-typedef struct {
-    proxy_info_t *proxies;
-    int count;
-} proxy_list_t;
+/* Lifecycle */
+int singbox_api_init(singbox_api_ctx_t *ctx, const atp_config_t *cfg);
+void singbox_api_cleanup(singbox_api_ctx_t *ctx);
 
-typedef struct {
-    char *type;
-    char *payload;
-    char *proxy;
-    char *uuid;
-} rule_info_t;
+/* Health Probe & Telemetry */
+int singbox_api_health_check(singbox_api_ctx_t *ctx);
+int singbox_api_get_version(singbox_api_ctx_t *ctx, char *version_buf, size_t buf_size);
+int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out);
+int singbox_api_get_clash_mode(singbox_api_ctx_t *ctx, char *mode_buf, size_t buf_size);
+int singbox_api_set_clash_mode(singbox_api_ctx_t *ctx, const char *mode);
+int singbox_api_reload(singbox_api_ctx_t *ctx);
 
-typedef struct {
-    rule_info_t *rules;
-    int count;
-} rule_list_t;
-
-typedef struct {
-    uint64_t upload_total;
-    uint64_t download_total;
-    int connection_count;
-    uint64_t timestamp;
-} traffic_snapshot_t;
-
-int singbox_parse_proxies(char *json_data, size_t json_len, proxy_list_t *out);
-int singbox_parse_rules(char *json_data, size_t json_len, rule_list_t *out);
-int singbox_parse_connections(char *json_data, size_t json_len, traffic_snapshot_t *out);
-int singbox_parse_version(char *json_data, size_t json_len, char *version_buf, size_t buf_size);
-
-void proxy_list_free(proxy_list_t *list);
-void rule_list_free(rule_list_t *list);
+/* Direct CLI Bridge for sing-box api */
+int singbox_api_exec_cli(const singbox_api_ctx_t *ctx, const char *subcmd,
+                         char *output, size_t out_size, int timeout_sec);
 
 #endif

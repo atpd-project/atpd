@@ -463,6 +463,42 @@ static int do_restart(atp_options_t *opts) {
 
 static int do_status(atp_options_t *opts) {
     (void)opts;
+    char uds_path[SAFE_PATH_MAX];
+    const char *data_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ".";
+    snprintf(uds_path, sizeof(uds_path), "%s/%s", data_dir, ATP_COMMAND_SOCKET);
+
+    /* 1. Fast-Path: Query running daemon over Unix Domain Socket (< 0.5 ms) */
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd >= 0) {
+        struct sockaddr_un sun;
+        memset(&sun, 0, sizeof(sun));
+        sun.sun_family = AF_UNIX;
+        strncpy(sun.sun_path, uds_path, sizeof(sun.sun_path) - 1);
+
+        struct timeval tv = { .tv_sec = 0, .tv_usec = 80000 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == 0) {
+            const char *cmd = "status\n";
+            if (send(fd, cmd, strlen(cmd), MSG_NOSIGNAL) == (ssize_t)strlen(cmd)) {
+                char buf[4096];
+                ssize_t n;
+                int read_any = 0;
+                while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
+                    fwrite(buf, 1, (size_t)n, stdout);
+                    read_any = 1;
+                }
+                if (read_any) {
+                    close(fd);
+                    return 0;
+                }
+            }
+        }
+        close(fd);
+    }
+
+    /* 2. Standalone Fallback: Offline inspection when daemon is stopped */
     service_ctx_t local_svc;
     memset(&local_svc, 0, sizeof(local_svc));
     service_init(&local_svc, &g_config);
@@ -551,9 +587,41 @@ static int do_ebpf_status(atp_options_t *opts) {
         }
     }
 
+    ebpf_probe_result_t probe;
+    ebpf_probe_detailed(&probe);
     ebpf_status(state, sizeof(state), &cfg);
-    printf("eBPF Data Path: sing-box native (cgroup.bpf.c)\n");
-    printf("eBPF Kernel Support: %s\n", state);
+
+    ebpf_runtime_status_t runtime;
+    int rt_ok = ebpf_get_runtime_status(&runtime);
+
+    atp_ebpf_telemetry_t tel;
+    ebpf_get_telemetry(&tel);
+
+    printf("=== Pure eBPF Kernel & Subsystem Status ===\n");
+    printf("  Kernel Release:      %s\n", probe.kernel_release);
+    printf("  eBPF Engine State:   %s\n", state);
+    printf("  Data Path:           sing-box ebpf inbound (cgroup.bpf.c)\n");
+    printf("  Kernel Capabilities: cgroup_sock=%d, tc=%d, lpm_trie=%d, lru_hash=%d\n",
+           probe.has_cgroup_sock_addr ? 1 : 0, probe.has_sched_cls ? 1 : 0,
+           probe.has_lpm_trie ? 1 : 0, probe.has_lru_hash ? 1 : 0);
+
+    if (rt_ok == 0 && runtime.is_active) {
+        printf("  BPF Map Pinning:     %s (ACTIVE)\n", runtime.pin_dir);
+        printf("  eBPF Control Flags:  0x%08X\n", runtime.flags);
+        printf("  Self TGID / PID:     %u\n", runtime.self_tgid);
+        printf("  Listener Port:       %u\n", runtime.listener_port);
+        printf("  Active UDP Flows:    %u\n", runtime.active_flows);
+    } else {
+        printf("  BPF Map Pinning:     STANDBY (Direct Kernel Sensing)\n");
+    }
+
+    if (tel.map_direct) {
+        printf("  BPF Packet Counters: %lu packets, %lu bytes\n",
+               (unsigned long)tel.total_packets, (unsigned long)tel.total_bytes);
+    } else {
+        printf("  BPF Active Sockets:  %lu\n", (unsigned long)tel.active_conns);
+    }
+
     return ATP_OK;
 }
 

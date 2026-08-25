@@ -168,41 +168,82 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
     if (!doc) return;
 
     yyjson_val *root = yyjson_doc_get_root(doc);
-    if (root) {
-        yyjson_val *exp = yyjson_obj_get(root, "experimental");
-        yyjson_val *clash_api = NULL;
-        if (exp) {
-            clash_api = yyjson_obj_get(exp, "clash_api");
-        }
-        if (!clash_api) {
-            clash_api = yyjson_obj_get(root, "clash_api");
+    if (root && yyjson_is_obj(root)) {
+        yyjson_val *api_service = NULL;
+
+        /* 1. Check services array for {"type": "api", "listen": "...", "secret": "..."} */
+        yyjson_val *services = yyjson_obj_get(root, "services");
+        if (services && yyjson_is_arr(services)) {
+            size_t idx, max;
+            yyjson_val *svc_item;
+            yyjson_arr_foreach(services, idx, max, svc_item) {
+                if (yyjson_is_obj(svc_item)) {
+                    yyjson_val *type_val = yyjson_obj_get(svc_item, "type");
+                    if (type_val && yyjson_is_str(type_val) && strcmp(yyjson_get_str(type_val), "api") == 0) {
+                        api_service = svc_item;
+                        break;
+                    }
+                }
+            }
         }
 
-        if (clash_api) {
-            yyjson_val *ext_ctrl = yyjson_obj_get(clash_api, "external_controller");
-            if (ext_ctrl && yyjson_is_str(ext_ctrl)) {
-                const char *ctrl = yyjson_get_str(ext_ctrl);
-                if (ctrl && ctrl[0]) {
-                    const char *colon = strrchr(ctrl, ':');
+        /* 2. Check top-level "api" object */
+        if (!api_service) {
+            yyjson_val *top_api = yyjson_obj_get(root, "api");
+            if (top_api && yyjson_is_obj(top_api)) {
+                api_service = top_api;
+            }
+        }
+
+        /* 3. Check experimental.api */
+        if (!api_service) {
+            yyjson_val *exp = yyjson_obj_get(root, "experimental");
+            if (exp && yyjson_is_obj(exp)) {
+                yyjson_val *exp_api = yyjson_obj_get(exp, "api");
+                if (exp_api && yyjson_is_obj(exp_api)) {
+                    api_service = exp_api;
+                }
+            }
+        }
+
+        if (api_service) {
+            yyjson_val *listen_val = yyjson_obj_get(api_service, "listen");
+            if (listen_val && yyjson_is_str(listen_val)) {
+                const char *listen_str = yyjson_get_str(listen_val);
+                if (listen_str && listen_str[0]) {
+                    const char *colon = strrchr(listen_str, ':');
                     if (colon) {
                         int port = atoi(colon + 1);
                         if (port > 0) {
                             cfg->api.port = port;
                         }
-                        if (colon != ctrl) {
-                            size_t host_len = (size_t)(colon - ctrl);
+                        if (colon != listen_str) {
+                            size_t host_len = (size_t)(colon - listen_str);
                             if (host_len < sizeof(cfg->api.host)) {
-                                strncpy(cfg->api.host, ctrl, host_len);
+                                strncpy(cfg->api.host, listen_str, host_len);
                                 cfg->api.host[host_len] = '\0';
                             }
                         }
+                    } else {
+                        snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", listen_str);
                     }
                 }
             }
 
-            yyjson_val *secret = yyjson_obj_get(clash_api, "secret");
-            if (secret && yyjson_is_str(secret)) {
-                const char *sec = yyjson_get_str(secret);
+            yyjson_val *port_val = yyjson_obj_get(api_service, "listen_port");
+            if (!port_val) {
+                port_val = yyjson_obj_get(api_service, "port");
+            }
+            if (port_val && yyjson_is_num(port_val)) {
+                int p = yyjson_get_int(port_val);
+                if (p > 0) {
+                    cfg->api.port = p;
+                }
+            }
+
+            yyjson_val *secret_val = yyjson_obj_get(api_service, "secret");
+            if (secret_val && yyjson_is_str(secret_val)) {
+                const char *sec = yyjson_get_str(secret_val);
                 if (sec && sec[0] && cfg->api.secret[0] == '\0') {
                     snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", sec);
                 }
@@ -230,7 +271,7 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
         else if (strcmp(k, "SERVICE_CIRCUIT_COOLDOWN") == 0) cfg->service.circuit_cooldown_sec = int_val;
         else if (strcmp(k, "SERVICE_HEALTH_CHECK_INTERVAL") == 0) cfg->service.health_check_interval_ms = int_val;
     } else {
-        if (strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", v);
+        if (strcmp(k, "API_SECRET") == 0 || strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", v);
         else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", v);
         else if (strcmp(k, "DATA_DIR") == 0 || strcmp(k, "WORK_DIR") == 0) snprintf(cfg->core.data_dir, sizeof(cfg->core.data_dir), "%s", v);
         else if (strcmp(k, "RUN_DIR") == 0) snprintf(cfg->core.run_dir, sizeof(cfg->core.run_dir), "%s", v);

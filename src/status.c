@@ -105,7 +105,7 @@ static int get_cpu_temperature(void) {
     return -1;
 }
 
-static void status_show_proxy_core(service_ctx_t *svc) {
+static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
     int pid = service_get_pid(svc);
     if (pid <= 0) {
         pid = get_pid_by_name("sing-box");
@@ -115,6 +115,7 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     char mem_str[32] = "N/A";
     char cpu_str[16] = "0.0%";
     char threads_str[16] = "0";
+    char goroutines_str[16] = "N/A";
     char fds_str[16] = "0";
     char version_str[64] = "unknown";
 
@@ -139,31 +140,16 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     snprintf(threads_str, sizeof(threads_str), "%d", threads);
     snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
 
-    /* 1. Fast path: Read version from Clash REST API /version via local socket (0.1ms) */
-    char api_resp[512] = {0};
-    char api_url[256];
-    snprintf(api_url, sizeof(api_url), "http://%s:%d/version",
-             g_config.api.host[0] ? g_config.api.host : "127.0.0.1",
-             g_config.api.port > 0 ? g_config.api.port : 9090);
-    if (api_get_sync(api_url, api_resp, sizeof(api_resp)) == 0 && api_resp[0]) {
-        char *v = strstr(api_resp, "\"version\"");
-        if (v) {
-            char *colon = strchr(v, ':');
-            if (colon) {
-                char *q1 = strchr(colon, '"');
-                if (q1) {
-                    char *q2 = strchr(q1 + 1, '"');
-                    if (q2) {
-                        *q2 = '\0';
-                        snprintf(version_str, sizeof(version_str), "%s", q1 + 1);
-                    }
-                }
-            }
-        }
+    /* 1. Goroutines count from sing-box Native API / Runtime telemetry */
+    int gr = api ? api_get_goroutines_count(api) : api_get_goroutines_count(&g_api_ctx);
+    if (gr > 0) {
+        snprintf(goroutines_str, sizeof(goroutines_str), "%d", gr);
+    } else {
+        snprintf(goroutines_str, sizeof(goroutines_str), "N/A");
     }
 
-    /* 2. Fallback: Only if API is not yet active, query binary directly */
-    if (strcmp(version_str, "unknown") == 0) {
+    /* 2. Version from Native API / Binary */
+    if ((!api || api_get_version_sync(api, version_str, sizeof(version_str)) != 0 || !version_str[0])) {
         char bin_path[PATH_MAX] = {0};
         char exe_link[64];
         snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
@@ -182,17 +168,18 @@ static void status_show_proxy_core(service_ctx_t *svc) {
     ui_table_subrow("├─", "Memory", mem_str);
     ui_table_subrow("├─", "CPU", cpu_str);
     ui_table_subrow("├─", "Threads", threads_str);
+    ui_table_subrow("├─", "Goroutines", goroutines_str);
     ui_table_subrow("├─", "FDs", fds_str);
     ui_table_subrow("└─", "Version", version_str);
 
     ui_table_end();
 }
 
-static void status_show_clash_mode(api_ctx_t *api, service_ctx_t *svc) {
+static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_config_t *cfg) {
     char current_mode[64] = {0};
 
     ui_table_begin();
-    ui_table_header("CLASH MODE");
+    ui_table_header("NATIVE API & MODE");
 
     int pid = service_get_pid(svc);
     if (pid <= 0) {
@@ -200,19 +187,27 @@ static void status_show_clash_mode(api_ctx_t *api, service_ctx_t *svc) {
     }
 
     if (pid <= 0) {
-        ui_table_row_color("MODE", "N/A (service stopped)", COLOR_YELLOW);
+        ui_table_row_color("STATUS", "N/A (service stopped)", COLOR_YELLOW);
         ui_table_end();
         return;
     }
 
-    if (api_get_mode_sync(api, current_mode, sizeof(current_mode)) == 0) {
+    int port = (api && api->native_ctx.port > 0) ? api->native_ctx.port :
+               (cfg && cfg->api.port > 0 ? cfg->api.port :
+               (g_config.api.port > 0 ? g_config.api.port : DEFAULT_API_PORT));
+
+    char api_info[128];
+    snprintf(api_info, sizeof(api_info), "Native API (Port %d)", port);
+    ui_table_subrow_color("├─", "API Engine", api_info, COLOR_GREEN);
+
+    if (api_get_mode_sync(api, current_mode, sizeof(current_mode)) == 0 && current_mode[0]) {
         const char *color = COLOR_GREEN;
         if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
         else if (strcmp(current_mode, "Google VPN") == 0) color = COLOR_GREEN;
-        ui_table_row_color(ui_emoji_info(), current_mode, color);
+        ui_table_subrow_color("└─", "Clash Mode", current_mode, color);
     } else {
-        ui_table_row_color(ui_emoji_info(), "Rule (Default)", COLOR_CYAN);
+        ui_table_subrow_color("└─", "Clash Mode", "Rule (Default)", COLOR_CYAN);
     }
 
     ui_table_end();
@@ -228,6 +223,9 @@ static void status_show_ebpf(void) {
     ui_table_subrow_color("├─", "Engine Mode", "Pure eBPF (Zero iptables)", COLOR_GREEN);
     ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
 
+    atp_ebpf_telemetry_t tel;
+    ebpf_get_telemetry(&tel);
+
     if (ebpf_probe_detailed(&probe) == 0 && probe.supported) {
         ui_table_subrow_color("├─", "eBPF Kernel", "AVAILABLE", COLOR_GREEN);
         char feat[128] = {0};
@@ -236,10 +234,18 @@ static void status_show_ebpf(void) {
         if (probe.has_sched_cls) pos += snprintf(feat + pos, sizeof(feat) - pos, "tc%s", (probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
         if (probe.has_lpm_trie) pos += snprintf(feat + pos, sizeof(feat) - pos, "lpm_trie%s", probe.has_lru_hash ? ", " : "");
         if (probe.has_lru_hash) pos += snprintf(feat + pos, sizeof(feat) - pos, "lru_hash");
-        ui_table_subrow("└─", "Capabilities", feat[0] ? feat : "Basic");
+        ui_table_subrow("├─", "Capabilities", feat[0] ? feat : "Basic");
     } else {
         ui_table_subrow_color("├─", "eBPF Kernel", "UNSUPPORTED", COLOR_RED);
-        ui_table_subrow("└─", "Capabilities", "None");
+        ui_table_subrow("├─", "Capabilities", "None");
+    }
+
+    if (tel.map_direct) {
+        char map_str[64];
+        snprintf(map_str, sizeof(map_str), "%lu pkts / %lu B", (unsigned long)tel.total_packets, (unsigned long)tel.total_bytes);
+        ui_table_subrow_color("└─", "BPF Map Stats", map_str, COLOR_CYAN);
+    } else {
+        ui_table_subrow("└─", "BPF Telemetry", "Direct Kernel Sensing");
     }
 
     ui_table_end();
@@ -247,6 +253,18 @@ static void status_show_ebpf(void) {
 
 static int check_fcm_status(char *status_buf, size_t size, int *is_connected) {
     *is_connected = 0;
+
+    static char s_cached_status[64] = "STANDBY (System Net Sensing)";
+    static int s_cached_conn = 0;
+    static time_t s_last_check = 0;
+    time_t now = time(NULL);
+
+    if (s_last_check != 0 && (now - s_last_check) < 2) {
+        *is_connected = s_cached_conn;
+        snprintf(status_buf, size, "%s", s_cached_status);
+        return 0;
+    }
+
     const char *paths[2] = { "/proc/net/tcp", "/proc/net/tcp6" };
 
     for (int f = 0; f < 2; f++) {
@@ -267,6 +285,9 @@ static int check_fcm_status(char *status_buf, size_t size, int *is_connected) {
                             snprintf(status_buf, size, "ACTIVE (mtalk %s:%d)", ip_str, rem_port);
                             *is_connected = 1;
                             fclose(fp);
+                            snprintf(s_cached_status, sizeof(s_cached_status), "%s", status_buf);
+                            s_cached_conn = 1;
+                            s_last_check = now;
                             return 0;
                         }
                     }
@@ -276,6 +297,9 @@ static int check_fcm_status(char *status_buf, size_t size, int *is_connected) {
                             snprintf(status_buf, size, "ACTIVE (mtalk [IPv6]:%d)", rem_port);
                             *is_connected = 1;
                             fclose(fp);
+                            snprintf(s_cached_status, sizeof(s_cached_status), "%s", status_buf);
+                            s_cached_conn = 1;
+                            s_last_check = now;
                             return 0;
                         }
                     }
@@ -286,6 +310,9 @@ static int check_fcm_status(char *status_buf, size_t size, int *is_connected) {
     }
 
     snprintf(status_buf, size, "STANDBY (System Net Sensing)");
+    snprintf(s_cached_status, sizeof(s_cached_status), "%s", status_buf);
+    s_cached_conn = 0;
+    s_last_check = now;
     return 0;
 }
 
@@ -605,10 +632,10 @@ void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
     (void)cfg;
     ui_title("ATP Status (Pure eBPF Edition)");
 
-    status_show_proxy_core(svc);
+    status_show_proxy_core(svc, api);
     ui_blank();
 
-    status_show_clash_mode(api, svc);
+    status_show_proxy_mode(api, svc, cfg);
     ui_blank();
 
     status_show_ebpf();

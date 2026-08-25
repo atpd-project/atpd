@@ -23,6 +23,8 @@ log_info "Project Root: ${PROJECT_ROOT}"
 log_info "Test Directory: ${TEST_DIR}"
 
 # 1. Clean and setup test environment
+pkill -9 -f "${TEST_DIR}" 2>/dev/null || true
+pkill -9 -f "sing-box.*${TEST_DIR}" 2>/dev/null || true
 rm -rf "${TEST_DIR}"
 mkdir -p "${TEST_DIR}/bin" "${TEST_DIR}/run"
 
@@ -53,19 +55,22 @@ log_info "Found sing-box binary at: ${SINGBOX_BIN}"
 cp "${SINGBOX_BIN}" "${TEST_DIR}/bin/sing-box"
 chmod +x "${TEST_DIR}/bin/sing-box"
 
+TEST_API_PORT="${API_PORT:-9080}"
+
 # 4. Generate sing-box minimal config.json
-cat > "${TEST_DIR}/config.json" << 'EOJSON'
+cat > "${TEST_DIR}/config.json" << EOJSON
 {
   "log": {
     "level": "info",
     "timestamp": true
   },
-  "experimental": {
-    "clash_api": {
-      "external_controller": "127.0.0.1:9090",
-      "secret": ""
+  "services": [
+    {
+      "type": "api",
+      "listen": "127.0.0.1",
+      "listen_port": ${TEST_API_PORT}
     }
-  },
+  ],
   "inbounds": [
     {
       "type": "mixed",
@@ -84,9 +89,9 @@ cat > "${TEST_DIR}/config.json" << 'EOJSON'
 EOJSON
 
 # 5. Generate atp.conf
-cat > "${TEST_DIR}/atp.conf" << 'EOCONF'
+cat > "${TEST_DIR}/atp.conf" << EOCONF
 LOG_TIMESTAMP=1
-API_PORT=9090
+API_PORT=${TEST_API_PORT}
 SERVICE_START_TIMEOUT=15
 SERVICE_STOP_TIMEOUT=10
 CORE_USER_GROUP=root:root
@@ -117,11 +122,12 @@ log_pass "sing-box configuration verified by official CLI check."
 cd "${TEST_DIR}"
 
 # ==============================================================================
-# 阶段 1: 启动 (Start) -> 校验进程 PID 与 Clash API 连通
+# 阶段 1: 首次启动 (Start) -> 校验进程存活与 Native API 就绪
 # ==============================================================================
 log_info "=== [STEP 1/4] 启动测试: 'atpd start' ==="
 ./atpd start
 
+# 等待启动稳定
 STATUS_OUTPUT=""
 for i in {1..10}; do
     STATUS_OUTPUT="$(./atpd status 2>&1)"
@@ -139,22 +145,22 @@ else
     log_fail "Step 1 FAIL: atpd 未能成功拉起 sing-box!"
 fi
 
-# 校验 Clash REST API
-log_info "校验 Clash API (http://127.0.0.1:9090/version)..."
-API_RES=""
+# 校验 sing-box Native API
+log_info "校验 sing-box Native API (127.0.0.1:${TEST_API_PORT})..."
+API_OK=0
 for i in {1..10}; do
-    API_RES="$(curl -s -m 2 http://127.0.0.1:9090/version || true)"
-    if [ -n "${API_RES}" ]; then
+    if nc -z 127.0.0.1 "${TEST_API_PORT}" 2>/dev/null || (echo > "/dev/tcp/127.0.0.1/${TEST_API_PORT}") 2>/dev/null; then
+        API_OK=1
         break
     fi
     sleep 0.5
 done
 
-if [ -n "${API_RES}" ]; then
-    log_pass "Clash API 响应成功: ${API_RES}"
+if [ "${API_OK}" -eq 1 ]; then
+    log_pass "sing-box Native API 响应正常 (Port ${TEST_API_PORT})"
 else
     dump_logs
-    log_fail "Clash API 未能在预期时间内响应!"
+    log_fail "sing-box Native API 未能在预期时间内响应!"
 fi
 
 # ==============================================================================
@@ -203,13 +209,12 @@ else
     log_fail "Step 3 FAIL: 重启后 sing-box 未能恢复运行!"
 fi
 
-# 再次验证 Clash API
-API_RES="$(curl -s -m 2 http://127.0.0.1:9090/version || true)"
-if [ -n "${API_RES}" ]; then
-    log_pass "重启后 Clash API 响应正常: ${API_RES}"
+# 再次验证 sing-box Native API
+if nc -z 127.0.0.1 "${TEST_API_PORT}" 2>/dev/null || (echo > "/dev/tcp/127.0.0.1/${TEST_API_PORT}") 2>/dev/null; then
+    log_pass "重启后 sing-box Native API 响应正常 (Port ${TEST_API_PORT})"
 else
     dump_logs
-    log_fail "重启后 Clash API 无法访问!"
+    log_fail "重启后 sing-box Native API 无法访问!"
 fi
 
 # ==============================================================================

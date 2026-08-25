@@ -122,7 +122,7 @@ int atpd_init_phase_service(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_phase_api(atpd_init_context_t *ctx) {
-    LOG_INFO("Initializing Clash REST API client...");
+    LOG_INFO("Initializing sing-box Native API client...");
     
     api_init(ctx->api, ctx->config);
     if (ctx->reactor) {

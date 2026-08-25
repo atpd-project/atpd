@@ -30,6 +30,7 @@ static const char *VALID_CONFIG_KEYS[] = {
     "LOG_FILE",
     "LOG_TIMESTAMP",
     "RESTART_DELAY",
+    "API_SECRET",
     "CLASH_SECRET",
     "API_PORT",
     "API_HOST",

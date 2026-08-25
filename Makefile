@@ -8,11 +8,19 @@ BINDIR ?= $(PREFIX)/bin
 RUNDIR ?= $(PREFIX)/run
 SINGBOXDIR ?= $(PREFIX)/sing-box
 
-CC = clang
+CC ?= $(shell which clang 2>/dev/null || echo gcc)
+
+ifeq ($(findstring clang,$(CC)),clang)
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC -Qunused-arguments
 CFLAGS += -Oz -flto -ffunction-sections -fdata-sections
 CFLAGS += -fno-unwind-tables -fno-asynchronous-unwind-tables
 CFLAGS += -fmerge-all-constants -fno-ident
+else
+CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC
+CFLAGS += -O2 -flto -ffunction-sections -fdata-sections
+CFLAGS += -fno-unwind-tables -fno-asynchronous-unwind-tables
+CFLAGS += -fmerge-all-constants -fno-ident
+endif
 CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=3
 CFLAGS += -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1
 CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"

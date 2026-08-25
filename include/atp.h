@@ -71,7 +71,7 @@
 #define PROXY_BIN_PATH      ATP_DEFAULT_DIR "/bin/sing-box"
 
 #define DEFAULT_RESTART_DELAY 2
-#define DEFAULT_API_PORT    9090
+#define DEFAULT_API_PORT    9080
 #define DEFAULT_API_HOST    "127.0.0.1"
 
 #define CMD_TIMEOUT_SEC     5
@@ -151,18 +151,8 @@ typedef enum {
 
 #define cfg_api_port          cfg->api.port
 #define cfg_api_host          cfg->api.host
-#define cfg_clash_secret      cfg->api.secret
+#define cfg_api_secret        cfg->api.secret
 
 #define cfg_config_mutex      cfg->mutex
-
-int atp_init(void);
-int atp_cleanup(void);
-int atp_create_pidfile(void);
-void atp_remove_pidfile(void);
-void atp_daemonize(void);
-int atp_signal_setup(void);
-int atp_check_running(void);
-int atp_check_root(void);
-void atp_show_status(void);
 
 #endif

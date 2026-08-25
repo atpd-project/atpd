@@ -9,6 +9,9 @@
 #include "reactor.h"
 #include "logger.h"
 #include "atpd_context.h"
+#include "atpd_global.h"
+#include "status.h"
+#include "ui.h"
 #include "session.h"
 #include "version.h"
 #include <stdio.h>
@@ -113,42 +116,22 @@ static int check_client_uid(int fd) {
 }
 
 static void handle_status(int fd) {
-    char response[UDS_RESPONSE_SIZE];
-    size_t off = 0;
+    char *buf = NULL;
+    size_t size = 0;
+    FILE *mem = open_memstream(&buf, &size);
+    if (mem) {
+        ui_set_output_file(mem);
+        status_show(&g_config, g_atpd.svc, &g_atpd.api_ctx);
+        ui_set_output_file(NULL);
+        fclose(mem);
 
-    off = append_response(response, sizeof(response), off,
-                          "=== ATPd Status ===\n");
-    off = append_response(response, sizeof(response), off,
-                          "Runtime State: %s\n",
-                          atpd_runtime_state_string(g_atpd_ctx.runtime_state));
-    off = append_response(response, sizeof(response), off,
-                          "VPN State: %s\n",
-                          vpn_state_string(atomic_load(&g_atpd_ctx.vpn_state)));
-    off = append_response(response, sizeof(response), off,
-                          "eBPF State: %s\n",
-                          ebpf_state_string(g_atpd_ctx.ebpf_state));
-    off = append_response(response, sizeof(response), off,
-                          "VPN Interface: %s\n",
-                          g_atpd_ctx.vpn_iface[0] ? g_atpd_ctx.vpn_iface : "none");
-    off = append_response(response, sizeof(response), off,
-                          "XFRM IF ID: %u\n",
-                          g_atpd_ctx.xfrm_if_id);
-    off = append_response(response, sizeof(response), off,
-                          "VPN Transitions: %" PRIu64 "\n",
-                          g_atpd_ctx.vpn_transitions);
-    off = append_response(response, sizeof(response), off,
-                          "Splice Bytes: %" PRIu64 "\n",
-                          g_atpd_ctx.splice_bytes_total);
-    off = append_response(response, sizeof(response), off,
-                          "Uptime: %" PRIu64 " seconds\n",
-                          atpd_runtime_get_uptime());
-
-    if (off >= sizeof(response)) {
-        send_string_all(fd, "ERROR: response too large\n");
-        return;
+        if (buf && size > 0) {
+            send_response_all(fd, buf, size);
+        }
+        free(buf);
+    } else {
+        send_string_all(fd, "ERROR: failed to generate status\n");
     }
-
-    send_response_all(fd, response, off);
 }
 
 static void handle_stop(int fd) {
@@ -361,6 +344,9 @@ static void uds_client_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
             break;
         }
     }
+
+    reactor_remove_fd(r, fd);
+    close(fd);
 }
 
 /* ========== UDS Accept Callback ========== */

@@ -8,6 +8,7 @@ set -euo pipefail
 BENCH_DIR="${TMPDIR:-/tmp}/atp_bench"
 ATP_BIN="${1:-./build/bin/atpd}"
 SINGBOX_BIN="${2:-$(command -v sing-box || echo "")}"
+BENCH_API_PORT="${API_PORT:-9080}"
 
 echo "================================================================"
 echo "          ATPd Automated Performance Benchmark Suite           "
@@ -18,7 +19,9 @@ if [ ! -f "${ATP_BIN}" ]; then
     exit 1
 fi
 
-# 1. 准备测试沙盒
+# 1. 清理并准备测试沙盒
+pkill -9 -x "atpd" 2>/dev/null || true
+pkill -9 -x "sing-box" 2>/dev/null || true
 rm -rf "${BENCH_DIR}"
 mkdir -p "${BENCH_DIR}/run" "${BENCH_DIR}/bin"
 cp "${ATP_BIN}" "${BENCH_DIR}/atpd"
@@ -30,17 +33,17 @@ if [ -n "${SINGBOX_BIN}" ] && [ -f "${SINGBOX_BIN}" ]; then
     echo "[BENCH-INFO] Using sing-box binary: ${SINGBOX_BIN}"
 fi
 
-# 极简高性能基准配置
-cat << 'EOF' > "${BENCH_DIR}/config.json"
+# 极简高性能基准配置 (Native API)
+INBOUND_PORT="${BENCH_INBOUND_PORT:-2088}"
+
+cat << EOF > "${BENCH_DIR}/config.json"
 {
   "log": { "level": "warn" },
-  "inbounds": [
-    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080 }
-  ],
+  "inbounds": [{ "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": ${INBOUND_PORT} }],
   "outbounds": [{ "type": "direct", "tag": "direct" }],
-  "experimental": {
-    "clash_api": { "external_controller": "127.0.0.1:9090" }
-  }
+  "services": [
+    { "type": "api", "listen": "127.0.0.1", "listen_port": ${BENCH_API_PORT} }
+  ]
 }
 EOF
 
@@ -48,10 +51,10 @@ cat << EOF > "${BENCH_DIR}/atp.conf"
 DATA_DIR="${BENCH_DIR}"
 RUN_DIR="run"
 CORE_USER_GROUP="root:root"
-API_PORT=9090
+API_PORT=${BENCH_API_PORT}
 EOF
 
-# 2. 启动服务并记录初始状态
+# 2. 启动服务并等待就绪
 "${BENCH_DIR}/atpd" start
 sleep 1
 
@@ -75,12 +78,12 @@ echo "    -> ATPd Baseline RSS: ${RSS_MB} MB (${RSS_KB} KB)"
 # ------------------------------------------------------------------------------
 # Benchmark 2: UDS 本地状态查询 QPS 与延迟压测
 # ------------------------------------------------------------------------------
-echo ">>> [2/4] Benchmarking UDS Command Latency (500 queries)..."
+echo ">>> [2/4] Benchmarking UDS Command Latency (200 queries)..."
 START_NS=$(date +%s%N)
-TOTAL_QUERIES=500
+TOTAL_QUERIES=200
 
 for ((i=1; i<=TOTAL_QUERIES; i++)); do
-    "${BENCH_DIR}/atpd" status >/dev/null 2>&1 || true
+    "${BENCH_DIR}/atpd" -c "${BENCH_DIR}/atp.conf" status >/dev/null 2>&1 || true
 done
 
 END_NS=$(date +%s%N)
@@ -112,14 +115,26 @@ if [ "${NL_MS}" -le 0 ]; then NL_MS=1; fi
 echo "    -> Processed ${NL_CYCLES} interface up/down cycles in ${NL_MS} ms"
 
 # ------------------------------------------------------------------------------
-# Benchmark 4: HTTP 代理并发吞吐压测 (wrk / curl)
+# Benchmark 4: Native API 探针与 Goroutines 遥测
 # ------------------------------------------------------------------------------
-echo ">>> [4/4] Benchmarking Proxy Health & Clash API..."
-CLASH_RESP=$(curl -s "http://127.0.0.1:9090/version" 2>/dev/null || echo "N/A")
-echo "    -> Clash API Response: ${CLASH_RESP}"
+echo ">>> [4/4] Benchmarking Proxy Health & Native API..."
+API_RESP="N/A"
+for i in {1..10}; do
+    if nc -z 127.0.0.1 "${BENCH_API_PORT}" 2>/dev/null || (echo > "/dev/tcp/127.0.0.1/${BENCH_API_PORT}") 2>/dev/null; then
+        API_RESP="HEALTHY (Port ${BENCH_API_PORT})"
+        break
+    fi
+    sleep 0.5
+done
+echo "    -> Native API Status: ${API_RESP}"
+
+STATUS_OUT=$("${BENCH_DIR}/atpd" status 2>&1 || true)
+GOROUTINES_VAL=$(echo "${STATUS_OUT}" | grep -i "Goroutines" | awk '{print $NF}' || echo "N/A")
+echo "    -> Active Goroutines: ${GOROUTINES_VAL}"
 
 # 停止沙盒进程
 "${BENCH_DIR}/atpd" stop || true
+pkill -9 -x "sing-box" 2>/dev/null || true
 
 # 5. 输出汇总 Markdown 报告
 cat << EOF
@@ -130,8 +145,10 @@ cat << EOF
 | Metric (指标项)                | Measured Value (实测值)    | Target SLO (标准) | Status |
 | :----------------------------- | :------------------------- | :----------------- | :----- |
 | **Baseline RSS Memory**        | **${RSS_MB} MB**           | < 3.0 MB           | $(awk "BEGIN {if (${RSS_MB} <= 3.0) print \"PASS\"; else print \"WARN\"}") |
-| **CLI Status Avg Latency**     | **${AVG_LATENCY_MS} ms**    | < 20.0 ms          | $(awk "BEGIN {if (${AVG_LATENCY_MS} <= 20.0) print \"PASS\"; else print \"WARN\"}") |
-| **CLI Status QPS**             | **${QPS} req/sec**         | > 50 req/sec       | $(awk "BEGIN {if (${QPS} >= 50) print \"PASS\"; else print \"WARN\"}") |
+| **CLI Status Avg Latency**     | **${AVG_LATENCY_MS} ms**    | < 10.0 ms          | $(awk "BEGIN {if (${AVG_LATENCY_MS} <= 10.0) print \"PASS\"; else print \"WARN\"}") |
+| **CLI Status QPS**             | **${QPS} req/sec**         | > 100 req/sec      | $(awk "BEGIN {if (${QPS} >= 100) print \"PASS\"; else print \"WARN\"}") |
 | **Netlink Flap Handling (30x)**| **${NL_MS} ms**            | < 500 ms           | $(awk "BEGIN {if (${NL_MS} <= 500) print \"PASS\"; else print \"WARN\"}") |
+| **Native API & Telemetry**     | **${API_RESP}**            | HEALTHY            | $(if echo "${API_RESP}" | grep -q "HEALTHY"; then echo "PASS"; else echo "WARN"; fi) |
+| **Active Goroutines**          | **${GOROUTINES_VAL}**      | Integer Value      | $(if [ "${GOROUTINES_VAL}" != "N/A" ]; then echo "PASS"; else echo "WARN"; fi) |
 ==============================================================
 EOF

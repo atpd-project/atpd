@@ -15,6 +15,16 @@
 #include <sys/ioctl.h>
 #include <stdarg.h>
 
+/* Custom output stream support (for UDS buffer or stdout) */
+static FILE *g_ui_out = NULL;
+#define OUT_FP (g_ui_out ? g_ui_out : stdout)
+#define printf(...) fprintf(OUT_FP, __VA_ARGS__)
+#define vprintf(...) vfprintf(OUT_FP, __VA_ARGS__)
+
+void ui_set_output_file(FILE *fp) {
+    g_ui_out = fp;
+}
+
 /* Force disable color output */
 static int g_force_no_color = 0;
 

@@ -1,11 +1,32 @@
 name: Benchmark & Performance Regression
 
+run-name: "#${{ github.run_number }}: Benchmark ATPd (${{ github.ref_name }})"
+
 on:
   push:
-    branches: [ pure-ebpf, main ]
+    branches:
+      - main
+      - dev
+      - staging
+      - ebpf
+      - pure-ebpf
+      - 'ebpf/**'
+      - 'feat-*'
+      - 'feat/**'
+      - 'test/**'
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'Makefile'
+      - '.github/workflows/benchmark.yml'
   pull_request:
-    branches: [ pure-ebpf, main ]
+    branches: [main, dev, ebpf, pure-ebpf]
   workflow_dispatch:
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   benchmark:
@@ -14,16 +35,20 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang llvm libbpf-dev iproute2 curl
+          sudo apt-get install -y -qq build-essential clang llvm libbpf-dev iproute2 curl jq procps
 
       - name: Download & Install sing-box official package
         run: |
-          wget -q https://github.com/debiansid/sing-box/releases/download/v1.14.0-beta.8/sing-box_1.14.0-beta.8_linux_amd64.deb
-          sudo dpkg -i sing-box_1.14.0-beta.8_linux_amd64.deb
+          DEB_URL="https://github.com/debiansid/sing-box/releases/download/v1.14.0-beta.8/sing-box_1.14.0-beta.8_linux_amd64.deb"
+          curl -fSL -o /tmp/sing-box.deb "${DEB_URL}"
+          sudo dpkg -i /tmp/sing-box.deb
+          which sing-box
           sing-box version
 
       - name: Build Native ATPd
@@ -33,7 +58,7 @@ jobs:
       - name: Run Benchmark Suite
         run: |
           chmod +x tests/benchmark_atpd.sh
-          sudo ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
+          sudo -E ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
 
       - name: Publish Performance Summary to GitHub UI
         if: always()
