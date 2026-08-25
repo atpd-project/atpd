@@ -91,15 +91,21 @@ int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size) {
     return -1;
 }
 
-int api_get_goroutines_count(api_ctx_t *ctx) {
-    if (!ctx) return -1;
+int api_get_status_sync(api_ctx_t *ctx, singbox_status_t *status) {
+    if (!ctx || !status) return -1;
     for (int attempt = 0; attempt < 20; attempt++) {
-        int count = -1;
-        if (singbox_api_get_goroutines(&ctx->native_ctx, &count) == 0 && count > 0) {
-            return count;
+        if (singbox_api_get_status(&ctx->native_ctx, status) == 0 && status->goroutines > 0) {
+            return 0;
         }
         if (attempt < 19) usleep(100 * 1000);
     }
-    LOG_WARN("sing-box SubscribeStatus gRPC-Web query unavailable after startup retries");
+    LOG_WARN("sing-box SubscribeStatus gRPC-Web snapshot unavailable after startup retries");
+    return -1;
+}
+
+int api_get_goroutines_count(api_ctx_t *ctx) {
+    if (!ctx) return -1;
+    singbox_status_t status;
+    if (api_get_status_sync(ctx, &status) == 0) return status.goroutines;
     return -1;
 }

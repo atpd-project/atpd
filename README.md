@@ -186,6 +186,12 @@ chmod 755 /data/adb/service.d/atpd_service.sh
     CPU             0.1%
     Threads         13
     Goroutines      <live value from SubscribeStatus>
+    Connections In   <live value from SubscribeStatus>
+    Connections Out  <live value from SubscribeStatus>
+    Uplink           <live value from SubscribeStatus>
+    Downlink         <live value from SubscribeStatus>
+    Uplink Total     <live value from SubscribeStatus>
+    Downlink Total   <live value from SubscribeStatus>
     FDs             14
     Version         sing-box 1.12.0
 
@@ -293,8 +299,8 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
 `services[].type: "api"` exposes the sing-box Native API used for health checks
 and dashboard control (port 9080 in this example). ATPd reads the same
 `SubscribeStatus` gRPC-Web stream used by the sing-box dashboard; its status
-message contains the current `runtime.NumGoroutine()` value. No separate debug
-listener is required. The displayed Clash mode is compared with
+message supplies memory, goroutines, connection counts, traffic rates, and
+traffic totals. No separate debug listener is required. The displayed Clash mode is compared with
 `experimental.clash_api.default_mode`; when omitted, sing-box defines the
 default as `Rule`.
 

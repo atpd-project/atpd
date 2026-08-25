@@ -15,12 +15,27 @@ typedef struct {
     time_t last_check;
 } singbox_api_ctx_t;
 
+/* Snapshot returned by StartedService.SubscribeStatus. Values use the same
+ * protobuf semantics as the official sing-box dashboard. */
+typedef struct {
+    uint64_t memory;
+    int32_t goroutines;
+    int32_t connections_in;
+    int32_t connections_out;
+    bool traffic_available;
+    int64_t uplink;
+    int64_t downlink;
+    int64_t uplink_total;
+    int64_t downlink_total;
+} singbox_status_t;
+
 /* Lifecycle */
 int singbox_api_init(singbox_api_ctx_t *ctx, const atp_config_t *cfg);
 void singbox_api_cleanup(singbox_api_ctx_t *ctx);
 
 /* Health Probe & Telemetry */
 int singbox_api_health_check(singbox_api_ctx_t *ctx);
+int singbox_api_get_status(singbox_api_ctx_t *ctx, singbox_status_t *status_out);
 int singbox_api_get_version(singbox_api_ctx_t *ctx, char *version_buf, size_t buf_size);
 int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out);
 int singbox_api_get_clash_mode(singbox_api_ctx_t *ctx, char *mode_buf, size_t buf_size);

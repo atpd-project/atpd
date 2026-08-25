@@ -130,6 +130,16 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
     char goroutines_str[16] = "N/A";
     char fds_str[16] = "0";
     char version_str[64] = "unknown";
+    char connections_in_str[16] = "N/A";
+    char connections_out_str[16] = "N/A";
+    char uplink_str[32] = "N/A";
+    char downlink_str[32] = "N/A";
+    char uplink_total_str[32] = "N/A";
+    char downlink_total_str[32] = "N/A";
+    singbox_status_t core_status;
+    memset(&core_status, 0, sizeof(core_status));
+    api_ctx_t *status_api = api ? api : &g_api_ctx;
+    int core_status_ok = api_get_status_sync(status_api, &core_status) == 0;
 
     ui_table_begin();
     ui_table_header("PROXY CORE");
@@ -140,22 +150,30 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
         return;
     }
 
-    long mem_kb = get_process_memory_kb(pid);
     double cpu = get_process_cpu_percent(pid);
     int threads = get_process_threads(pid);
     int fd_count = get_process_fd_count(pid);
     int uptime_sec = get_process_uptime_sec(pid);
 
     format_uptime_human(uptime_sec, uptime_str, sizeof(uptime_str));
-    format_bytes(mem_str, sizeof(mem_str), (unsigned long long)mem_kb * 1024);
+    if (core_status_ok) {
+        format_bytes(mem_str, sizeof(mem_str), core_status.memory);
+        snprintf(connections_in_str, sizeof(connections_in_str), "%d", core_status.connections_in);
+        snprintf(connections_out_str, sizeof(connections_out_str), "%d", core_status.connections_out);
+        if (core_status.traffic_available) {
+            format_bytes(uplink_str, sizeof(uplink_str), (unsigned long long)(core_status.uplink > 0 ? core_status.uplink : 0));
+            format_bytes(downlink_str, sizeof(downlink_str), (unsigned long long)(core_status.downlink > 0 ? core_status.downlink : 0));
+            format_bytes(uplink_total_str, sizeof(uplink_total_str), (unsigned long long)(core_status.uplink_total > 0 ? core_status.uplink_total : 0));
+            format_bytes(downlink_total_str, sizeof(downlink_total_str), (unsigned long long)(core_status.downlink_total > 0 ? core_status.downlink_total : 0));
+        }
+    } else snprintf(mem_str, sizeof(mem_str), "N/A");
     snprintf(cpu_str, sizeof(cpu_str), "%.1f%%", cpu);
     snprintf(threads_str, sizeof(threads_str), "%d", threads);
     snprintf(fds_str, sizeof(fds_str), "%d", fd_count);
 
-    /* 1. Goroutines count from sing-box Native API SubscribeStatus. */
-    int gr = api ? api_get_goroutines_count(api) : api_get_goroutines_count(&g_api_ctx);
-    if (gr > 0) {
-        snprintf(goroutines_str, sizeof(goroutines_str), "%d", gr);
+    /* All dashboard runtime values come from one SubscribeStatus snapshot. */
+    if (core_status_ok) {
+        snprintf(goroutines_str, sizeof(goroutines_str), "%d", core_status.goroutines);
     } else {
         snprintf(goroutines_str, sizeof(goroutines_str), "N/A");
     }
@@ -172,6 +190,12 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
     ui_table_subrow("├─", "CPU", cpu_str);
     ui_table_subrow("├─", "Threads", threads_str);
     ui_table_subrow("├─", "Goroutines", goroutines_str);
+    ui_table_subrow("├─", "Connections In", connections_in_str);
+    ui_table_subrow("├─", "Connections Out", connections_out_str);
+    ui_table_subrow("├─", "Uplink", uplink_str);
+    ui_table_subrow("├─", "Downlink", downlink_str);
+    ui_table_subrow("├─", "Uplink Total", uplink_total_str);
+    ui_table_subrow("├─", "Downlink Total", downlink_total_str);
     ui_table_subrow("├─", "FDs", fds_str);
     ui_table_subrow("└─", "Version", version_str);
 
@@ -207,7 +231,8 @@ static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_confi
     snprintf(default_mode, sizeof(default_mode), "%s",
              (cfg && cfg->api.default_mode[0]) ? cfg->api.default_mode : "Rule");
 
-    if (api_get_mode_sync(api, current_mode, sizeof(current_mode)) == 0 && current_mode[0]) {
+    api_ctx_t *mode_api = api ? api : &g_api_ctx;
+    if (api_get_mode_sync(mode_api, current_mode, sizeof(current_mode)) == 0 && current_mode[0]) {
         const char *color = COLOR_GREEN;
         if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;

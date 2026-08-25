@@ -149,10 +149,12 @@ static int read_varint(const unsigned char *buf, size_t len, size_t *pos,
     return -1;
 }
 
-/* Decode the first gRPC-Web data frame of SubscribeStatus. The Status
- * protobuf contains goroutines as field 2 (varint). */
+/* Decode the first gRPC-Web data frame of SubscribeStatus. The fields mirror
+ * daemon.Status in sing-box and are the values consumed by its dashboard. */
 static int parse_status_frame(const unsigned char *buf, size_t len,
-                              int *goroutines_out) {
+                              singbox_status_t *status_out) {
+    if (!status_out) return -1;
+    memset(status_out, 0, sizeof(*status_out));
     if (len < 5) return 0;
     if (buf[0] & 0x80) return -1; /* trailers frame, not a Status message */
 
@@ -169,17 +171,22 @@ static int parse_status_frame(const unsigned char *buf, size_t len,
         if (read_varint(buf, end, &pos, &key) != 0) return -1;
         unsigned int field = (unsigned int)(key >> 3);
         unsigned int wire = (unsigned int)(key & 7);
-        if (field == 2 && wire == 0) {
-            uint64_t value;
-            if (read_varint(buf, end, &pos, &value) != 0 || value > INT_MAX) return -1;
-            *goroutines_out = (int)value;
-            return *goroutines_out > 0 ? 1 : -1;
-        }
-
         switch (wire) {
         case 0: {
-            uint64_t ignored;
-            if (read_varint(buf, end, &pos, &ignored) != 0) return -1;
+            uint64_t value;
+            if (read_varint(buf, end, &pos, &value) != 0) return -1;
+            switch (field) {
+            case 1: status_out->memory = value; break;
+            case 2: if (value > INT32_MAX) return -1; status_out->goroutines = (int32_t)value; break;
+            case 3: if (value > INT32_MAX) return -1; status_out->connections_in = (int32_t)value; break;
+            case 4: if (value > INT32_MAX) return -1; status_out->connections_out = (int32_t)value; break;
+            case 5: status_out->traffic_available = value != 0; break;
+            case 6: status_out->uplink = (int64_t)value; break;
+            case 7: status_out->downlink = (int64_t)value; break;
+            case 8: status_out->uplink_total = (int64_t)value; break;
+            case 9: status_out->downlink_total = (int64_t)value; break;
+            default: break;
+            }
             break;
         }
         case 1:
@@ -200,14 +207,14 @@ static int parse_status_frame(const unsigned char *buf, size_t len,
             return -1;
         }
     }
-    return -1;
+    return 1;
 }
 
 /* Parse HTTP/1.1 framing used by sing-box's gRPC-Web bridge. Streaming
  * responses are chunked, so do not wait for EOF: the first Status frame is
  * emitted immediately and the stream remains open for dashboard updates. */
 static int parse_grpc_web_response(const unsigned char *buf, size_t len,
-                                   int *goroutines_out) {
+                                   singbox_status_t *status_out) {
     const char *header_end = strstr((const char *)buf, "\r\n\r\n");
     if (!header_end) return 0;
     size_t body = (size_t)(header_end - (const char *)buf) + 4;
@@ -215,7 +222,7 @@ static int parse_grpc_web_response(const unsigned char *buf, size_t len,
     int chunked = strcasestr(headers, "transfer-encoding: chunked") != NULL;
 
     if (!chunked) {
-        return body <= len ? parse_status_frame(buf + body, len - body, goroutines_out) : 0;
+        return body <= len ? parse_status_frame(buf + body, len - body, status_out) : 0;
     }
 
     while (body < len) {
@@ -233,16 +240,16 @@ static int parse_grpc_web_response(const unsigned char *buf, size_t len,
         body += line_len + 2;
         if (chunk_len == 0) return -1;
         if (chunk_len > len - body || len - body - chunk_len < 2) return 0;
-        int parsed = parse_status_frame(buf + body, (size_t)chunk_len, goroutines_out);
+        int parsed = parse_status_frame(buf + body, (size_t)chunk_len, status_out);
         if (parsed != 0) return parsed;
         body += (size_t)chunk_len + 2;
     }
     return 0;
 }
 
-int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
-    if (!goroutines_out) return -1;
-    *goroutines_out = -1;
+int singbox_api_get_status(singbox_api_ctx_t *ctx, singbox_status_t *status_out) {
+    if (!status_out) return -1;
+    memset(status_out, 0, sizeof(*status_out));
 
     /* SubscribeStatus is the same server-streaming RPC used by the official
      * sing-box dashboard. Its first Status frame is an instantaneous sample. */
@@ -340,10 +347,21 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
         if (n <= 0) break;
         used += (size_t)n;
         buf[used] = '\0';
-        parsed = parse_grpc_web_response(buf, used, goroutines_out);
+        parsed = parse_grpc_web_response(buf, used, status_out);
     }
     close(sock);
     return parsed == 1 ? 0 : -1;
+}
+
+int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
+    if (!goroutines_out) return -1;
+    singbox_status_t status;
+    if (singbox_api_get_status(ctx, &status) != 0 || status.goroutines <= 0) {
+        *goroutines_out = -1;
+        return -1;
+    }
+    *goroutines_out = status.goroutines;
+    return 0;
 }
 
 /* Issue a unary StartedService RPC over the same HTTP/1.1 gRPC-Web bridge
