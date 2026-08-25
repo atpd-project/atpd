@@ -43,10 +43,14 @@ if [ -n "${SINGBOX_BIN_OVERRIDE:-}" ] && [ -x "${SINGBOX_BIN_OVERRIDE}" ]; then
     SINGBOX_BIN="${SINGBOX_BIN_OVERRIDE}"
 elif command -v sing-box >/dev/null 2>&1; then
     SINGBOX_BIN="$(command -v sing-box)"
-elif [ -f "/usr/bin/sing-box" ]; then
+elif [ -x "/usr/bin/sing-box" ]; then
     SINGBOX_BIN="/usr/bin/sing-box"
-elif [ -f "/usr/local/bin/sing-box" ]; then
+elif [ -x "/usr/local/bin/sing-box" ]; then
     SINGBOX_BIN="/usr/local/bin/sing-box"
+elif [ -x "/data/data/com.termux/files/usr/bin/sing-box" ]; then
+    SINGBOX_BIN="/data/data/com.termux/files/usr/bin/sing-box"
+elif [ -x "/data/adb/atp/bin/sing-box" ]; then
+    SINGBOX_BIN="/data/adb/atp/bin/sing-box"
 fi
 
 if [ -z "${SINGBOX_BIN}" ]; then
@@ -150,11 +154,26 @@ cd "${TEST_DIR}"
 log_info "=== [STEP 1/4] 启动测试: 'atpd start' ==="
 ./atpd start
 
-# 等待启动稳定
+# 校验 sing-box Native API 端口就绪
+log_info "校验 sing-box Native API (127.0.0.1:${TEST_API_PORT})..."
+API_OK=0
+if wait_for_api; then API_OK=1; fi
+
+if [ "${API_OK}" -eq 1 ]; then
+    log_pass "sing-box Native API 响应正常 (Port ${TEST_API_PORT})"
+else
+    dump_logs
+    log_fail "sing-box Native API 未能在预期时间内响应!"
+fi
+
+# 等待启动稳定并获取状态数据
 STATUS_OUTPUT=""
-for i in {1..10}; do
-    STATUS_OUTPUT="$(./atpd status 2>&1)"
-    if echo "${STATUS_OUTPUT}" | grep -q "PID"; then
+for i in {1..20}; do
+    STATUS_OUTPUT="$(./atpd -n status 2>&1)"
+    GOROUTINES_VALUE="$(echo "${STATUS_OUTPUT}" | sed -r 's/\x1b\[[0-9;]*m//g' | awk '/Goroutines/{print $NF; exit}')"
+    if echo "${STATUS_OUTPUT}" | grep -q "PID" && \
+       echo "${STATUS_OUTPUT}" | sed -r 's/\x1b\[[0-9;]*m//g' | grep -qE 'Clash Mode[[:space:]]+Rule' && \
+       [[ "${GOROUTINES_VALUE}" =~ ^[1-9][0-9]*$ ]]; then
         break
     fi
     sleep 0.5
@@ -168,7 +187,7 @@ else
     log_fail "Step 1 FAIL: atpd 未能成功拉起 sing-box!"
 fi
 
-GOROUTINES_VALUE="$(echo "${STATUS_OUTPUT}" | awk '/Goroutines/{print $NF; exit}')"
+GOROUTINES_VALUE="$(echo "${STATUS_OUTPUT}" | sed -r 's/\x1b\[[0-9;]*m//g' | awk '/Goroutines/{print $NF; exit}')"
 if [[ "${GOROUTINES_VALUE}" =~ ^[1-9][0-9]*$ ]]; then
     log_pass "Native API SubscribeStatus 返回实时 Goroutines=${GOROUTINES_VALUE}"
 else
@@ -176,23 +195,11 @@ else
     log_fail "Goroutines 未从 Native API 返回整数值: ${GOROUTINES_VALUE:-N/A}"
 fi
 
-if echo "${STATUS_OUTPUT}" | grep -qE 'Clash Mode[[:space:]]+Rule'; then
+if echo "${STATUS_OUTPUT}" | sed -r 's/\x1b\[[0-9;]*m//g' | grep -qE 'Clash Mode[[:space:]]+Rule'; then
     log_pass "Native API GetClashModeStatus 返回默认模式 Rule"
 else
     dump_logs
     log_fail "未能通过 Native API 读取默认 Clash mode"
-fi
-
-# 校验 sing-box Native API
-log_info "校验 sing-box Native API (127.0.0.1:${TEST_API_PORT})..."
-API_OK=0
-if wait_for_api; then API_OK=1; fi
-
-if [ "${API_OK}" -eq 1 ]; then
-    log_pass "sing-box Native API 响应正常 (Port ${TEST_API_PORT})"
-else
-    dump_logs
-    log_fail "sing-box Native API 未能在预期时间内响应!"
 fi
 
 # ==============================================================================
@@ -202,8 +209,8 @@ log_info "=== [STEP 2/4] 停止测试: 'atpd stop' ==="
 ./atpd stop
 
 STOP_STATUS=""
-for i in {1..10}; do
-    STOP_STATUS="$(./atpd status 2>&1)"
+for i in {1..20}; do
+    STOP_STATUS="$(./atpd -n status 2>&1)"
     if echo "${STOP_STATUS}" | grep -q "STOPPED" || echo "${STOP_STATUS}" | grep -q "Daemon stopped"; then
         break
     fi
@@ -224,9 +231,17 @@ fi
 log_info "=== [STEP 3/4] 重启测试: 'atpd restart' ==="
 ./atpd restart
 
+# 等待重启后 sing-box Native API 完成监听
+if wait_for_api; then
+    log_pass "重启后 sing-box Native API 响应正常 (Port ${TEST_API_PORT})"
+else
+    dump_logs
+    log_fail "重启后 sing-box Native API 无法访问!"
+fi
+
 RESTART_STATUS=""
-for i in {1..10}; do
-    RESTART_STATUS="$(./atpd status 2>&1)"
+for i in {1..20}; do
+    RESTART_STATUS="$(./atpd -n status 2>&1)"
     if echo "${RESTART_STATUS}" | grep -q "PID"; then
         break
     fi
@@ -241,25 +256,28 @@ else
     log_fail "Step 3 FAIL: 重启后 sing-box 未能恢复运行!"
 fi
 
-# 再次验证 sing-box Native API。restart 是异步启动，必须等待新进程
-# 完成监听后再判定，否则会把正常启动窗口误报为失败。
-if wait_for_api; then
-    log_pass "重启后 sing-box Native API 响应正常 (Port ${TEST_API_PORT})"
-else
-    dump_logs
-    log_fail "重启后 sing-box Native API 无法访问!"
-fi
-
 # ==============================================================================
 # 阶段 4: 最终停止 (Final Stop) -> 完整生命周期收尾
 # ==============================================================================
 log_info "=== [STEP 4/4] 最终收尾: 'atpd stop' ==="
 ./atpd stop
-sleep 1
 
-FINAL_STATUS="$(./atpd status 2>&1)"
+FINAL_STATUS=""
+for i in {1..20}; do
+    FINAL_STATUS="$(./atpd -n status 2>&1)"
+    if echo "${FINAL_STATUS}" | grep -q "STOPPED" || echo "${FINAL_STATUS}" | grep -q "Daemon stopped"; then
+        break
+    fi
+    sleep 0.5
+done
 echo "${FINAL_STATUS}"
-log_pass "Step 4 PASS: 完整启停、重启闭环生命周期测试全部通过 (100% SUCCESS)!"
+
+if echo "${FINAL_STATUS}" | grep -q "STOPPED" || echo "${FINAL_STATUS}" | grep -q "Daemon stopped"; then
+    log_pass "Step 4 PASS: 完整启停、重启闭环生命周期测试全部通过 (100% SUCCESS)!"
+else
+    dump_logs
+    log_fail "Step 4 FAIL: 最终停止后未能正确处于停止状态!"
+fi
 
 # 清理测试现场
 chmod -R 777 "${TEST_DIR}" 2>/dev/null || true
