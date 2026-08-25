@@ -114,6 +114,17 @@ dump_logs() {
 }
 trap dump_logs ERR
 
+wait_for_api() {
+    for _ in {1..20}; do
+        if nc -z 127.0.0.1 "${TEST_API_PORT}" 2>/dev/null || \
+           (echo > "/dev/tcp/127.0.0.1/${TEST_API_PORT}") 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
 # --- PRE-CHECK: Validate sing-box config syntax ---
 log_info "Pre-check: Validating sing-box configuration syntax..."
 "${TEST_DIR}/bin/sing-box" check -c "${TEST_DIR}/config.json" -D "${TEST_DIR}"
@@ -148,13 +159,7 @@ fi
 # 校验 sing-box Native API
 log_info "校验 sing-box Native API (127.0.0.1:${TEST_API_PORT})..."
 API_OK=0
-for i in {1..10}; do
-    if nc -z 127.0.0.1 "${TEST_API_PORT}" 2>/dev/null || (echo > "/dev/tcp/127.0.0.1/${TEST_API_PORT}") 2>/dev/null; then
-        API_OK=1
-        break
-    fi
-    sleep 0.5
-done
+if wait_for_api; then API_OK=1; fi
 
 if [ "${API_OK}" -eq 1 ]; then
     log_pass "sing-box Native API 响应正常 (Port ${TEST_API_PORT})"
@@ -209,8 +214,9 @@ else
     log_fail "Step 3 FAIL: 重启后 sing-box 未能恢复运行!"
 fi
 
-# 再次验证 sing-box Native API
-if nc -z 127.0.0.1 "${TEST_API_PORT}" 2>/dev/null || (echo > "/dev/tcp/127.0.0.1/${TEST_API_PORT}") 2>/dev/null; then
+# 再次验证 sing-box Native API。restart 是异步启动，必须等待新进程
+# 完成监听后再判定，否则会把正常启动窗口误报为失败。
+if wait_for_api; then
     log_pass "重启后 sing-box Native API 响应正常 (Port ${TEST_API_PORT})"
 else
     dump_logs
