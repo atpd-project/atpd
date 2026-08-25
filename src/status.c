@@ -160,18 +160,9 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
         snprintf(goroutines_str, sizeof(goroutines_str), "N/A");
     }
 
-    /* 2. Version from Native API / Binary */
-    if ((!api || api_get_version_sync(api, version_str, sizeof(version_str)) != 0 || !version_str[0])) {
-        char bin_path[PATH_MAX] = {0};
-        char exe_link[64];
-        snprintf(exe_link, sizeof(exe_link), "/proc/%d/exe", pid);
-        ssize_t rlen = readlink(exe_link, bin_path, sizeof(bin_path) - 1);
-        if (rlen > 0) {
-            bin_path[rlen] = '\0';
-            get_binary_version(bin_path, version_str, sizeof(version_str));
-        } else if (find_command_path("sing-box", bin_path, sizeof(bin_path)) == 0) {
-            get_binary_version(bin_path, version_str, sizeof(version_str));
-        }
+    /* Version is authoritative only when returned by StartedService.GetVersion. */
+    if (!api || api_get_version_sync(api, version_str, sizeof(version_str)) != 0 || !version_str[0]) {
+        snprintf(version_str, sizeof(version_str), "unknown");
     }
 
     ui_table_row_color(ui_emoji_service(1), "sing-box", COLOR_GREEN);
@@ -219,7 +210,7 @@ static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_confi
         else if (strcmp(current_mode, "Google VPN") == 0) color = COLOR_GREEN;
         ui_table_subrow_color("└─", "Clash Mode", current_mode, color);
     } else {
-        ui_table_subrow_color("└─", "Clash Mode", "Rule (Default)", COLOR_CYAN);
+        ui_table_subrow_color("└─", "Clash Mode", "N/A (API unavailable)", COLOR_YELLOW);
     }
 
     ui_table_end();

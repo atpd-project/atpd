@@ -185,7 +185,7 @@ chmod 755 /data/adb/service.d/atpd_service.sh
     Memory          35.45 MB
     CPU             0.1%
     Threads         13
-    Goroutines      42
+    Goroutines      <live value from SubscribeStatus>
     FDs             14
     Version         sing-box 1.12.0
 
@@ -232,7 +232,7 @@ Automated CI benchmark suite results on Linux / Android GKI kernels:
 | **CLI Status Throughput** | **163 req/sec** | > 100 req/sec | ✅ **PASS** |
 | **Netlink Flap Handling (30x)** | **456 ms** | < 500 ms | ✅ **PASS** |
 | **Native API & Telemetry** | **HEALTHY (Port 9080)** | HEALTHY | ✅ **PASS** |
-| **Active Goroutines** | **42** | Integer Value | ✅ **PASS** |
+| **Active Goroutines** | **live value from SubscribeStatus** | Integer Value | ✅ **PASS** |
 
 ---
 
