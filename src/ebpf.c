@@ -30,11 +30,9 @@ int ebpf_probe_detailed(ebpf_probe_result_t *res) {
 
     memset(res, 0, sizeof(*res));
 
-    int k_major = 0, k_minor = 0;
     struct utsname uts;
     if (uname(&uts) == 0) {
         snprintf(res->kernel_release, sizeof(res->kernel_release), "%s", uts.release);
-        sscanf(uts.release, "%d.%d", &k_major, &k_minor);
     } else {
         snprintf(res->kernel_release, sizeof(res->kernel_release), "unknown");
     }
@@ -51,24 +49,10 @@ int ebpf_probe_detailed(ebpf_probe_result_t *res) {
     res->has_cgroup_sock_addr = (ebpf_probe_prog_type(BPF_PROG_TYPE_CGROUP_SOCK_ADDR) == 0);
     res->has_sched_cls = (ebpf_probe_prog_type(BPF_PROG_TYPE_SCHED_CLS) == 0);
 
-    /* 3. Fallback sensing for unprivileged CLI inspection or modern kernel environments */
-    bool has_btf = (access("/sys/kernel/btf/vmlinux", F_OK) == 0);
-    bool has_sys_bpf = (access("/sys/fs/bpf", F_OK) == 0);
-    bool has_jit = (access("/proc/sys/net/core/bpf_jit_enable", F_OK) == 0);
-    bool is_modern_kernel = (k_major >= 5 || (k_major == 4 && k_minor >= 19));
-
-    if (is_modern_kernel || has_btf || has_sys_bpf || has_jit) {
-        if (!res->has_hash) res->has_hash = 1;
-        if (!res->has_array) res->has_array = 1;
-        if (!res->has_lru_hash) res->has_lru_hash = 1;
-        if (!res->has_lpm_trie) res->has_lpm_trie = 1;
-        if (!res->has_cgroup_sock_addr) res->has_cgroup_sock_addr = 1;
-        if (!res->has_sched_cls) res->has_sched_cls = 1;
-        res->supported = 1;
-    } else {
-        /* Core requirements for sing-box local eBPF inbound: cgroup_sock_addr + hash/array/lru_hash */
-        res->supported = (res->has_hash && res->has_array && res->has_cgroup_sock_addr);
-    }
+    /* A failed syscall is not evidence of support: it may be EPERM, which
+     * must remain visible to callers instead of being reported as ready. */
+    res->supported = (res->has_hash && res->has_array &&
+                      res->has_cgroup_sock_addr);
 
     memcpy(&s_cached_probe, res, sizeof(*res));
     s_has_cache = true;
@@ -240,12 +224,13 @@ int ebpf_get_runtime_status(ebpf_runtime_status_t *status) {
                         union bpf_attr next_attr;
                         memset(&next_attr, 0, sizeof(next_attr));
                         next_attr.map_fd = (uint32_t)flow_fd;
-                        next_attr.key = (uint64_t)(uintptr_t)&cur_key;
+                        next_attr.key = 0;
                         next_attr.next_key = (uint64_t)(uintptr_t)&next_key;
 
                         while (ebpf_call(BPF_MAP_GET_NEXT_KEY, &next_attr) == 0) {
                             count++;
                             cur_key = next_key;
+                            next_attr.key = (uint64_t)(uintptr_t)&cur_key;
                         }
                         status->active_flows = count;
                         close((int)flow_fd);
@@ -264,4 +249,3 @@ int ebpf_get_runtime_status(ebpf_runtime_status_t *status) {
 
     return -1;
 }
-

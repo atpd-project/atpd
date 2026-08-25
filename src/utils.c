@@ -683,11 +683,9 @@ int get_binary_version(const char *bin_path, char *version, size_t size) {
         return 0;
     }
 
-    char cmd[MAX_CMD_LEN];
-    snprintf(cmd, sizeof(cmd), "%s version", bin_path);
-
     char output[256] = {0};
-    if (exec_cmd(cmd, output, sizeof(output), 3) == 0 && output[0]) {
+    char *argv[] = { (char *)bin_path, "version", NULL };
+    if (exec_cmd_argv(bin_path, argv, output, sizeof(output), 3) == 0 && output[0]) {
         trim(output);
         char *p = strstr(output, "version ");
         if (p) {

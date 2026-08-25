@@ -526,6 +526,10 @@ int reactor_cancel_timer(reactor_t *r, reactor_timer_t *timer) {
 
     if (internal->linked) {
         timer_list_remove(priv, internal);
+        /* Keep the deferred-free contract, but make canceled timers eligible
+         * immediately instead of retaining them until their old deadline. */
+        internal->expires_ms = priv->current_time_ms;
+        timer_list_insert(priv, internal);
     }
 
     internal->active = 0;

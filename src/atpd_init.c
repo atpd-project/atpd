@@ -33,7 +33,6 @@ static init_phase_config_t init_phases[] = {
 int atpd_init_phase_config(atpd_init_context_t *ctx) {
     LOG_INFO("Loading configuration...");
     
-    config_set_defaults(ctx->config);
     ctx->config->core.foreground = ctx->opts->foreground;
     ctx->config->core.verbose = ctx->opts->verbose;
     

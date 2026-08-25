@@ -474,6 +474,7 @@ static int service_spawn(service_ctx_t *ctx) {
 
     ctx->child_pid = pid;
     ctx->validated_pid = 1;
+    ctx->start_time = time(NULL);
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
 
     char pid_path[PATH_MAX];
@@ -652,10 +653,8 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
     if (!ctx) return;
 
     int status;
-    pid_t pid;
-
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
-        if (pid == ctx->child_pid) {
+    pid_t pid = ctx->child_pid > 0 ? waitpid(ctx->child_pid, &status, WNOHANG) : 0;
+    if (pid == ctx->child_pid) {
             if (WIFEXITED(status)) {
                 LOG_WARN("Service: sing-box exited with code %d", WEXITSTATUS(status));
             } else if (WIFSIGNALED(status)) {
@@ -673,9 +672,12 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
             if (ctx->state == SERVICE_RUNNING || ctx->state == SERVICE_STARTING) {
                 ctx->state = SERVICE_FAILED;
                 circuit_breaker_record_failure(&ctx->breaker);
-                LOG_INFO("Service: state -> FAILED, will restart on next monitor tick");
+                if (ctx->reactor && ctx->fail_count < ctx->max_failures) {
+                    ctx->fail_count++;
+                    LOG_INFO("Service: state -> FAILED, scheduling restart");
+                    service_schedule_retry(ctx);
+                }
             }
-        }
     }
 }
 
@@ -726,6 +728,15 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
             break;
 
         case SERVICE_STARTING:
+            if (ctx->start_time > 0 && time(NULL) - ctx->start_time >= ctx->start_timeout_sec) {
+                LOG_WARN("Service: startup timed out after %ds", ctx->start_timeout_sec);
+                if (ctx->child_pid > 0) kill(ctx->child_pid, SIGKILL);
+                ctx->state = SERVICE_FAILED;
+                ctx->fail_count++;
+                circuit_breaker_record_failure(&ctx->breaker);
+                if (ctx->reactor && ctx->fail_count < ctx->max_failures) service_schedule_retry(ctx);
+                break;
+            }
             if (service_is_alive(ctx)) {
                 if (!ctx->validated_pid) {
                     if (validate_process(ctx, ctx->child_pid)) {
@@ -786,6 +797,9 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
             break;
 
         case SERVICE_FAILED:
+            if (ctx->reactor && ctx->child_pid <= 0 && ctx->fail_count < ctx->max_failures && !ctx->retry_timer) {
+                service_schedule_retry(ctx);
+            }
             break;
 
         case SERVICE_STOPPING:
@@ -855,6 +869,7 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     ctx->grace_period_sec = cfg->service.grace_period_sec > 0 ? cfg->service.grace_period_sec : 3;
     ctx->health_check_interval_ms = cfg->service.health_check_interval_ms > 0 ? cfg->service.health_check_interval_ms : 5000;
     ctx->stop_attempts = 0;
+    ctx->start_time = 0;
     ctx->running_healthy = 0;
     ctx->last_health_check = 0;
     ctx->retry_timer = NULL;
@@ -875,6 +890,27 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
 
     LOG_DEBUG("Service: initialized (bin=%s, port=%d, timeout=%ds, max_fail=%d)",
               ctx->bin_path, ctx->api_port, ctx->start_timeout_sec, ctx->max_failures);
+    return 0;
+}
+
+int service_apply_config(service_ctx_t *ctx, const atp_config_t *cfg) {
+    if (!ctx || !cfg) return -1;
+    ctx->api_port = cfg->api.port;
+    ctx->max_failures = cfg->service.max_failures > 0 ? cfg->service.max_failures : 5;
+    ctx->start_timeout_sec = cfg->service.start_timeout_sec > 0 ? cfg->service.start_timeout_sec : 30;
+    ctx->stop_timeout_sec = cfg->service.stop_timeout_sec > 0 ? cfg->service.stop_timeout_sec : 10;
+    ctx->grace_period_sec = cfg->service.grace_period_sec > 0 ? cfg->service.grace_period_sec : 3;
+    ctx->health_check_interval_ms = cfg->service.health_check_interval_ms > 0 ? cfg->service.health_check_interval_ms : 5000;
+    snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core.core_user);
+    snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core.core_group);
+    snprintf(ctx->service_args, sizeof(ctx->service_args), "%.511s", cfg->service.args);
+    snprintf(ctx->service_env, sizeof(ctx->service_env), "%.511s", cfg->service.env);
+    if (ctx->reactor && ctx->state == SERVICE_RUNNING && ctx->health_timer) {
+        reactor_cancel_timer(ctx->reactor, ctx->health_timer);
+        ctx->health_timer = reactor_add_timer(ctx->reactor, ctx->health_check_interval_ms,
+                                               ctx->health_check_interval_ms,
+                                               service_health_check_cb, ctx);
+    }
     return 0;
 }
 
@@ -918,6 +954,7 @@ int service_start_async(service_ctx_t *ctx) {
 
     if (service_spawn(ctx) == 0) {
         ctx->state = SERVICE_STARTING;
+        ctx->start_time = time(NULL);
         ctx->fail_count = 0;
         backoff_reset(&ctx->backoff);
         return 0;

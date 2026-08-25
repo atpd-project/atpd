@@ -203,15 +203,12 @@ void async_validate_cleanup(async_validate_ctx_t *ctx) {
 
 static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
     async_validate_ctx_t *ctx = userdata;
-    int completed_old;
     (void)r;
     (void)events;
 
     if (!ctx) return;
 
-    /* Check if already completed */
-    completed_old = atomic_exchange(&ctx->completed, 1);
-    if (completed_old) {
+    if (atomic_load(&ctx->completed)) {
         return;
     }
 
@@ -227,8 +224,6 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
             ctx->output_truncated = 1;
             LOG_WARN("AsyncValidate: output truncated");
         }
-        /* Re-arm: mark not completed and continue reading */
-        atomic_store(&ctx->completed, 0);
         return;
     } else if (n == 0) {
         /* EOF - child should have exited */
@@ -238,7 +233,6 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
         if (wr == 0) {
             /* Child still running - keep waiting */
             LOG_DEBUG("AsyncValidate: EOF but child still running, waiting");
-            atomic_store(&ctx->completed, 0);
             return;
         } else if (wr < 0) {
             LOG_ERROR("AsyncValidate: waitpid failed: %s", strerror(errno));
@@ -256,21 +250,16 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
         return;
     }
 
-    /* Re-arm if not completed */
-    atomic_store(&ctx->completed, 0);
 }
 
 static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
     async_validate_ctx_t *ctx = userdata;
-    int completed_old;
     (void)r;
     (void)events;
 
     if (!ctx) return;
 
-    /* Check if already completed */
-    completed_old = atomic_exchange(&ctx->completed, 1);
-    if (completed_old) {
+    if (atomic_load(&ctx->completed)) {
         return;
     }
 
@@ -288,7 +277,6 @@ static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *use
     if (wr == ctx->child_pid) {
         /* Child already exited, wait for IO callback to handle */
         LOG_DEBUG("AsyncValidate: timeout but child already exited");
-        atomic_store(&ctx->completed, 0);
         return;
     }
 

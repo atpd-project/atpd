@@ -197,8 +197,6 @@ static void daemonize(void) {
         exit(1);
     }
 
-    signal(SIGHUP, SIG_IGN);
-
     pid = fork();
     if (pid < 0) {
         perror("fork");
@@ -245,6 +243,8 @@ static void on_idle(reactor_t *r, void *userdata) {
             LOG_ERROR("Config reload failed");
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
         } else {
+            if (g_svc) service_apply_config(g_svc, &g_config);
+            api_init(&g_api_ctx, &g_config);
             LOG_INFO("Config reload completed successfully");
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
         }
@@ -265,23 +265,50 @@ static void on_idle(reactor_t *r, void *userdata) {
 
 static void service_stop_sync(service_ctx_t *ctx) {
     if (!ctx) return;
+
+    /* Detach and cancel timers before the reactor is destroyed. */
+    if (ctx->reactor) {
+        if (ctx->monitor_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
+            ctx->monitor_timer = NULL;
+        }
+        if (ctx->retry_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+            ctx->retry_timer = NULL;
+        }
+        if (ctx->health_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->health_timer);
+            ctx->health_timer = NULL;
+        }
+        ctx->reactor = NULL;
+    }
+
     int pid = service_get_pid(ctx);
-    if (pid <= 0) return;
+    if (pid <= 0) {
+        ctx->state = SERVICE_STOPPED;
+        return;
+    }
 
     LOG_INFO("Stopping sing-box core (PID %d)...", pid);
     kill(pid, SIGTERM);
 
     for (int i = 0; i < SERVICE_STOP_RETRY_COUNT; ++i) {
         usleep(SERVICE_STOP_INTERVAL_MS * 1000);
-        if (kill(pid, 0) != 0 && errno == ESRCH) {
+        if (waitpid(pid, NULL, WNOHANG) == pid) {
             LOG_INFO("Service stopped gracefully");
+            ctx->child_pid = -1;
+            ctx->validated_pid = 0;
+            ctx->state = SERVICE_STOPPED;
             return;
         }
     }
 
     LOG_WARN("Service did not stop gracefully, sending SIGKILL");
     kill(pid, SIGKILL);
-    usleep(100000);
+    waitpid(pid, NULL, 0);
+    ctx->child_pid = -1;
+    ctx->validated_pid = 0;
+    ctx->state = SERVICE_STOPPED;
 }
 
 static void run_event_loop(void) {
@@ -394,7 +421,6 @@ cleanup:
     uds_cleanup();
     api_cleanup(&g_api_ctx);
     if (g_svc) {
-        service_stop_async(g_svc, NULL, NULL);
         free(g_svc);
         g_svc = NULL;
     }

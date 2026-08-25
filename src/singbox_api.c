@@ -200,22 +200,7 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
         close(sock);
     }
 
-    /* 2. Kernel & Runtime Process Telemetry Inspection */
-    int pid = get_pid_by_name("sing-box");
-    if (pid > 0) {
-        int threads = get_process_threads(pid);
-        int socks = get_process_socket_count(pid);
-        if (threads > 0) {
-            /* Base Go system goroutines (GC, sysmon, netpoller, timers, engine)
-             * + active worker threads + active socket channels */
-            int computed = 16 + (threads > 1 ? (threads - 1) * 2 : 0) + (socks * 2);
-            s_cached_goroutines = computed;
-            s_last_cached = now;
-            *goroutines_out = computed;
-            return 0;
-        }
-    }
-
+    /* Do not label a thread/socket heuristic as goroutine telemetry. */
     return -1;
 }
 
@@ -237,7 +222,8 @@ int singbox_api_get_version(singbox_api_ctx_t *ctx, char *version_buf, size_t bu
     char bin_path[PATH_MAX] = {0};
 
     if (find_command_path("sing-box", bin_path, sizeof(bin_path)) == 0) {
-        if (exec_cmd("sing-box version", output, sizeof(output), 2) == 0 && output[0]) {
+        char *argv[] = { bin_path, "version", NULL };
+        if (exec_cmd_argv(bin_path, argv, output, sizeof(output), 2) == 0 && output[0]) {
             char *newline = strchr(output, '\n');
             if (newline) *newline = '\0';
             snprintf(s_cached_version, sizeof(s_cached_version), "%s", output);
@@ -281,4 +267,3 @@ int singbox_api_exec_cli(const singbox_api_ctx_t *ctx, const char *subcmd,
     (void)timeout_sec;
     return 0;
 }
-
