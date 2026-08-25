@@ -151,7 +151,9 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
     int port = (ctx && ctx->port > 0) ? ctx->port : DEFAULT_API_PORT;
     const char *host = (ctx && ctx->host[0]) ? ctx->host : "127.0.0.1";
 
-    /* 1. Fast path: Direct pprof endpoint query on Native API (Non-blocking with 30ms limit) */
+    /* Query the Go pprof endpoint exposed by sing-box. The connect phase is
+     * non-blocking, but the request/response phase must drain until EOF: a
+     * pprof response commonly exceeds one TCP segment. */
     int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock >= 0) {
         struct sockaddr_in sa;
@@ -166,33 +168,67 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
         int ok = (ret == 0) ? 1 : ((errno == EINPROGRESS) ? wait_connect_ready(sock, 30) : 0);
 
         if (ok) {
-            char req[512];
-            int req_len = snprintf(req, sizeof(req),
-                "GET /debug/pprof/goroutine?debug=1 HTTP/1.1\r\n"
-                "Host: %s:%d\r\n"
-                "User-Agent: ATPd-Native/2.0\r\n"
-                "Connection: close\r\n\r\n",
-                host, port);
+            int flags = fcntl(sock, F_GETFL, 0);
+            if (flags < 0 || fcntl(sock, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+                close(sock);
+                return -1;
+            }
 
-            struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 };
+            char req[768];
+            int req_len;
+            if (ctx && ctx->secret[0]) {
+                req_len = snprintf(req, sizeof(req),
+                    "GET /debug/pprof/goroutine?debug=1 HTTP/1.1\r\n"
+                    "Host: %s:%d\r\n"
+                    "User-Agent: ATPd-Native/2.0\r\n"
+                    "Authorization: Bearer %s\r\n"
+                    "Connection: close\r\n\r\n",
+                    host, port, ctx->secret);
+            } else {
+                req_len = snprintf(req, sizeof(req),
+                    "GET /debug/pprof/goroutine?debug=1 HTTP/1.1\r\n"
+                    "Host: %s:%d\r\n"
+                    "User-Agent: ATPd-Native/2.0\r\n"
+                    "Connection: close\r\n\r\n",
+                    host, port);
+            }
+
+            if (req_len < 0 || (size_t)req_len >= sizeof(req)) {
+                close(sock);
+                return -1;
+            }
+
+            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
             setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
             setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-            if (send(sock, req, req_len, 0) == req_len) {
-                char buf[1024] = {0};
-                ssize_t n = recv(sock, buf, sizeof(buf) - 1, 0);
-                if (n > 0) {
-                    buf[n] = '\0';
-                    char *p = strstr(buf, "goroutine profile: total ");
-                    if (p) {
-                        int count = 0;
-                        if (sscanf(p + 25, "%d", &count) == 1 && count > 0) {
-                            close(sock);
-                            s_cached_goroutines = count;
-                            s_last_cached = now;
-                            *goroutines_out = count;
-                            return 0;
-                        }
+            size_t sent = 0;
+            while (sent < (size_t)req_len) {
+                ssize_t n = send(sock, req + sent, (size_t)req_len - sent, MSG_NOSIGNAL);
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                sent += (size_t)n;
+            }
+
+            if (sent == (size_t)req_len) {
+                char buf[16384];
+                size_t used = 0;
+                while (used < sizeof(buf) - 1) {
+                    ssize_t n = recv(sock, buf + used, sizeof(buf) - 1 - used, 0);
+                    if (n < 0 && errno == EINTR) continue;
+                    if (n <= 0) break;
+                    used += (size_t)n;
+                }
+                buf[used] = '\0';
+                char *p = strstr(buf, "goroutine profile: total ");
+                if (p) {
+                    int count = 0;
+                    if (sscanf(p + strlen("goroutine profile: total "), "%d", &count) == 1 && count > 0) {
+                        close(sock);
+                        s_cached_goroutines = count;
+                        s_last_cached = now;
+                        *goroutines_out = count;
+                        return 0;
                     }
                 }
             }
