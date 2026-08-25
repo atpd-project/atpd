@@ -10,7 +10,6 @@
 #include "logger.h"
 #include "utils.h"
 #include "atpd_context.h"
-#include "yyjson.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,12 +84,6 @@ int singbox_api_init(singbox_api_ctx_t *ctx, const atp_config_t *cfg) {
     ctx->timeout_sec = 2;
     ctx->connected = 0;
     ctx->last_check = 0;
-    if (cfg && cfg->api.debug_port > 0) {
-        ctx->debug_port = cfg->api.debug_port;
-        snprintf(ctx->debug_host, sizeof(ctx->debug_host), "%s",
-                 cfg->api.debug_host[0] ? cfg->api.debug_host : "127.0.0.1");
-    }
-
     LOG_INFO("sing-box Native API client initialized on %s:%d", ctx->host, ctx->port);
     return 0;
 }
@@ -141,16 +134,117 @@ int singbox_api_health_check(singbox_api_ctx_t *ctx) {
 
 /* ========== Native Telemetry & Goroutines ========== */
 
+static int read_varint(const unsigned char *buf, size_t len, size_t *pos,
+                       uint64_t *value) {
+    uint64_t result = 0;
+    for (unsigned int shift = 0; shift < 64 && *pos < len; shift += 7) {
+        unsigned char byte = buf[(*pos)++];
+        result |= (uint64_t)(byte & 0x7f) << shift;
+        if (!(byte & 0x80)) {
+            *value = result;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* Decode the first gRPC-Web data frame of SubscribeStatus. The Status
+ * protobuf contains goroutines as field 2 (varint). */
+static int parse_status_frame(const unsigned char *buf, size_t len,
+                              int *goroutines_out) {
+    if (len < 5) return 0;
+    if (buf[0] & 0x80) return -1; /* trailers frame, not a Status message */
+
+    uint32_t message_len = ((uint32_t)buf[1] << 24) |
+                           ((uint32_t)buf[2] << 16) |
+                           ((uint32_t)buf[3] << 8) |
+                           (uint32_t)buf[4];
+    if (message_len > len - 5) return 0;
+
+    size_t pos = 5;
+    size_t end = 5 + message_len;
+    while (pos < end) {
+        uint64_t key;
+        if (read_varint(buf, end, &pos, &key) != 0) return -1;
+        unsigned int field = (unsigned int)(key >> 3);
+        unsigned int wire = (unsigned int)(key & 7);
+        if (field == 2 && wire == 0) {
+            uint64_t value;
+            if (read_varint(buf, end, &pos, &value) != 0 || value > INT_MAX) return -1;
+            *goroutines_out = (int)value;
+            return *goroutines_out > 0 ? 1 : -1;
+        }
+
+        switch (wire) {
+        case 0: {
+            uint64_t ignored;
+            if (read_varint(buf, end, &pos, &ignored) != 0) return -1;
+            break;
+        }
+        case 1:
+            if (end - pos < 8) return 0;
+            pos += 8;
+            break;
+        case 2: {
+            uint64_t size;
+            if (read_varint(buf, end, &pos, &size) != 0 || size > end - pos) return 0;
+            pos += (size_t)size;
+            break;
+        }
+        case 5:
+            if (end - pos < 4) return 0;
+            pos += 4;
+            break;
+        default:
+            return -1;
+        }
+    }
+    return -1;
+}
+
+/* Parse HTTP/1.1 framing used by sing-box's gRPC-Web bridge. Streaming
+ * responses are chunked, so do not wait for EOF: the first Status frame is
+ * emitted immediately and the stream remains open for dashboard updates. */
+static int parse_grpc_web_response(const unsigned char *buf, size_t len,
+                                   int *goroutines_out) {
+    const char *header_end = strstr((const char *)buf, "\r\n\r\n");
+    if (!header_end) return 0;
+    size_t body = (size_t)(header_end - (const char *)buf) + 4;
+    const char *headers = (const char *)buf;
+    int chunked = strcasestr(headers, "transfer-encoding: chunked") != NULL;
+
+    if (!chunked) {
+        return body <= len ? parse_status_frame(buf + body, len - body, goroutines_out) : 0;
+    }
+
+    while (body < len) {
+        const unsigned char *line_end = (const unsigned char *)memmem(
+            buf + body, len - body, "\r\n", 2);
+        if (!line_end) return 0;
+        size_t line_len = (size_t)(line_end - (buf + body));
+        if (line_len == 0 || line_len >= 32) return -1;
+        char size_text[32];
+        memcpy(size_text, buf + body, line_len);
+        size_text[line_len] = '\0';
+        char *endptr;
+        unsigned long chunk_len = strtoul(size_text, &endptr, 16);
+        if (*endptr != '\0' || chunk_len > SIZE_MAX) return -1;
+        body += line_len + 2;
+        if (chunk_len == 0) return -1;
+        if (chunk_len > len - body || len - body - chunk_len < 2) return 0;
+        int parsed = parse_status_frame(buf + body, (size_t)chunk_len, goroutines_out);
+        if (parsed != 0) return parsed;
+        body += (size_t)chunk_len + 2;
+    }
+    return 0;
+}
+
 int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
     if (!goroutines_out) return -1;
     *goroutines_out = -1;
 
-    int port = (ctx && ctx->debug_port > 0) ? ctx->debug_port : 0;
-    const char *host = (ctx && ctx->debug_host[0]) ? ctx->debug_host : "127.0.0.1";
-    if (port <= 0) return -1;
-
-    /* sing-box exposes runtime.NumGoroutine through the debug server, not the
-     * Native API service. /debug/memory returns a small JSON object. */
+    int port = (ctx && ctx->port > 0) ? ctx->port : DEFAULT_API_PORT;
+    const char *host = (ctx && ctx->host[0]) ? ctx->host : "127.0.0.1";
     int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock >= 0) {
         struct sockaddr_in sa;
@@ -171,20 +265,28 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
                 return -1;
             }
 
-            char req[768];
+            char req[1024];
             int req_len;
             if (ctx && ctx->secret[0]) {
                 req_len = snprintf(req, sizeof(req),
-                    "GET /debug/memory HTTP/1.1\r\n"
+                    "POST /daemon.StartedService/SubscribeStatus HTTP/1.1\r\n"
                     "Host: %s:%d\r\n"
+                    "Content-Type: application/grpc-web+proto\r\n"
+                    "X-Grpc-Web: 1\r\n"
+                    "Accept: application/grpc-web+proto\r\n"
+                    "Content-Length: 5\r\n"
                     "User-Agent: ATPd-Native/2.0\r\n"
                     "Authorization: Bearer %s\r\n"
                     "Connection: close\r\n\r\n",
                     host, port, ctx->secret);
             } else {
                 req_len = snprintf(req, sizeof(req),
-                    "GET /debug/memory HTTP/1.1\r\n"
+                    "POST /daemon.StartedService/SubscribeStatus HTTP/1.1\r\n"
                     "Host: %s:%d\r\n"
+                    "Content-Type: application/grpc-web+proto\r\n"
+                    "X-Grpc-Web: 1\r\n"
+                    "Accept: application/grpc-web+proto\r\n"
+                    "Content-Length: 5\r\n"
                     "User-Agent: ATPd-Native/2.0\r\n"
                     "Connection: close\r\n\r\n",
                     host, port);
@@ -206,32 +308,33 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
                 if (n <= 0) break;
                 sent += (size_t)n;
             }
-
+            unsigned char request_frame[5] = {0, 0, 0, 0, 0};
             if (sent == (size_t)req_len) {
-                char buf[16384];
+                sent = 0;
+                while (sent < sizeof(request_frame)) {
+                    ssize_t n = send(sock, request_frame + sent,
+                                     sizeof(request_frame) - sent, MSG_NOSIGNAL);
+                    if (n < 0 && errno == EINTR) continue;
+                    if (n <= 0) break;
+                    sent += (size_t)n;
+                }
+            }
+
+            if (sent == sizeof(request_frame)) {
+                unsigned char buf[4096];
                 size_t used = 0;
-                while (used < sizeof(buf) - 1) {
+                int parsed = 0;
+                while (used < sizeof(buf) - 1 && !parsed) {
                     ssize_t n = recv(sock, buf + used, sizeof(buf) - 1 - used, 0);
                     if (n < 0 && errno == EINTR) continue;
                     if (n <= 0) break;
                     used += (size_t)n;
+                    buf[used] = '\0';
+                    parsed = parse_grpc_web_response(buf, used, goroutines_out);
                 }
-                buf[used] = '\0';
-                char *body = strstr(buf, "\r\n\r\n");
-                if (body) {
-                    body += 4;
-                    yyjson_doc *doc = yyjson_read(body, strlen(body), 0);
-                    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
-                    yyjson_val *goroutines = root && yyjson_is_obj(root) ?
-                        yyjson_obj_get(root, "goroutines") : NULL;
-                    int count = goroutines && yyjson_is_num(goroutines) ?
-                        yyjson_get_int(goroutines) : -1;
-                    if (doc) yyjson_doc_free(doc);
-                    if (count > 0) {
-                        close(sock);
-                        *goroutines_out = count;
-                        return 0;
-                    }
+                if (parsed == 1) {
+                    close(sock);
+                    return 0;
                 }
             }
         }

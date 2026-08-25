@@ -52,8 +52,6 @@ typedef struct {
     int port;
     char host[64];
     char secret[128];
-    int debug_port;
-    char debug_host[64];
 } api_config_t;
 
 /* Complete config */

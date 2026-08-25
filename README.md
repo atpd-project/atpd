@@ -17,7 +17,7 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 |---|---|
 | **Zero Firewall Rules (0 iptables)** | 100% free of `iptables`, `ip6tables`, `ipset`, and policy routing table 2025. Zero Netfilter overhead and zero `netd` conflict. |
 | **In-Kernel eBPF Interception** | Traffic captured directly in-kernel via sing-box eBPF inbound (`cgroup/connect4`, `cgroup/connect6`, `cgroup/sendmsg4`, `cgroup/recvmsg4`, TC `sched_cls`). |
-| **Native API & Runtime Telemetry** | Uses sing-box `services: [{"type": "api"}]` for Native API health, and samples live **Go Goroutines** from sing-box's `experimental.debug.listen` endpoint. |
+| **Native API & Runtime Telemetry** | Uses sing-box `services: [{"type": "api"}]` for Native API health and the `SubscribeStatus` gRPC-Web stream for live **Go Goroutines**. |
 | **Fast-Path UDS IPC (< 3ms, 160+ QPS)** | UNIX Domain Socket (`run/atpd.sock`) with in-memory dashboard streaming for near-instant CLI status queries. |
 | **Zero-Context-Switch eBPF Telemetry** | Direct kernel BPF Map inspection (`control_map`, `flow_map`, `stats_map`) via non-invasive `bpf()` syscalls. |
 | **Multi-VPN Tunnel Sensing** | Real-time Netlink event sensing for secondary VPN tunnels: **Cloudflare WARP (`tun0` / `warp0`)**, **WireGuard (`wg0`)**, **Tailscale (`tailscale0`)**, and **Google VPN (`ipsec0` / `xfrm0`)**. |
@@ -42,7 +42,7 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 │                                                             │
 │  3. Native API & Runtime Telemetry                           │
 │     • Auto-detects services: [type: api] in config.json     │
-│     • Samples /debug/memory on sing-box debug.listen        │
+│     • Reads SubscribeStatus runtime status from Native API   │
 │                                                             │
 │  4. Fast-Path UDS IPC & eBPF Telemetry                      │
 │     • Microsecond in-memory dashboard streaming (UDS)       │
@@ -89,7 +89,7 @@ ATPd automatically derives its root working directory from its own binary path (
 /data/adb/atp/ (or /data/adb/sing-box/)
 ├── atpd                 ── ATP Daemon (C11 + Pure eBPF Reactor)
 ├── atp.conf             ── ATP Framework Configuration (Optional)
-├── config.json          ── sing-box Core Configuration (Native API + debug.listen)
+├── config.json          ── sing-box Core Configuration (Native API)
 ├── cache.db             ── sing-box cache & rule-sets (auto-stored via -D .)
 ├── bin/
 │   └── sing-box         ── Proxy Core Binary (or at root ./sing-box)
@@ -268,11 +268,6 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
     "level": "info",
     "timestamp": true
   },
-  "experimental": {
-    "debug": {
-      "listen": "127.0.0.1:9091"
-    }
-  },
   "services": [
     {
       "type": "api",
@@ -296,11 +291,10 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
 ```
 
 `services[].type: "api"` exposes the sing-box Native API used for health checks
-(port 9080 in this example). Go runtime telemetry is a separate sing-box debug
-HTTP service. Set `experimental.debug.listen` to enable it; ATPd queries
-`/debug/memory` for the current `runtime.NumGoroutine()` value on every status
-request. Keep both listeners on loopback unless external access is explicitly
-required.
+and dashboard control (port 9080 in this example). ATPd reads the same
+`SubscribeStatus` gRPC-Web stream used by the sing-box dashboard; its status
+message contains the current `runtime.NumGoroutine()` value. No separate debug
+listener is required.
 
 ---
 

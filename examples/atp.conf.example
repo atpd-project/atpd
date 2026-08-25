@@ -50,9 +50,8 @@ UI_EMOJI_ENABLED=1
 # API secret (leave empty if not configured in sing-box)
 # API_SECRET="
 
-# Go runtime telemetry is configured in sing-box config.json, not atp.conf:
-# experimental.debug.listen=127.0.0.1:9091
-# ATPd reads /debug/memory from that listener for the live goroutine count.
+# Go runtime telemetry is read from the Native API SubscribeStatus stream.
+# No separate sing-box debug listener is required.
 
 # -----------------------------------------------------------------------------
 # 4. Service Supervisor & Circuit Breaker Parameters
