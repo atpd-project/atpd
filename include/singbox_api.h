@@ -13,6 +13,8 @@ typedef struct {
     int timeout_sec;
     int connected;
     time_t last_check;
+    char debug_host[64];
+    int debug_port;
 } singbox_api_ctx_t;
 
 /* Lifecycle */

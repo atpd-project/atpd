@@ -10,6 +10,7 @@
 #include "logger.h"
 #include "utils.h"
 #include "atpd_context.h"
+#include "yyjson.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -84,6 +85,11 @@ int singbox_api_init(singbox_api_ctx_t *ctx, const atp_config_t *cfg) {
     ctx->timeout_sec = 2;
     ctx->connected = 0;
     ctx->last_check = 0;
+    if (cfg && cfg->api.debug_port > 0) {
+        ctx->debug_port = cfg->api.debug_port;
+        snprintf(ctx->debug_host, sizeof(ctx->debug_host), "%s",
+                 cfg->api.debug_host[0] ? cfg->api.debug_host : "127.0.0.1");
+    }
 
     LOG_INFO("sing-box Native API client initialized on %s:%d", ctx->host, ctx->port);
     return 0;
@@ -148,12 +154,12 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
         return 0;
     }
 
-    int port = (ctx && ctx->port > 0) ? ctx->port : DEFAULT_API_PORT;
-    const char *host = (ctx && ctx->host[0]) ? ctx->host : "127.0.0.1";
+    int port = (ctx && ctx->debug_port > 0) ? ctx->debug_port : 0;
+    const char *host = (ctx && ctx->debug_host[0]) ? ctx->debug_host : "127.0.0.1";
+    if (port <= 0) return -1;
 
-    /* Query the Go pprof endpoint exposed by sing-box. The connect phase is
-     * non-blocking, but the request/response phase must drain until EOF: a
-     * pprof response commonly exceeds one TCP segment. */
+    /* sing-box exposes runtime.NumGoroutine through the debug server, not the
+     * Native API service. /debug/memory returns a small JSON object. */
     int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sock >= 0) {
         struct sockaddr_in sa;
@@ -178,7 +184,7 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
             int req_len;
             if (ctx && ctx->secret[0]) {
                 req_len = snprintf(req, sizeof(req),
-                    "GET /debug/pprof/goroutine?debug=1 HTTP/1.1\r\n"
+                    "GET /debug/memory HTTP/1.1\r\n"
                     "Host: %s:%d\r\n"
                     "User-Agent: ATPd-Native/2.0\r\n"
                     "Authorization: Bearer %s\r\n"
@@ -186,7 +192,7 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
                     host, port, ctx->secret);
             } else {
                 req_len = snprintf(req, sizeof(req),
-                    "GET /debug/pprof/goroutine?debug=1 HTTP/1.1\r\n"
+                    "GET /debug/memory HTTP/1.1\r\n"
                     "Host: %s:%d\r\n"
                     "User-Agent: ATPd-Native/2.0\r\n"
                     "Connection: close\r\n\r\n",
@@ -220,10 +226,17 @@ int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
                     used += (size_t)n;
                 }
                 buf[used] = '\0';
-                char *p = strstr(buf, "goroutine profile: total ");
-                if (p) {
-                    int count = 0;
-                    if (sscanf(p + strlen("goroutine profile: total "), "%d", &count) == 1 && count > 0) {
+                char *body = strstr(buf, "\r\n\r\n");
+                if (body) {
+                    body += 4;
+                    yyjson_doc *doc = yyjson_read(body, strlen(body), 0);
+                    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+                    yyjson_val *goroutines = root && yyjson_is_obj(root) ?
+                        yyjson_obj_get(root, "goroutines") : NULL;
+                    int count = goroutines && yyjson_is_num(goroutines) ?
+                        yyjson_get_int(goroutines) : -1;
+                    if (doc) yyjson_doc_free(doc);
+                    if (count > 0) {
                         close(sock);
                         s_cached_goroutines = count;
                         s_last_cached = now;

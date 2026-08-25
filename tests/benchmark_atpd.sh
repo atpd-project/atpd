@@ -41,6 +41,7 @@ cat << EOF > "${BENCH_DIR}/config.json"
   "log": { "level": "warn" },
   "inbounds": [{ "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": ${INBOUND_PORT} }],
   "outbounds": [{ "type": "direct", "tag": "direct" }],
+  "experimental": { "debug": { "listen": "127.0.0.1:9091" } },
   "services": [
     { "type": "api", "listen": "127.0.0.1", "listen_port": ${BENCH_API_PORT} }
   ]

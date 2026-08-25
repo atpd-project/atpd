@@ -64,6 +64,11 @@ cat > "${TEST_DIR}/config.json" << EOJSON
     "level": "info",
     "timestamp": true
   },
+  "experimental": {
+    "debug": {
+      "listen": "127.0.0.1:9091"
+    }
+  },
   "services": [
     {
       "type": "api",

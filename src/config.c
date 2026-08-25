@@ -158,6 +158,8 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->api.port = DEFAULT_API_PORT;
     snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", DEFAULT_API_HOST);
     cfg->api.secret[0] = '\0';
+    cfg->api.debug_port = 0;
+    cfg->api.debug_host[0] = '\0';
 
     config_sync_from_singbox_json(cfg);
 }
@@ -262,6 +264,30 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
                 const char *sec = yyjson_get_str(secret_val);
                 if (sec && sec[0] && cfg->api.secret[0] == '\0') {
                     snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", sec);
+                }
+            }
+        }
+
+        /* sing-box's runtime debug HTTP server is under experimental.debug.
+         * The services[type="api"] listener above is the Native API and does
+         * not expose Go runtime telemetry. */
+        yyjson_val *experimental = yyjson_obj_get(root, "experimental");
+        yyjson_val *debug = experimental && yyjson_is_obj(experimental) ?
+            yyjson_obj_get(experimental, "debug") : NULL;
+        yyjson_val *debug_listen = debug && yyjson_is_obj(debug) ?
+            yyjson_obj_get(debug, "listen") : NULL;
+        if (debug_listen && yyjson_is_str(debug_listen)) {
+            const char *listen_str = yyjson_get_str(debug_listen);
+            const char *colon = listen_str ? strrchr(listen_str, ':') : NULL;
+            if (colon && colon[1]) {
+                int port = atoi(colon + 1);
+                if (port > 0) cfg->api.debug_port = port;
+                if (colon != listen_str) {
+                    size_t host_len = (size_t)(colon - listen_str);
+                    if (host_len < sizeof(cfg->api.debug_host)) {
+                        memcpy(cfg->api.debug_host, listen_str, host_len);
+                        cfg->api.debug_host[host_len] = '\0';
+                    }
                 }
             }
         }
