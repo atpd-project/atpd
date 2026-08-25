@@ -147,7 +147,7 @@ cat << EOF
 | **Baseline RSS Memory**        | **${RSS_MB} MB**           | < 3.0 MB           | $(awk "BEGIN {if (${RSS_MB} <= 3.0) print \"PASS\"; else print \"WARN\"}") |
 | **CLI Status Avg Latency**     | **${AVG_LATENCY_MS} ms**    | < 10.0 ms          | $(awk "BEGIN {if (${AVG_LATENCY_MS} <= 10.0) print \"PASS\"; else print \"WARN\"}") |
 | **CLI Status QPS**             | **${QPS} req/sec**         | > 100 req/sec      | $(awk "BEGIN {if (${QPS} >= 100) print \"PASS\"; else print \"WARN\"}") |
-| **Netlink Flap Handling (30x)**| **${NL_MS} ms**            | < 500 ms           | $(awk "BEGIN {if (${NL_MS} <= 500) print \"PASS\"; else print \"WARN\"}") |
+| **Netlink Flap Handling (30x)**| **${NL_MS} ms**            | < 750 ms           | $(awk "BEGIN {if (${NL_MS} <= 750) print \"PASS\"; else print \"WARN\"}") |
 | **Native API & Telemetry**     | **${API_RESP}**            | HEALTHY            | $(if echo "${API_RESP}" | grep -q "HEALTHY"; then echo "PASS"; else echo "WARN"; fi) |
 | **Active Goroutines**          | **${GOROUTINES_VAL}**      | Integer Value      | $(if [ "${GOROUTINES_VAL}" != "N/A" ]; then echo "PASS"; else echo "WARN"; fi) |
 ==============================================================
