@@ -112,7 +112,12 @@ done
 END_NL=$(date +%s%N)
 NL_MS=$(( (END_NL - START_NL) / 1000000 ))
 if [ "${NL_MS}" -le 0 ]; then NL_MS=1; fi
+NL_AVG_MS=$(awk "BEGIN {printf \"%.2f\", ${NL_MS}/${NL_CYCLES}}")
+NL_RATE=$(awk "BEGIN {printf \"%.0f\", (${NL_CYCLES} * 1000) / ${NL_MS}}")
+
 echo "    -> Processed ${NL_CYCLES} interface up/down cycles in ${NL_MS} ms"
+echo "    -> Average Flap Cycle Latency: ${NL_AVG_MS} ms"
+echo "    -> Netlink Flap Rate: ${NL_RATE} cycles/sec"
 
 # ------------------------------------------------------------------------------
 # Benchmark 4: Native API 探针与 Goroutines 遥测
@@ -147,7 +152,8 @@ cat << EOF
 | **Baseline RSS Memory**        | **${RSS_MB} MB**           | < 3.0 MB           | $(awk "BEGIN {if (${RSS_MB} <= 3.0) print \"PASS\"; else print \"WARN\"}") |
 | **CLI Status Avg Latency**     | **${AVG_LATENCY_MS} ms**    | < 10.0 ms          | $(awk "BEGIN {if (${AVG_LATENCY_MS} <= 10.0) print \"PASS\"; else print \"WARN\"}") |
 | **CLI Status QPS**             | **${QPS} req/sec**         | > 100 req/sec      | $(awk "BEGIN {if (${QPS} >= 100) print \"PASS\"; else print \"WARN\"}") |
-| **Netlink Flap Handling (30x)**| **${NL_MS} ms**            | < 750 ms           | $(awk "BEGIN {if (${NL_MS} <= 750) print \"PASS\"; else print \"WARN\"}") |
+| **Netlink Flap Avg Latency**   | **${NL_AVG_MS} ms**        | < 20.0 ms          | $(awk "BEGIN {if (${NL_AVG_MS} <= 20.0) print \"PASS\"; else print \"WARN\"}") |
+| **Netlink Flap Rate**          | **${NL_RATE} cycle/sec**   | > 45 cycle/sec     | $(awk "BEGIN {if (${NL_RATE} >= 45) print \"PASS\"; else print \"WARN\"}") |
 | **Native API & Telemetry**     | **${API_RESP}**            | HEALTHY            | $(if echo "${API_RESP}" | grep -q "HEALTHY"; then echo "PASS"; else echo "WARN"; fi) |
 | **Active Goroutines**          | **${GOROUTINES_VAL}**      | Integer Value      | $(if [ "${GOROUTINES_VAL}" != "N/A" ]; then echo "PASS"; else echo "WARN"; fi) |
 ==============================================================
