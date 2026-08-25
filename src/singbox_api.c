@@ -486,6 +486,11 @@ static int grpc_web_unary_call(const singbox_api_ctx_t *ctx, const char *path,
             frame_size = used - body;
         }
         if (frame_size < 5) continue;
+        /* A trailers-only gRPC-Web response represents an RPC error. */
+        if (buf[frame_offset] & 0x80) {
+            close(sock);
+            return -1;
+        }
         uint32_t message_len = ((uint32_t)buf[frame_offset + 1] << 24) |
                                ((uint32_t)buf[frame_offset + 2] << 16) |
                                ((uint32_t)buf[frame_offset + 3] << 8) |
@@ -559,15 +564,22 @@ int singbox_api_get_clash_mode(singbox_api_ctx_t *ctx, char *mode_buf, size_t bu
 int singbox_api_set_clash_mode(singbox_api_ctx_t *ctx, const char *mode) {
     if (!mode || !mode[0]) return -1;
     size_t mode_len = strlen(mode);
-    if (mode_len > 127) return -1;
-    unsigned char request[129];
-    request[0] = 0x1a;
-    request[1] = (unsigned char)mode_len;
-    memcpy(request + 2, mode, mode_len);
+    if (mode_len > 255) return -1;
+    unsigned char request[260];
+    size_t request_len = 0;
+    request[request_len++] = 0x1a; /* ClashMode.mode is protobuf field 3. */
+    size_t length = mode_len;
+    while (length >= 0x80) {
+        request[request_len++] = (unsigned char)(length | 0x80);
+        length >>= 7;
+    }
+    request[request_len++] = (unsigned char)length;
+    memcpy(request + request_len, mode, mode_len);
+    request_len += mode_len;
     unsigned char response[256];
     size_t response_len;
     return grpc_web_unary_call(ctx, "/daemon.StartedService/SetClashMode",
-                               request, mode_len + 2, response, sizeof(response), &response_len);
+                               request, request_len, response, sizeof(response), &response_len);
 }
 
 int singbox_api_reload(singbox_api_ctx_t *ctx) {
