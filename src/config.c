@@ -164,19 +164,9 @@ void config_set_defaults(atp_config_t *cfg) {
 static void config_sync_from_singbox_json(atp_config_t *cfg) {
     if (!cfg) return;
 
-    char conf_candidates[3][PATH_MAX];
-    snprintf(conf_candidates[0], sizeof(conf_candidates[0]), "%s/config.json", cfg->core.data_dir);
-    snprintf(conf_candidates[1], sizeof(conf_candidates[1]), "%s/sing-box.json", cfg->core.data_dir);
-    snprintf(conf_candidates[2], sizeof(conf_candidates[2]), "%s/sing-box/config.json", cfg->core.data_dir);
-
-    const char *conf_path = NULL;
-    for (int i = 0; i < 3; i++) {
-        if (access(conf_candidates[i], R_OK) == 0) {
-            conf_path = conf_candidates[i];
-            break;
-        }
-    }
-    if (!conf_path) return;
+    char conf_path[PATH_MAX];
+    snprintf(conf_path, sizeof(conf_path), "%s/config.json", cfg->core.data_dir);
+    if (access(conf_path, R_OK) != 0) return;
 
     yyjson_read_err err;
     yyjson_doc *doc = yyjson_read_file(conf_path, 0, NULL, &err);

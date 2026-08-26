@@ -51,6 +51,7 @@ struct service_ctx_t {
     char work_dir[PATH_MAX];
     char conf_path[PATH_MAX];
     char log_path[PATH_MAX];
+    char pid_path[PATH_MAX];
     char user[64];
     char group[64];
     char service_args[512];

@@ -239,13 +239,13 @@ static int service_binary_exists(service_ctx_t *ctx) {
 
 void service_pid_path(service_ctx_t *ctx, char *path, size_t size) {
     if (!ctx || !path || size == 0) return;
-    snprintf(path, size, "%s", ctx->log_path);
-    char *slash = strrchr(path, '/');
-    if (slash) {
-        snprintf(slash + 1, size - (size_t)(slash + 1 - path), "sing-box.pid");
-    } else {
-        snprintf(path, size, "sing-box.pid");
-    }
+    snprintf(path, size, "%s", ctx->pid_path);
+}
+
+static void service_unlink_pid(service_ctx_t *ctx) {
+    char pid_path[PATH_MAX];
+    service_pid_path(ctx, pid_path, sizeof(pid_path));
+    unlink(pid_path);
 }
 
 void service_rotate_log(service_ctx_t *ctx) {
@@ -367,6 +367,26 @@ static int service_spawn(service_ctx_t *ctx) {
 
     service_rotate_log(ctx);
 
+    if (ctx->work_dir[0] && mkdir_recursive(ctx->work_dir, 0755) != 0 && errno != EEXIST) {
+        LOG_ERROR("Service: failed to create sing-box data directory %s: %s",
+                  ctx->work_dir, strerror(errno));
+        return -1;
+    }
+
+    char pid_path[PATH_MAX];
+    service_pid_path(ctx, pid_path, sizeof(pid_path));
+    char run_dir[PATH_MAX];
+    snprintf(run_dir, sizeof(run_dir), "%s", pid_path);
+    char *run_slash = strrchr(run_dir, '/');
+    if (run_slash) {
+        *run_slash = '\0';
+        if (mkdir_recursive(run_dir, 0755) != 0 && errno != EEXIST) {
+            LOG_ERROR("Service: failed to create runtime directory %s: %s",
+                      run_dir, strerror(errno));
+            return -1;
+        }
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         LOG_ERROR("Service: fork failed: %s", strerror(errno));
@@ -477,17 +497,17 @@ static int service_spawn(service_ctx_t *ctx) {
     ctx->start_time = time(NULL);
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
 
-    char pid_path[PATH_MAX];
-    service_pid_path(ctx, pid_path, sizeof(pid_path));
-    char run_dir[PATH_MAX];
-    snprintf(run_dir, sizeof(run_dir), "%s", ctx->log_path);
-    char *run_slash = strrchr(run_dir, '/');
-    if (run_slash) *run_slash = '\0';
-    mkdir_recursive(run_dir, 0755);
     FILE *pfp = fopen(pid_path, "w");
-    if (pfp) {
-        fprintf(pfp, "%d\n", pid);
-        fclose(pfp);
+    int pid_file_ok = pfp && fprintf(pfp, "%d\n", pid) >= 0;
+    if (pfp && fclose(pfp) != 0) pid_file_ok = 0;
+    if (!pid_file_ok) {
+        LOG_ERROR("Service: failed to write sing-box PID file %s", pid_path);
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        unlink(pid_path);
+        ctx->child_pid = -1;
+        ctx->validated_pid = 0;
+        return -1;
     }
     return 0;
 }
@@ -574,6 +594,7 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
         LOG_INFO("Service: stopped successfully");
         ctx->state = SERVICE_STOPPED;
         ctx->running_healthy = 0;
+        service_unlink_pid(ctx);
         if (state->done_cb) {
             state->done_cb(ctx, state->userdata);
         }
@@ -590,6 +611,7 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
         ctx->validated_pid = 0;
         ctx->state = SERVICE_STOPPED;
         ctx->running_healthy = 0;
+        service_unlink_pid(ctx);
         if (state->done_cb) {
             state->done_cb(ctx, state->userdata);
         }
@@ -813,47 +835,28 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
 
     const char *base_dir = cfg->core.data_dir[0] ? cfg->core.data_dir : ".";
 
-    /* 1. Base directory is the working directory */
+    /* sing-box uses the installation root as its working directory. */
     snprintf(ctx->work_dir, sizeof(ctx->work_dir), "%s", base_dir);
 
-    /* 2. Locate sing-box binary (candidate: base_dir/bin/sing-box -> base_dir/sing-box) */
+    /* Locate the bundled sing-box binary. */
     char candidate[PATH_MAX];
     snprintf(candidate, sizeof(candidate), "%s/bin/%s", base_dir, PROXY_BIN_NAME);
     if (access(candidate, X_OK) == 0) {
         snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s", candidate);
     } else {
-        snprintf(candidate, sizeof(candidate), "%s/%s", base_dir, PROXY_BIN_NAME);
-        if (access(candidate, X_OK) == 0) {
-            snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s", candidate);
-        } else {
-            snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s/bin/%s", base_dir, PROXY_BIN_NAME);
-        }
+        snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s/bin/%s", base_dir, PROXY_BIN_NAME);
     }
 
-    /* 3. Locate configuration (candidate: base_dir/config.json -> base_dir/sing-box.json -> base_dir/sing-box/config.json) */
-    snprintf(candidate, sizeof(candidate), "%s/config.json", base_dir);
-    if (access(candidate, R_OK) == 0) {
-        snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s", candidate);
-    } else {
-        snprintf(candidate, sizeof(candidate), "%s/sing-box.json", base_dir);
-        if (access(candidate, R_OK) == 0) {
-            snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s", candidate);
-        } else {
-            snprintf(candidate, sizeof(candidate), "%s/sing-box/config.json", base_dir);
-            if (access(candidate, R_OK) == 0) {
-                snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s", candidate);
-            } else {
-                snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s/config.json", base_dir);
-            }
-        }
-    }
+    /* sing-box configuration lives beside the binary's working directory. */
+    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s/config.json", base_dir);
 
-    /* 4. Logs and user/group */
+    /* Logs stay in sing-box's working directory; ATPd runtime files stay in run/. */
+    snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/sing-box.log", base_dir);
     const char *run_dir = cfg->core.run_dir[0] ? cfg->core.run_dir : ATP_RUN_DIR;
     if (run_dir[0] == '/') {
-        snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/sing-box.log", run_dir);
+        snprintf(ctx->pid_path, sizeof(ctx->pid_path), "%s/sing-box.pid", run_dir);
     } else {
-        snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/%s/sing-box.log", base_dir, run_dir);
+        snprintf(ctx->pid_path, sizeof(ctx->pid_path), "%s/%s/sing-box.pid", base_dir, run_dir);
     }
     snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core.core_user);
     snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core.core_group);
@@ -981,6 +984,7 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
         ctx->state = SERVICE_STOPPED;
         ctx->fail_count = 0;
         ctx->running_healthy = 0;
+        service_unlink_pid(ctx);
         if (done_cb) {
             done_cb(ctx, userdata);
         }
@@ -1003,6 +1007,7 @@ int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void
         ctx->state = SERVICE_STOPPED;
         ctx->fail_count = 0;
         ctx->running_healthy = 0;
+        service_unlink_pid(ctx);
         if (done_cb) {
             done_cb(ctx, userdata);
         }

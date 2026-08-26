@@ -122,9 +122,9 @@ dump_logs() {
         echo "=== atp.log ==="
         cat "${TEST_DIR}/run/atp.log" || true
     fi
-    if [ -f "${TEST_DIR}/run/sing-box.log" ]; then
+    if [ -f "${TEST_DIR}/sing-box.log" ]; then
         echo "=== sing-box.log ==="
-        cat "${TEST_DIR}/run/sing-box.log" || true
+        cat "${TEST_DIR}/sing-box.log" || true
     fi
     chmod -R 777 "${TEST_DIR}" 2>/dev/null || true
 }
@@ -164,6 +164,32 @@ if [ "${API_OK}" -eq 1 ]; then
 else
     dump_logs
     log_fail "sing-box Native API 未能在预期时间内响应!"
+fi
+
+if [ -s "${TEST_DIR}/sing-box.log" ] && [ ! -e "${TEST_DIR}/run/sing-box.log" ]; then
+    log_pass "sing-box 日志位于工作目录 ${TEST_DIR}/sing-box.log"
+else
+    dump_logs
+    log_fail "sing-box 日志路径不符合工作目录规范"
+fi
+
+# sing-box does not create a PID file itself. ATPd writes the supervised
+# child's PID in ATPd's runtime directory so CLI status/stop still work after
+# a daemon re-exec on Android.
+SINGBOX_PID_FILE="${TEST_DIR}/run/sing-box.pid"
+if [ -s "${SINGBOX_PID_FILE}" ]; then
+    SINGBOX_PID="$(tr -d '[:space:]' < "${SINGBOX_PID_FILE}")"
+    if [[ "${SINGBOX_PID}" =~ ^[1-9][0-9]*$ ]] && \
+       kill -0 "${SINGBOX_PID}" 2>/dev/null && \
+       [ "$(tr -d '[:space:]' < "/proc/${SINGBOX_PID}/comm" 2>/dev/null)" = "sing-box" ]; then
+        log_pass "ATPd 已将 sing-box PID 写入 ${SINGBOX_PID_FILE}"
+    else
+        dump_logs
+        log_fail "sing-box PID 文件无效或未指向运行中的 sing-box"
+    fi
+else
+    dump_logs
+    log_fail "ATPd 未写入 sing-box PID 文件: ${SINGBOX_PID_FILE}"
 fi
 
 # 等待启动稳定并获取状态数据
@@ -225,6 +251,13 @@ else
     log_fail "Step 2 FAIL: 停止指令执行后进程未能退出!"
 fi
 
+if [ ! -e "${SINGBOX_PID_FILE}" ]; then
+    log_pass "停止后已清理 sing-box PID 文件"
+else
+    dump_logs
+    log_fail "停止后仍残留 sing-box PID 文件: ${SINGBOX_PID_FILE}"
+fi
+
 # ==============================================================================
 # 阶段 3: 重启 / 再次启动 (Restart / Re-start) -> 校验热恢复与新 PID
 # ==============================================================================
@@ -277,6 +310,11 @@ if echo "${FINAL_STATUS}" | grep -q "STOPPED" || echo "${FINAL_STATUS}" | grep -
 else
     dump_logs
     log_fail "Step 4 FAIL: 最终停止后未能正确处于停止状态!"
+fi
+
+if [ -e "${SINGBOX_PID_FILE}" ]; then
+    dump_logs
+    log_fail "最终停止后仍残留 sing-box PID 文件: ${SINGBOX_PID_FILE}"
 fi
 
 # 清理测试现场

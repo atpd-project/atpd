@@ -66,7 +66,7 @@
 
 #define PROXY_BIN_NAME      "sing-box"
 #define PROXY_PID_FILE      ATP_RUN_DIR "/sing-box.pid"
-#define PROXY_LOG_FILE      ATP_RUN_DIR "/sing-box.log"
+#define PROXY_LOG_FILE      "sing-box.log"
 #define TRAFFIC_STATE_FILE  ATP_RUN_DIR "/traffic.state"
 #define PROXY_BIN_PATH      ATP_DEFAULT_DIR "/bin/sing-box"
 

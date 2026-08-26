@@ -83,22 +83,26 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 
 ## 📁 Workspace Directory Structure (Self-Adaptive)
 
-ATPd automatically derives its root working directory from its own binary path (`/proc/self/exe`), allowing arbitrary installation paths (`/data/adb/atp`, `/data/adb/sing-box`, etc.) with zero hardcoding:
+ATPd derives its root working directory from its own binary path (`/proc/self/exe`). The standalone Android deployment uses `/data/adb/atp` as the canonical root:
 
 ```text
-/data/adb/atp/ (or /data/adb/sing-box/)
+/data/adb/atp/
 ├── atpd                 ── ATP Daemon (C11 + Pure eBPF Reactor)
 ├── atp.conf             ── ATP Framework Configuration (Optional)
-├── config.json          ── sing-box Core Configuration (Native API)
-├── cache.db             ── sing-box cache & rule-sets (auto-stored via -D .)
 ├── bin/
-│   └── sing-box         ── Proxy Core Binary (or at root ./sing-box)
-└── run/                 ── Isolated Runtime Directory (auto-created)
+│   └── sing-box         ── Proxy Core Binary
+├── config.json          ── sing-box Core Configuration (Native API)
+├── providers/           ── Provider data (sing-box work directory)
+├── rule_set/            ── Rule-set data (sing-box work directory)
+├── dashboard/           ── Dashboard assets
+├── zashboard/           ── Zashboard assets
+├── cache.db             ── sing-box cache database
+├── sing-box.log         ── sing-box Core Log (sing-box work directory)
+└── run/                 ── ATPd runtime directory (auto-created)
     ├── atpd.pid         ── ATPd Daemon PID
     ├── atpd.sock        ── Fast-Path UDS Command Socket (0600)
     ├── atp.log          ── ATPd System Log
-    ├── sing-box.pid     ── sing-box Process PID
-    └── sing-box.log     ── sing-box Process Log
+    └── sing-box.pid     ── sing-box Process PID
 ```
 
 ---
@@ -107,7 +111,7 @@ ATPd automatically derives its root working directory from its own binary path (
 
 ### 1. Installation
 
-Deploy `atpd`, `atp.conf`, `config.json`, and `sing-box` directly to your root directory:
+Deploy `atpd`, `atp.conf`, `config.json`, and `bin/sing-box` directly to the root directory:
 
 ```bash
 mkdir -p /data/adb/atp/bin /data/adb/atp/run
@@ -148,26 +152,11 @@ chmod 755 /data/adb/atp/atpd /data/adb/atp/bin/sing-box
 
 ### 3. Boot Service Setup (`service.d`)
 
-Create `/data/adb/service.d/atpd_service.sh` for automatic boot execution under Magisk, KernelSU, or APatch:
+Copy the bundled `service.d/atpd_service.sh` to `/data/adb/service.d/` for automatic boot execution under Magisk, KernelSU, or APatch:
 
 ```bash
 mkdir -p /data/adb/service.d
-cat << 'EOF' > /data/adb/service.d/atpd_service.sh
-#!/system/bin/sh
-until [ "$(getprop sys.boot_completed)" = "1" ]; do
-    sleep 3
-done
-sleep 2
-
-for candidate in /data/adb/atp/atpd /data/adb/sing-box/atpd; do
-    if [ -f "${candidate}" ]; then
-        chmod +x "${candidate}"
-        "${candidate}" start
-        break
-    fi
-done
-exit 0
-EOF
+cp service.d/atpd_service.sh /data/adb/service.d/atpd_service.sh
 chmod 755 /data/adb/service.d/atpd_service.sh
 ```
 
