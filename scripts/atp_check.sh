@@ -1,55 +1,17 @@
 #!/system/bin/sh
-# ATP Quick Check Script for KernelSU
+# ATPd quick status for Android root shells.
 
-ATP_DATA="/data/adb/atp"
-ATP_BIN="${ATP_DATA}/bin"
-PID_FILE="${ATP_DATA}/run/atpd.pid"
+ATP_ROOT="${ATP_ROOT:-/data/adb/atp}"
+ATPD="${ATP_ROOT}/atpd"
+ATP_CONF="${ATP_ROOT}/atp.conf"
+
+if [ ! -x "${ATPD}" ]; then
+    echo "Missing executable: ${ATPD}" >&2
+    exit 1
+fi
+
+"${ATPD}" -c "${ATP_CONF}" -n status
 
 echo ""
-echo "┌─────────────────────────────────────────────┐"
-echo "│         ATP Daemon Quick Snapshot          │"
-echo "├─────────────────────────────────────────────┤"
-
-# Check daemon status
-if [ -f "$PID_FILE" ]; then
-    PID=$(cat "$PID_FILE" 2>/dev/null)
-    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-        echo "│ Status:  \033[1;32mRUNNING\033[0m (PID: $PID)                 │"
-    else
-        echo "│ Status:  \033[1;31mOFFLINE\033[0m (Stale PID file)            │"
-    fi
-else
-    echo "│ Status:  \033[1;31mOFFLINE\033[0m (Not running)                 │"
-fi
-
-# Get proxy mode
-if [ -x "${ATP_BIN}/atpd" ]; then
-    MODE=$(${ATP_BIN}/atpd status 2>/dev/null | grep "Routing:" | awk '{print $NF}')
-    if [ -n "$MODE" ]; then
-        echo "│ Mode:    $MODE                                  │"
-    fi
-fi
-
-# Check VPN traffic
-TRAFFIC=$(${ATP_BIN}/atpd status 2>/dev/null | grep "VPN Traffic" | head -1)
-if [ -n "$TRAFFIC" ]; then
-    echo "│ $TRAFFIC │"
-fi
-
-# Check memory usage
-if [ -f "$PID_FILE" ]; then
-    PID=$(cat "$PID_FILE" 2>/dev/null)
-    if [ -n "$PID" ] && [ -d "/proc/$PID" ]; then
-        MEM=$(grep -w VmRSS "/proc/$PID/status" 2>/dev/null | awk '{print $2" "$3}')
-        echo "│ Memory:  $MEM (atpd)                         │"
-    fi
-fi
-
-echo "└─────────────────────────────────────────────┘"
-echo ""
-
-# Show last 3 log lines
-echo "Recent logs (last 3 lines):"
-echo "---------------------------------------------"
-tail -3 "${ATP_DATA}/run/atp.log" 2>/dev/null || echo "No logs found"
-echo "---------------------------------------------"
+echo "Recent ATPd logs:"
+tail -n 10 "${ATP_ROOT}/run/atp.log" 2>/dev/null || echo "No ATPd log found"

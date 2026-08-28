@@ -55,6 +55,7 @@ test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST)
 	$(VPN_MODE_TEST)
 	$(LOGGER_SAFETY_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
+	sh tests/test_android_service.sh
 
 $(VPN_MODE_TEST): tests/test_api_vpn_mode.c src/api.c
 	@mkdir -p $(dir $@)
