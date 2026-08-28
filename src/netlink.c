@@ -33,7 +33,7 @@
 #define NL_DUMP_SIZE 32768
 #define NETLINK_RECV_TIMEOUT_MS 3000
 #define NETLINK_DEBOUNCE_MS 500
-#define NETLINK_VPN_SETTLE_MS 6000
+#define NETLINK_VPN_SETTLE_MS 1000
 
 #ifndef XFRMA_RTA
 #define XFRMA_RTA(r) ((struct rtattr*)((char*)(r) + NLMSG_ALIGN(sizeof(struct xfrm_usersa_info))))

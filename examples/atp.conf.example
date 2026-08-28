@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 # ATP (Advanced Transparent Proxy) Configuration File - Pure eBPF Edition
 # Location: <MODULE_DIR>/atp.conf (Auto-detected from /proc/self/exe parent directory)
 # =============================================================================
@@ -85,3 +85,18 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
 
 # Optional custom environment variables (space-separated KEY=VALUE pairs)
 # SERVICE_ENV=
+
+# -----------------------------------------------------------------------------
+# 5. VPN Tunnel & Clash Mode Dynamic Handover Settings
+# -----------------------------------------------------------------------------
+
+# Automatically switch sing-box Clash mode when secondary VPN connects/disconnects
+# 1=enable, 0=disable (default: 1)
+VPN_AUTO_CLASH_MODE=1
+
+# Target Clash mode to activate when VPN tunnel connects (default: "Google VPN")
+# Note: sing-box calculates valid modes from route.rules[].clash_mode in config.json.
+VPN_TARGET_MODE="Google VPN"
+
+# Fallback Clash mode to restore when VPN disconnects if prior mode was unavailable (default: "Rule")
+VPN_FALLBACK_MODE="Rule"

@@ -141,6 +141,9 @@ void config_set_defaults(atp_config_t *cfg) {
 #endif
 
     cfg->interface.current_vpn_iface[0] = '\0';
+    cfg->interface.vpn_auto_mode = true;
+    snprintf(cfg->interface.vpn_target_mode, sizeof(cfg->interface.vpn_target_mode), "Google VPN");
+    snprintf(cfg->interface.vpn_fallback_mode, sizeof(cfg->interface.vpn_fallback_mode), "Rule");
 
     cfg->ebpf.enabled = 1;
     cfg->ebpf.ready = 1;
@@ -278,9 +281,12 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
         else if (strcmp(k, "SERVICE_CIRCUIT_THRESHOLD") == 0) cfg->service.circuit_threshold = int_val;
         else if (strcmp(k, "SERVICE_CIRCUIT_COOLDOWN") == 0) cfg->service.circuit_cooldown_sec = int_val;
         else if (strcmp(k, "SERVICE_HEALTH_CHECK_INTERVAL") == 0) cfg->service.health_check_interval_ms = int_val;
+        else if (strcmp(k, "VPN_AUTO_CLASH_MODE") == 0 || strcmp(k, "VPN_AUTO_MODE") == 0) cfg->interface.vpn_auto_mode = (int_val != 0);
     } else {
         if (strcmp(k, "API_SECRET") == 0 || strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", v);
         else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", v);
+        else if (strcmp(k, "VPN_TARGET_MODE") == 0 || strcmp(k, "VPN_CLASH_MODE") == 0) snprintf(cfg->interface.vpn_target_mode, sizeof(cfg->interface.vpn_target_mode), "%s", v);
+        else if (strcmp(k, "VPN_FALLBACK_MODE") == 0 || strcmp(k, "VPN_DEFAULT_MODE") == 0) snprintf(cfg->interface.vpn_fallback_mode, sizeof(cfg->interface.vpn_fallback_mode), "%s", v);
         else if (strcmp(k, "DATA_DIR") == 0 || strcmp(k, "WORK_DIR") == 0) snprintf(cfg->core.data_dir, sizeof(cfg->core.data_dir), "%s", v);
         else if (strcmp(k, "RUN_DIR") == 0) snprintf(cfg->core.run_dir, sizeof(cfg->core.run_dir), "%s", v);
         else if (strcmp(k, "PID_FILE") == 0) snprintf(cfg->core.pid_file, sizeof(cfg->core.pid_file), "%s", v);

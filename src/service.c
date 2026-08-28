@@ -28,6 +28,7 @@
 #include <time.h>
 #include <libgen.h>
 #include "async_validate.h"
+#include "netlink.h"
 
 /* Forward declarations */
 void service_schedule_retry(service_ctx_t *ctx);
@@ -778,6 +779,10 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                     ctx->last_health_check = time(NULL);
                     backoff_reset(&ctx->backoff);
                     circuit_breaker_record_success(&ctx->breaker);
+
+                    if (ctx->reactor) {
+                        netlink_refresh_state(ctx->reactor);
+                    }
 
                     if (ctx->reactor && ctx->health_check_interval_ms > 0) {
                         if (ctx->health_timer) {

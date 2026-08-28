@@ -79,18 +79,31 @@ int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback
     return ret;
 }
 
+static int is_clash_mode_supported(const singbox_clash_mode_status_t *status, const char *mode) {
+    if (!status || !mode || !mode[0]) return 0;
+    for (size_t i = 0; i < status->mode_count; ++i) {
+        if (strcmp(status->modes[i], mode) == 0) return 1;
+    }
+    return 0;
+}
+
 void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata) {
     api_ctx_t *ctx = userdata;
     if (!ctx) return;
+
+    if (!g_config.interface.vpn_auto_mode) {
+        return;
+    }
 
     if (state == VPN_STATE_PREDICTING || state == VPN_STATE_TEARDOWN) {
         /* The debounced READY/IDLE transition is the stable sync point. */
         return;
     }
 
-    if (state == VPN_STATE_READY && (!iface || strncmp(iface, "ipsec", 5) != 0)) {
-        return;
-    }
+    const char *target_mode = g_config.interface.vpn_target_mode[0] ?
+                              g_config.interface.vpn_target_mode : "Google VPN";
+    const char *fallback_mode = g_config.interface.vpn_fallback_mode[0] ?
+                                g_config.interface.vpn_fallback_mode : "Rule";
 
     singbox_clash_mode_status_t status;
     if (singbox_api_get_clash_mode_status(&ctx->native_ctx, &status) != 0) {
@@ -99,40 +112,40 @@ void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata)
     }
 
     if (state == VPN_STATE_IDLE) {
-        if (!ctx->default_mode[0] || strcmp(status.current_mode, ctx->default_mode) == 0) {
+        const char *restore_mode = ctx->default_mode[0] ? ctx->default_mode : fallback_mode;
+        if (!restore_mode[0] || strcmp(status.current_mode, restore_mode) == 0) {
             return;
         }
-        if (api_set_mode_async(ctx, ctx->default_mode, NULL, NULL) != 0) {
-            LOG_WARN("Native API: failed to restore Clash mode to %s", ctx->default_mode);
+        if (!is_clash_mode_supported(&status, restore_mode)) {
+            LOG_WARN("Native API: Restore Clash mode '%s' is not present in sing-box mode list", restore_mode);
             return;
         }
-        LOG_INFO("Native API: VPN state IDLE restored Clash mode %s", ctx->default_mode);
+        if (api_set_mode_async(ctx, restore_mode, NULL, NULL) != 0) {
+            LOG_WARN("Native API: failed to restore Clash mode to %s", restore_mode);
+            return;
+        }
+        LOG_INFO("Native API: VPN state IDLE restored Clash mode %s", restore_mode);
         return;
     }
 
-    if (!ctx->default_mode[0] && strcmp(status.current_mode, "Google VPN") != 0) {
+    /* state == VPN_STATE_READY */
+    if (!ctx->default_mode[0] && strcmp(status.current_mode, target_mode) != 0) {
         snprintf(ctx->default_mode, sizeof(ctx->default_mode), "%s", status.current_mode);
     }
 
-    int google_vpn_available = 0;
-    for (size_t i = 0; i < status.mode_count; ++i) {
-        if (strcmp(status.modes[i], "Google VPN") == 0) {
-            google_vpn_available = 1;
-            break;
-        }
-    }
-    if (!google_vpn_available) {
-        LOG_WARN("Native API: Google VPN Clash mode is not present in the calculated mode list");
+    if (!is_clash_mode_supported(&status, target_mode)) {
+        LOG_WARN("Native API: Target Clash mode '%s' is not present in sing-box mode list", target_mode);
         return;
     }
 
-    if (strcmp(status.current_mode, "Google VPN") == 0) return;
-    if (api_set_mode_async(ctx, "Google VPN", NULL, NULL) != 0) {
-        LOG_WARN("Native API: failed to switch Clash mode to Google VPN");
+    if (strcmp(status.current_mode, target_mode) == 0) return;
+    if (api_set_mode_async(ctx, target_mode, NULL, NULL) != 0) {
+        LOG_WARN("Native API: failed to switch Clash mode to %s", target_mode);
         return;
     }
-    LOG_INFO("Native API: VPN state READY selected Clash mode Google VPN (restore=%s)",
-             ctx->default_mode[0] ? ctx->default_mode : "unavailable");
+    LOG_INFO("Native API: VPN state READY (%s) selected Clash mode '%s' (restore=%s)",
+             (iface && iface[0]) ? iface : "vpn", target_mode,
+             ctx->default_mode[0] ? ctx->default_mode : fallback_mode);
 }
 
 int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size) {

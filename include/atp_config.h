@@ -26,6 +26,9 @@ typedef struct {
 /* Interface & VPN Sensing */
 typedef struct {
     char current_vpn_iface[IFNAMSIZ];
+    bool vpn_auto_mode;
+    char vpn_target_mode[64];
+    char vpn_fallback_mode[64];
 } interface_config_t;
 
 /* eBPF Prober Config */

@@ -239,7 +239,7 @@ Automated CI benchmark suite results on Linux / Android GKI kernels:
 # Process user and group (Android: root:net_admin, Linux: root:root)
 CORE_USER_GROUP="root:net_admin"
 
-# Log timestamping
+# Log timestamping & Timezone (auto-detects Android persist.sys.timezone / tzdata)
 LOG_TIMESTAMP=1
 
 # Native API Connection (Auto-detected from config.json if not set)
@@ -253,6 +253,11 @@ SERVICE_STOP_TIMEOUT=10
 SERVICE_MAX_FAILURES=5
 SERVICE_CIRCUIT_COOLDOWN=60
 SERVICE_HEALTH_CHECK_INTERVAL=5000
+
+# VPN Tunnel & Clash Mode Dynamic Handover
+VPN_AUTO_CLASH_MODE=1
+VPN_TARGET_MODE="Google VPN"
+VPN_FALLBACK_MODE="Rule"
 ```
 
 ### `config.json` (sing-box Native API, Runtime Telemetry & eBPF Config)
@@ -271,6 +276,9 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
       "listen_port": 9080
     }
   ],
+  "experimental": {
+    "clash_api": {}
+  },
   "inbounds": [
     {
       "type": "ebpf",
@@ -279,7 +287,7 @@ SERVICE_HEALTH_CHECK_INTERVAL=5000
       "network": ["tcp", "udp"],
       "local": {
         "cgroup_path": "/sys/fs/cgroup",
-        "exclude_interface": ["tun+", "ipsec+"]
+        "exclude_interface": ["tun+", "ipsec+", "wg+", "warp+"]
       }
     }
   ],
@@ -296,13 +304,15 @@ message supplies memory, goroutines, connection counts, traffic rates, and
 traffic totals. No separate debug listener is required. Clash mode is queried
 live through the optional Native API Clash-mode RPC; if that service is not
 enabled, ATPd displays `N/A` rather than inferring a mode from configuration.
-When an `ipsecN` Google VPN interface reaches the debounced `READY` state,
-ATPd first verifies that `Google VPN` is in sing-box's calculated mode list,
-saves the current live mode, and requests `Google VPN` through the same Native
-API. After the interface reaches `IDLE`, ATPd restores that saved mode instead
-of assuming `Rule`. The empty `experimental.clash_api` object enables the mode
-engine only; status and control traffic still use the Native API gRPC-Web
-service, and no Clash REST listener is required.
+
+When any supported VPN interface (`ipsecN`, `tunN`, `wgN`, `warpN`, `tailscaleN`)
+reaches the debounced `READY` state, ATPd dynamically verifies via Native API
+that the configured `VPN_TARGET_MODE` (default: `"Google VPN"`) is in sing-box's
+calculated mode list, saves the current live mode, and requests the target mode
+through the Native API. When the interface disconnects and returns to `IDLE`,
+ATPd seamlessly restores the saved mode (or falls back safely to `VPN_FALLBACK_MODE`).
+The empty `experimental.clash_api` object enables the mode engine in sing-box;
+status and control traffic still use the Native API gRPC-Web service.
 
 ---
 
