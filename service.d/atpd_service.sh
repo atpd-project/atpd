@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# ATPd boot/test entry for KernelSU, Magisk, and APatch.
+# ATPd boot/service entry for KernelSU, Magisk, and APatch.
 
 ATP_ROOT="${ATP_ROOT:-/data/adb/atp}"
 ATPD="${ATP_ROOT}/atpd"
@@ -9,6 +9,7 @@ SING_BOX_CONF="${ATP_ROOT}/config.json"
 RUN_DIR="${ATP_ROOT}/run"
 ATPD_PID_FILE="${RUN_DIR}/atpd.pid"
 SING_BOX_PID_FILE="${RUN_DIR}/sing-box.pid"
+ATPD_SOCKET="${RUN_DIR}/atpd.sock"
 BOOT_LOG="${RUN_DIR}/boot.log"
 BOOT_WAIT="${BOOT_WAIT:-180}"
 START_WAIT="${START_WAIT:-45}"
@@ -133,7 +134,7 @@ stop_daemon() {
         fail "orphaned sing-box is still running; inspect it before cleanup"
         return 1
     else
-        rm -f "${ATPD_PID_FILE}" "${SING_BOX_PID_FILE}"
+        rm -f "${ATPD_PID_FILE}" "${SING_BOX_PID_FILE}" "${ATPD_SOCKET}"
         write_log "already stopped"
     fi
 }

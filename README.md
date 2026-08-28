@@ -161,8 +161,9 @@ chmod 755 /data/adb/service.d/atpd_service.sh
 ```
 
 The same script supports `check`, `start`, `status`, `restart`, and `stop` for
-manual acceptance testing. See [the Android device test plan](docs/android-device-test.md)
-for migration from an old `atp.sh` module and the complete pass criteria.
+manual acceptance testing. Existing `atp.sh` users should follow the
+[migration guide](docs/migrate-from-atp-sh.md), then use the
+[Android device test plan](docs/android-device-test.md) for the complete pass criteria.
 
 ---
 
