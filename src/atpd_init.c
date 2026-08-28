@@ -19,6 +19,7 @@
 #include "cli.h"
 
 #include <stdlib.h>
+#include <unistd.h>
 
 static init_phase_config_t init_phases[] = {
     {INIT_PHASE_CONFIG, "config", atpd_init_phase_config, 1, 0},
@@ -33,19 +34,30 @@ static init_phase_config_t init_phases[] = {
 int atpd_init_phase_config(atpd_init_context_t *ctx) {
     LOG_INFO("Loading configuration...");
     
-    ctx->config->core.foreground = ctx->opts->foreground;
-    ctx->config->core.verbose = ctx->opts->verbose;
-    
     char auto_cfg_path[PATH_MAX];
     const char *config_path = ctx->opts->config_file;
     if (!config_path || !config_path[0]) {
-        snprintf(auto_cfg_path, sizeof(auto_cfg_path), "%s/%s", ctx->config->core.data_dir, ATP_CONF_FILE);
+        if (snprintf(auto_cfg_path, sizeof(auto_cfg_path), "%s/%s",
+                     ctx->config->core.data_dir, ATP_CONF_FILE) >= (int)sizeof(auto_cfg_path)) {
+            LOG_ERROR("Configuration path is too long");
+            return -1;
+        }
         config_path = auto_cfg_path;
     }
     
-    if (config_load(config_path, ctx->config) != ATP_OK) {
-        LOG_WARN("Could not load config from %s, using defaults", config_path);
+    if (access(config_path, R_OK) == 0) {
+        if (config_load(config_path, ctx->config) != ATP_OK) {
+            LOG_ERROR("Invalid configuration: %s", config_path);
+            return -1;
+        }
+    } else if (ctx->opts->config_file[0]) {
+        LOG_ERROR("Cannot read configuration: %s", config_path);
+        return -1;
     }
+
+    /* Command-line options override both defaults and file configuration. */
+    ctx->config->core.foreground = ctx->opts->foreground;
+    ctx->config->core.verbose = ctx->opts->verbose;
     
     atp_register_cleanup(ctx->config);
     
@@ -61,9 +73,12 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
         if (ctx->config->core.log_file[0] == '/') {
             snprintf(log_path, sizeof(log_path), "%s", ctx->config->core.log_file);
         } else {
-            snprintf(log_path, sizeof(log_path), "%s/%s",
-                     ctx->config->core.data_dir[0] ? ctx->config->core.data_dir : ".",
-                     ctx->config->core.log_file);
+            if (snprintf(log_path, sizeof(log_path), "%s/%s",
+                         ctx->config->core.data_dir[0] ? ctx->config->core.data_dir : ".",
+                         ctx->config->core.log_file) >= (int)sizeof(log_path)) {
+                LOG_ERROR("Log path is too long");
+                return -1;
+            }
         }
         char log_dir[PATH_MAX];
         snprintf(log_dir, sizeof(log_dir), "%s", log_path);

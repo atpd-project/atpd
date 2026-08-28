@@ -622,27 +622,12 @@ static int do_ebpf_probe(atp_options_t *opts) {
 }
 
 static int do_ebpf_status(atp_options_t *opts) {
+    (void)opts;
     char state[64] = {0};
-    atp_config_t cfg;
-    config_set_defaults(&cfg);
-
-    const char *config_path = opts->config_file;
-    if (config_path && config_path[0]) {
-        config_load(config_path, &cfg);
-    } else {
-        char default_path[PATH_MAX];
-        snprintf(default_path, sizeof(default_path), "%s/%s", cfg.core.data_dir, ATP_CONF_FILE);
-        if (access(default_path, R_OK) == 0) {
-            config_load(default_path, &cfg);
-        }
-    }
 
     ebpf_probe_result_t probe;
     ebpf_probe_detailed(&probe);
-    ebpf_status(state, sizeof(state), &cfg);
-
-    ebpf_runtime_status_t runtime;
-    int rt_ok = ebpf_get_runtime_status(&runtime);
+    ebpf_status(state, sizeof(state), &g_config);
 
     atp_ebpf_telemetry_t tel;
     ebpf_get_telemetry(&tel);
@@ -655,22 +640,8 @@ static int do_ebpf_status(atp_options_t *opts) {
            probe.has_cgroup_sock_addr ? 1 : 0, probe.has_sched_cls ? 1 : 0,
            probe.has_lpm_trie ? 1 : 0, probe.has_lru_hash ? 1 : 0);
 
-    if (rt_ok == 0 && runtime.is_active) {
-        printf("  BPF Map Pinning:     %s (ACTIVE)\n", runtime.pin_dir);
-        printf("  eBPF Control Flags:  0x%08X\n", runtime.flags);
-        printf("  Self TGID / PID:     %u\n", runtime.self_tgid);
-        printf("  Listener Port:       %u\n", runtime.listener_port);
-        printf("  Active UDP Flows:    %u\n", runtime.active_flows);
-    } else {
-        printf("  BPF Map Pinning:     STANDBY (Direct Kernel Sensing)\n");
-    }
-
-    if (tel.map_direct) {
-        printf("  BPF Packet Counters: %lu packets, %lu bytes\n",
-               (unsigned long)tel.total_packets, (unsigned long)tel.total_bytes);
-    } else {
-        printf("  BPF Active Sockets:  %lu\n", (unsigned long)tel.active_conns);
-    }
+    printf("  Runtime Inspection:  Native API and capability probes\n");
+    printf("  Process File Descriptors: %lu\n", (unsigned long)tel.active_conns);
 
     return ATP_OK;
 }
@@ -687,11 +658,21 @@ int main(int argc, char *argv[]) {
     char auto_cfg_path[PATH_MAX];
     const char *cfg_path = opts.config_file[0] ? opts.config_file : NULL;
     if (!cfg_path) {
-        snprintf(auto_cfg_path, sizeof(auto_cfg_path), "%s/%s", g_config.core.data_dir, ATP_CONF_FILE);
+        if (snprintf(auto_cfg_path, sizeof(auto_cfg_path), "%s/%s",
+                     g_config.core.data_dir, ATP_CONF_FILE) >= (int)sizeof(auto_cfg_path)) {
+            fprintf(stderr, "Configuration path is too long\n");
+            return 1;
+        }
         cfg_path = auto_cfg_path;
     }
     if (access(cfg_path, R_OK) == 0) {
-        config_load(cfg_path, &g_config);
+        if (config_load(cfg_path, &g_config) != ATP_OK) {
+            fprintf(stderr, "Invalid configuration: %s\n", cfg_path);
+            return 1;
+        }
+    } else if (opts.config_file[0]) {
+        fprintf(stderr, "Cannot read configuration: %s\n", cfg_path);
+        return 1;
     }
     g_config.core.foreground = opts.foreground;
     g_config.core.verbose = opts.verbose;

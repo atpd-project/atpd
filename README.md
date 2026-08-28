@@ -19,7 +19,7 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 | **In-Kernel eBPF Interception** | Traffic captured directly in-kernel via sing-box eBPF inbound (`cgroup/connect4`, `cgroup/connect6`, `cgroup/sendmsg4`, `cgroup/recvmsg4`, TC `sched_cls`). |
 | **Native API & Runtime Telemetry** | Uses sing-box `services: [{"type": "api"}]` for Native API health and the `SubscribeStatus` gRPC-Web stream for live **Go Goroutines**. |
 | **Fast-Path UDS IPC (< 3ms, 160+ QPS)** | UNIX Domain Socket (`run/atpd.sock`) with in-memory dashboard streaming for near-instant CLI status queries. |
-| **Zero-Context-Switch eBPF Telemetry** | Direct kernel BPF Map inspection (`control_map`, `flow_map`, `stats_map`) via non-invasive `bpf()` syscalls. |
+| **eBPF Capability Diagnostics** | Probes required kernel map/program capabilities; runtime health comes from the supported sing-box Native API. |
 | **Multi-VPN Tunnel Sensing** | Real-time Netlink event sensing for secondary VPN tunnels: **Cloudflare WARP (`tun0` / `warp0`)**, **WireGuard (`wg0`)**, **Tailscale (`tailscale0`)**, and **Google VPN (`ipsec0` / `xfrm0`)**. |
 | **Ultra-Lean Resource Footprint** | Binary size stripped down to **< 160 KB**; runtime RSS memory baseline **~2.3 MB**; 0 background busy-polling loops. |
 | **Resilient Core Lifecycle** | Non-blocking async process supervisor with exponential backoff, circuit breaker, and health check. |
@@ -44,9 +44,9 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 │     • Auto-detects services: [type: api] in config.json     │
 │     • Reads SubscribeStatus runtime status from Native API   │
 │                                                             │
-│  4. Fast-Path UDS IPC & eBPF Telemetry                      │
+│  4. Fast-Path UDS IPC & eBPF Diagnostics                    │
 │     • Microsecond in-memory dashboard streaming (UDS)       │
-│     • Zero-Context-Switch BPF Map lookup (flow / stats)     │
+│     • Kernel capability probes (map / program types)         │
 └─────────────────────────────────────────────────────────────┘
                                ▲
                                │ Lifecycle & Supervision / API
@@ -193,7 +193,7 @@ chmod 755 /data/adb/service.d/atpd_service.sh
     Data Path       sing-box ebpf inbound
     eBPF Kernel  AVAILABLE
     Capabilities    cgroup_sock, tc, lpm_trie, lru_hash
-    BPF Telemetry   Direct Kernel Sensing
+    Runtime Signal  <live sing-box file descriptor count>
 
 ============================= MONITORS & SENSING =============================
     Netlink Listener  ACTIVE (Link / Route)
@@ -283,12 +283,9 @@ VPN_FALLBACK_MODE="Rule"
     {
       "type": "ebpf",
       "tag": "ebpf-in",
-      "mode": "local",
-      "network": ["tcp", "udp"],
-      "local": {
-        "cgroup_path": "/sys/fs/cgroup",
-        "exclude_interface": ["tun+", "ipsec+", "wg+", "warp+"]
-      }
+      "cgroup_enabled": true,
+      "cgroup_path": "/sys/fs/cgroup",
+      "network": ["tcp", "udp"]
     }
   ],
   "route": {
@@ -304,6 +301,8 @@ message supplies memory, goroutines, connection counts, traffic rates, and
 traffic totals. No separate debug listener is required. Clash mode is queried
 live through the optional Native API Clash-mode RPC; if that service is not
 enabled, ATPd displays `N/A` rather than inferring a mode from configuration.
+On Android, `include_package` or `exclude_package` can be added directly to the
+eBPF inbound; those package selectors are not accepted by sing-box on Linux.
 
 When any supported VPN interface (`ipsecN`, `tunN`, `wgN`, `warpN`, `tailscaleN`)
 reaches the debounced `READY` state, ATPd dynamically verifies via Native API

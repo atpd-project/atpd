@@ -11,6 +11,7 @@
 #include "logger.h"
 #include "utils.h"
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -34,6 +35,33 @@
 void service_schedule_retry(service_ctx_t *ctx);
 
 #define MAX_LOG_SIZE (10 * 1024 * 1024)
+
+static int open_regular_file(const char *path, int flags, mode_t mode) {
+    int fd = open(path, flags | O_NOFOLLOW | O_CLOEXEC, mode);
+    if (fd < 0) return -1;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode) || st.st_nlink != 1) {
+        close(fd);
+        errno = EINVAL;
+        return -1;
+    }
+    return fd;
+}
+
+static int format_path(char *path, size_t size, const char *format, ...) {
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(path, size, format, args);
+    va_end(args);
+    return length >= 0 && (size_t)length < size ? 0 : -1;
+}
 
 static void backoff_init(backoff_t *b) {
     b->base_delay_ms = 1000;
@@ -251,7 +279,7 @@ static void service_unlink_pid(service_ctx_t *ctx) {
 
 void service_rotate_log(service_ctx_t *ctx) {
     struct stat st;
-    char backup_path[512];
+    char backup_path[PATH_MAX];
     char timestamp[64];
     time_t now;
     struct tm *tm_info;
@@ -267,7 +295,11 @@ void service_rotate_log(service_ctx_t *ctx) {
     }
 
     strftime(timestamp, sizeof(timestamp), "%Y-%m-%d_%H-%M-%S", tm_info);
-    snprintf(backup_path, sizeof(backup_path), "%s.%s", ctx->log_path, timestamp);
+    if (format_path(backup_path, sizeof(backup_path), "%s.%s",
+                    ctx->log_path, timestamp) != 0) {
+        LOG_WARN("Service: rotated log path is too long");
+        return;
+    }
 
     if (rename(ctx->log_path, backup_path) == 0) {
         LOG_INFO("Service: rotated log to %s (size: %ld bytes)",
@@ -415,7 +447,8 @@ static int service_spawn(service_ctx_t *ctx) {
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
 
-        int log_fd = open(ctx->log_path, O_WRONLY | O_CREAT | O_APPEND, 0640);
+        int log_fd = open_regular_file(ctx->log_path,
+                                       O_WRONLY | O_CREAT | O_APPEND, 0640);
         if (log_fd >= 0) {
             if (dup2(log_fd, STDOUT_FILENO) < 0) {
                 close(log_fd);
@@ -439,13 +472,23 @@ static int service_spawn(service_ctx_t *ctx) {
         uid_t target_uid = getuid();
         gid_t target_gid = getgid();
 
+        struct passwd *pwd = NULL;
         if (ctx->user[0]) {
-            struct passwd *pwd = getpwnam(ctx->user);
+            pwd = getpwnam(ctx->user);
             if (pwd) {
                 target_uid = pwd->pw_uid;
                 target_gid = pwd->pw_gid;
             } else if (is_number(ctx->user)) {
-                target_uid = (uid_t)atoi(ctx->user);
+                errno = 0;
+                unsigned long value = strtoul(ctx->user, NULL, 10);
+                target_uid = (uid_t)value;
+                if (errno == ERANGE || (unsigned long)target_uid != value) {
+                    LOG_ERROR("Service: invalid numeric user '%s'", ctx->user);
+                    _exit(127);
+                }
+            } else {
+                LOG_ERROR("Service: unknown user '%s'", ctx->user);
+                _exit(127);
             }
         }
 
@@ -454,25 +497,36 @@ static int service_spawn(service_ctx_t *ctx) {
             if (grp) {
                 target_gid = grp->gr_gid;
             } else if (is_number(ctx->group)) {
-                target_gid = (gid_t)atoi(ctx->group);
+                errno = 0;
+                unsigned long value = strtoul(ctx->group, NULL, 10);
+                target_gid = (gid_t)value;
+                if (errno == ERANGE || (unsigned long)target_gid != value) {
+                    LOG_ERROR("Service: invalid numeric group '%s'", ctx->group);
+                    _exit(127);
+                }
+            } else {
+                LOG_ERROR("Service: unknown group '%s'", ctx->group);
+                _exit(127);
             }
         }
 
-        if (getuid() == 0) {
-            if (ctx->user[0] && getpwnam(ctx->user)) {
-                initgroups(ctx->user, target_gid);
-            }
-            if (target_gid > 0) {
-                if (setgid(target_gid) != 0) {
-                    LOG_ERROR("Service: setgid failed: %s", strerror(errno));
+        if (geteuid() == 0) {
+            if (pwd) {
+                if (initgroups(pwd->pw_name, target_gid) != 0) {
+                    LOG_ERROR("Service: initgroups failed: %s", strerror(errno));
                     _exit(127);
                 }
+            } else if (setgroups(0, NULL) != 0) {
+                LOG_ERROR("Service: setgroups failed: %s", strerror(errno));
+                _exit(127);
             }
-            if (target_uid > 0) {
-                if (setuid(target_uid) != 0) {
-                    LOG_ERROR("Service: setuid failed: %s", strerror(errno));
-                    _exit(127);
-                }
+            if (setgid(target_gid) != 0) {
+                LOG_ERROR("Service: setgid failed: %s", strerror(errno));
+                _exit(127);
+            }
+            if (setuid(target_uid) != 0) {
+                LOG_ERROR("Service: setuid failed: %s", strerror(errno));
+                _exit(127);
             }
         }
 
@@ -498,9 +552,12 @@ static int service_spawn(service_ctx_t *ctx) {
     ctx->start_time = time(NULL);
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
 
-    FILE *pfp = fopen(pid_path, "w");
-    int pid_file_ok = pfp && fprintf(pfp, "%d\n", pid) >= 0;
-    if (pfp && fclose(pfp) != 0) pid_file_ok = 0;
+    int pid_fd = open_regular_file(pid_path, O_WRONLY | O_CREAT, 0644);
+    int pid_file_ok = pid_fd >= 0;
+    if (pid_file_ok && ftruncate(pid_fd, 0) != 0) pid_file_ok = 0;
+    if (pid_file_ok && dprintf(pid_fd, "%d\n", pid) < 0) pid_file_ok = 0;
+    if (pid_file_ok && fsync(pid_fd) != 0) pid_file_ok = 0;
+    if (pid_fd >= 0 && close(pid_fd) != 0) pid_file_ok = 0;
     if (!pid_file_ok) {
         LOG_ERROR("Service: failed to write sing-box PID file %s", pid_path);
         kill(pid, SIGKILL);
@@ -845,23 +902,36 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
 
     /* Locate the bundled sing-box binary. */
     char candidate[PATH_MAX];
-    snprintf(candidate, sizeof(candidate), "%s/bin/%s", base_dir, PROXY_BIN_NAME);
-    if (access(candidate, X_OK) == 0) {
-        snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s", candidate);
-    } else {
-        snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s/bin/%s", base_dir, PROXY_BIN_NAME);
+    if (format_path(candidate, sizeof(candidate), "%s/bin/%s",
+                    base_dir, PROXY_BIN_NAME) != 0) {
+        LOG_ERROR("Service: sing-box binary path is too long");
+        return -1;
     }
+    snprintf(ctx->bin_path, sizeof(ctx->bin_path), "%s", candidate);
 
     /* sing-box configuration lives beside the binary's working directory. */
-    snprintf(ctx->conf_path, sizeof(ctx->conf_path), "%s/config.json", base_dir);
+    if (format_path(ctx->conf_path, sizeof(ctx->conf_path), "%s/config.json", base_dir) != 0) {
+        LOG_ERROR("Service: sing-box configuration path is too long");
+        return -1;
+    }
 
     /* Logs stay in sing-box's working directory; ATPd runtime files stay in run/. */
-    snprintf(ctx->log_path, sizeof(ctx->log_path), "%s/sing-box.log", base_dir);
+    if (format_path(ctx->log_path, sizeof(ctx->log_path), "%s/sing-box.log", base_dir) != 0) {
+        LOG_ERROR("Service: sing-box log path is too long");
+        return -1;
+    }
     const char *run_dir = cfg->core.run_dir[0] ? cfg->core.run_dir : ATP_RUN_DIR;
     if (run_dir[0] == '/') {
-        snprintf(ctx->pid_path, sizeof(ctx->pid_path), "%s/sing-box.pid", run_dir);
+        if (format_path(ctx->pid_path, sizeof(ctx->pid_path), "%s/sing-box.pid", run_dir) != 0) {
+            LOG_ERROR("Service: sing-box PID path is too long");
+            return -1;
+        }
     } else {
-        snprintf(ctx->pid_path, sizeof(ctx->pid_path), "%s/%s/sing-box.pid", base_dir, run_dir);
+        if (format_path(ctx->pid_path, sizeof(ctx->pid_path), "%s/%s/sing-box.pid",
+                        base_dir, run_dir) != 0) {
+            LOG_ERROR("Service: sing-box PID path is too long");
+            return -1;
+        }
     }
     snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core.core_user);
     snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core.core_group);

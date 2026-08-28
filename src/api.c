@@ -112,24 +112,30 @@ void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata)
     }
 
     if (state == VPN_STATE_IDLE) {
-        const char *restore_mode = ctx->default_mode[0] ? ctx->default_mode : fallback_mode;
-        if (!restore_mode[0] || strcmp(status.current_mode, restore_mode) == 0) {
+        if (!ctx->default_mode[0]) {
             return;
         }
+        const char *restore_mode = ctx->default_mode;
         if (!is_clash_mode_supported(&status, restore_mode)) {
-            LOG_WARN("Native API: Restore Clash mode '%s' is not present in sing-box mode list", restore_mode);
-            return;
+            if (!is_clash_mode_supported(&status, fallback_mode)) {
+                LOG_WARN("Native API: neither saved Clash mode '%s' nor fallback '%s' is available",
+                         restore_mode, fallback_mode);
+                return;
+            }
+            restore_mode = fallback_mode;
         }
-        if (api_set_mode_async(ctx, restore_mode, NULL, NULL) != 0) {
+        if (strcmp(status.current_mode, restore_mode) != 0 &&
+            api_set_mode_async(ctx, restore_mode, NULL, NULL) != 0) {
             LOG_WARN("Native API: failed to restore Clash mode to %s", restore_mode);
             return;
         }
         LOG_INFO("Native API: VPN state IDLE restored Clash mode %s", restore_mode);
+        ctx->default_mode[0] = '\0';
         return;
     }
 
     /* state == VPN_STATE_READY */
-    if (!ctx->default_mode[0] && strcmp(status.current_mode, target_mode) != 0) {
+    if (!ctx->default_mode[0]) {
         snprintf(ctx->default_mode, sizeof(ctx->default_mode), "%s", status.current_mode);
     }
 

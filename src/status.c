@@ -270,13 +270,9 @@ static void status_show_ebpf(void) {
         ui_table_subrow("├─", "Capabilities", "None");
     }
 
-    if (tel.map_direct) {
-        char map_str[64];
-        snprintf(map_str, sizeof(map_str), "%lu pkts / %lu B", (unsigned long)tel.total_packets, (unsigned long)tel.total_bytes);
-        ui_table_subrow_color("└─", "BPF Map Stats", map_str, COLOR_CYAN);
-    } else {
-        ui_table_subrow("└─", "BPF Telemetry", "Direct Kernel Sensing");
-    }
+    char fd_str[64];
+    snprintf(fd_str, sizeof(fd_str), "%lu sing-box FDs", (unsigned long)tel.active_conns);
+    ui_table_subrow("└─", "Runtime Signal", fd_str);
 
     ui_table_end();
 }
@@ -566,7 +562,7 @@ static void status_show_engine_v2(void) {
                 emoji = "!";
                 break;
             default:
-                stage = "READY (Pure eBPF Active)";
+                stage = "READY (Supervisor Active)";
                 color = COLOR_GREEN;
                 emoji = "⚡";
                 break;

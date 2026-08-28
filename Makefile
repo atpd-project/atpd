@@ -37,17 +37,32 @@ endif
 LIBS = -lpthread
 
 LDFLAGS = -flto
-LDFLAGS += -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
+LDFLAGS += -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-z,relro,-z,now
 
 SRC = $(wildcard src/*.c)
 
 OBJDIR = build/obj
 OBJ = $(SRC:%.c=$(OBJDIR)/%.o)
 TARGET = build/bin/atpd
+VPN_MODE_TEST = build/tests/test_api_vpn_mode
+LOGGER_SAFETY_TEST = build/tests/test_logger_file_safety
 
-.PHONY: all clean distclean install uninstall
+.PHONY: all test clean distclean install uninstall
 
 all: $(TARGET)
+
+test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST)
+	$(VPN_MODE_TEST)
+	$(LOGGER_SAFETY_TEST)
+	sh tests/test_config_validation.sh $(TARGET)
+
+$(VPN_MODE_TEST): tests/test_api_vpn_mode.c src/api.c
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
+
+$(LOGGER_SAFETY_TEST): tests/test_logger_file_safety.c src/logger.c
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)
@@ -60,7 +75,6 @@ uninstall:
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
-	@strip -s --strip-all --remove-section=.comment --remove-section=.note* --remove-section=.ARM.exidx* --remove-section=.eh_frame* $@ 2>/dev/null || true
 	@echo "  LD (Native Lean) $@"
 
 $(OBJDIR)/%.o: %.c

@@ -143,6 +143,9 @@ wait_for_api() {
 
 # --- PRE-CHECK: Validate sing-box config syntax ---
 log_info "Pre-check: Validating sing-box configuration syntax..."
+"${TEST_DIR}/bin/sing-box" check \
+    -c "${PROJECT_ROOT}/examples/config.json.example" -D "${TEST_DIR}"
+log_pass "Repository eBPF example accepted by sing-box."
 "${TEST_DIR}/bin/sing-box" check -c "${TEST_DIR}/config.json" -D "${TEST_DIR}"
 log_pass "sing-box configuration verified by official CLI check."
 

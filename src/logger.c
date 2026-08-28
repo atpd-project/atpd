@@ -115,15 +115,24 @@ static void log_open_file_unlocked(void) {
     if (!g_log_config.log_file[0]) return;
     if (g_log_fp) return;
 
-    g_log_fp = fopen(g_log_config.log_file, "a");
+    int fd = open(g_log_config.log_file,
+                  O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0640);
+    if (fd < 0) return;
+
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_nlink != 1) {
+        close(fd);
+        return;
+    }
+
+    g_log_fp = fdopen(fd, "a");
+    if (!g_log_fp) {
+        close(fd);
+        return;
+    }
     if (g_log_fp) {
         setvbuf(g_log_fp, NULL, _IOLBF, 0);
-        struct stat st;
-        if (fstat(fileno(g_log_fp), &st) == 0) {
-            g_current_log_size = (size_t)st.st_size;
-        } else {
-            g_current_log_size = 0;
-        }
+        g_current_log_size = (size_t)st.st_size;
     }
 }
 

@@ -1,83 +1,67 @@
-﻿{
-  log: {
-    level: info,
-    timestamp: true
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
   },
-  services: [
+  "services": [
     {
-      type: api,
-      tag: api-service,
-      listen: 127.0.0.1,
-      listen_port: 9080
+      "type": "api",
+      "tag": "api-service",
+      "listen": "127.0.0.1",
+      "listen_port": 9080
     }
   ],
-  experimental: {
-    # Enables the optional Clash-mode RPCs used for Google VPN handover.
-    # Add a route rule with clash_mode: Google VPN to make that mode valid.
-    clash_api: {}
+  "experimental": {
+    "clash_api": {}
   },
-  inbounds: [
+  "inbounds": [
     {
-      type: ebpf,
-      tag: ebpf-in,
-      mode: local,
-      network: [tcp, udp],
-      local: {
-        cgroup_path: /sys/fs/cgroup,
-        exclude_package: [
-          com.google.android.gms,
-          com.android.vending
-        ],
-        exclude_interface: [tun+, ipsec+]
-      }
+      "type": "ebpf",
+      "tag": "ebpf-in",
+      "cgroup_enabled": true,
+      "cgroup_path": "/sys/fs/cgroup",
+      "network": ["tcp", "udp"]
     }
   ],
-  outbounds: [
+  "outbounds": [
     {
-      type: selector,
-      tag: select,
-      outbounds: [
-        proxy,
-        direct
-      ],
-      default: proxy
+      "type": "selector",
+      "tag": "select",
+      "outbounds": ["direct"],
+      "default": "direct"
     },
     {
-      type: direct,
-      tag: direct
+      "type": "direct",
+      "tag": "direct"
     },
     {
-      type: block,
-      tag: block
-    },
-    {
-      type: dns,
-      tag: dns-out
+      "type": "block",
+      "tag": "block"
     }
   ],
-  route: {
-    rules: [
+  "route": {
+    "rules": [
       {
-        protocol: dns,
-        outbound: dns-out
+        "protocol": "dns",
+        "action": "hijack-dns"
       },
       {
-        ip_is_private: true,
-        outbound: direct
+        "ip_is_private": true,
+        "outbound": "direct"
       },
       {
-        clash_mode: Google VPN,
-        outbound: direct
+        "clash_mode": "Google VPN",
+        "outbound": "direct"
       },
       {
-        clash_mode: Global,
-        outbound: select
+        "clash_mode": "Global",
+        "outbound": "select"
       },
       {
-        clash_mode: Direct,
-        outbound: direct
+        "clash_mode": "Direct",
+        "outbound": "direct"
       }
     ],
-    auto_detect_interface: true
+    "auto_detect_interface": true
   }
 }
