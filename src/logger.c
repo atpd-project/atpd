@@ -152,12 +152,14 @@ static void log_rotate_file_unlocked(const char *path) {
 }
 
 void log_init(void) {
-    char log_path[PATH_MAX];
+    atp_timezone_init();
+
+    char log_path[PATH_MAX + 32];
     char app_dir[PATH_MAX];
     get_app_dir(app_dir, sizeof(app_dir));
     snprintf(log_path, sizeof(log_path), "%s/%s", app_dir, ATP_LOG_FILE);
 
-    char run_dir[PATH_MAX];
+    char run_dir[PATH_MAX + 32];
     snprintf(run_dir, sizeof(run_dir), "%s/run", app_dir);
     mkdir_recursive(run_dir, 0755);
 

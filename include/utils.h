@@ -40,4 +40,7 @@ int kill_process(pid_t pid, int signal);
 int kill_all_by_name(const char *name, int signal);
 int get_app_dir(char *buf, size_t size);
 int check_ip6tables_available(void);
+int atp_timezone_init(void);
+int atp_timezone_get_name(char *buf, size_t size);
+long atp_timezone_get_offset_sec(void);
 #endif

@@ -239,6 +239,7 @@ static void on_idle(reactor_t *r, void *userdata) {
     if (g_reload) {
         g_reload = 0;
         LOG_INFO("Processing config reload...");
+        atp_timezone_init();
         if (config_reload(&g_config) != ATP_OK) {
             LOG_ERROR("Config reload failed");
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
@@ -675,6 +676,7 @@ static int do_ebpf_status(atp_options_t *opts) {
 }
 
 int main(int argc, char *argv[]) {
+    atp_timezone_init();
     atp_options_t opts = {0};
 
     if (parse_arguments(argc, argv, &opts) != 0) {
