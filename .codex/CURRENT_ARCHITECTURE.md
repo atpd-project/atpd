@@ -27,6 +27,7 @@
 - Step 03: Build hardening is controlled by Makefile flags; core `atp.h` no longer provides `cfg_*` compatibility aliases or Fortify policy.
 - Step 04: Configuration is a plain desired-state value; runtime readiness, VPN observation, CLI state, and synchronization are owned outside `atp_config_t`.
 - Step 05: Configuration parsing uses one strict typed schema; unknown, malformed, duplicate, invalid-type, and truncating inputs are rejected before candidate acceptance.
+- Step 06: Reload validates and merges a stack candidate before commit; active config/runtime are retained on failure and reload generation advances only after successful apply.
 
 ## Update rule
 
