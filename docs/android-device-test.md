@@ -48,15 +48,14 @@ chmod 0755 /data/adb/service.d/atpd_service.sh
 
 ```sh
 su -c '/data/adb/service.d/atpd_service.sh check'
-su -c '/data/adb/atp/atpd -c /data/adb/atp/atp.conf ebpf probe'
 su -c '/data/adb/atp/bin/sing-box tools ebpf status --mode local --cgroup /sys/fs/cgroup'
 ```
 
 通过标准：
 
 - 两个二进制都能运行，sing-box 版本输出包含 `with_ebpf`。
-- ATPd 配置检查成功，`ebpf probe` 输出 `supported=1`。
-- sing-box 的能力探针成功；它是实际 eBPF 数据路径的权威结果。
+- ATPd 配置检查成功。
+- sing-box 的能力探针成功；它是实际 eBPF 数据路径的唯一权威结果。
 
 ## 阶段二：ATPd 核心功能
 
@@ -68,7 +67,7 @@ su -c '/data/adb/service.d/atpd_service.sh status'
 su -c 'cat /data/adb/atp/run/atpd.pid /data/adb/atp/run/sing-box.pid'
 ```
 
-通过标准：两个 PID 均存活；状态包含 sing-box 版本、Native API、正整数 Goroutines、Clash Mode 和 eBPF capability；`run/atpd.sock` 存在。
+通过标准：两个 PID 均存活；状态包含 sing-box 版本、Native API、正整数 Goroutines 和 Clash Mode；`run/atpd.sock` 存在。
 
 随后用浏览器或 Termux 产生一次 TCP 和一次 DNS/UDP 流量。只确认网络仍可用、sing-box 日志显示流量进入 `ebpf-in`，不评价人工提供的节点速度或分流规则。
 
@@ -112,7 +111,7 @@ su -c 'kill -9 $(cat /data/adb/atp/run/sing-box.pid)'
 
 在 Wi-Fi 与移动数据间切换 10 次，每次间隔至少 3 秒。
 
-通过标准：ATPd PID 保持不变；sing-box 不进入持续重启；状态查询始终能在 3 秒内返回；日志没有 circuit breaker 永久打开或重复 eBPF attach 错误。
+通过标准：ATPd PID 保持不变；sing-box 不进入持续重启；状态查询始终能在 3 秒内返回；日志没有 circuit breaker 永久打开或 sing-box 重复 eBPF attach 错误。
 
 ## 阶段三：开机与收尾
 
@@ -149,4 +148,4 @@ su -c 'dmesg | tail -n 300' > dmesg-tail.txt
 
 最终通过条件是 T01–T09 全部通过，连续运行 30 分钟无异常重启，ATPd 的 PID、FD 数和 RSS 无持续增长。代理节点速度、分流命中率和规则内容不作为 ATPd 验收结论。
 
-常见失败应先按边界归因：eBPF 探针的 `operation not permitted` 指向 root/SELinux/内核能力；只有 atpd PID 而无 sing-box PID 时查看 `sing-box.log`；PID 正常但没有 Native API/Goroutines 时核对 API 地址、端口和 secret。不要通过全局 permissive 或清空防火墙来掩盖失败。
+常见失败应先按边界归因：sing-box eBPF 探针的 `operation not permitted` 指向 root/SELinux/内核能力；只有 atpd PID 而无 sing-box PID 时查看 `sing-box.log`；PID 正常但没有 Native API/Goroutines 时核对 API 地址、端口和 secret。不要通过全局 permissive 或清空防火墙来掩盖失败。

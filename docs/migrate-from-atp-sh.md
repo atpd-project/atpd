@@ -79,7 +79,6 @@ adb shell su -c 'chmod 0755 /data/adb/atp/atpd /data/adb/atp/bin/sing-box /data/
 
 ```sh
 adb shell su -c '/data/adb/service.d/atpd_service.sh check'
-adb shell su -c '/data/adb/atp/atpd -c /data/adb/atp/atp.conf ebpf probe'
 adb shell su -c '/data/adb/atp/bin/sing-box tools ebpf status --mode local --cgroup /sys/fs/cgroup'
 adb shell su -c '/data/adb/service.d/atpd_service.sh start'
 adb shell su -c '/data/adb/service.d/atpd_service.sh status'

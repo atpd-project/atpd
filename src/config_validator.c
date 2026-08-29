@@ -2,7 +2,7 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * Configuration validator implementation - Pure eBPF Edition
+ * Configuration validator implementation
  */
 
 #include "config_validator.h"

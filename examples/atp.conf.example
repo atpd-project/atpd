@@ -1,5 +1,5 @@
 # =============================================================================
-# ATP (Advanced Transparent Proxy) Configuration File - Pure eBPF Edition
+# ATP (Advanced Transparent Proxy) Configuration File
 # Location: <MODULE_DIR>/atp.conf (Auto-detected from /proc/self/exe parent directory)
 # =============================================================================
 

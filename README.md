@@ -1,6 +1,6 @@
-# ATP -- Advanced Transparent Proxy (Pure eBPF Edition)
+# ATP -- Advanced Transparent Proxy
 
-Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android devices (GKI 5.10+, Pixel, Android 13+) and Linux systems, powered by **In-Kernel eBPF Socket Interception**, **sing-box Native API Integration**, **Fast-Path UDS IPC**, **Multi-VPN Tunnel Sensing** (WARP `tun0`, WireGuard, Tailscale, Google VPN `ipsec0`), and an asynchronous C11 Reactor architecture.
+Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android devices (GKI 5.10+, Pixel, Android 13+) and Linux systems, supervising sing-box's **In-Kernel eBPF Socket Interception**, **Native API Integration**, **Fast-Path UDS IPC**, **Multi-VPN Tunnel Sensing** (WARP `tun0`, WireGuard, Tailscale, Google VPN `ipsec0`), and an asynchronous C11 Reactor architecture.
 
 ---
 
@@ -19,7 +19,7 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 | **In-Kernel eBPF Interception** | Traffic captured directly in-kernel via sing-box eBPF inbound (`cgroup/connect4`, `cgroup/connect6`, `cgroup/sendmsg4`, `cgroup/recvmsg4`, TC `sched_cls`). |
 | **Native API & Runtime Telemetry** | Uses sing-box `services: [{"type": "api"}]` for Native API health and the `SubscribeStatus` gRPC-Web stream for live **Go Goroutines**. |
 | **Fast-Path UDS IPC (< 3ms, 160+ QPS)** | UNIX Domain Socket (`run/atpd.sock`) with in-memory dashboard streaming for near-instant CLI status queries. |
-| **eBPF Capability Diagnostics** | Probes required kernel map/program capabilities; runtime health comes from the supported sing-box Native API. |
+| **sing-box eBPF Ownership** | sing-box owns eBPF capability detection, program/map lifecycle, and the `ebpf-in` datapath; ATPd supervises the process and reads its Native API. |
 | **Multi-VPN Tunnel Sensing** | Real-time Netlink event sensing for secondary VPN tunnels: **Cloudflare WARP (`tun0` / `warp0`)**, **WireGuard (`wg0`)**, **Tailscale (`tailscale0`)**, and **Google VPN (`ipsec0` / `xfrm0`)**. |
 | **Ultra-Lean Resource Footprint** | Binary size stripped down to **< 160 KB**; runtime RSS memory baseline **~2.3 MB**; 0 background busy-polling loops. |
 | **Resilient Core Lifecycle** | Non-blocking async process supervisor with exponential backoff, circuit breaker, and health check. |
@@ -30,7 +30,7 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│                      ATPD (Pure eBPF)                       │
+│                    ATPD (Control Plane)                     │
 ├─────────────────────────────────────────────────────────────┤
 │  1. Core Supervisor & Reactor                               │
 │     • Single-threaded Epoll Reactor event loop              │
@@ -44,9 +44,9 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 │     • Auto-detects services: [type: api] in config.json     │
 │     • Reads SubscribeStatus runtime status from Native API   │
 │                                                             │
-│  4. Fast-Path UDS IPC & eBPF Diagnostics                    │
+│  4. Fast-Path UDS IPC & Supervision                         │
 │     • Microsecond in-memory dashboard streaming (UDS)       │
-│     • Kernel capability probes (map / program types)         │
+│     • sing-box lifecycle and Native API supervision          │
 └─────────────────────────────────────────────────────────────┘
                                ▲
                                │ Lifecycle & Supervision / API
@@ -87,7 +87,7 @@ ATPd derives its root working directory from its own binary path (`/proc/self/ex
 
 ```text
 /data/adb/atp/
-├── atpd                 ── ATP Daemon (C11 + Pure eBPF Reactor)
+├── atpd                 ── ATP Daemon (C11 control-plane Reactor)
 ├── atp.conf             ── ATP Framework Configuration (Optional)
 ├── bin/
 │   └── sing-box         ── Proxy Core Binary
@@ -143,11 +143,6 @@ chmod 755 /data/adb/atp/atpd /data/adb/atp/bin/sing-box
 # Validate configuration files
 /data/adb/atp/atpd check
 
-# Inspect in-kernel eBPF status and live BPF map bindings
-/data/adb/atp/atpd ebpf status
-
-# Non-invasive probe of kernel eBPF capabilities
-/data/adb/atp/atpd ebpf probe
 ```
 
 ### 3. Boot Service Setup (`service.d`)
@@ -170,7 +165,7 @@ manual acceptance testing. Existing `atp.sh` users should follow the
 ## 📊 Live Status Dashboard (`atpd status`)
 
 ```text
-=== ATP Status (Pure eBPF Edition) ===
+=== ATPD Status ===
 
 ================================= PROXY CORE =================================
   🚀  sing-box
@@ -193,13 +188,6 @@ manual acceptance testing. Existing `atp.sh` users should follow the
     API Engine  Native API (Port 9080)
     Clash Mode  Rule
 
-============================== PURE eBPF ENGINE ==============================
-    Engine Mode  Pure eBPF (Zero iptables)
-    Data Path       sing-box ebpf inbound
-    eBPF Kernel  AVAILABLE
-    Capabilities    cgroup_sock, tc, lpm_trie, lru_hash
-    Runtime Signal  <live sing-box file descriptor count>
-
 ============================= MONITORS & SENSING =============================
     Netlink Listener  ACTIVE (Link / Route)
     XFRM SA Listener  ACTIVE (IPsec Sensing)
@@ -207,11 +195,11 @@ manual acceptance testing. Existing `atp.sh` users should follow the
 
 ============================= VPN TUNNEL STATUS ==============================
   ℹ  STANDALONE / DIRECT
-    Secondary Tunnel  None (Direct eBPF)
+    Secondary Tunnel  None (sing-box datapath)
     Data Path       cgroup socket interception
 
 =========================== REACTOR ENGINE (v2.0) ============================
-  State Machine  ⚡  READY (Pure eBPF Active)
+  State Machine  ⚡  READY
     XFRM Sync  IDLE (Direct Routing)
 
 =================================== SYSTEM ===================================
@@ -265,7 +253,7 @@ VPN_TARGET_MODE="Google VPN"
 VPN_FALLBACK_MODE="Rule"
 ```
 
-### `config.json` (sing-box Native API, Runtime Telemetry & eBPF Config)
+### `config.json` (sing-box Native API, Runtime Telemetry & eBPF Inbound)
 
 ```json
 {

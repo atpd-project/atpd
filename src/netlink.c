@@ -10,7 +10,6 @@
 #include "logger.h"
 #include "utils.h"
 #include "atpd_context.h"
-#include "ebpf.h"
 
 #include <stdio.h>
 #include <stdlib.h>

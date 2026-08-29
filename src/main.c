@@ -2,7 +2,7 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * Main entry point - Pure eBPF Reactor Architecture
+ * Main entry point - ATPD control-plane Reactor architecture
  */
 
 #include "atp.h"
@@ -18,7 +18,6 @@
 #include "status.h"
 #include "ui.h"
 #include "cli.h"
-#include "ebpf.h"
 #include "cleanup.h"
 #include "reactor.h"
 #include "uds.h"
@@ -331,7 +330,7 @@ static void service_stop_sync(service_ctx_t *ctx) {
 }
 
 static void run_event_loop(void) {
-    LOG_INFO("Initializing Pure eBPF Reactor event loop...");
+    LOG_INFO("Initializing ATPD control-plane Reactor event loop...");
 
     g_reactor = reactor_create();
     if (!g_reactor) {
@@ -381,7 +380,7 @@ static void run_event_loop(void) {
 #if defined(__GLIBC__) && !defined(__ANDROID__)
     malloc_trim(0);
 #endif
-    LOG_INFO("Pure eBPF Reactor running, entering event loop");
+    LOG_INFO("ATPD control-plane Reactor running, entering event loop");
     reactor_run(g_reactor);
 
     LOG_INFO("Reactor exited, cleaning up...");
@@ -433,7 +432,7 @@ static int do_start(atp_options_t *opts) {
     g_svc = init_ctx.service;
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
 
-    LOG_INFO("Engine: Pure eBPF active (Zero iptables / sing-box native inbound)");
+    LOG_INFO("ATPD control plane active; sing-box owns the ebpf-in datapath");
 
     run_event_loop();
     ret = 0;
@@ -518,7 +517,7 @@ static int do_stop(atp_options_t *opts) {
 }
 
 static int do_restart(atp_options_t *opts) {
-    printf("Restarting atpd (Pure eBPF)...\n");
+    printf("Restarting atpd...\n");
     do_stop(opts);
     usleep(500000);
     return do_start(opts);
@@ -608,7 +607,7 @@ static int do_reload(atp_options_t *opts) {
 
 static int do_check(atp_options_t *opts) {
     (void)opts;
-    printf("Validating configuration for Pure eBPF...\n");
+    printf("Validating ATPD configuration...\n");
     if (config_validate_values(&g_config) == 0) {
         printf("Configuration is valid\n");
         return 0;
@@ -616,50 +615,6 @@ static int do_check(atp_options_t *opts) {
         printf("Configuration validation failed\n");
         return 1;
     }
-}
-
-static int do_ebpf_probe(atp_options_t *opts) {
-    (void)opts;
-    ebpf_probe_result_t res;
-    atp_result_t result = ebpf_probe_detailed(&res);
-    if (result != ATP_OK) {
-        fprintf(stderr, "eBPF probe failed: %s\n", atp_result_string(result));
-        return 1;
-    }
-    printf("kernel_release=%s\n", res.kernel_release);
-    printf("supported=%d\n", res.supported ? 1 : 0);
-    printf("cgroup_sock_addr=%d\n", res.has_cgroup_sock_addr ? 1 : 0);
-    printf("sched_cls=%d\n", res.has_sched_cls ? 1 : 0);
-    printf("lpm_trie=%d\n", res.has_lpm_trie ? 1 : 0);
-    printf("array=%d\n", res.has_array ? 1 : 0);
-    printf("hash=%d\n", res.has_hash ? 1 : 0);
-    printf("lru_hash=%d\n", res.has_lru_hash ? 1 : 0);
-    return res.supported ? 0 : 1;
-}
-
-static int do_ebpf_status(atp_options_t *opts) {
-    (void)opts;
-    char state[64] = {0};
-
-    ebpf_probe_result_t probe;
-    ebpf_probe_detailed(&probe);
-    ebpf_status(state, sizeof(state));
-
-    atp_ebpf_telemetry_t tel;
-    ebpf_get_telemetry(&tel);
-
-    printf("=== Pure eBPF Kernel & Subsystem Status ===\n");
-    printf("  Kernel Release:      %s\n", probe.kernel_release);
-    printf("  eBPF Engine State:   %s\n", state);
-    printf("  Data Path:           sing-box ebpf inbound (cgroup.bpf.c)\n");
-    printf("  Kernel Capabilities: cgroup_sock=%d, tc=%d, lpm_trie=%d, lru_hash=%d\n",
-           probe.has_cgroup_sock_addr ? 1 : 0, probe.has_sched_cls ? 1 : 0,
-           probe.has_lpm_trie ? 1 : 0, probe.has_lru_hash ? 1 : 0);
-
-    printf("  Runtime Inspection:  Native API and capability probes\n");
-    printf("  Process File Descriptors: %lu\n", (unsigned long)tel.active_conns);
-
-    return ATP_OK;
 }
 
 int main(int argc, char *argv[]) {
@@ -712,10 +667,6 @@ int main(int argc, char *argv[]) {
         case CMD_HELP:
             print_usage(argv[0]);
             return 0;
-        case CMD_EBPF_PROBE:
-            return do_ebpf_probe(&opts);
-        case CMD_EBPF_STATUS:
-            return do_ebpf_status(&opts);
         default:
             print_usage(argv[0]);
             return 0;

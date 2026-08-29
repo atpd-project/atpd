@@ -37,17 +37,6 @@ const char* vpn_state_string(vpn_state_t state) {
     }
 }
 
-const char* ebpf_state_string(ebpf_state_t state) {
-    switch (state) {
-        case EBPF_STATE_UNINITIALIZED: return "UNINITIALIZED";
-        case EBPF_STATE_LOADING:       return "LOADING";
-        case EBPF_STATE_READY:         return "READY";
-        case EBPF_STATE_FAILED:        return "FAILED";
-        case EBPF_STATE_DISABLED:      return "DISABLED";
-        default:                       return "UNKNOWN";
-    }
-}
-
 const char* atpd_runtime_state_string(atpd_runtime_state_t state) {
     if (state >= ATPD_RUNTIME_STATE_UNINITIALIZED && state <= ATPD_RUNTIME_STATE_FAILED) {
         return runtime_state_names[state];
@@ -69,11 +58,6 @@ void atpd_context_init(void) {
     g_atpd_ctx.vpn_mode_callback = NULL;
     g_atpd_ctx.vpn_mode_userdata = NULL;
     
-    /* eBPF State */
-    g_atpd_ctx.ebpf_state = EBPF_STATE_UNINITIALIZED;
-    g_atpd_ctx.ebpf_enabled = false;
-    g_atpd_ctx.ebpf_probed = false;
-    
     /* Runtime State */
     g_atpd_ctx.runtime_state = ATPD_RUNTIME_STATE_UNINITIALIZED;
     g_atpd_ctx.start_time = time(NULL);
@@ -84,7 +68,6 @@ void atpd_context_init(void) {
     
     /* Components */
     g_atpd_ctx.components.netlink_ready = false;
-    g_atpd_ctx.components.ebpf_ready = false;
     g_atpd_ctx.components.service_ready = false;
     g_atpd_ctx.components.api_ready = false;
     g_atpd_ctx.components.reactor_ready = false;
@@ -102,9 +85,8 @@ void atpd_context_init(void) {
     g_atpd_ctx.last_error.last_error_msg[0] = '\0';
     g_atpd_ctx.last_error.last_error_time = 0;
     
-    LOG_INFO("ATPd Context: initialized (VPN=%s, eBPF=%s, Runtime=%s)",
+    LOG_INFO("ATPd Context: initialized (VPN=%s, Runtime=%s)",
              vpn_state_string(atomic_load(&g_atpd_ctx.vpn_state)),
-             ebpf_state_string(g_atpd_ctx.ebpf_state),
              atpd_runtime_state_string(g_atpd_ctx.runtime_state));
 }
 
@@ -151,17 +133,6 @@ void atpd_set_vpn_mode_callback(atpd_vpn_mode_callback_t callback, void *userdat
     g_atpd_ctx.vpn_mode_userdata = userdata;
 }
 
-void atpd_ebpf_state_transition(ebpf_state_t new_state) {
-    ebpf_state_t old_state = g_atpd_ctx.ebpf_state;
-
-    if (old_state == new_state) return;
-
-    LOG_INFO("EBPF_STATE: %s -> %s",
-             ebpf_state_string(old_state), ebpf_state_string(new_state));
-
-    g_atpd_ctx.ebpf_state = new_state;
-}
-
 /* === Runtime State Functions === */
 
 void atpd_runtime_state_transition(atpd_runtime_state_t new_state) {
@@ -205,8 +176,6 @@ uint64_t atpd_runtime_get_uptime(void) {
 void atpd_component_set_ready(const char *name, int ready) {
     if (strcmp(name, "netlink") == 0) {
         g_atpd_ctx.components.netlink_ready = ready;
-    } else if (strcmp(name, "ebpf") == 0) {
-        g_atpd_ctx.components.ebpf_ready = ready;
     } else if (strcmp(name, "service") == 0) {
         g_atpd_ctx.components.service_ready = ready;
     } else if (strcmp(name, "api") == 0) {
@@ -220,7 +189,6 @@ void atpd_component_set_ready(const char *name, int ready) {
 
 int atpd_component_is_ready(const char *name) {
     if (strcmp(name, "netlink") == 0) return g_atpd_ctx.components.netlink_ready;
-    if (strcmp(name, "ebpf") == 0) return g_atpd_ctx.components.ebpf_ready;
     if (strcmp(name, "service") == 0) return g_atpd_ctx.components.service_ready;
     if (strcmp(name, "api") == 0) return g_atpd_ctx.components.api_ready;
     if (strcmp(name, "reactor") == 0) return g_atpd_ctx.components.reactor_ready;

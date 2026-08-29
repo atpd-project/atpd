@@ -2,7 +2,7 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * Command line interface implementation - Pure eBPF Edition
+ * Command line interface implementation
  */
 
 #include "cli.h"
@@ -11,7 +11,6 @@
 #include "version.h"
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
 
 static const struct option long_options[] = {
     {"config",    required_argument, 0, 'c'},
@@ -23,47 +22,18 @@ static const struct option long_options[] = {
     {"force",     no_argument,       0, 'F'},
     {"test",      no_argument,       0, 't'},
     {"no-color",  no_argument,       0, 'n'},
-    {"ipv6",      required_argument, 0, '6'},
     {"help",      no_argument,       0, 'h'},
     {"version",   no_argument,       0, 'v'},
     {0, 0, 0, 0}
 };
 
-static const char *short_options = "c:p:fdqFtn6:hv";
-
-static int parse_ebpf_command(int argc, char *argv[], atp_options_t *opts) {
-    if (argc < 3) {
-        fprintf(stderr, "ebpf: missing subcommand\n");
-        fprintf(stderr, "Usage: atpd ebpf {probe|status}\n");
-        return -1;
-    }
-
-    const char *sub = argv[2];
-    if (strcmp(sub, "probe") == 0) {
-        opts->command = CMD_EBPF_PROBE;
-    } else if (strcmp(sub, "status") == 0) {
-        opts->command = CMD_EBPF_STATUS;
-    } else {
-        fprintf(stderr, "ebpf: unknown subcommand '%s'\n", sub);
-        fprintf(stderr, "Usage: atpd ebpf {probe|status}\n");
-        return -1;
-    }
-
-    for (int i = 3; i < argc; i++) {
-        if (strcmp(argv[i], "--ipv6") == 0 && i + 1 < argc) {
-            opts->ipv6 = atoi(argv[i + 1]);
-            i++;
-        }
-    }
-
-    return 0;
-}
+static const char *short_options = "c:p:fdqFtnhv";
 
 void print_usage(const char *progname) {
     const char *base = strrchr(progname, '/');
     base = base ? base + 1 : progname;
 
-    printf(ATP_NAME " %s (Pure eBPF Edition)\n\n", atp_get_full_version());
+    printf(ATP_NAME " %s\n\n", atp_get_full_version());
     printf("Usage: %s [options] command [subcommand] [args]\n\n", base);
     printf("Options:\n");
     printf("  -c, --config FILE     Specify configuration file\n");
@@ -75,27 +45,22 @@ void print_usage(const char *progname) {
     printf("  -F, --force           Skip confirmation for dangerous operations\n");
     printf("  -t, --test            Test configuration and exit\n");
     printf("  -n, --no-color        Disable colored output\n");
-    printf("  -6, --ipv6 1|0        Enable/disable IPv6 for eBPF probe\n");
     printf("  -h, --help            Show this help\n");
     printf("  -v, --version         Print version and exit\n");
     printf("\nCommands:\n");
-    printf("  start                 Start daemon (Pure eBPF mode)\n");
+    printf("  start                 Start daemon\n");
     printf("  stop                  Stop daemon\n");
     printf("  restart               Restart daemon\n");
     printf("  status                Show daemon, VPN tunnel, and traffic status\n");
     printf("  reload                Reload configuration without restart\n");
     printf("  check                 Validate configuration and exit\n");
     printf("  help                  Show this help message\n");
-    printf("\neBPF Diagnostic Commands:\n");
-    printf("  ebpf probe [--ipv6 1] Probe kernel eBPF support for sing-box\n");
-    printf("  ebpf status           Show eBPF kernel support and inbound status\n");
     printf("\nExamples:\n");
     printf("  %s status\n", base);
-    printf("  %s ebpf probe --ipv6 1\n", base);
 }
 
 void print_version(void) {
-    printf("atpd %s (Pure eBPF)\n", atp_get_full_version());
+    printf("atpd %s\n", atp_get_full_version());
 }
 
 void print_help(const char *progname) {
@@ -107,7 +72,6 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
     opts->command = CMD_NONE;
     opts->daemon = 1;
     opts->log_level = LOG_LEVEL_INFO;
-    opts->ipv6 = 1;
 
     int opt;
     int option_index = 0;
@@ -150,9 +114,6 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
             case 'n':
                 opts->no_color = 1;
                 break;
-            case '6':
-                opts->ipv6 = atoi(optarg);
-                break;
             case 'h':
                 opts->command = CMD_HELP;
                 return 0;
@@ -182,8 +143,6 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
             opts->command = CMD_VERSION;
         } else if (strcmp(cmd, "help") == 0) {
             opts->command = CMD_HELP;
-        } else if (strcmp(cmd, "ebpf") == 0) {
-            return parse_ebpf_command(argc - optind + 1, &argv[optind - 1], opts);
         } else {
             fprintf(stderr, "Unknown command: %s\n", cmd);
             return -1;
@@ -207,8 +166,6 @@ const char* command_to_string(atp_command_t cmd) {
         case CMD_CHECK: return "check";
         case CMD_VERSION: return "version";
         case CMD_HELP: return "help";
-        case CMD_EBPF_PROBE: return "ebpf probe";
-        case CMD_EBPF_STATUS: return "ebpf status";
         default: return "unknown";
     }
 }

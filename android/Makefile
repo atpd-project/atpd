@@ -10,8 +10,6 @@ LOCAL_SRC_FILES := \
     ../src/logger.c \
     ../src/config.c \
     ../src/netlink.c \
-    ../src/ebpf.c \
-    ../src/ebpf_common.c \
     ../src/reactor.c \
     ../src/service.c \
     ../src/session.c \

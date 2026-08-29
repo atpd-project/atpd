@@ -1,5 +1,5 @@
 # ATP - Advanced Transparent Proxy
-# Makefile for Android NDK / Linux build - Pure eBPF Edition (True Native Size-Optimized)
+# Makefile for Android NDK / Linux build (True Native Size-Optimized)
 
 PREFIX ?= /data/adb/atp
 BINDIR ?= $(PREFIX)/bin

@@ -2,7 +2,7 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * Configuration loader & runtime serializer - Pure eBPF Edition
+ * Configuration loader & runtime serializer
  */
 
 #include "config.h"

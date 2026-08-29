@@ -2,7 +2,7 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * Initialization phases - Pure eBPF Architecture
+ * Initialization phases - ATPD control plane
  */
 
 #include "config.h"
@@ -10,7 +10,6 @@
 #include "atpd_global.h"
 #include "logger.h"
 #include "utils.h"
-#include "ebpf.h"
 #include "netlink.h"
 #include "service.h"
 #include "api.h"
@@ -24,7 +23,6 @@
 static init_phase_config_t init_phases[] = {
     {INIT_PHASE_CONFIG, "config", atpd_init_phase_config, 1, 0},
     {INIT_PHASE_LOGGER, "logger", atpd_init_phase_logger, 1, 0},
-    {INIT_PHASE_EBPF, "ebpf", atpd_init_phase_ebpf, 1, 0},
     {INIT_PHASE_NETLINK, "netlink", atpd_init_phase_netlink, 1, 0},
     {INIT_PHASE_SERVICE, "service", atpd_init_phase_service, 1, 0},
     {INIT_PHASE_API, "api", atpd_init_phase_api, 0, 1},
@@ -93,25 +91,6 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
     return 0;
 }
 
-int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
-    LOG_INFO("Pure eBPF Engine: probing kernel eBPF capabilities...");
-    atpd_ebpf_state_transition(EBPF_STATE_LOADING);
-    
-    int ret = ebpf_probe();
-    if (ret == ATP_OK) {
-        ctx->ctx->ebpf_enabled = true;
-        ctx->ctx->ebpf_probed = true;
-        atpd_ebpf_state_transition(EBPF_STATE_READY);
-        LOG_INFO("Pure eBPF Engine: active (Zero-iptables / cgroup kernel interception)");
-        return 0;
-    } else {
-        ctx->ctx->ebpf_enabled = false;
-        atpd_ebpf_state_transition(EBPF_STATE_FAILED);
-        LOG_WARN("Pure eBPF Engine: kernel eBPF probe returned warnings or unsupported features");
-        return 0;
-    }
-}
-
 int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing Netlink & Multi-VPN tunnel listener...");
     
@@ -161,7 +140,7 @@ int atpd_init_phase_api(atpd_init_context_t *ctx) {
 
 int atpd_init_phase_ready(atpd_init_context_t *ctx) {
     (void)ctx;
-    LOG_INFO("Pure eBPF Environment ready - all components initialized");
+    LOG_INFO("ATPD control plane ready - all components initialized");
     return 0;
 }
 
@@ -206,8 +185,6 @@ int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
                     free(ctx->service);
                     ctx->service = NULL;
                 }
-                break;
-            case INIT_PHASE_EBPF:
                 break;
             case INIT_PHASE_NETLINK:
                 netlink_cleanup();

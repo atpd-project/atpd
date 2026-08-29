@@ -2,7 +2,7 @@
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * Status display - Pure eBPF Edition
+ * Status display
  */
 
 #include "atpd_global.h"
@@ -14,8 +14,6 @@
 #include "api.h"
 #include "ui.h"
 #include "atpd_context.h"
-#include "ebpf.h"
-#include "ebpf_common.h"
 #include "version.h"
 #include <stdio.h>
 #include <string.h>
@@ -244,40 +242,6 @@ static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_confi
     ui_table_end();
 }
 
-static void status_show_ebpf(void) {
-    ebpf_probe_result_t probe;
-    memset(&probe, 0, sizeof(probe));
-
-    ui_table_begin();
-    ui_table_header("PURE eBPF ENGINE");
-
-    ui_table_subrow_color("├─", "Engine Mode", "Pure eBPF (Zero iptables)", COLOR_GREEN);
-    ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
-
-    atp_ebpf_telemetry_t tel;
-    ebpf_get_telemetry(&tel);
-
-    if (ebpf_probe_detailed(&probe) == 0 && probe.supported) {
-        ui_table_subrow_color("├─", "eBPF Kernel", "AVAILABLE", COLOR_GREEN);
-        char feat[128] = {0};
-        int pos = 0;
-        if (probe.has_cgroup_sock_addr) pos += snprintf(feat + pos, sizeof(feat) - pos, "cgroup_sock%s", (probe.has_sched_cls || probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
-        if (probe.has_sched_cls) pos += snprintf(feat + pos, sizeof(feat) - pos, "tc%s", (probe.has_lpm_trie || probe.has_lru_hash) ? ", " : "");
-        if (probe.has_lpm_trie) pos += snprintf(feat + pos, sizeof(feat) - pos, "lpm_trie%s", probe.has_lru_hash ? ", " : "");
-        if (probe.has_lru_hash) pos += snprintf(feat + pos, sizeof(feat) - pos, "lru_hash");
-        ui_table_subrow("├─", "Capabilities", feat[0] ? feat : "Basic");
-    } else {
-        ui_table_subrow_color("├─", "eBPF Kernel", "UNSUPPORTED", COLOR_RED);
-        ui_table_subrow("├─", "Capabilities", "None");
-    }
-
-    char fd_str[64];
-    snprintf(fd_str, sizeof(fd_str), "%lu sing-box FDs", (unsigned long)tel.active_conns);
-    ui_table_subrow("└─", "Runtime Signal", fd_str);
-
-    ui_table_end();
-}
-
 static int check_fcm_status(char *status_buf, size_t size, int *is_connected) {
     *is_connected = 0;
 
@@ -460,7 +424,7 @@ static void status_show_vpn(void) {
 
     if (!has_vpn) {
         ui_table_row_color(ui_emoji_info(), "STANDALONE / DIRECT", COLOR_GREEN);
-        ui_table_subrow("├─", "Secondary Tunnel", "None (Direct eBPF)");
+        ui_table_subrow("├─", "Secondary Tunnel", "None (sing-box datapath)");
         ui_table_subrow("└─", "Data Path", "cgroup socket interception");
         ui_table_end();
         return;
@@ -643,11 +607,11 @@ static void status_show_system(void) {
 
 void status_show_config(atp_config_t *cfg) {
     (void)cfg;
-    ui_title("ATP Pure eBPF Configuration");
+    ui_title("ATPD Configuration");
 
     ui_table_begin();
     ui_table_header("CONFIGURATION");
-    ui_table_subrow("├─", "Engine", "Pure eBPF (Zero iptables)");
+    ui_table_subrow("├─", "Engine", "ATPD control plane");
     ui_table_subrow("├─", "Data Path", "sing-box ebpf inbound");
     ui_table_subrow("└─", "Supervisor", "Active (Circuit Breaker)");
     ui_table_end();
@@ -655,15 +619,12 @@ void status_show_config(atp_config_t *cfg) {
 
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
     (void)cfg;
-    ui_title("ATP Status (Pure eBPF Edition)");
+    ui_title("ATPD Status");
 
     status_show_proxy_core(svc, api);
     ui_blank();
 
     status_show_proxy_mode(api, svc, cfg);
-    ui_blank();
-
-    status_show_ebpf();
     ui_blank();
 
     status_show_monitors();
