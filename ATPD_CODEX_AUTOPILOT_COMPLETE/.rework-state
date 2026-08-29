@@ -1,0 +1,6 @@
+# ATPD Codex automatic refactor state
+current_step=1
+last_completed_step=0
+last_commit=
+status=ready
+blocked_reason=
