@@ -70,14 +70,9 @@ atp_result_t ebpf_probe(void) {
     return res.supported ? ATP_OK : ATP_ERR_NOTSUP;
 }
 
-atp_result_t ebpf_status(char *state, size_t size, atp_config_t *cfg) {
+atp_result_t ebpf_status(char *state, size_t size) {
     if (!state || size == 0) {
         return ATP_ERR_INVAL;
-    }
-
-    if (!cfg || !cfg->ebpf.enabled) {
-        snprintf(state, size, "%s", "disabled");
-        return ATP_OK;
     }
 
     ebpf_probe_result_t res;

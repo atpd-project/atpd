@@ -60,7 +60,6 @@
 #define TRAFFIC_STATE_FILE  ATP_RUN_DIR "/traffic.state"
 #define PROXY_BIN_PATH      ATP_DEFAULT_DIR "/bin/sing-box"
 
-#define DEFAULT_RESTART_DELAY 2
 #define DEFAULT_API_PORT    9080
 #define DEFAULT_API_HOST    "127.0.0.1"
 

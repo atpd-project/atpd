@@ -36,7 +36,6 @@ static const char *VALID_CONFIG_KEYS[] = {
     "API_HOST",
     "UI_EMOJI_ENABLED",
     "CORE_USER_GROUP",
-    "ENABLE_EBPF",
     "SERVICE_START_TIMEOUT",
     "SERVICE_STOP_TIMEOUT",
     "SERVICE_GRACE_PERIOD",
@@ -137,8 +136,8 @@ int config_validate_values(atp_config_t *cfg) {
     errors += validate_port(cfg->api.port, "API_PORT") ? 1 : 0;
     errors += validate_service_params(cfg);
 
-    if (cfg->core.restart_delay < 0 || cfg->core.restart_delay > 3600) {
-        LOG_ERROR("RESTART_DELAY must be between 0-3600 seconds, got %d", cfg->core.restart_delay);
+    if (cfg->service.restart_delay_sec < 0 || cfg->service.restart_delay_sec > 3600) {
+        LOG_ERROR("RESTART_DELAY must be between 0-3600 seconds, got %d", cfg->service.restart_delay_sec);
         errors++;
     }
 

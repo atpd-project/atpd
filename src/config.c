@@ -9,8 +9,6 @@
 #include "logger.h"
 #include "utils.h"
 #include "atp.h"
-#include "atpd_context.h"
-#include "ebpf.h"
 #include "config_validator.h"
 #include <yyjson.h>
 #include <pwd.h>
@@ -20,39 +18,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 #include <limits.h>
 #include <errno.h>
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
-
-static config_snapshot_t g_snapshot = {
-    .has_backup = 0,
-    .backup_path = "",
-    .version = 0,
-    .load_time = 0
-};
-
-static pthread_mutex_t g_snapshot_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define DEFAULT_SERVICE_RESTART_DELAY_SEC 2
 
 static void config_sync_from_singbox_json(atp_config_t *cfg);
-
-static void config_copy_content(atp_config_t *dst, const atp_config_t *src) {
-    dst->core = src->core;
-    dst->interface = src->interface;
-    dst->ebpf = src->ebpf;
-    dst->service = src->service;
-    dst->api = src->api;
-}
-
-static void config_snapshot_content(atp_config_t *dst, const atp_config_t *src) {
-    memset(dst, 0, sizeof(*dst));
-    dst->core = src->core;
-    dst->interface = src->interface;
-    dst->ebpf = src->ebpf;
-    dst->service = src->service;
-    dst->api = src->api;
-}
 
 static int config_parse_int(const char *str, int *out) {
     if (!str || !out) return -1;
@@ -80,32 +52,6 @@ static void config_apply_run_dir_defaults(atp_config_t *cfg) {
     }
 }
 
-static __attribute__((unused)) uint64_t snapshot_update(const char *backup_path, int has_backup) {
-    uint64_t version = 0;
-    pthread_mutex_lock(&g_snapshot_mutex);
-    g_snapshot.has_backup = has_backup;
-    if (backup_path) {
-        snprintf(g_snapshot.backup_path, sizeof(g_snapshot.backup_path), "%s", backup_path);
-    } else {
-        g_snapshot.backup_path[0] = '\0';
-    }
-    if (has_backup) {
-        g_snapshot.version++;
-        g_snapshot.load_time = time(NULL);
-        version = g_snapshot.version;
-    }
-    pthread_mutex_unlock(&g_snapshot_mutex);
-    return version;
-}
-
-static atp_result_t snapshot_get(config_snapshot_t *out) {
-    if (!out) return ATP_ERR_INVAL;
-    pthread_mutex_lock(&g_snapshot_mutex);
-    *out = g_snapshot;
-    pthread_mutex_unlock(&g_snapshot_mutex);
-    return ATP_OK;
-}
-
 static atp_result_t config_prepare(const char *path, atp_config_t *cfg) {
     atp_result_t ret = config_load_file(path, cfg);
     if (ret != ATP_OK) return ret;
@@ -115,15 +61,9 @@ static atp_result_t config_prepare(const char *path, atp_config_t *cfg) {
 void config_set_defaults(atp_config_t *cfg) {
     if (!cfg) return;
     memset(cfg, 0, sizeof(atp_config_t));
-    pthread_mutex_init(&cfg->mutex, NULL);
 
-    cfg->core.foreground = 0;
-    cfg->core.verbose = 0;
-    cfg->core.no_color = 0;
     cfg->core.ui_emoji_enabled = 1;
-    cfg->core.dry_run = 0;
     cfg->core.log_timestamp = 1;
-    cfg->core.restart_delay = DEFAULT_RESTART_DELAY;
     get_app_dir(cfg->core.data_dir, sizeof(cfg->core.data_dir));
     snprintf(cfg->core.run_dir, sizeof(cfg->core.run_dir), "%s", ATP_RUN_DIR);
     snprintf(cfg->core.pid_file, sizeof(cfg->core.pid_file), "%s", ATP_PID_FILE);
@@ -140,14 +80,11 @@ void config_set_defaults(atp_config_t *cfg) {
     }
 #endif
 
-    cfg->interface.current_vpn_iface[0] = '\0';
     cfg->interface.vpn_auto_mode = true;
     snprintf(cfg->interface.vpn_target_mode, sizeof(cfg->interface.vpn_target_mode), "Google VPN");
     snprintf(cfg->interface.vpn_fallback_mode, sizeof(cfg->interface.vpn_fallback_mode), "Rule");
 
-    cfg->ebpf.enabled = 1;
-    cfg->ebpf.ready = 1;
-
+    cfg->service.restart_delay_sec = DEFAULT_SERVICE_RESTART_DELAY_SEC;
     cfg->service.start_timeout_sec = SERVICE_DEFAULT_START_TIMEOUT_SEC;
     cfg->service.stop_timeout_sec = SERVICE_DEFAULT_STOP_TIMEOUT_SEC;
     cfg->service.grace_period_sec = SERVICE_DEFAULT_GRACE_PERIOD_SEC;
@@ -270,10 +207,9 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
 
     if (config_parse_int(v, &int_val) == 0) {
         if (strcmp(k, "LOG_TIMESTAMP") == 0) cfg->core.log_timestamp = int_val;
-        else if (strcmp(k, "RESTART_DELAY") == 0) cfg->core.restart_delay = int_val;
+        else if (strcmp(k, "RESTART_DELAY") == 0) cfg->service.restart_delay_sec = int_val;
         else if (strcmp(k, "API_PORT") == 0) cfg->api.port = int_val;
         else if (strcmp(k, "UI_EMOJI_ENABLED") == 0) cfg->core.ui_emoji_enabled = int_val;
-        else if (strcmp(k, "ENABLE_EBPF") == 0) cfg->ebpf.enabled = int_val;
         else if (strcmp(k, "SERVICE_START_TIMEOUT") == 0) cfg->service.start_timeout_sec = int_val;
         else if (strcmp(k, "SERVICE_STOP_TIMEOUT") == 0) cfg->service.stop_timeout_sec = int_val;
         else if (strcmp(k, "SERVICE_GRACE_PERIOD") == 0) cfg->service.grace_period_sec = int_val;
@@ -337,34 +273,14 @@ atp_result_t config_load(const char *path, atp_config_t *cfg) {
     atp_config_t tmp;
     config_set_defaults(&tmp);
 
-    int ret = config_prepare(path, &tmp);
+    atp_result_t ret = config_prepare(path, &tmp);
     if (ret != ATP_OK) {
-        pthread_mutex_destroy(&tmp.mutex);
         return ret;
     }
 
     config_sync_from_singbox_json(&tmp);
-
-    pthread_mutex_lock(&cfg->mutex);
-    config_copy_content(cfg, &tmp);
-    pthread_mutex_unlock(&cfg->mutex);
-
-    pthread_mutex_destroy(&tmp.mutex);
+    *cfg = tmp;
     LOG_INFO("Configuration loaded: %s", path);
-    return ATP_OK;
-}
-
-atp_result_t config_set_mode(atp_config_t *cfg, const char *mode) {
-    (void)cfg;
-    (void)mode;
-    return ATP_OK;
-}
-
-static atp_result_t config_apply_deltas(atp_config_t *cfg, const atp_config_t *old) {
-    (void)old;
-    if (cfg->ebpf.enabled) {
-        ebpf_probe();
-    }
     return ATP_OK;
 }
 
@@ -380,77 +296,15 @@ atp_result_t config_reload(atp_config_t *cfg) {
     atp_config_t new_config;
     config_set_defaults(&new_config);
 
-    int ret = config_prepare(cp, &new_config);
+    atp_result_t ret = config_prepare(cp, &new_config);
     if (ret != ATP_OK) {
-        pthread_mutex_destroy(&new_config.mutex);
         return ret;
     }
     config_sync_from_singbox_json(&new_config);
 
-    atp_config_t old_config;
-    memset(&old_config, 0, sizeof(old_config));
-
-    pthread_mutex_lock(&cfg->mutex);
-    config_snapshot_content(&old_config, cfg);
-    config_copy_content(cfg, &new_config);
-    pthread_mutex_unlock(&cfg->mutex);
-
-    ret = config_apply_deltas(cfg, &old_config);
-    pthread_mutex_destroy(&new_config.mutex);
+    *cfg = new_config;
 
     LOG_INFO("Configuration reloaded successfully");
-    return ret;
-}
-
-atp_result_t config_reload_atomic(atp_config_t *cfg) {
-    return config_reload(cfg);
-}
-
-atp_result_t config_rollback(atp_config_t *cfg) {
-    (void)cfg;
-    return ATP_OK;
-}
-
-atp_result_t config_get_snapshot(config_snapshot_t *out) {
-    return snapshot_get(out);
-}
-
-atp_result_t config_save_runtime(const char *path, atp_config_t *cfg) {
-    char tmp_path[SAFE_PATH_MAX];
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-
-    atp_config_t local;
-    memset(&local, 0, sizeof(local));
-
-    pthread_mutex_lock(&cfg->mutex);
-    config_copy_content(&local, cfg);
-    pthread_mutex_unlock(&cfg->mutex);
-
-    FILE *fp = fopen(tmp_path, "w");
-    if (!fp) {
-        return ATP_ERR_IO;
-    }
-
-    int ret = fprintf(fp, "# ATP Pure eBPF Runtime\nPROXY_MODE=4\nEBPF_ENABLED=%d\nEBPF_READY=%d\n",
-                      local.ebpf.enabled, local.ebpf.ready);
-
-    if (fflush(fp) != 0 || fsync(fileno(fp)) != 0) {
-        fclose(fp);
-        unlink(tmp_path);
-        return ATP_ERR_IO;
-    }
-
-    int fclose_ret = fclose(fp);
-    if (ret < 0 || fclose_ret != 0) {
-        unlink(tmp_path);
-        return ATP_ERR_IO;
-    }
-
-    if (rename(tmp_path, path) != 0) {
-        unlink(tmp_path);
-        return ATP_ERR_IO;
-    }
-
     return ATP_OK;
 }
 

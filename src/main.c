@@ -630,7 +630,7 @@ static int do_ebpf_status(atp_options_t *opts) {
 
     ebpf_probe_result_t probe;
     ebpf_probe_detailed(&probe);
-    ebpf_status(state, sizeof(state), &g_config);
+    ebpf_status(state, sizeof(state));
 
     atp_ebpf_telemetry_t tel;
     ebpf_get_telemetry(&tel);
@@ -677,9 +677,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Cannot read configuration: %s\n", cfg_path);
         return 1;
     }
-    g_config.core.foreground = opts.foreground;
-    g_config.core.verbose = opts.verbose;
-
     atpd_context_init();
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_INITIALIZING);
 

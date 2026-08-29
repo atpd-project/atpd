@@ -49,16 +49,18 @@ LOGGER_SAFETY_TEST = build/tests/test_logger_file_safety
 RESULT_TEST = build/tests/test_atp_result
 VERSION_HEADER = build/generated/version_build.h
 VERSION_TEST = build/tests/test_version
+CONFIG_VALUE_TEST = build/tests/test_config_value
 
 .PHONY: all test clean distclean install uninstall
 
 all: $(TARGET)
 
-test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST)
+test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST)
 	$(VPN_MODE_TEST)
 	$(LOGGER_SAFETY_TEST)
 	$(RESULT_TEST)
 	$(VERSION_TEST)
+	$(CONFIG_VALUE_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
 	sh tests/test_android_service.sh
 
@@ -77,6 +79,10 @@ $(RESULT_TEST): tests/test_atp_result.c
 $(VERSION_TEST): tests/test_version.c src/version.c $(VERSION_HEADER)
 	@mkdir -p $(dir $@)
 	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_version.c src/version.c
+
+$(CONFIG_VALUE_TEST): tests/test_config_value.c
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)

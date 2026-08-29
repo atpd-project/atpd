@@ -55,10 +55,6 @@ int atpd_init_phase_config(atpd_init_context_t *ctx) {
         return -1;
     }
 
-    /* Command-line options override both defaults and file configuration. */
-    ctx->config->core.foreground = ctx->opts->foreground;
-    ctx->config->core.verbose = ctx->opts->verbose;
-    
     atp_register_cleanup(ctx->config);
     
     return 0;
@@ -103,14 +99,12 @@ int atpd_init_phase_ebpf(atpd_init_context_t *ctx) {
     
     int ret = ebpf_probe();
     if (ret == ATP_OK) {
-        ctx->config->ebpf.ready = 1;
         ctx->ctx->ebpf_enabled = true;
         ctx->ctx->ebpf_probed = true;
         atpd_ebpf_state_transition(EBPF_STATE_READY);
         LOG_INFO("Pure eBPF Engine: active (Zero-iptables / cgroup kernel interception)");
         return 0;
     } else {
-        ctx->config->ebpf.ready = 0;
         ctx->ctx->ebpf_enabled = false;
         atpd_ebpf_state_transition(EBPF_STATE_FAILED);
         LOG_WARN("Pure eBPF Engine: kernel eBPF probe returned warnings or unsupported features");
@@ -214,7 +208,6 @@ int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
                 }
                 break;
             case INIT_PHASE_EBPF:
-                ctx->config->ebpf.ready = 0;
                 break;
             case INIT_PHASE_NETLINK:
                 netlink_cleanup();
