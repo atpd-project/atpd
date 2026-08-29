@@ -37,6 +37,11 @@ expect_invalid
 printf '%s\n' 'API_HOST="127.0.0.1' > "$TEST_TMP/invalid.conf"
 expect_invalid
 
+mkdir "$TEST_TMP/data"
+printf '%s\n' "DATA_DIR=$TEST_TMP/data" > "$TEST_TMP/invalid.conf"
+printf '%s\n' '{"api":{"port":0}}' > "$TEST_TMP/data/config.json"
+expect_invalid
+
 if "$ATPD_BIN" -c "$TEST_TMP/missing.conf" check >/dev/null 2>&1; then
     echo "missing explicit configuration was accepted" >&2
     exit 1

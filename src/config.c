@@ -24,7 +24,14 @@
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 #define DEFAULT_SERVICE_RESTART_DELAY_SEC 2
 
-static void config_sync_from_singbox_json(atp_config_t *cfg);
+typedef struct {
+    bool api_port;
+    bool api_host;
+    bool api_secret;
+} config_presence_t;
+
+static atp_result_t config_sync_from_singbox_json(atp_config_t *cfg,
+                                                  const config_presence_t *presence);
 
 static int config_parse_int(const char *str, int *out) {
     if (!str || !out) return -1;
@@ -82,10 +89,12 @@ static int config_apply_run_dir_defaults(atp_config_t *cfg) {
     return 0;
 }
 
-static atp_result_t config_prepare(const char *path, atp_config_t *cfg) {
-    atp_result_t ret = config_load_file(path, cfg);
-    if (ret != ATP_OK) return ret;
-    return config_validate_values(cfg) == 0 ? ATP_OK : ATP_ERR_CONFIG;
+static atp_result_t config_load_file_internal(const char *path, atp_config_t *cfg,
+                                              config_presence_t *presence);
+
+static atp_result_t config_prepare(const char *path, atp_config_t *cfg,
+                                   config_presence_t *presence) {
+    return config_load_file_internal(path, cfg, presence);
 }
 
 void config_set_defaults(atp_config_t *cfg) {
@@ -131,16 +140,22 @@ void config_set_defaults(atp_config_t *cfg) {
 
 }
 
-static void config_sync_from_singbox_json(atp_config_t *cfg) {
-    if (!cfg) return;
+static atp_result_t config_sync_from_singbox_json(atp_config_t *cfg,
+                                                  const config_presence_t *presence) {
+    if (!cfg) return ATP_ERR_INVAL;
 
     char conf_path[PATH_MAX];
-    snprintf(conf_path, sizeof(conf_path), "%s/config.json", cfg->core.data_dir);
-    if (access(conf_path, R_OK) != 0) return;
+    if (snprintf(conf_path, sizeof(conf_path), "%s/config.json", cfg->core.data_dir) >=
+        (int)sizeof(conf_path)) {
+        return ATP_ERR_CONFIG;
+    }
+    if (access(conf_path, R_OK) != 0) return ATP_OK;
 
     yyjson_read_err err;
     yyjson_doc *doc = yyjson_read_file(conf_path, 0, NULL, &err);
-    if (!doc) return;
+    if (!doc) return ATP_ERR_CONFIG;
+
+    atp_result_t result = ATP_OK;
 
     yyjson_val *root = yyjson_doc_get_root(doc);
     if (root && yyjson_is_obj(root)) {
@@ -188,20 +203,29 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
                 if (listen_str && listen_str[0]) {
                     const char *colon = strrchr(listen_str, ':');
                     if (colon) {
-                        int port = atoi(colon + 1);
-                        if (port > 0 && cfg->api.port == DEFAULT_API_PORT) {
+                        int port;
+                        if (config_parse_int(colon + 1, &port) != 0 || validate_port(port) != ATP_OK) {
+                            result = ATP_ERR_CONFIG;
+                            goto done;
+                        }
+                        if (!presence || !presence->api_port) {
                             cfg->api.port = port;
                         }
-                        if (colon != listen_str && strcmp(cfg->api.host, DEFAULT_API_HOST) == 0) {
+                        if (colon != listen_str && (!presence || !presence->api_host)) {
                             size_t host_len = (size_t)(colon - listen_str);
-                            if (host_len < sizeof(cfg->api.host)) {
-                                strncpy(cfg->api.host, listen_str, host_len);
-                                cfg->api.host[host_len] = '\0';
+                            if (host_len >= sizeof(cfg->api.host)) {
+                                result = ATP_ERR_CONFIG;
+                                goto done;
                             }
+                            memcpy(cfg->api.host, listen_str, host_len);
+                            cfg->api.host[host_len] = '\0';
                         }
                     } else {
-                        if (strcmp(cfg->api.host, DEFAULT_API_HOST) == 0) {
-                            snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", listen_str);
+                        if (!presence || !presence->api_host) {
+                            if (config_copy_string(cfg->api.host, sizeof(cfg->api.host), listen_str) != 0) {
+                                result = ATP_ERR_CONFIG;
+                                goto done;
+                            }
                         }
                     }
                 }
@@ -211,25 +235,42 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
             if (!port_val) {
                 port_val = yyjson_obj_get(api_service, "port");
             }
-            if (port_val && yyjson_is_num(port_val)) {
+            if (port_val && !yyjson_is_int(port_val)) {
+                result = ATP_ERR_CONFIG;
+                goto done;
+            }
+            if (port_val) {
                 int p = yyjson_get_int(port_val);
-                if (p > 0 && cfg->api.port == DEFAULT_API_PORT) {
+                if (validate_port(p) != ATP_OK) {
+                    result = ATP_ERR_CONFIG;
+                    goto done;
+                }
+                if (!presence || !presence->api_port) {
                     cfg->api.port = p;
                 }
             }
 
             yyjson_val *secret_val = yyjson_obj_get(api_service, "secret");
-            if (secret_val && yyjson_is_str(secret_val)) {
+            if (secret_val && !yyjson_is_str(secret_val)) {
+                result = ATP_ERR_CONFIG;
+                goto done;
+            }
+            if (secret_val) {
                 const char *sec = yyjson_get_str(secret_val);
-                if (sec && sec[0] && cfg->api.secret[0] == '\0') {
-                    snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", sec);
+                if (sec && sec[0] && (!presence || !presence->api_secret)) {
+                    if (config_copy_string(cfg->api.secret, sizeof(cfg->api.secret), sec) != 0) {
+                        result = ATP_ERR_CONFIG;
+                        goto done;
+                    }
                 }
             }
         }
 
     }
 
+done:
     yyjson_doc_free(doc);
+    return result;
 }
 
 static int parse_key_value(const config_key_spec_t *spec, const char *k,
@@ -312,7 +353,8 @@ static int parse_key_value(const config_key_spec_t *spec, const char *k,
     return -1;
 }
 
-atp_result_t config_load_file(const char *path, atp_config_t *cfg) {
+static atp_result_t config_load_file_internal(const char *path, atp_config_t *cfg,
+                                              config_presence_t *presence) {
     FILE *fp = fopen(path, "r");
     if (!fp) {
         return ATP_ERR_NOENT;
@@ -361,6 +403,11 @@ atp_result_t config_load_file(const char *path, atp_config_t *cfg) {
             fclose(fp);
             return config_parse_error(line_no, k, "unknown key");
         }
+        if (presence) {
+            if (strcmp(spec->canonical_name, "API_PORT") == 0) presence->api_port = true;
+            if (strcmp(spec->canonical_name, "API_HOST") == 0) presence->api_host = true;
+            if (strcmp(spec->canonical_name, "API_SECRET") == 0) presence->api_secret = true;
+        }
         if (spec->deprecated) {
             LOG_WARN("Deprecated configuration key %s; use %s", k, spec->canonical_name);
         }
@@ -390,22 +437,32 @@ atp_result_t config_load_file(const char *path, atp_config_t *cfg) {
     return ATP_OK;
 }
 
+atp_result_t config_load_file(const char *path, atp_config_t *cfg) {
+    return config_load_file_internal(path, cfg, NULL);
+}
+
 atp_result_t config_load(const char *path, atp_config_t *cfg) {
+    if (!path || !cfg) return ATP_ERR_INVAL;
     atp_config_t tmp;
+    config_presence_t presence = {0};
     config_set_defaults(&tmp);
 
-    atp_result_t ret = config_prepare(path, &tmp);
+    atp_result_t ret = config_prepare(path, &tmp, &presence);
     if (ret != ATP_OK) {
         return ret;
     }
 
-    config_sync_from_singbox_json(&tmp);
+    ret = config_sync_from_singbox_json(&tmp, &presence);
+    if (ret != ATP_OK || config_validate_values(&tmp) != 0) {
+        return ATP_ERR_CONFIG;
+    }
     *cfg = tmp;
     LOG_INFO("Configuration loaded: %s", path);
     return ATP_OK;
 }
 
 atp_result_t config_reload(atp_config_t *cfg) {
+    if (!cfg) return ATP_ERR_INVAL;
     char cp[SAFE_PATH_MAX];
     if (snprintf(cp, sizeof(cp), "%s/%s", cfg->core.data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) {
         return ATP_ERR_INVAL;
@@ -415,13 +472,17 @@ atp_result_t config_reload(atp_config_t *cfg) {
     }
 
     atp_config_t new_config;
+    config_presence_t presence = {0};
     config_set_defaults(&new_config);
 
-    atp_result_t ret = config_prepare(cp, &new_config);
+    atp_result_t ret = config_prepare(cp, &new_config, &presence);
     if (ret != ATP_OK) {
         return ret;
     }
-    config_sync_from_singbox_json(&new_config);
+    ret = config_sync_from_singbox_json(&new_config, &presence);
+    if (ret != ATP_OK || config_validate_values(&new_config) != 0) {
+        return ATP_ERR_CONFIG;
+    }
 
     *cfg = new_config;
 

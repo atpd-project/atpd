@@ -238,15 +238,28 @@ static void on_idle(reactor_t *r, void *userdata) {
     if (g_reload) {
         g_reload = 0;
         LOG_INFO("Processing config reload...");
-        atp_timezone_init();
+        atp_config_t previous_config = g_config;
         if (config_reload(&g_config) != ATP_OK) {
             LOG_ERROR("Config reload failed");
-            atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
-        } else {
-            if (g_svc) service_apply_config(g_svc, &g_config);
-            api_init(&g_api_ctx, &g_config);
-            LOG_INFO("Config reload completed successfully");
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+        } else {
+            int apply_failed = g_svc && service_apply_config(g_svc, &g_config) < 0;
+            if (!apply_failed && api_init(&g_api_ctx, &g_config) < 0) {
+                apply_failed = 1;
+            }
+            if (apply_failed) {
+                g_config = previous_config;
+                if (g_svc) service_apply_config(g_svc, &previous_config);
+                api_init(&g_api_ctx, &previous_config);
+                LOG_ERROR("Config reload apply failed; previous configuration restored");
+                atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+            } else {
+                atp_timezone_init();
+                g_atpd_ctx.reload_count++;
+                LOG_INFO("Config reload completed successfully (generation=%u)",
+                         g_atpd_ctx.reload_count);
+                atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+            }
         }
     }
 
