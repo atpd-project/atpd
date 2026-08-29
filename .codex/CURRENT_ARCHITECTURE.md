@@ -35,7 +35,6 @@
 After a successful Step, add only durable facts such as:
 
 ```text
-- Step 07: ATPD-owned eBPF files/sys_bpf probing removed; sing-box is sole ebpf-in owner.
 - Step 08: g_atpd/atpd_global removed.
 - Step 09: public mutable g_atpd_ctx removed; session/XFRM/error ownership moved to subsystem owners.
 ```
