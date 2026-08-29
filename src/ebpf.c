@@ -1,7 +1,7 @@
 #include "ebpf.h"
 #include "ebpf_common.h"
 #include "logger.h"
-#include "atp_error.h"
+#include "atp_result.h"
 #include "utils.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +15,7 @@ static void raise_memlock(void) {
     setrlimit(RLIMIT_MEMLOCK, &unlimited);
 }
 
-int ebpf_probe_detailed(ebpf_probe_result_t *res) {
+atp_result_t ebpf_probe_detailed(ebpf_probe_result_t *res) {
     if (!res) return ATP_ERR_INVAL;
 
     static ebpf_probe_result_t s_cached_probe;
@@ -61,15 +61,16 @@ int ebpf_probe_detailed(ebpf_probe_result_t *res) {
     return ATP_OK;
 }
 
-int ebpf_probe(void) {
+atp_result_t ebpf_probe(void) {
     ebpf_probe_result_t res;
-    if (ebpf_probe_detailed(&res) != ATP_OK) {
-        return ATP_ERR_EBPF;
+    atp_result_t result = ebpf_probe_detailed(&res);
+    if (result != ATP_OK) {
+        return result;
     }
-    return res.supported ? ATP_OK : ATP_ERR_EBPF;
+    return res.supported ? ATP_OK : ATP_ERR_NOTSUP;
 }
 
-int ebpf_status(char *state, size_t size, atp_config_t *cfg) {
+atp_result_t ebpf_status(char *state, size_t size, atp_config_t *cfg) {
     if (!state || size == 0) {
         return ATP_ERR_INVAL;
     }
@@ -86,7 +87,7 @@ int ebpf_status(char *state, size_t size, atp_config_t *cfg) {
     }
 
     snprintf(state, size, "%s", "unsupported");
-    return ATP_ERR_EBPF;
+    return ATP_ERR_NOTSUP;
 }
 
 bool ebpf_is_pure_mode(const atp_config_t *cfg) {

@@ -46,14 +46,16 @@ OBJ = $(SRC:%.c=$(OBJDIR)/%.o)
 TARGET = build/bin/atpd
 VPN_MODE_TEST = build/tests/test_api_vpn_mode
 LOGGER_SAFETY_TEST = build/tests/test_logger_file_safety
+RESULT_TEST = build/tests/test_atp_result
 
 .PHONY: all test clean distclean install uninstall
 
 all: $(TARGET)
 
-test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST)
+test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST)
 	$(VPN_MODE_TEST)
 	$(LOGGER_SAFETY_TEST)
+	$(RESULT_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
 	sh tests/test_android_service.sh
 
@@ -64,6 +66,10 @@ $(VPN_MODE_TEST): tests/test_api_vpn_mode.c src/api.c
 $(LOGGER_SAFETY_TEST): tests/test_logger_file_safety.c src/logger.c
 	@mkdir -p $(dir $@)
 	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
+
+$(RESULT_TEST): tests/test_atp_result.c
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)

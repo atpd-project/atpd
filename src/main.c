@@ -609,7 +609,11 @@ static int do_check(atp_options_t *opts) {
 static int do_ebpf_probe(atp_options_t *opts) {
     (void)opts;
     ebpf_probe_result_t res;
-    ebpf_probe_detailed(&res);
+    atp_result_t result = ebpf_probe_detailed(&res);
+    if (result != ATP_OK) {
+        fprintf(stderr, "eBPF probe failed: %s\n", atp_result_string(result));
+        return 1;
+    }
     printf("kernel_release=%s\n", res.kernel_release);
     printf("supported=%d\n", res.supported ? 1 : 0);
     printf("cgroup_sock_addr=%d\n", res.has_cgroup_sock_addr ? 1 : 0);
@@ -618,7 +622,7 @@ static int do_ebpf_probe(atp_options_t *opts) {
     printf("array=%d\n", res.has_array ? 1 : 0);
     printf("hash=%d\n", res.has_hash ? 1 : 0);
     printf("lru_hash=%d\n", res.has_lru_hash ? 1 : 0);
-    return res.supported ? ATP_OK : ATP_ERR_EBPF;
+    return res.supported ? 0 : 1;
 }
 
 static int do_ebpf_status(atp_options_t *opts) {

@@ -22,7 +22,7 @@
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <pthread.h>
-#include "atp_error.h"
+#include "atp_result.h"
 #include "atp_config.h"
 
 #define ATP_NAME            "atpd"

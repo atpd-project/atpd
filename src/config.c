@@ -98,7 +98,7 @@ static __attribute__((unused)) uint64_t snapshot_update(const char *backup_path,
     return version;
 }
 
-static int snapshot_get(config_snapshot_t *out) {
+static atp_result_t snapshot_get(config_snapshot_t *out) {
     if (!out) return ATP_ERR_INVAL;
     pthread_mutex_lock(&g_snapshot_mutex);
     *out = g_snapshot;
@@ -106,10 +106,10 @@ static int snapshot_get(config_snapshot_t *out) {
     return ATP_OK;
 }
 
-static int config_prepare(const char *path, atp_config_t *cfg) {
-    int ret = config_load_file(path, cfg);
+static atp_result_t config_prepare(const char *path, atp_config_t *cfg) {
+    atp_result_t ret = config_load_file(path, cfg);
     if (ret != ATP_OK) return ret;
-    return config_validate_values(cfg);
+    return config_validate_values(cfg) == 0 ? ATP_OK : ATP_ERR_CONFIG;
 }
 
 void config_set_defaults(atp_config_t *cfg) {
@@ -304,7 +304,7 @@ static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
     }
 }
 
-int config_load_file(const char *path, atp_config_t *cfg) {
+atp_result_t config_load_file(const char *path, atp_config_t *cfg) {
     FILE *fp = fopen(path, "r");
     if (!fp) {
         return ATP_ERR_NOENT;
@@ -333,7 +333,7 @@ int config_load_file(const char *path, atp_config_t *cfg) {
     return ATP_OK;
 }
 
-int config_load(const char *path, atp_config_t *cfg) {
+atp_result_t config_load(const char *path, atp_config_t *cfg) {
     atp_config_t tmp;
     config_set_defaults(&tmp);
 
@@ -354,13 +354,13 @@ int config_load(const char *path, atp_config_t *cfg) {
     return ATP_OK;
 }
 
-int config_set_mode(atp_config_t *cfg, const char *mode) {
+atp_result_t config_set_mode(atp_config_t *cfg, const char *mode) {
     (void)cfg;
     (void)mode;
     return ATP_OK;
 }
 
-static int config_apply_deltas(atp_config_t *cfg, const atp_config_t *old) {
+static atp_result_t config_apply_deltas(atp_config_t *cfg, const atp_config_t *old) {
     (void)old;
     if (cfg->ebpf.enabled) {
         ebpf_probe();
@@ -368,7 +368,7 @@ static int config_apply_deltas(atp_config_t *cfg, const atp_config_t *old) {
     return ATP_OK;
 }
 
-int config_reload(atp_config_t *cfg) {
+atp_result_t config_reload(atp_config_t *cfg) {
     char cp[SAFE_PATH_MAX];
     if (snprintf(cp, sizeof(cp), "%s/%s", cfg->core.data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) {
         return ATP_ERR_INVAL;
@@ -402,20 +402,20 @@ int config_reload(atp_config_t *cfg) {
     return ret;
 }
 
-int config_reload_atomic(atp_config_t *cfg) {
+atp_result_t config_reload_atomic(atp_config_t *cfg) {
     return config_reload(cfg);
 }
 
-int config_rollback(atp_config_t *cfg) {
+atp_result_t config_rollback(atp_config_t *cfg) {
     (void)cfg;
     return ATP_OK;
 }
 
-int config_get_snapshot(config_snapshot_t *out) {
+atp_result_t config_get_snapshot(config_snapshot_t *out) {
     return snapshot_get(out);
 }
 
-int config_save_runtime(const char *path, atp_config_t *cfg) {
+atp_result_t config_save_runtime(const char *path, atp_config_t *cfg) {
     char tmp_path[SAFE_PATH_MAX];
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
 
@@ -454,7 +454,7 @@ int config_save_runtime(const char *path, atp_config_t *cfg) {
     return ATP_OK;
 }
 
-int validate_interface_name(const char *n) {
+atp_result_t validate_interface_name(const char *n) {
     if (!n || !*n) return ATP_ERR_INVAL;
     if (strlen(n) >= IFNAMSIZ) return ATP_ERR_INVAL;
     for (const char *p = n; *p; p++) {
@@ -463,12 +463,12 @@ int validate_interface_name(const char *n) {
     return ATP_OK;
 }
 
-int validate_port(int p) {
+atp_result_t validate_port(int p) {
     if (p > 0 && p <= 65535) return ATP_OK;
     return ATP_ERR_INVAL;
 }
 
-int validate_mark(int m) {
+atp_result_t validate_mark(int m) {
     if (m >= 1 && m <= 2147483647) return ATP_OK;
     return ATP_ERR_INVAL;
 }
