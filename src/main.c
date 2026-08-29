@@ -18,7 +18,6 @@
 #include "status.h"
 #include "ui.h"
 #include "cli.h"
-#include "version.h"
 #include "ebpf.h"
 #include "cleanup.h"
 #include "reactor.h"

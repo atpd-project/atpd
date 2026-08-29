@@ -173,9 +173,9 @@ static void handle_version(int fd) {
     size_t off = 0;
 
     off = append_response(response, sizeof(response), off,
-                          "ATPd Version: %s\n", ATP_VERSION_STRING);
+                          "ATPd Version: %s\n", atp_get_full_version());
     off = append_response(response, sizeof(response), off,
-                          "Git Commit: %s\n", ATP_COMMIT);
+                          "Git Commit: %s\n", atp_get_commit());
 
     if (off >= sizeof(response)) {
         send_string_all(fd, "ERROR: response too large\n");

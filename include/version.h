@@ -1,15 +1,11 @@
-/*
- * ATP - Advanced Transparent Proxy
- * Copyright (C) 2024-2026 ATP Project
- *
- * Auto-generated version header - DO NOT EDIT
- */
-
 #ifndef ATP_VERSION_H
 #define ATP_VERSION_H
 
-#define ATP_VERSION_STRING  "v0.364e1ce-dirty"
-#define ATP_VERSION         "v0.364e1ce-dirty"
-#define ATP_COMMIT          "364e1ce"
+#include <stdbool.h>
 
-#endif /* ATP_VERSION_H */
+const char *atp_get_version(void);
+const char *atp_get_full_version(void);
+const char *atp_get_commit(void);
+bool atp_build_is_dirty(void);
+
+#endif

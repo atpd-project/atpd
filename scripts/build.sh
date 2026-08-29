@@ -20,15 +20,15 @@ echo "=== Starting Pure eBPF True Native Lean Build ==="
 echo "CC: $CC"
 echo "STRIP: $STRIP"
 
-# 2. 版本生成
-chmod +x scripts/gen_version.sh
-./scripts/gen_version.sh
-if [ -f include/version.h ]; then
-    cat include/version.h
-fi
-
-# 3. 彻底清理
+# 2. 彻底清理
 make clean
+
+# 3. 版本生成
+chmod +x scripts/gen_version.sh
+./scripts/gen_version.sh build/generated/version_build.h
+if [ -f build/generated/version_build.h ]; then
+    cat build/generated/version_build.h
+fi
 
 # 4. 创建输出目录
 mkdir -p build/bin

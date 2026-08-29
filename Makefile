@@ -1,8 +1,6 @@
 # ATP - Advanced Transparent Proxy
 # Makefile for Android NDK / Linux build - Pure eBPF Edition (True Native Size-Optimized)
 
-VERSION = 2.0.0
-
 PREFIX ?= /data/adb/atp
 BINDIR ?= $(PREFIX)/bin
 RUNDIR ?= $(PREFIX)/run
@@ -33,6 +31,7 @@ CFLAGS += -Iinclude
 ifdef DEBUG
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -DATP_DEBUG -O0 -fsanitize=address -Iinclude
 endif
+CFLAGS += -Ibuild/generated
 
 LIBS = -lpthread
 
@@ -47,15 +46,18 @@ TARGET = build/bin/atpd
 VPN_MODE_TEST = build/tests/test_api_vpn_mode
 LOGGER_SAFETY_TEST = build/tests/test_logger_file_safety
 RESULT_TEST = build/tests/test_atp_result
+VERSION_HEADER = build/generated/version_build.h
+VERSION_TEST = build/tests/test_version
 
 .PHONY: all test clean distclean install uninstall
 
 all: $(TARGET)
 
-test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST)
+test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST)
 	$(VPN_MODE_TEST)
 	$(LOGGER_SAFETY_TEST)
 	$(RESULT_TEST)
+	$(VERSION_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
 	sh tests/test_android_service.sh
 
@@ -71,6 +73,10 @@ $(RESULT_TEST): tests/test_atp_result.c
 	@mkdir -p $(dir $@)
 	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^
 
+$(VERSION_TEST): tests/test_version.c src/version.c $(VERSION_HEADER)
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_version.c src/version.c
+
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)
 	install -d $(DESTDIR)$(RUNDIR)
@@ -83,6 +89,13 @@ $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 	@echo "  LD (Native Lean) $@"
+
+$(VERSION_HEADER): FORCE VERSION scripts/gen_version.sh
+	@bash scripts/gen_version.sh $@
+
+FORCE:
+
+$(OBJDIR)/src/version.o: $(VERSION_HEADER)
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)

@@ -16,6 +16,7 @@
 #include "atpd_context.h"
 #include "ebpf.h"
 #include "ebpf_common.h"
+#include "version.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -603,6 +604,7 @@ static void status_show_system(void) {
 
     ui_table_begin();
     ui_table_header("SYSTEM");
+    ui_table_subrow("├─", "ATPD Version", atp_get_full_version());
 
     if (temp > 0) {
         char temp_str[32];

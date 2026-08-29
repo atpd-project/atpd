@@ -1,36 +1,18 @@
-/*
- * ATP - Advanced Transparent Proxy
- * Copyright (C) 2024-2025 ATP Project
- *
- * Version information
- */
-
 #include "version.h"
-#include "atp.h"
-#include <string.h>
-#include <stdlib.h>
+#include "version_build.h"
 
-const char* atp_get_version(void) {
+const char *atp_get_version(void) {
     return ATP_VERSION_STRING;
 }
 
-const char* atp_get_full_version(void) {
-    return ATP_VERSION_STRING;
+const char *atp_get_full_version(void) {
+    return ATP_VERSION_FULL;
 }
 
-int atp_get_version_major(void) {
-    /* Parse from v0.abc1234 format */
-    const char *v = ATP_VERSION_STRING;
-    if (v[0] == 'v') {
-        return atoi(v + 1);
-    }
-    return 0;
+const char *atp_get_commit(void) {
+    return ATP_COMMIT;
 }
 
-int atp_get_version_minor(void) {
-    return 0;  /* Not used in simplified version scheme */
-}
-
-int atp_get_version_patch(void) {
-    return 0;  /* Not used in simplified version scheme */
+bool atp_build_is_dirty(void) {
+    return ATP_BUILD_DIRTY != 0;
 }

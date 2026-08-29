@@ -63,7 +63,7 @@ void print_usage(const char *progname) {
     const char *base = strrchr(progname, '/');
     base = base ? base + 1 : progname;
 
-    printf(ATP_NAME " " ATP_VERSION_STRING " (Pure eBPF Edition)\n\n");
+    printf(ATP_NAME " %s (Pure eBPF Edition)\n\n", atp_get_full_version());
     printf("Usage: %s [options] command [subcommand] [args]\n\n", base);
     printf("Options:\n");
     printf("  -c, --config FILE     Specify configuration file\n");
@@ -95,7 +95,7 @@ void print_usage(const char *progname) {
 }
 
 void print_version(void) {
-    printf("atpd %s (Pure eBPF)\n", ATP_VERSION_STRING);
+    printf("atpd %s (Pure eBPF)\n", atp_get_full_version());
 }
 
 void print_help(const char *progname) {

@@ -26,12 +26,6 @@
 #include "atp_config.h"
 
 #define ATP_NAME            "atpd"
-#define ATP_BUILD_TIME      __TIME__
-
-#define ATP_VERSION_MAJOR   2
-#define ATP_VERSION_MINOR   0
-#define ATP_VERSION_PATCH   0
-
 #ifndef _FORTIFY_SOURCE
 #define _FORTIFY_SOURCE 3
 #endif
