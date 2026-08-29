@@ -19,7 +19,7 @@ Tests added: none.
 
 Commands and gates:
 
-- `./scripts/codex-preflight.sh`: branch/state checks passed; reported expected in-progress related changes as dirty.
+- `./scripts/codex-preflight.sh`: reported the expected in-progress related changes as dirty; branch and repository checks were correct.
 - `make`: PASS.
 - `make clean && make`: PASS; only the existing LTO serial-compilation warning.
 - `make test`: PASS (VPN mode, logger safety, result/version/config, strict validation, Android service tests).
@@ -29,4 +29,4 @@ Commands and gates:
 
 Deferred: future Steps remain untouched; Step 8 was not started.
 
-Implementation commit: pending signed commit.
+Implementation commit: `7c9af220f3b9fb9532359d6e0d79db60ed77ead5` (GPG-signed).
