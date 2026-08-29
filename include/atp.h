@@ -26,10 +26,6 @@
 #include "atp_config.h"
 
 #define ATP_NAME            "atpd"
-#ifndef _FORTIFY_SOURCE
-#define _FORTIFY_SOURCE 3
-#endif
-
 #ifndef ATP_DEFAULT_DIR
 #define ATP_DEFAULT_DIR     "/data/adb/atp"
 #endif
@@ -109,44 +105,5 @@ typedef enum {
     ROOT_KSU = 1,
     ROOT_MAGISK = 2
 } root_method_t;
-
-/* ========== Compatibility Macros ========== */
-#define cfg_foreground          cfg->core.foreground
-#define cfg_verbose             cfg->core.verbose
-#define cfg_no_color            cfg->core.no_color
-#define cfg_ui_emoji_enabled    cfg->core.ui_emoji_enabled
-#define cfg_performance_mode    cfg->core.performance_mode
-#define cfg_dry_run             cfg->core.dry_run
-#define cfg_log_timestamp       cfg->core.log_timestamp
-#define cfg_restart_delay       cfg->core.restart_delay
-#define cfg_data_dir            cfg->core.data_dir
-#define cfg_core_user           cfg->core.core_user
-#define cfg_core_group          cfg->core.core_group
-#define cfg_pid_file            cfg->core.pid_file
-
-#define cfg_proxy_mode          cfg->network.proxy_mode
-#define cfg_proxy_ipv6          cfg->network.proxy_ipv6
-#define cfg_dns_hijack          cfg->network.dns_hijack
-
-#define cfg_current_vpn_iface   cfg->interface.current_vpn_iface
-
-#define cfg_ebpf_enabled        cfg->ebpf.enabled
-#define cfg_ebpf_ready          cfg->ebpf.ready
-
-#define cfg_service_start_timeout_sec      cfg->service.start_timeout_sec
-#define cfg_service_stop_timeout_sec       cfg->service.stop_timeout_sec
-#define cfg_service_grace_period_sec       cfg->service.grace_period_sec
-#define cfg_service_max_failures           cfg->service.max_failures
-#define cfg_service_circuit_threshold      cfg->service.circuit_threshold
-#define cfg_service_circuit_cooldown_sec   cfg->service.circuit_cooldown_sec
-#define cfg_service_health_check_interval_ms cfg->service.health_check_interval_ms
-#define cfg_service_args                   cfg->service.args
-#define cfg_service_env                    cfg->service.env
-
-#define cfg_api_port          cfg->api.port
-#define cfg_api_host          cfg->api.host
-#define cfg_api_secret        cfg->api.secret
-
-#define cfg_config_mutex      cfg->mutex
 
 #endif

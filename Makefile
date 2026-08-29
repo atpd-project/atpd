@@ -19,7 +19,7 @@ CFLAGS += -O2 -flto -ffunction-sections -fdata-sections
 CFLAGS += -fno-unwind-tables -fno-asynchronous-unwind-tables
 CFLAGS += -fmerge-all-constants -fno-ident
 endif
-CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=3
+CFLAGS += -fstack-protector-strong
 CFLAGS += -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1
 CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"
 CFLAGS += -DATP_CONF_FILE=\"atp.conf\"
@@ -31,6 +31,7 @@ CFLAGS += -Iinclude
 ifdef DEBUG
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -DATP_DEBUG -O0 -fsanitize=address -Iinclude
 endif
+CFLAGS += -D_FORTIFY_SOURCE=3
 CFLAGS += -Ibuild/generated
 
 LIBS = -lpthread
