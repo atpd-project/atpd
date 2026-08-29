@@ -11,6 +11,32 @@ if "$ATPD_BIN" -c "$TEST_TMP/invalid.conf" check >/dev/null 2>&1; then
     exit 1
 fi
 
+expect_invalid() {
+    if "$ATPD_BIN" -c "$TEST_TMP/invalid.conf" check >/dev/null 2>&1; then
+        echo "invalid configuration was accepted" >&2
+        exit 1
+    fi
+}
+
+printf '%s\n' 'API_P0RT=9080' > "$TEST_TMP/invalid.conf"
+expect_invalid
+printf '%s\n' 'API_PORT=abc' > "$TEST_TMP/invalid.conf"
+expect_invalid
+printf '%s\n' 'SERVICE_START_TIMEOUT=30x' > "$TEST_TMP/invalid.conf"
+expect_invalid
+printf '%s\n' 'VPN_AUTO_MODE=2' > "$TEST_TMP/invalid.conf"
+expect_invalid
+printf '%s\n' 'UI_EMOJI_ENABLED=-1' > "$TEST_TMP/invalid.conf"
+expect_invalid
+printf '%s\n' 'API_PORT=9080' 'API_PORT=9090' > "$TEST_TMP/invalid.conf"
+expect_invalid
+printf '%*s\n' 64 '' | tr ' ' x | sed 's/^/API_HOST=/' > "$TEST_TMP/invalid.conf"
+expect_invalid
+printf '%s\n' 'API_PORT 9080' > "$TEST_TMP/invalid.conf"
+expect_invalid
+printf '%s\n' 'API_HOST="127.0.0.1' > "$TEST_TMP/invalid.conf"
+expect_invalid
+
 if "$ATPD_BIN" -c "$TEST_TMP/missing.conf" check >/dev/null 2>&1; then
     echo "missing explicit configuration was accepted" >&2
     exit 1

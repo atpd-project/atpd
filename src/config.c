@@ -36,20 +36,50 @@ static int config_parse_int(const char *str, int *out) {
     return 0;
 }
 
-static void config_apply_run_dir_defaults(atp_config_t *cfg) {
+static int config_parse_bool(const char *str, bool *out) {
+    int value;
+    if (!out || config_parse_int(str, &value) != 0 || (value != 0 && value != 1)) {
+        return -1;
+    }
+    *out = value != 0;
+    return 0;
+}
+
+static int config_copy_string(char *dst, size_t dst_size, const char *value) {
+    size_t len = strlen(value);
+    if (len >= dst_size) return -1;
+    memcpy(dst, value, len + 1);
+    return 0;
+}
+
+static atp_result_t config_parse_error(size_t line_no, const char *key, const char *reason) {
+    if (key && key[0]) {
+        LOG_ERROR("Invalid configuration at line %zu (key %s): %s", line_no, key, reason);
+    } else {
+        LOG_ERROR("Invalid configuration at line %zu: %s", line_no, reason);
+    }
+    return ATP_ERR_CONFIG;
+}
+
+static int config_apply_run_dir_defaults(atp_config_t *cfg) {
     if (!cfg || !cfg->core.run_dir[0] || strcmp(cfg->core.run_dir, ATP_RUN_DIR) == 0) {
-        return;
+        return 0;
     }
 
     /* Keep explicit PID_FILE/LOG_FILE overrides; only move untouched defaults. */
     if (strcmp(cfg->core.pid_file, ATP_PID_FILE) == 0) {
-        snprintf(cfg->core.pid_file, sizeof(cfg->core.pid_file),
-                 "%s/atpd.pid", cfg->core.run_dir);
+        if (snprintf(cfg->core.pid_file, sizeof(cfg->core.pid_file),
+                     "%s/atpd.pid", cfg->core.run_dir) >= (int)sizeof(cfg->core.pid_file)) {
+            return -1;
+        }
     }
     if (strcmp(cfg->core.log_file, ATP_LOG_FILE) == 0) {
-        snprintf(cfg->core.log_file, sizeof(cfg->core.log_file),
-                 "%s/atp.log", cfg->core.run_dir);
+        if (snprintf(cfg->core.log_file, sizeof(cfg->core.log_file),
+                     "%s/atp.log", cfg->core.run_dir) >= (int)sizeof(cfg->core.log_file)) {
+            return -1;
+        }
     }
+    return 0;
 }
 
 static atp_result_t config_prepare(const char *path, atp_config_t *cfg) {
@@ -202,42 +232,84 @@ static void config_sync_from_singbox_json(atp_config_t *cfg) {
     yyjson_doc_free(doc);
 }
 
-static void parse_key_value(const char *k, const char *v, atp_config_t *cfg) {
-    int int_val;
+static int parse_key_value(const config_key_spec_t *spec, const char *k,
+                           const char *v, atp_config_t *cfg) {
+    if (!spec || !k || !v || (!spec->allow_empty && !v[0])) return -1;
 
-    if (config_parse_int(v, &int_val) == 0) {
-        if (strcmp(k, "LOG_TIMESTAMP") == 0) cfg->core.log_timestamp = int_val;
-        else if (strcmp(k, "RESTART_DELAY") == 0) cfg->service.restart_delay_sec = int_val;
-        else if (strcmp(k, "API_PORT") == 0) cfg->api.port = int_val;
-        else if (strcmp(k, "UI_EMOJI_ENABLED") == 0) cfg->core.ui_emoji_enabled = int_val;
-        else if (strcmp(k, "SERVICE_START_TIMEOUT") == 0) cfg->service.start_timeout_sec = int_val;
-        else if (strcmp(k, "SERVICE_STOP_TIMEOUT") == 0) cfg->service.stop_timeout_sec = int_val;
-        else if (strcmp(k, "SERVICE_GRACE_PERIOD") == 0) cfg->service.grace_period_sec = int_val;
-        else if (strcmp(k, "SERVICE_MAX_FAILURES") == 0) cfg->service.max_failures = int_val;
-        else if (strcmp(k, "SERVICE_CIRCUIT_THRESHOLD") == 0) cfg->service.circuit_threshold = int_val;
-        else if (strcmp(k, "SERVICE_CIRCUIT_COOLDOWN") == 0) cfg->service.circuit_cooldown_sec = int_val;
-        else if (strcmp(k, "SERVICE_HEALTH_CHECK_INTERVAL") == 0) cfg->service.health_check_interval_ms = int_val;
-        else if (strcmp(k, "VPN_AUTO_CLASH_MODE") == 0 || strcmp(k, "VPN_AUTO_MODE") == 0) cfg->interface.vpn_auto_mode = (int_val != 0);
-    } else {
-        if (strcmp(k, "API_SECRET") == 0 || strcmp(k, "CLASH_SECRET") == 0) snprintf(cfg->api.secret, sizeof(cfg->api.secret), "%s", v);
-        else if (strcmp(k, "API_HOST") == 0) snprintf(cfg->api.host, sizeof(cfg->api.host), "%s", v);
-        else if (strcmp(k, "VPN_TARGET_MODE") == 0 || strcmp(k, "VPN_CLASH_MODE") == 0) snprintf(cfg->interface.vpn_target_mode, sizeof(cfg->interface.vpn_target_mode), "%s", v);
-        else if (strcmp(k, "VPN_FALLBACK_MODE") == 0 || strcmp(k, "VPN_DEFAULT_MODE") == 0) snprintf(cfg->interface.vpn_fallback_mode, sizeof(cfg->interface.vpn_fallback_mode), "%s", v);
-        else if (strcmp(k, "DATA_DIR") == 0 || strcmp(k, "WORK_DIR") == 0) snprintf(cfg->core.data_dir, sizeof(cfg->core.data_dir), "%s", v);
-        else if (strcmp(k, "RUN_DIR") == 0) snprintf(cfg->core.run_dir, sizeof(cfg->core.run_dir), "%s", v);
-        else if (strcmp(k, "PID_FILE") == 0) snprintf(cfg->core.pid_file, sizeof(cfg->core.pid_file), "%s", v);
-        else if (strcmp(k, "LOG_FILE") == 0) snprintf(cfg->core.log_file, sizeof(cfg->core.log_file), "%s", v);
-        else if (strcmp(k, "CORE_USER_GROUP") == 0) {
-            char val[256]; snprintf(val, sizeof(val), "%s", v); char *colon = strchr(val, ':');
-            if (colon) {
-                *colon = '\0';
-                snprintf(cfg->core.core_user, sizeof(cfg->core.core_user), "%.63s", val);
-                snprintf(cfg->core.core_group, sizeof(cfg->core.core_group), "%.63s", colon + 1);
-            }
-        }
-        else if (strcmp(k, "SERVICE_ARGS") == 0) snprintf(cfg->service.args, sizeof(cfg->service.args), "%s", v);
-        else if (strcmp(k, "SERVICE_ENV") == 0) snprintf(cfg->service.env, sizeof(cfg->service.env), "%s", v);
+    if (spec->type == CONFIG_VALUE_INT) {
+        int value;
+        if (config_parse_int(v, &value) != 0) return -1;
+        if (strcmp(k, "RESTART_DELAY") == 0) cfg->service.restart_delay_sec = value;
+        else if (strcmp(k, "API_PORT") == 0) cfg->api.port = value;
+        else if (strcmp(k, "SERVICE_START_TIMEOUT") == 0) cfg->service.start_timeout_sec = value;
+        else if (strcmp(k, "SERVICE_STOP_TIMEOUT") == 0) cfg->service.stop_timeout_sec = value;
+        else if (strcmp(k, "SERVICE_GRACE_PERIOD") == 0) cfg->service.grace_period_sec = value;
+        else if (strcmp(k, "SERVICE_MAX_FAILURES") == 0) cfg->service.max_failures = value;
+        else if (strcmp(k, "SERVICE_CIRCUIT_THRESHOLD") == 0) cfg->service.circuit_threshold = value;
+        else if (strcmp(k, "SERVICE_CIRCUIT_COOLDOWN") == 0) cfg->service.circuit_cooldown_sec = value;
+        else if (strcmp(k, "SERVICE_HEALTH_CHECK_INTERVAL") == 0) cfg->service.health_check_interval_ms = value;
+        else return -1;
+        return 0;
     }
+
+    if (spec->type == CONFIG_VALUE_BOOL) {
+        bool value;
+        if (config_parse_bool(v, &value) != 0) return -1;
+        if (strcmp(k, "LOG_TIMESTAMP") == 0) cfg->core.log_timestamp = value;
+        else if (strcmp(k, "UI_EMOJI_ENABLED") == 0) cfg->core.ui_emoji_enabled = value;
+        else if (strcmp(k, "VPN_AUTO_CLASH_MODE") == 0 || strcmp(k, "VPN_AUTO_MODE") == 0) {
+            cfg->interface.vpn_auto_mode = value;
+        } else return -1;
+        return 0;
+    }
+
+    if (strcmp(k, "API_SECRET") == 0 || strcmp(k, "CLASH_SECRET") == 0) {
+        return config_copy_string(cfg->api.secret, sizeof(cfg->api.secret), v);
+    }
+    if (strcmp(k, "API_HOST") == 0) {
+        return config_copy_string(cfg->api.host, sizeof(cfg->api.host), v);
+    }
+    if (strcmp(k, "VPN_TARGET_MODE") == 0 || strcmp(k, "VPN_CLASH_MODE") == 0) {
+        return config_copy_string(cfg->interface.vpn_target_mode,
+                                  sizeof(cfg->interface.vpn_target_mode), v);
+    }
+    if (strcmp(k, "VPN_FALLBACK_MODE") == 0 || strcmp(k, "VPN_DEFAULT_MODE") == 0) {
+        return config_copy_string(cfg->interface.vpn_fallback_mode,
+                                  sizeof(cfg->interface.vpn_fallback_mode), v);
+    }
+    if (strcmp(k, "DATA_DIR") == 0 || strcmp(k, "WORK_DIR") == 0) {
+        return config_copy_string(cfg->core.data_dir, sizeof(cfg->core.data_dir), v);
+    }
+    if (strcmp(k, "RUN_DIR") == 0) {
+        return config_copy_string(cfg->core.run_dir, sizeof(cfg->core.run_dir), v);
+    }
+    if (strcmp(k, "PID_FILE") == 0) {
+        return config_copy_string(cfg->core.pid_file, sizeof(cfg->core.pid_file), v);
+    }
+    if (strcmp(k, "LOG_FILE") == 0) {
+        return config_copy_string(cfg->core.log_file, sizeof(cfg->core.log_file), v);
+    }
+    if (strcmp(k, "CORE_USER_GROUP") == 0) {
+        const char *colon = strchr(v, ':');
+        size_t user_len = colon ? (size_t)(colon - v) : 0;
+        size_t group_len = colon ? strlen(colon + 1) : 0;
+        if (!colon || !user_len || !group_len || strchr(colon + 1, ':') ||
+            user_len >= sizeof(cfg->core.core_user) ||
+            group_len >= sizeof(cfg->core.core_group)) {
+            return -1;
+        }
+        memcpy(cfg->core.core_user, v, user_len);
+        cfg->core.core_user[user_len] = '\0';
+        memcpy(cfg->core.core_group, colon + 1, group_len + 1);
+        return 0;
+    }
+    if (strcmp(k, "SERVICE_ARGS") == 0) {
+        return config_copy_string(cfg->service.args, sizeof(cfg->service.args), v);
+    }
+    if (strcmp(k, "SERVICE_ENV") == 0) {
+        return config_copy_string(cfg->service.env, sizeof(cfg->service.env), v);
+    }
+    return -1;
 }
 
 atp_result_t config_load_file(const char *path, atp_config_t *cfg) {
@@ -246,26 +318,75 @@ atp_result_t config_load_file(const char *path, atp_config_t *cfg) {
         return ATP_ERR_NOENT;
     }
     char line[1024];
+    const char *seen_keys[64];
+    size_t seen_count = 0;
+    size_t line_no = 0;
     while (fgets(line, sizeof(line), fp)) {
+        line_no++;
+        if (!strchr(line, '\n') && !feof(fp)) {
+            while (fgets(line, sizeof(line), fp) && !strchr(line, '\n')) { }
+            fclose(fp);
+            return config_parse_error(line_no, NULL, "line exceeds 1023 bytes");
+        }
         trim(line);
         if (line[0] == '#' || line[0] == '\0') continue;
         char *eq = strchr(line, '=');
-        if (!eq) continue;
+        if (!eq) {
+            fclose(fp);
+            return config_parse_error(line_no, NULL, "expected KEY=VALUE");
+        }
         *eq = '\0';
         char *k = line, *v = eq + 1;
         trim(k);
         trim(v);
+        if (!k[0]) {
+            fclose(fp);
+            return config_parse_error(line_no, NULL, "empty key");
+        }
         if ((v[0] == '"' || v[0] == '\'') && strlen(v) >= 2) {
             size_t vlen = strlen(v);
             if (v[vlen-1] == v[0]) {
                 v[vlen-1] = '\0';
                 memmove(v, v+1, vlen-1);
+            } else {
+                fclose(fp);
+                return config_parse_error(line_no, k, "unterminated quote");
+            }
+        } else if (v[0] == '"' || v[0] == '\'') {
+            fclose(fp);
+            return config_parse_error(line_no, k, "unterminated quote");
+        }
+        const config_key_spec_t *spec = config_schema_find(k);
+        if (!spec) {
+            fclose(fp);
+            return config_parse_error(line_no, k, "unknown key");
+        }
+        if (spec->deprecated) {
+            LOG_WARN("Deprecated configuration key %s; use %s", k, spec->canonical_name);
+        }
+        for (size_t i = 0; i < seen_count; i++) {
+            if (strcmp(seen_keys[i], spec->canonical_name) == 0) {
+                fclose(fp);
+                return config_parse_error(line_no, k, "duplicate key");
             }
         }
-        parse_key_value(k, v, cfg);
+        if (seen_count < sizeof(seen_keys) / sizeof(seen_keys[0])) {
+            seen_keys[seen_count++] = spec->canonical_name;
+        }
+        if (parse_key_value(spec, k, v, cfg) != 0) {
+            fclose(fp);
+            return config_parse_error(line_no, k, "invalid value");
+        }
     }
-    fclose(fp);
-    config_apply_run_dir_defaults(cfg);
+    if (ferror(fp)) {
+        fclose(fp);
+        return ATP_ERR_IO;
+    }
+    if (fclose(fp) != 0) return ATP_ERR_IO;
+    if (config_apply_run_dir_defaults(cfg) != 0) {
+        LOG_ERROR("Invalid configuration: RUN_DIR leaves no room for default file paths");
+        return ATP_ERR_CONFIG;
+    }
     return ATP_OK;
 }
 
