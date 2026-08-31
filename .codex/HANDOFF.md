@@ -2,17 +2,17 @@
 
 Repository: `/home/ezhang/atpd`
 Branch: `ebpf-native-api`
-HEAD: `629bcf6`
+HEAD: `90dce36`
 
-Last completed Step: 22
-Next Step: 23
+Last completed Step: 23
+Next Step: 24
 
 Current `.rework-state`:
 
 ```text
-current_step=23
-last_completed_step=22
-last_commit=629bcf6c233bd0911b00b01d897ffabf4606ded3
+current_step=24
+last_completed_step=23
+last_commit=90dce36bf9f2e2df8a57892f9c42dc90fa89b894
 status=ready
 blocked_reason=
 ```
@@ -27,6 +27,7 @@ Working tree: product source is clean. The only remaining changes are the preser
 
 Key commits:
 
+- Step 23: `90dce36 refactor(utils): harden command and process helpers`
 - Step 22: `629bcf6 fix(logger): harden logging state and file safety`
 - Step 21: `6d9f138 refactor(error): centralize diagnostic event history`
 - Step 20: `e7311b4 fix(uds): harden local control socket lifecycle`
