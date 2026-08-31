@@ -84,6 +84,8 @@ int service_apply_config(service_ctx_t *ctx, const atp_config_t *cfg);
 int service_set_reactor(service_ctx_t *ctx, reactor_t *r);
 int service_start_async(service_ctx_t *ctx);
 int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata);
+int service_stop_sync(service_ctx_t *ctx);
+void service_destroy(service_ctx_t *ctx);
 int service_get_pid(service_ctx_t *ctx);
 int service_is_running(service_ctx_t *ctx);
 int service_is_healthy(service_ctx_t *ctx);

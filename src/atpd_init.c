@@ -12,22 +12,55 @@
 #include "netlink.h"
 #include "service.h"
 #include "api.h"
-#include "cleanup.h"
 #include "cli.h"
 
+#include <errno.h>
+#include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
 
+static void cleanup_reactor(atpd_init_context_t *ctx) {
+    if (ctx->reactor) {
+        reactor_destroy(ctx->reactor);
+        ctx->reactor = NULL;
+    }
+}
+
+static void cleanup_netlink(atpd_init_context_t *ctx) {
+    (void)ctx;
+    netlink_cleanup();
+}
+
+static void cleanup_service(atpd_init_context_t *ctx) {
+    if (ctx->service) {
+        service_destroy(ctx->service);
+        ctx->service = NULL;
+    }
+}
+
+static void cleanup_api(atpd_init_context_t *ctx) {
+    if (ctx->api) {
+        atpd_set_vpn_mode_callback(NULL, NULL);
+        api_cleanup(ctx->api);
+    }
+}
+
 static init_phase_config_t init_phases[] = {
-    {INIT_PHASE_CONFIG, "config", atpd_init_phase_config, 1, 0},
-    {INIT_PHASE_LOGGER, "logger", atpd_init_phase_logger, 1, 0},
-    {INIT_PHASE_NETLINK, "netlink", atpd_init_phase_netlink, 1, 0},
-    {INIT_PHASE_SERVICE, "service", atpd_init_phase_service, 1, 0},
-    {INIT_PHASE_API, "api", atpd_init_phase_api, 0, 1},
-    {INIT_PHASE_READY, "ready", atpd_init_phase_ready, 1, 0},
+    {INIT_PHASE_CONFIG, "config", atpd_init_phase_config, NULL, 1},
+    {INIT_PHASE_LOGGER, "logger", atpd_init_phase_logger, NULL, 1},
+    {INIT_PHASE_REACTOR, "reactor", atpd_init_phase_reactor, cleanup_reactor, 1},
+    {INIT_PHASE_NETLINK, "netlink", atpd_init_phase_netlink, cleanup_netlink, 1},
+    {INIT_PHASE_SERVICE, "service", atpd_init_phase_service, cleanup_service, 1},
+    {INIT_PHASE_API, "api", atpd_init_phase_api, cleanup_api, 0},
+    {INIT_PHASE_READY, "ready", atpd_init_phase_ready, NULL, 1},
 };
 
 int atpd_init_phase_config(atpd_init_context_t *ctx) {
+    if (ctx->config_loaded) {
+        LOG_DEBUG("Configuration already loaded by command dispatcher");
+        return 0;
+    }
+
     LOG_INFO("Loading configuration...");
     
     char auto_cfg_path[PATH_MAX];
@@ -51,8 +84,7 @@ int atpd_init_phase_config(atpd_init_context_t *ctx) {
         return -1;
     }
 
-    atp_register_cleanup(ctx->config);
-    
+    ctx->config_loaded = true;
     return 0;
 }
 
@@ -77,7 +109,10 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
         char *slash = strrchr(log_dir, '/');
         if (slash) {
             *slash = '\0';
-            mkdir_recursive(log_dir, 0755);
+            if (mkdir_recursive(log_dir, 0755) != 0 && errno != EEXIST) {
+                LOG_ERROR("Failed to create log directory: %s", strerror(errno));
+                return -1;
+            }
         }
         log_set_file(log_path);
     }
@@ -89,6 +124,17 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
     return 0;
 }
 
+int atpd_init_phase_reactor(atpd_init_context_t *ctx) {
+    if (!ctx || ctx->reactor) return -1;
+
+    ctx->reactor = reactor_create();
+    if (!ctx->reactor) {
+        LOG_ERROR("Failed to create reactor");
+        return -1;
+    }
+    return 0;
+}
+
 int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing Netlink & Multi-VPN tunnel listener...");
     
@@ -97,9 +143,14 @@ int atpd_init_phase_netlink(atpd_init_context_t *ctx) {
         return -1;
     }
     
-    if (ctx->reactor) {
-        netlink_set_reactor(ctx->reactor);
-        netlink_xfrm_init(ctx->reactor);
+    if (!ctx->reactor) {
+        netlink_cleanup();
+        return -1;
+    }
+    netlink_set_reactor(ctx->reactor);
+    if (netlink_xfrm_init(ctx->reactor) < 0) {
+        netlink_cleanup();
+        return -1;
     }
     
     return 0;
@@ -116,7 +167,13 @@ int atpd_init_phase_service(atpd_init_context_t *ctx) {
     
     if (service_init(ctx->service, ctx->config) < 0) {
         LOG_ERROR("Failed to initialize service");
-        free(ctx->service);
+        service_destroy(ctx->service);
+        ctx->service = NULL;
+        return -1;
+    }
+
+    if (!ctx->reactor || service_set_reactor(ctx->service, ctx->reactor) < 0) {
+        service_destroy(ctx->service);
         ctx->service = NULL;
         return -1;
     }
@@ -127,10 +184,15 @@ int atpd_init_phase_service(atpd_init_context_t *ctx) {
 int atpd_init_phase_api(atpd_init_context_t *ctx) {
     LOG_INFO("Initializing sing-box Native API client...");
     
-    api_init(ctx->api, ctx->config);
+    if (api_init(ctx->api, ctx->config) < 0) {
+        api_cleanup(ctx->api);
+        return -1;
+    }
     atpd_set_vpn_mode_callback(api_vpn_mode_callback, ctx->api);
-    if (ctx->reactor) {
-        api_start_with_reactor(ctx->api, ctx->reactor);
+    if (!ctx->reactor || api_start_with_reactor(ctx->api, ctx->reactor) < 0) {
+        atpd_set_vpn_mode_callback(NULL, NULL);
+        api_cleanup(ctx->api);
+        return -1;
     }
     
     return 0;
@@ -143,6 +205,10 @@ int atpd_init_phase_ready(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_run(atpd_init_context_t *ctx) {
+    if (!ctx) return -1;
+
+    ctx->completed_phases = 0;
+    ctx->degraded_phases = 0;
     int failed_phase = INIT_PHASE_MAX;
     
     for (int i = 0; i < INIT_PHASE_MAX; i++) {
@@ -155,7 +221,10 @@ int atpd_init_run(atpd_init_context_t *ctx) {
                 break;
             } else {
                 LOG_WARN("Optional phase '%s' failed, continuing", phase->name);
+                ctx->degraded_phases |= 1u << phase->phase;
             }
+        } else {
+            ctx->completed_phases |= 1u << phase->phase;
         }
     }
     
@@ -168,29 +237,16 @@ int atpd_init_run(atpd_init_context_t *ctx) {
 }
 
 int atpd_init_rollback(atpd_init_context_t *ctx, init_phase_t phase) {
-    LOG_WARN("Rolling back from phase %d", phase);
-    
-    for (int i = phase; i >= 0; i--) {
-        switch (init_phases[i].phase) {
-            case INIT_PHASE_API:
-                if (ctx->api) {
-                    api_cleanup(ctx->api);
-                }
-                break;
-            case INIT_PHASE_SERVICE:
-                if (ctx->service) {
-                    service_stop_async(ctx->service, NULL, NULL);
-                    free(ctx->service);
-                    ctx->service = NULL;
-                }
-                break;
-            case INIT_PHASE_NETLINK:
-                netlink_cleanup();
-                break;
-            default:
-                break;
+    (void)phase;
+    if (!ctx) return -1;
+
+    LOG_WARN("Rolling back completed initialization phases");
+    for (int i = INIT_PHASE_MAX - 1; i >= 0; i--) {
+        if (!(ctx->completed_phases & (1u << i))) continue;
+        if (init_phases[i].cleanup) {
+            init_phases[i].cleanup(ctx);
         }
+        ctx->completed_phases &= ~(1u << i);
     }
-    
     return 0;
 }

@@ -25,7 +25,6 @@ LOCAL_SRC_FILES := \
     ../src/atpd_context.c \
     ../src/atpd_error.c \
     ../src/atpd_init.c \
-    ../src/cleanup.c \
     ../src/yyjson.c
 
 LOCAL_C_INCLUDES := $(LOCAL_PATH)/../include

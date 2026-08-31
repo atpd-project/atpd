@@ -1,6 +1,9 @@
 #ifndef ATPD_INIT_H
 #define ATPD_INIT_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "atp.h"
 #include "reactor.h"
 #include "service.h"
@@ -9,15 +12,19 @@
 
 typedef struct atpd_init_context {
     atp_config_t *config;
+    bool config_loaded;
     reactor_t *reactor;
     service_ctx_t *service;
     api_ctx_t *api;
     atp_options_t *opts;
+    uint32_t completed_phases;
+    uint32_t degraded_phases;
 } atpd_init_context_t;
 
 typedef enum {
     INIT_PHASE_CONFIG = 0,
     INIT_PHASE_LOGGER,
+    INIT_PHASE_REACTOR,
     INIT_PHASE_NETLINK,
     INIT_PHASE_SERVICE,
     INIT_PHASE_API,
@@ -26,17 +33,19 @@ typedef enum {
 } init_phase_t;
 
 typedef int (*init_phase_handler_t)(atpd_init_context_t *ctx);
+typedef void (*init_phase_cleanup_t)(atpd_init_context_t *ctx);
 
 typedef struct {
     init_phase_t phase;
     const char *name;
     init_phase_handler_t handler;
+    init_phase_cleanup_t cleanup;
     int required;
-    int skip_on_failure;
 } init_phase_config_t;
 
 int atpd_init_phase_config(atpd_init_context_t *ctx);
 int atpd_init_phase_logger(atpd_init_context_t *ctx);
+int atpd_init_phase_reactor(atpd_init_context_t *ctx);
 int atpd_init_phase_netlink(atpd_init_context_t *ctx);
 int atpd_init_phase_service(atpd_init_context_t *ctx);
 int atpd_init_phase_api(atpd_init_context_t *ctx);

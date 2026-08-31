@@ -1043,6 +1043,75 @@ int service_start_async(service_ctx_t *ctx) {
     }
 }
 
+int service_stop_sync(service_ctx_t *ctx) {
+    int result = 0;
+    pid_t pid;
+
+    if (!ctx) return -1;
+
+    ctx->state = SERVICE_STOPPING;
+    if (ctx->reactor) {
+        if (ctx->monitor_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
+            ctx->monitor_timer = NULL;
+        }
+        if (ctx->retry_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
+            ctx->retry_timer = NULL;
+        }
+        if (ctx->health_timer) {
+            reactor_cancel_timer(ctx->reactor, ctx->health_timer);
+            ctx->health_timer = NULL;
+        }
+        ctx->reactor = NULL;
+    }
+
+    pid = ctx->child_pid;
+    if (pid > 0) {
+        bool reaped = false;
+        int attempts = ctx->stop_timeout_sec > 0 ? ctx->stop_timeout_sec * 10 : 10;
+
+        if (kill(pid, SIGTERM) < 0 && errno != ESRCH) {
+            result = -1;
+        }
+        for (int i = 0; i < attempts; i++) {
+            int status;
+            pid_t waited = waitpid(pid, &status, WNOHANG);
+            if (waited == pid || (waited < 0 && errno == ECHILD)) {
+                reaped = true;
+                break;
+            }
+            if (waited < 0 && errno != EINTR) {
+                result = -1;
+                break;
+            }
+            usleep(100000);
+        }
+        if (!reaped) {
+            if (kill(pid, SIGKILL) < 0 && errno != ESRCH) {
+                result = -1;
+            }
+            while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+            }
+        }
+    }
+
+    ctx->child_pid = -1;
+    ctx->validated_pid = 0;
+    ctx->running_healthy = 0;
+    ctx->state = SERVICE_STOPPED;
+    service_unlink_pid(ctx);
+    return result;
+}
+
+void service_destroy(service_ctx_t *ctx) {
+    if (!ctx) return;
+    if (service_stop_sync(ctx) != 0) {
+        LOG_WARN("Service: synchronous shutdown reported an error");
+    }
+    free(ctx);
+}
+
 int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata) {
     if (!ctx) return -1;
 

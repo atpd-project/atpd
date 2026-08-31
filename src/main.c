@@ -17,7 +17,6 @@
 #include "status.h"
 #include "ui.h"
 #include "cli.h"
-#include "cleanup.h"
 #include "reactor.h"
 #include "uds.h"
 #include "session.h"
@@ -41,13 +40,9 @@
 #endif
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
-#define SIGNAL_RETRY_MAX 5
-#define SIGNAL_RETRY_DELAY_US 10000
-
-static void run_event_loop(void);
+static int run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
 static void on_idle(reactor_t *r, void *userdata);
-static void service_stop_sync(service_ctx_t *ctx);
 static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static void daemonize(void);
@@ -222,6 +217,7 @@ static void on_signal(reactor_t *r, int sig, void *userdata) {
         status_requested = 1;
     } else {
         shutdown_requested = 1;
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
         reactor_stop(r);
     }
 }
@@ -266,94 +262,47 @@ static void on_idle(reactor_t *r, void *userdata) {
 
     if (shutdown_requested) {
         LOG_INFO("Stopping reactor...");
-        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPED);
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
         reactor_stop(r);
     }
 }
 
-static void service_stop_sync(service_ctx_t *ctx) {
-    if (!ctx) return;
+static int run_event_loop(void) {
+    int result = -1;
 
-    /* Detach and cancel timers before the reactor is destroyed. */
-    if (ctx->reactor) {
-        if (ctx->monitor_timer) {
-            reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
-            ctx->monitor_timer = NULL;
-        }
-        if (ctx->retry_timer) {
-            reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
-            ctx->retry_timer = NULL;
-        }
-        if (ctx->health_timer) {
-            reactor_cancel_timer(ctx->reactor, ctx->health_timer);
-            ctx->health_timer = NULL;
-        }
-        ctx->reactor = NULL;
-    }
-
-    int pid = service_get_pid(ctx);
-    if (pid <= 0) {
-        ctx->state = SERVICE_STOPPED;
-        return;
-    }
-
-    LOG_INFO("Stopping sing-box core (PID %d)...", pid);
-    kill(pid, SIGTERM);
-
-    for (int i = 0; i < SERVICE_STOP_RETRY_COUNT; ++i) {
-        usleep(SERVICE_STOP_INTERVAL_MS * 1000);
-        if (waitpid(pid, NULL, WNOHANG) == pid) {
-            LOG_INFO("Service stopped gracefully");
-            ctx->child_pid = -1;
-            ctx->validated_pid = 0;
-            ctx->state = SERVICE_STOPPED;
-            char pid_path[PATH_MAX];
-            service_pid_path(ctx, pid_path, sizeof(pid_path));
-            unlink(pid_path);
-            return;
-        }
-    }
-
-    LOG_WARN("Service did not stop gracefully, sending SIGKILL");
-    kill(pid, SIGKILL);
-    waitpid(pid, NULL, 0);
-    ctx->child_pid = -1;
-    ctx->validated_pid = 0;
-    ctx->state = SERVICE_STOPPED;
-    char pid_path[PATH_MAX];
-    service_pid_path(ctx, pid_path, sizeof(pid_path));
-    unlink(pid_path);
-}
-
-static void run_event_loop(void) {
     LOG_INFO("Initializing ATPD control-plane Reactor event loop...");
 
-    daemon_reactor = reactor_create();
     if (!daemon_reactor) {
-        LOG_ERROR("Failed to create reactor");
-        return;
+        LOG_ERROR("Reactor was not initialized");
+        goto cleanup;
     }
 
-    reactor_set_signal_cb(daemon_reactor, on_signal);
+    if (reactor_set_signal_cb(daemon_reactor, on_signal) != 0) {
+        LOG_ERROR("Failed to configure reactor signal callback");
+        goto cleanup;
+    }
     reactor_set_idle_cb(daemon_reactor, on_idle);
 
     const int watched_signals[] = { SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGCHLD };
     for (size_t i = 0; i < sizeof(watched_signals) / sizeof(watched_signals[0]); i++) {
         if (reactor_watch_signal(daemon_reactor, watched_signals[i]) != 0) {
-            LOG_WARN("Failed to watch signal %d", watched_signals[i]);
+            LOG_ERROR("Failed to watch required signal %d", watched_signals[i]);
+            goto cleanup;
         }
     }
 
     int nl_fd = netlink_get_fd();
     if (nl_fd >= 0) {
-        reactor_add_fd(daemon_reactor, nl_fd, REACTOR_EVENT_READ, netlink_handle_event, NULL);
+        if (reactor_add_fd(daemon_reactor, nl_fd, REACTOR_EVENT_READ,
+                           netlink_handle_event, NULL) != 0) {
+            LOG_ERROR("Failed to attach netlink to reactor");
+            goto cleanup;
+        }
     }
 
-    netlink_set_reactor(daemon_reactor);
-    netlink_xfrm_init(daemon_reactor);
-
-    if (daemon_service) {
-        service_set_reactor(daemon_service, daemon_reactor);
+    if (!daemon_service) {
+        LOG_ERROR("Service was not initialized");
+        goto cleanup;
     }
 
     char uds_path[SAFE_PATH_MAX];
@@ -365,14 +314,13 @@ static void run_event_loop(void) {
         .shutdown_requested = &shutdown_requested
     };
     if (uds_init(daemon_reactor, uds_path, &uds_dependencies) < 0) {
-        LOG_WARN("Failed to initialize UDS command socket");
+        LOG_ERROR("Failed to initialize UDS command socket");
+        goto cleanup;
     }
 
     if (service_start_async(daemon_service) < 0) {
         LOG_ERROR("Failed to start service");
-        reactor_destroy(daemon_reactor);
-        daemon_reactor = NULL;
-        return;
+        goto cleanup;
     }
 
     /* Reconcile an already-present VPN after sing-box has been spawned. */
@@ -383,17 +331,34 @@ static void run_event_loop(void) {
     malloc_trim(0);
 #endif
     LOG_INFO("ATPD control-plane Reactor running, entering event loop");
-    reactor_run(daemon_reactor);
+    result = reactor_run(daemon_reactor);
 
+cleanup:
+    if (result != 0 && atpd_runtime_is_running()) {
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
+    }
     LOG_INFO("Reactor exited, cleaning up...");
-    atpd_session_gc_process(daemon_reactor);
     uds_cleanup();
-    service_stop_sync(daemon_service);
+    atpd_session_emergency_drain_all();
+    if (daemon_service) {
+        service_destroy(daemon_service);
+        daemon_service = NULL;
+    }
+    atpd_session_gc_process(daemon_reactor);
+    atpd_set_vpn_mode_callback(NULL, NULL);
+    atpd_set_vpn_teardown_callback(NULL);
+    api_cleanup(&daemon_api);
+    netlink_cleanup();
 
     if (daemon_reactor) {
         reactor_destroy(daemon_reactor);
         daemon_reactor = NULL;
     }
+    if (atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPED) != 0) {
+        LOG_ERROR("Failed to publish stopped runtime state");
+        result = -1;
+    }
+    return result;
 }
 
 static int do_start(atp_options_t *opts) {
@@ -403,6 +368,7 @@ static int do_start(atp_options_t *opts) {
 
     atpd_init_context_t init_ctx = {
         .config = &daemon_config,
+        .config_loaded = true,
         .reactor = NULL,
         .service = NULL,
         .api = &daemon_api,
@@ -421,32 +387,37 @@ static int do_start(atp_options_t *opts) {
     }
     pid_written = true;
 
+    if (atpd_context_init() != 0) {
+        ret = 1;
+        goto cleanup_return;
+    }
+    atpd_set_vpn_teardown_callback(atpd_session_emergency_drain_all);
+    if (atpd_runtime_state_transition(ATPD_RUNTIME_STATE_INITIALIZING) != 0) {
+        ret = 1;
+        goto cleanup_return;
+    }
+
     if (atpd_init_run(&init_ctx) != 0) {
         LOG_ERROR("Initialization failed");
         atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
         ret = 1;
-        goto cleanup;
+        goto cleanup_return;
     }
 
     daemon_service = init_ctx.service;
+    daemon_reactor = init_ctx.reactor;
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
 
     LOG_INFO("ATPD control plane active; sing-box owns the ebpf-in datapath");
 
-    run_event_loop();
-    ret = 0;
-
-cleanup:
-    netlink_cleanup();
-    uds_cleanup();
-    api_cleanup(&daemon_api);
-    if (daemon_service) {
-        free(daemon_service);
-        daemon_service = NULL;
-    }
+    ret = run_event_loop() == 0 ? 0 : 1;
 
 cleanup_return:
     if (pid_written) {
+        if (g_pid_fd >= 0) {
+            close(g_pid_fd);
+            g_pid_fd = -1;
+        }
         unlink(pp);
     }
     return ret;
@@ -644,12 +615,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Cannot read configuration: %s\n", cfg_path);
         return 1;
     }
-    if (atpd_context_init() != 0) {
-        return 1;
-    }
-    atpd_set_vpn_teardown_callback(atpd_session_emergency_drain_all);
-    atpd_runtime_state_transition(ATPD_RUNTIME_STATE_INITIALIZING);
-
     switch (opts.command) {
         case CMD_START:
             return do_start(&opts);
