@@ -17,16 +17,22 @@ Use `CODEX_STEPS.md` + the current manifest as the machine execution path.
 
 ## Startup
 
-1. Enter the WSL repository.
-2. Run `scripts/codex-preflight.sh`.
-3. Read `.rework-state`.
-4. Read `CODEX_STEPS.md` only far enough to identify the current Step entry.
-5. Read `.codex/CURRENT_ARCHITECTURE.md`.
-6. Read the current `.codex/steps/XX-*.md`.
-7. Read only the specialized MD(s) named in that manifest.
-8. Run the manifest's targeted `rg` searches.
-9. Open only relevant source/test hits.
-10. Implement the current Step.
+1. Enter the WSL repository and read `.rework-state`.
+2. Classify the checkpoint before touching source:
+   - `status=ready` means `between-step`; run `scripts/codex-preflight.sh`.
+   - `status=in_progress` means an explicit `resume-current-step`; first audit
+     `git status`/`git diff`, then run `scripts/codex-preflight.sh --resume`.
+3. Never infer resume mode from a dirty tree, and never use `--resume` to
+   bypass an unknown or out-of-scope dirty file.
+4. Verify the selected mode's gate passes before reading the current Step.
+5. Read `CODEX_STEPS.md` only far enough to identify the current Step entry.
+6. Read `.codex/CURRENT_ARCHITECTURE.md`.
+7. Read the current `.codex/steps/XX-*.md`.
+8. Read only the specialized MD(s) named in that manifest.
+9. Run the manifest's targeted `rg` searches.
+10. Open only relevant source/test hits.
+11. Implement the current Step, or continue existing in-progress changes in
+    resume mode without reset/checkout/clean.
 
 ## Token-efficiency rules
 
@@ -119,3 +125,10 @@ Do not copy the design plan into the report.
 Use `.rework-state` as the checkpoint.
 Verify `last_commit` exists and is an ancestor of HEAD before continuing.
 If state and Git disagree, stop instead of guessing.
+
+`status=ready` is a between-step checkpoint and requires the normal clean-tree
+gate. Set `status=in_progress` when a Step has begun but is not yet committed;
+recover it only with the explicit `scripts/codex-preflight.sh --resume` gate.
+Resume accepts only reports/runtime checkpoint files plus dirty paths in the
+current manifest's auditable scope. An unlisted or unexplained path is a hard
+stop; resume is not a general dirty-tree override.

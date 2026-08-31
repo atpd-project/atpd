@@ -8,6 +8,26 @@ STEP_INDEX="${ATPD_CODEX_STEP_INDEX:-CODEX_STEPS.md}"
 ARCH_FILE="${ATPD_CODEX_ARCH_FILE:-.codex/CURRENT_ARCHITECTURE.md}"
 MANIFEST_DIR="${ATPD_CODEX_MANIFEST_DIR:-.codex/steps}"
 REPORT_DIR="${ATPD_CODEX_REPORT_DIR:-reports}"
+MODE="between-step"
+
+if (( $# > 1 )); then
+  printf 'Usage: %s [--resume]\n' "$0" >&2
+  exit 2
+fi
+case "${1:-}" in
+  "") ;;
+  --resume) MODE="resume-current-step" ;;
+  --help)
+    printf 'Usage: %s [--resume]\n' "$0"
+    printf '  default   validate a clean between-step checkpoint\n'
+    printf '  --resume  validate an explicit current-step in-progress resume\n'
+    exit 0
+    ;;
+  *)
+    printf 'Usage: %s [--resume]\n' "$0" >&2
+    exit 2
+    ;;
+esac
 
 fail() { printf 'PRECHECK FAIL: %s\n' "$*" >&2; exit 1; }
 info() { printf 'PRECHECK: %s\n' "$*"; }
@@ -35,23 +55,6 @@ for required in "$MASTER_PLAN" "$STATE_FILE" "$STEP_INDEX" "$ARCH_FILE" "$MANIFE
 done
 mkdir -p "$REPORT_DIR"
 
-# Runtime checkpoint/report changes are allowed between Steps. All source, docs,
-# manifests and architecture files must otherwise be clean before a Step starts.
-status_filtered="$(git status --porcelain --untracked-files=all | awk '
-  {
-    p=substr($0,4)
-    if (p==".rework-state") next
-    if (p ~ /^reports\//) next
-    print
-  }
-')"
-if [[ -n "$status_filtered" ]]; then
-  printf 'PRECHECK FAIL: working tree has non-runtime changes:\n%s\n' "$status_filtered" >&2
-  printf 'Bootstrap note: commit the harness/docs once before starting Step 1.\n' >&2
-  exit 1
-fi
-info "working tree: clean except allowed runtime checkpoint/report files"
-
 get_state() {
   local key="$1"
   awk -F= -v k="$key" '$1 == k {sub(/^[^=]*=/, ""); print; exit}' "$STATE_FILE"
@@ -69,6 +72,7 @@ blocked_reason="$(get_state blocked_reason)"
 (( last_completed_step >= 0 && last_completed_step <= 30 )) || fail "last_completed_step out of range: $last_completed_step"
 
 if [[ "$status" == "complete" ]]; then
+  [[ "$MODE" == "between-step" ]] || fail "cannot resume a complete refactor"
   [[ "$last_completed_step" -eq 30 ]] || fail "status=complete but last_completed_step=$last_completed_step"
   info "state is complete; all 30 Steps are recorded as finished"
   exit 0
@@ -78,7 +82,12 @@ expected_step=$((last_completed_step + 1))
 [[ "$current_step" -eq "$expected_step" ]] || fail "state mismatch: current_step=$current_step but last_completed_step+1=$expected_step"
 
 case "$status" in
-  ready) ;;
+  ready)
+    [[ "$MODE" == "between-step" ]] || fail "status=ready is a between-step checkpoint; use normal preflight"
+    ;;
+  in_progress)
+    [[ "$MODE" == "resume-current-step" ]] || fail "state is in_progress; resume explicitly with --resume"
+    ;;
   blocked) fail "state is blocked${blocked_reason:+: $blocked_reason}" ;;
   *) fail "invalid status '$status' in $STATE_FILE" ;;
 esac
@@ -104,6 +113,66 @@ while IFS= read -r plan_path; do
 done < <(grep -oE 'docs/refactor/[A-Za-z0-9_.-]+\.md' "$manifest" | sort -u || true)
 [[ "$missing" -eq 0 ]] || exit 1
 
+is_runtime_path() {
+  case "$1" in
+    .rework-state|reports/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+scope_files="$(sed -n '/^## Primary starting files/,/^## /p' "$manifest" |
+  sed -n 's/^[[:space:]]*-[[:space:]]*`\([^`]*\)`.*/\1/p')"
+
+resume_scope_allows() {
+  local path="$1"
+  local source header
+
+  while IFS= read -r source; do
+    [[ -z "$source" ]] && continue
+    [[ "$path" == "$source" ]] && return 0
+    case "$source" in
+      src/*.c)
+        header="include/$(basename "${source%.c}").h"
+        [[ "$path" == "$header" ]] && return 0
+        ;;
+    esac
+  done <<< "$scope_files"
+
+  case "$path" in
+    tests/*|Makefile|android/Makefile) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+status_all="$(git status --porcelain --untracked-files=all)"
+if [[ "$MODE" == "between-step" ]]; then
+  status_filtered="$(printf '%s\n' "$status_all" | awk '
+    {
+      p=substr($0,4)
+      if (p==".rework-state") next
+      if (p ~ /^reports\//) next
+      print
+    }
+  ')"
+  if [[ -n "$status_filtered" ]]; then
+    printf 'PRECHECK FAIL: working tree has non-runtime changes:\n%s\n' "$status_filtered" >&2
+    printf 'Use --resume only for an explicitly marked, auditable current-step in-progress state.\n' >&2
+    exit 1
+  fi
+  info "mode: between-step"
+  info "working tree: clean except allowed runtime checkpoint/report files"
+else
+  info "mode: resume-current-step"
+  while IFS= read -r entry; do
+    [[ -z "$entry" ]] && continue
+    path="${entry:3}"
+    [[ "$path" == *" -> "* ]] && fail "renames are not an auditable resume path: $path"
+    is_runtime_path "$path" && continue
+    resume_scope_allows "$path" || fail "dirty path is outside Step $current_step resume scope: $path"
+    info "resume scope: $path"
+  done <<< "$status_all"
+fi
+
 info "master plan: $MASTER_PLAN"
 info "step index: $STEP_INDEX"
 info "architecture checkpoint: $ARCH_FILE"
@@ -118,4 +187,8 @@ elif command -v clang >/dev/null 2>&1; then info "clang: $(command -v clang)";
 else printf 'PRECHECK WARNING: no C compiler found in PATH.\n' >&2; fi
 
 printf '\nPRECHECK PASS\n'
-printf 'Next action: read CODEX_AUTOPILOT.md, the Step %s entry in %s, %s, and only the specialized plan/source hits required by the manifest.\n' "$current_step" "$STEP_INDEX" "$manifest"
+if [[ "$MODE" == "resume-current-step" ]]; then
+  printf 'Next action: audit git diff/status, then read the Step %s manifest and required plan before resuming existing changes.\n' "$current_step"
+else
+  printf 'Next action: read CODEX_AUTOPILOT.md, the Step %s entry in %s, %s, and only the specialized plan/source hits required by the manifest.\n' "$current_step" "$STEP_INDEX" "$manifest"
+fi
