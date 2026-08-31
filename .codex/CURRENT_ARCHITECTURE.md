@@ -43,6 +43,7 @@
 - Step 19: Async validation owns one child-reap path and drains validator output before completing callbacks.
 - Step 20: UDS owns bounded client state, buffered responses, idle cleanup, peer checks, and safe socket-path replacement.
 - Step 21: Diagnostic history is owned by `atpd_error`; getters return copies and logging occurs outside its mutex.
+- Step 22: Logger validates emitted levels, synchronizes threshold access, and exposes only implemented sinks.
 
 ## Update rule
 
