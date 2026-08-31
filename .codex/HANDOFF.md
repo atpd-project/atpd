@@ -48,3 +48,5 @@ Old Codex conversation history is not required for recovery. Git, `.rework-state
 Known unresolved issues: none.
 
 Preserved historical reports remain untracked and must not be modified or removed as part of startup or handoff. Treat them as historical artifacts, not as current implementation state.
+
+Unattended unsigned commits: `bf9c6ef`, `c21f3be`.
