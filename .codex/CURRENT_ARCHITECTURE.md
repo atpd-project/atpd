@@ -35,6 +35,7 @@
 - Step 11: Daemon-mode parents wait for an explicit startup result; main delegates service lifecycle to its owner, prioritizes shutdown over pending control work, and publishes STOPPED only after teardown.
 - Step 12: Reactor initialization and signal replacement are transactional; cached FD interests follow successful kernel updates.
 - Step 13: Service stop/reap is the sole child lifecycle owner; async stop uses one bounded reactor timer path.
+- Step 14: Native API transport reports unavailable/unsupported operations explicitly; process lifecycle remains service-owned.
 
 ## Update rule
 

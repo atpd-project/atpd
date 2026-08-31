@@ -16,14 +16,12 @@
 #include <unistd.h>
 #include <errno.h>
 
-static reactor_t *g_api_reactor = NULL;
-
 int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     if (!ctx) return -1;
     memset(ctx, 0, sizeof(api_ctx_t));
     ctx->config = cfg;
 
-    singbox_api_init(&ctx->native_ctx, cfg);
+    if (singbox_api_init(&ctx->native_ctx, cfg) != 0) return -1;
 
     snprintf(ctx->base_url, sizeof(ctx->base_url), "http://%s:%d",
              ctx->native_ctx.host, ctx->native_ctx.port);
@@ -42,12 +40,11 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
 void api_cleanup(api_ctx_t *ctx) {
     if (!ctx) return;
     singbox_api_cleanup(&ctx->native_ctx);
-    g_api_reactor = NULL;
 }
 
 int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r) {
     if (!ctx || !r) return -1;
-    g_api_reactor = r;
+    (void)r;
     LOG_INFO("sing-box Native API dispatcher bound to reactor");
     return 0;
 }
@@ -156,26 +153,12 @@ void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata)
 
 int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size) {
     if (!ctx || !version || size == 0) return -1;
-    for (int attempt = 0; attempt < 20; attempt++) {
-        if (singbox_api_get_version(&ctx->native_ctx, version, size) == 0 && version[0]) {
-            return 0;
-        }
-        if (attempt < 19) usleep(100 * 1000);
-    }
-    LOG_WARN("sing-box GetVersion gRPC-Web query unavailable after startup retries");
-    return -1;
+    return singbox_api_get_version(&ctx->native_ctx, version, size);
 }
 
 int api_get_status_sync(api_ctx_t *ctx, singbox_status_t *status) {
     if (!ctx || !status) return -1;
-    for (int attempt = 0; attempt < 20; attempt++) {
-        if (singbox_api_get_status(&ctx->native_ctx, status) == 0 && status->goroutines > 0) {
-            return 0;
-        }
-        if (attempt < 19) usleep(100 * 1000);
-    }
-    LOG_WARN("sing-box SubscribeStatus gRPC-Web snapshot unavailable after startup retries");
-    return -1;
+    return singbox_api_get_status(&ctx->native_ctx, status);
 }
 
 int api_get_goroutines_count(api_ctx_t *ctx) {

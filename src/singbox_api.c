@@ -640,19 +640,18 @@ int singbox_api_set_clash_mode(singbox_api_ctx_t *ctx, const char *mode) {
 
 int singbox_api_reload(singbox_api_ctx_t *ctx) {
     (void)ctx;
-    int pid = get_pid_by_name("sing-box");
-    if (pid > 0) {
-        return kill(pid, SIGHUP);
-    }
-    return 0;
+    /* Process lifecycle belongs to service_ctx; never discover or signal a
+     * process by name from the transport layer. */
+    errno = ENOTSUP;
+    return -1;
 }
 
 int singbox_api_exec_cli(const singbox_api_ctx_t *ctx, const char *subcmd,
                          char *output, size_t out_size, int timeout_sec) {
     (void)ctx;
     (void)subcmd;
-    (void)output;
-    (void)out_size;
     (void)timeout_sec;
-    return 0;
+    if (output && out_size) output[0] = '\0';
+    errno = ENOTSUP;
+    return -1;
 }
