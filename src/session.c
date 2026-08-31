@@ -118,6 +118,22 @@ static void atpd_session_destroy_internal(atpd_session_t *s);
 static inline void safe_close(int *fd);
 static void emergency_drain(atpd_session_t *s);
 
+static bool session_set_state(atpd_session_t *s, int desired) {
+    int current;
+    if (!s) return false;
+    current = atomic_load_explicit(&s->state, memory_order_acquire);
+    for (;;) {
+        if (current >= ATPD_SESSION_CLOSING && desired < ATPD_SESSION_CLOSING) {
+            return false;
+        }
+        if (atomic_compare_exchange_weak_explicit(&s->state, &current, desired,
+                                                  memory_order_acq_rel,
+                                                  memory_order_acquire)) {
+            return true;
+        }
+    }
+}
+
 /* ========== Global GC Queue with Mutex ========== */
 
 static pthread_mutex_t g_gc_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -204,8 +220,10 @@ atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out) {
         return NULL;
     }
     
-    fcntl(s->pipe_fds[0], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE);
-    fcntl(s->pipe_fds[1], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE);
+    if (fcntl(s->pipe_fds[0], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE) < 0 ||
+        fcntl(s->pipe_fds[1], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE) < 0) {
+        LOG_DEBUG("SESSION[%lu]: requested pipe size unavailable, using kernel default", s->session_id);
+    }
     
     atpd_session_get(s); /* Registry ownership. */
     session_registry_add(s);
@@ -217,20 +235,37 @@ atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out) {
 
 void atpd_session_get(atpd_session_t *s) {
     if (!s) return;
-    unsigned int old = atomic_fetch_add_explicit(&s->ref_count, 1, memory_order_relaxed);
-    LOG_DEBUG("SESSION[%lu]: get ref=%u", s->session_id, old + 1);
+    unsigned int refs = atomic_load_explicit(&s->ref_count, memory_order_acquire);
+    while (refs != 0) {
+        if (atomic_compare_exchange_weak_explicit(&s->ref_count, &refs, refs + 1,
+                                                  memory_order_acquire,
+                                                  memory_order_relaxed)) {
+            LOG_DEBUG("SESSION[%lu]: get ref=%u", s->session_id, refs + 1);
+            return;
+        }
+    }
+    LOG_WARN("SESSION[%lu]: ignored get on released session", s->session_id);
 }
 
 void atpd_session_put(atpd_session_t *s) {
     if (!s) return;
-    unsigned int old = atomic_fetch_sub_explicit(&s->ref_count, 1, memory_order_acq_rel);
-    LOG_DEBUG("SESSION[%lu]: put ref=%u", s->session_id, old - 1);
-    if (old == 1) {
+    unsigned int refs = atomic_load_explicit(&s->ref_count, memory_order_acquire);
+    while (refs != 0) {
+        if (!atomic_compare_exchange_weak_explicit(&s->ref_count, &refs, refs - 1,
+                                                   memory_order_acq_rel,
+                                                   memory_order_acquire)) {
+            continue;
+        }
+        LOG_DEBUG("SESSION[%lu]: put ref=%u", s->session_id, refs - 1);
+        if (refs == 1) {
         /* Last reference dropped */
         /* Acquire memory fence to ensure all previous operations are visible */
         atomic_thread_fence(memory_order_acquire);
-        atpd_session_destroy_internal(s);
+            atpd_session_destroy_internal(s);
+        }
+        return;
     }
+    LOG_WARN("SESSION[%lu]: ignored put with zero references", s->session_id);
 }
 
 static inline void safe_close(int *fd) {
@@ -303,7 +338,10 @@ int atpd_session_register(reactor_t *r, atpd_session_t *s) {
         return -1;
     }
     
-    atomic_store(&s->state, ATPD_SESSION_ACTIVE);
+    if (!session_set_state(s, ATPD_SESSION_ACTIVE)) {
+        atpd_session_mark_closing(s);
+        return -1;
+    }
     LOG_DEBUG("SESSION[%lu]: registered, ref=%u", s->session_id, atomic_load(&s->ref_count));
     return 0;
 }
@@ -329,7 +367,7 @@ int atpd_session_drain_pipe(atpd_session_t *s) {
         return 0;
     }
     
-    atomic_store(&s->state, ATPD_SESSION_DRAINING);
+    if (!session_set_state(s, ATPD_SESSION_DRAINING)) return -1;
     
     ssize_t sent = 0;
     while (sent < (ssize_t)pending) {
@@ -340,12 +378,12 @@ int atpd_session_drain_pipe(atpd_session_t *s) {
         if (ret < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 atomic_store(&s->pipe_pending, pending - sent);
-                atomic_store(&s->state, ATPD_SESSION_PIPE_DIRTY);
+                session_set_state(s, ATPD_SESSION_PIPE_DIRTY);
                 return 1;  /* Still dirty */
             }
             if (errno == EINTR) continue;
             LOG_ERROR("SESSION[%lu]: drain pipe failed: %s", s->session_id, strerror(errno));
-            atomic_store(&s->state, ATPD_SESSION_PIPE_DIRTY);
+            session_set_state(s, ATPD_SESSION_PIPE_DIRTY);
             return -1;
         }
         if (ret == 0) break;
@@ -354,11 +392,15 @@ int atpd_session_drain_pipe(atpd_session_t *s) {
     }
     
     atomic_store(&s->pipe_pending, 0);
-    atomic_store(&s->state, ATPD_SESSION_ACTIVE);
+    if (!session_set_state(s, ATPD_SESSION_ACTIVE)) return -1;
     
     /* Remove WRITE event after drain complete */
     if (s->reactor) {
-        reactor_modify_fd(s->reactor, s->fd_out, REACTOR_EVENT_READ | REACTOR_EVENT_EDGE);
+        if (reactor_modify_fd(s->reactor, s->fd_out,
+                              REACTOR_EVENT_READ | REACTOR_EVENT_EDGE) != 0) {
+            atpd_session_mark_closing(s);
+            return -1;
+        }
     }
     
     LOG_DEBUG("SESSION[%lu]: pipe drained, sent=%zd", s->session_id, sent);
@@ -450,14 +492,17 @@ ssize_t atpd_session_splice_pump(atpd_session_t *s, size_t max_len) {
                     case EWOULDBLOCK:
 #endif
                         atomic_store(&s->pipe_pending, to_send - (size_t)sent);
-                        atomic_store(&s->state, ATPD_SESSION_PIPE_DIRTY);
+                        if (!session_set_state(s, ATPD_SESSION_PIPE_DIRTY)) return ATPD_SPLICE_ERROR;
                         bytes_out_total += (uint64_t)sent;
                         atomic_fetch_add(&s->bytes_in, bytes_in_total);
                         atomic_fetch_add(&s->bytes_out, bytes_out_total);
                         /* Enable WRITE event */
                         if (s->reactor) {
-                            reactor_modify_fd(s->reactor, s->fd_out, 
-                                              REACTOR_EVENT_READ | REACTOR_EVENT_WRITE | REACTOR_EVENT_EDGE);
+                            if (reactor_modify_fd(s->reactor, s->fd_out,
+                                                  REACTOR_EVENT_READ | REACTOR_EVENT_WRITE | REACTOR_EVENT_EDGE) != 0) {
+                                atpd_session_mark_closing(s);
+                                return ATPD_SPLICE_ERROR;
+                            }
                         }
                         LOG_DEBUG("SESSION[%lu]: pipe dirty, pending=%zu", 
                                   s->session_id, atomic_load(&s->pipe_pending));
@@ -467,7 +512,7 @@ ssize_t atpd_session_splice_pump(atpd_session_t *s, size_t max_len) {
                     case EPIPE:
                     case ECONNRESET:
                         atomic_store(&s->pipe_pending, to_send - (size_t)sent);
-                        atomic_store(&s->state, ATPD_SESSION_PIPE_DIRTY);
+                        if (!session_set_state(s, ATPD_SESSION_PIPE_DIRTY)) return ATPD_SPLICE_ERROR;
                         bytes_out_total += (uint64_t)sent;
                         if (total_moved + sent > 0) {
                             atomic_fetch_add(&s->bytes_in, bytes_in_total);
@@ -677,7 +722,11 @@ void atpd_session_gc_enqueue(atpd_session_t *s) {
     /* GC takes a reference */
     atpd_session_get(s);
     
-    atomic_store(&s->state, ATPD_SESSION_DESTROY_PENDING);
+    if (!session_set_state(s, ATPD_SESSION_DESTROY_PENDING)) {
+        atomic_store(&s->gc_enqueued, false);
+        atpd_session_put(s);
+        return;
+    }
     s->gc_node.session = s;
     s->gc_node.next = NULL;
     

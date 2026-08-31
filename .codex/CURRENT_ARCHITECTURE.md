@@ -38,6 +38,7 @@
 - Step 14: Native API transport reports unavailable/unsupported operations explicitly; process lifecycle remains service-owned.
 - Step 15: API context is a thin control facade with no duplicated transport configuration or reactor ownership.
 - Step 16: Netlink owns XFRM FD registration and only publishes successful attachment state.
+- Step 17: Session refcount/state transitions are terminal-safe; registry close-all uses a dynamic snapshot and deferred GC.
 
 ## Update rule
 
