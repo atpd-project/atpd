@@ -127,6 +127,53 @@ static struct {
     struct session_gc_node *tail;
 } g_gc_queue = { NULL, NULL };
 
+static pthread_mutex_t g_session_lock = PTHREAD_MUTEX_INITIALIZER;
+static atpd_session_t *g_session_head;
+static size_t g_session_count;
+
+static void session_registry_add(atpd_session_t *s) {
+    pthread_mutex_lock(&g_session_lock);
+    s->prev = NULL;
+    s->next = g_session_head;
+    if (g_session_head) {
+        g_session_head->prev = s;
+    }
+    g_session_head = s;
+    s->registry_registered = true;
+    g_session_count++;
+    pthread_mutex_unlock(&g_session_lock);
+}
+
+static void session_registry_remove(atpd_session_t *s) {
+    bool removed = false;
+
+    pthread_mutex_lock(&g_session_lock);
+    if (s->registry_registered) {
+        if (s->prev) {
+            s->prev->next = s->next;
+        } else {
+            g_session_head = s->next;
+        }
+        if (s->next) {
+            s->next->prev = s->prev;
+        }
+        s->prev = NULL;
+        s->next = NULL;
+        s->registry_registered = false;
+        if (g_session_count > 0) {
+            g_session_count--;
+        }
+        removed = true;
+    }
+    pthread_mutex_unlock(&g_session_lock);
+
+    if (removed) {
+        LOG_DEBUG("SESSION[%lu]: unregistered", s->session_id);
+        /* The registry owns one reference while the session is active. */
+        atpd_session_put(s);
+    }
+}
+
 /* ========== Session Lifecycle ========== */
 
 atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out) {
@@ -160,7 +207,8 @@ atpd_session_t* atpd_session_create(reactor_t *r, int fd_in, int fd_out) {
     fcntl(s->pipe_fds[0], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE);
     fcntl(s->pipe_fds[1], F_SETPIPE_SZ, ATPD_SESSION_PIPE_SIZE);
     
-    atpd_session_register_to_ctx(s);
+    atpd_session_get(s); /* Registry ownership. */
+    session_registry_add(s);
     
     LOG_DEBUG("SESSION[%lu]: created fd_in=%d fd_out=%d ref=1", 
               s->session_id, fd_in, fd_out);
@@ -223,8 +271,6 @@ static void atpd_session_destroy_internal(atpd_session_t *s) {
     
     atomic_store(&s->state, ATPD_SESSION_DESTROYED);
     
-    atpd_session_unregister_from_ctx(s);
-    
     safe_close(&s->pipe_fds[0]);
     safe_close(&s->pipe_fds[1]);
     safe_close(&s->fd_in);
@@ -265,7 +311,9 @@ int atpd_session_register(reactor_t *r, atpd_session_t *s) {
 /* ========== VPN State ========== */
 
 int atpd_session_is_vpn_ready(void) {
-    return atomic_load_explicit(&g_atpd_ctx.vpn_state, memory_order_acquire) == VPN_STATE_READY;
+    atpd_vpn_snapshot_t snapshot;
+    atpd_vpn_get_snapshot(&snapshot);
+    return snapshot.state == VPN_STATE_READY;
 }
 
 /* ========== Pipe Drain ========== */
@@ -574,6 +622,9 @@ static void session_free_cb(void *userdata) {
 
 void atpd_session_mark_closing(atpd_session_t *s) {
     if (!s) return;
+
+    /* Keep the object alive while dropping the registry's active reference. */
+    atpd_session_get(s);
     
     /* Loop CAS: allow transition from any state to CLOSING */
     for (;;) {
@@ -583,6 +634,7 @@ void atpd_session_mark_closing(atpd_session_t *s) {
         if (state >= ATPD_SESSION_CLOSING) {
             LOG_DEBUG("SESSION[%lu]: already closing or destroyed (state=%d)", 
                       s->session_id, state);
+            atpd_session_put(s);
             return;
         }
         
@@ -594,6 +646,7 @@ void atpd_session_mark_closing(atpd_session_t *s) {
     }
     
     LOG_DEBUG("SESSION[%lu]: marking closing", s->session_id);
+    session_registry_remove(s);
     
     /* Remove from reactor - this will trigger free_cb for each fd */
     if (s->reactor) {
@@ -606,6 +659,7 @@ void atpd_session_mark_closing(atpd_session_t *s) {
     
     /* Enqueue for GC - GC takes its own reference */
     atpd_session_gc_enqueue(s);
+    atpd_session_put(s);
 }
 
 /* ========== GC Queue ========== */
@@ -698,24 +752,48 @@ static void emergency_drain(atpd_session_t *s) {
 }
 
 void atpd_session_emergency_drain_all(void) {
-    struct atpd_session_list *node = g_atpd_ctx.sessions;
-    struct atpd_session_list *next;
+    atpd_session_t **sessions;
+    size_t count;
+    size_t snapshot_count = 0;
     int drained = 0;
-    
-    while (node) {
-        next = node->next;  /* Safe traversal */
-        atpd_session_t *s = node->session;
-        if (s) {
-            int state = atomic_load(&s->state);
-            if (state < ATPD_SESSION_CLOSING) {
-                emergency_drain(s);
-                drained++;
-            }
-        }
-        node = next;
+
+    pthread_mutex_lock(&g_session_lock);
+    count = g_session_count;
+    pthread_mutex_unlock(&g_session_lock);
+    if (count == 0) return;
+
+    sessions = calloc(count, sizeof(*sessions));
+    if (!sessions) {
+        LOG_ERROR("session: failed to snapshot active sessions for emergency drain");
+        return;
     }
-    
+
+    pthread_mutex_lock(&g_session_lock);
+    for (atpd_session_t *s = g_session_head; s && snapshot_count < count; s = s->next) {
+        atpd_session_get(s);
+        sessions[snapshot_count++] = s;
+    }
+    pthread_mutex_unlock(&g_session_lock);
+
+    for (size_t i = 0; i < snapshot_count; i++) {
+        atpd_session_t *s = sessions[i];
+        if (atomic_load(&s->state) < ATPD_SESSION_CLOSING) {
+            emergency_drain(s);
+            drained++;
+        }
+        atpd_session_put(s);
+    }
+    free(sessions);
     LOG_WARN("session: emergency drain completed for %d sessions", drained);
+}
+
+size_t atpd_session_active_count(void) {
+    size_t count;
+
+    pthread_mutex_lock(&g_session_lock);
+    count = g_session_count;
+    pthread_mutex_unlock(&g_session_lock);
+    return count;
 }
 /* ========== Destroy Wrapper ========== */
 

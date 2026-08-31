@@ -330,7 +330,6 @@ int netlink_xfrm_init(reactor_t *r) {
     setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
 
     g_xfrm_fd = fd;
-    g_atpd_ctx.xfrm_fd = fd;
 
     if (r) {
         reactor_add_fd(r, fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);

@@ -1,33 +1,50 @@
-#include "atpd_error.h"
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
  *
- * ATPd Global Context (VPN State Machine + Session List + Runtime State)
+ * Daemon lifecycle and VPN observation state.
  */
 
 #include "atpd_context.h"
 #include "logger.h"
-#include "session.h"
+#include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-#include <stdlib.h>
-#include <stdatomic.h>
 
-atpd_context_t g_atpd_ctx;
+struct atpd_context {
+    pthread_mutex_t lock;
+    bool initialized;
 
-static const char* runtime_state_names[] = {
-    [ATPD_RUNTIME_STATE_UNINITIALIZED] = "UNINITIALIZED",
-    [ATPD_RUNTIME_STATE_INITIALIZING]  = "INITIALIZING",
-    [ATPD_RUNTIME_STATE_RUNNING]       = "RUNNING",
-    [ATPD_RUNTIME_STATE_RELOADING]     = "RELOADING",
-    [ATPD_RUNTIME_STATE_STOPPING]      = "STOPPING",
-    [ATPD_RUNTIME_STATE_STOPPED]       = "STOPPED",
-    [ATPD_RUNTIME_STATE_FAILED]        = "FAILED"
+    atpd_vpn_snapshot_t vpn;
+    atpd_vpn_mode_callback_t vpn_mode_callback;
+    void *vpn_mode_userdata;
+    void (*vpn_teardown_callback)(void);
+
+    atpd_runtime_state_t runtime_state;
+    struct timespec started_at_mono;
 };
 
-const char* vpn_state_string(vpn_state_t state) {
+static struct atpd_context g_context = {
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .vpn = {
+        .state = VPN_STATE_IDLE
+    },
+    .runtime_state = ATPD_RUNTIME_STATE_UNINITIALIZED
+};
+
+static const char *runtime_state_names[] = {
+    [ATPD_RUNTIME_STATE_UNINITIALIZED] = "UNINITIALIZED",
+    [ATPD_RUNTIME_STATE_INITIALIZING] = "INITIALIZING",
+    [ATPD_RUNTIME_STATE_RUNNING] = "RUNNING",
+    [ATPD_RUNTIME_STATE_RELOADING] = "RELOADING",
+    [ATPD_RUNTIME_STATE_STOPPING] = "STOPPING",
+    [ATPD_RUNTIME_STATE_STOPPED] = "STOPPED",
+    [ATPD_RUNTIME_STATE_FAILED] = "FAILED"
+};
+
+const char *vpn_state_string(vpn_state_t state) {
     switch (state) {
         case VPN_STATE_IDLE:       return "IDLE";
         case VPN_STATE_PREDICTING: return "PREDICTING";
@@ -37,270 +54,207 @@ const char* vpn_state_string(vpn_state_t state) {
     }
 }
 
-const char* atpd_runtime_state_string(atpd_runtime_state_t state) {
-    if (state >= ATPD_RUNTIME_STATE_UNINITIALIZED && state <= ATPD_RUNTIME_STATE_FAILED) {
+const char *atpd_runtime_state_string(atpd_runtime_state_t state) {
+    if (state >= ATPD_RUNTIME_STATE_UNINITIALIZED &&
+        state <= ATPD_RUNTIME_STATE_FAILED) {
         return runtime_state_names[state];
     }
     return "UNKNOWN";
 }
 
-void atpd_context_init(void) {
-    atpd_error_init();
-    memset(&g_atpd_ctx, 0, sizeof(g_atpd_ctx));
-    
-    /* VPN State - atomic init */
-    atomic_init(&g_atpd_ctx.vpn_state, VPN_STATE_IDLE);
-    g_atpd_ctx.xfrm_fd = -1;
-    clock_gettime(CLOCK_MONOTONIC, &g_atpd_ctx.vpn_state_since);
-    g_atpd_ctx.vpn_teardown_cb = atpd_vpn_killswitch;
-    g_atpd_ctx.vpn_transitions = 0;
-    g_atpd_ctx.splice_bytes_total = 0;
-    g_atpd_ctx.vpn_mode_callback = NULL;
-    g_atpd_ctx.vpn_mode_userdata = NULL;
-    
-    /* Runtime State */
-    g_atpd_ctx.runtime_state = ATPD_RUNTIME_STATE_UNINITIALIZED;
-    g_atpd_ctx.start_time = time(NULL);
-    g_atpd_ctx.uptime_seconds = 0;
-    g_atpd_ctx.reload_count = 0;
-    g_atpd_ctx.error_count = 0;
-    g_atpd_ctx.last_activity_time = time(NULL);
-    
-    /* Components */
-    g_atpd_ctx.components.netlink_ready = false;
-    g_atpd_ctx.components.service_ready = false;
-    g_atpd_ctx.components.api_ready = false;
-    g_atpd_ctx.components.reactor_ready = false;
-    
-    /* Stats */
-    g_atpd_ctx.stats.events_processed = 0;
-    g_atpd_ctx.stats.timers_fired = 0;
-    g_atpd_ctx.stats.signals_received = 0;
-    g_atpd_ctx.stats.errors_total = 0;
-    g_atpd_ctx.stats.bytes_rx = 0;
-    g_atpd_ctx.stats.bytes_tx = 0;
-    
-    /* Error */
-    g_atpd_ctx.last_error.last_error_code = 0;
-    g_atpd_ctx.last_error.last_error_msg[0] = '\0';
-    g_atpd_ctx.last_error.last_error_time = 0;
-    
-    LOG_INFO("ATPd Context: initialized (VPN=%s, Runtime=%s)",
-             vpn_state_string(atomic_load(&g_atpd_ctx.vpn_state)),
-             atpd_runtime_state_string(g_atpd_ctx.runtime_state));
-}
-
-void atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char *iface) {
-    int old_int = atomic_exchange_explicit(&g_atpd_ctx.vpn_state, (int)new_state, memory_order_acq_rel);
-    vpn_state_t old_state = (vpn_state_t)old_int;
-    bool iface_changed = iface && iface[0] &&
-                         strcmp(g_atpd_ctx.vpn_iface, iface) != 0;
-
-    if (old_state == new_state && !iface_changed) return;
-
+int atpd_context_init(void) {
     struct timespec now;
+
+    pthread_mutex_lock(&g_context.lock);
+    if (g_context.initialized) {
+        pthread_mutex_unlock(&g_context.lock);
+        LOG_ERROR("ATPD context initialization requested more than once");
+        return -1;
+    }
+
     clock_gettime(CLOCK_MONOTONIC, &now);
+    g_context.initialized = true;
+    g_context.vpn.state = VPN_STATE_IDLE;
+    g_context.vpn.if_id = 0;
+    g_context.vpn.iface[0] = '\0';
+    g_context.vpn.changed_at = now;
+    g_context.vpn.transitions = 0;
+    g_context.vpn_mode_callback = NULL;
+    g_context.vpn_mode_userdata = NULL;
+    g_context.vpn_teardown_callback = NULL;
+    g_context.runtime_state = ATPD_RUNTIME_STATE_UNINITIALIZED;
+    g_context.started_at_mono = now;
+    pthread_mutex_unlock(&g_context.lock);
 
-    long elapsed_us = (now.tv_sec - g_atpd_ctx.vpn_state_since.tv_sec) * 1000000 +
-                      (now.tv_nsec - g_atpd_ctx.vpn_state_since.tv_nsec) / 1000;
-
-    LOG_INFO("VPN_STATE: %s -> %s (IF_ID=%u, elapsed=%ldus)",
-             vpn_state_string(old_state), vpn_state_string(new_state),
-             if_id, elapsed_us);
-
-    g_atpd_ctx.xfrm_if_id = if_id;
-    g_atpd_ctx.vpn_state_since = now;
-    g_atpd_ctx.vpn_transitions++;
-
-    if (iface && iface[0]) {
-        snprintf(g_atpd_ctx.vpn_iface, sizeof(g_atpd_ctx.vpn_iface), "%s", iface);
-    } else if (new_state == VPN_STATE_IDLE || new_state == VPN_STATE_TEARDOWN) {
-        g_atpd_ctx.vpn_iface[0] = '\0';
-    }
-
-    if (g_atpd_ctx.vpn_mode_callback) {
-        g_atpd_ctx.vpn_mode_callback(new_state, iface, g_atpd_ctx.vpn_mode_userdata);
-    }
-
-    if (new_state == VPN_STATE_TEARDOWN && g_atpd_ctx.vpn_teardown_cb) {
-        LOG_WARN("VPN_STATE: Kill-switch activated, cleaning up sessions");
-        g_atpd_ctx.vpn_teardown_cb();
-    }
-}
-
-void atpd_set_vpn_mode_callback(atpd_vpn_mode_callback_t callback, void *userdata) {
-    g_atpd_ctx.vpn_mode_callback = callback;
-    g_atpd_ctx.vpn_mode_userdata = userdata;
-}
-
-/* === Runtime State Functions === */
-
-void atpd_runtime_state_transition(atpd_runtime_state_t new_state) {
-    atpd_runtime_state_t old = g_atpd_ctx.runtime_state;
-    if (old == new_state) return;
-    
-    g_atpd_ctx.runtime_state = new_state;
-    g_atpd_ctx.last_activity_time = time(NULL);
-    
-    if (new_state == ATPD_RUNTIME_STATE_RUNNING) {
-        g_atpd_ctx.start_time = time(NULL);
-    }
-    
-    LOG_INFO("RUNTIME_STATE: %s -> %s",
-             atpd_runtime_state_string(old),
-             atpd_runtime_state_string(new_state));
-}
-
-int atpd_runtime_is_running(void) {
-    return g_atpd_ctx.runtime_state == ATPD_RUNTIME_STATE_RUNNING;
-}
-
-int atpd_runtime_can_reload(void) {
-    return g_atpd_ctx.runtime_state == ATPD_RUNTIME_STATE_RUNNING ||
-           g_atpd_ctx.runtime_state == ATPD_RUNTIME_STATE_RELOADING;
-}
-
-void atpd_runtime_update_uptime(void) {
-    if (g_atpd_ctx.start_time > 0) {
-        g_atpd_ctx.uptime_seconds = time(NULL) - g_atpd_ctx.start_time;
-    }
-}
-
-uint64_t atpd_runtime_get_uptime(void) {
-    atpd_runtime_update_uptime();
-    return g_atpd_ctx.uptime_seconds;
-}
-
-/* === Component Status Functions === */
-
-void atpd_component_set_ready(const char *name, int ready) {
-    if (strcmp(name, "netlink") == 0) {
-        g_atpd_ctx.components.netlink_ready = ready;
-    } else if (strcmp(name, "service") == 0) {
-        g_atpd_ctx.components.service_ready = ready;
-    } else if (strcmp(name, "api") == 0) {
-        g_atpd_ctx.components.api_ready = ready;
-    } else if (strcmp(name, "reactor") == 0) {
-        g_atpd_ctx.components.reactor_ready = ready;
-    }
-    
-    LOG_DEBUG("Component '%s' %s", name, ready ? "ready" : "not ready");
-}
-
-int atpd_component_is_ready(const char *name) {
-    if (strcmp(name, "netlink") == 0) return g_atpd_ctx.components.netlink_ready;
-    if (strcmp(name, "service") == 0) return g_atpd_ctx.components.service_ready;
-    if (strcmp(name, "api") == 0) return g_atpd_ctx.components.api_ready;
-    if (strcmp(name, "reactor") == 0) return g_atpd_ctx.components.reactor_ready;
+    LOG_INFO("ATPD context initialized (VPN=%s, Runtime=%s)",
+             vpn_state_string(VPN_STATE_IDLE),
+             atpd_runtime_state_string(ATPD_RUNTIME_STATE_UNINITIALIZED));
     return 0;
 }
 
-/* === Statistics Functions === */
-
-void atpd_stats_increment_events(void) {
-    g_atpd_ctx.stats.events_processed++;
-}
-
-void atpd_stats_increment_timers(void) {
-    g_atpd_ctx.stats.timers_fired++;
-}
-
-void atpd_stats_increment_signals(void) {
-    g_atpd_ctx.stats.signals_received++;
-}
-
-void atpd_stats_increment_errors(void) {
-    g_atpd_ctx.stats.errors_total++;
-}
-
-void atpd_stats_add_bytes(uint64_t rx, uint64_t tx) {
-    g_atpd_ctx.stats.bytes_rx += rx;
-    g_atpd_ctx.stats.bytes_tx += tx;
-}
-
-/* === Error Functions === */
-
-void atpd_error_record(int code, const char *msg) {
-    g_atpd_ctx.last_error.last_error_code = code;
-    strncpy(g_atpd_ctx.last_error.last_error_msg, msg,
-            sizeof(g_atpd_ctx.last_error.last_error_msg) - 1);
-    g_atpd_ctx.last_error.last_error_msg[sizeof(g_atpd_ctx.last_error.last_error_msg) - 1] = '\0';
-    g_atpd_ctx.last_error.last_error_time = time(NULL);
-    g_atpd_ctx.error_count++;
-    
-    LOG_ERROR("Error recorded: code=%d, msg=%s", code, msg);
-}
-
-
-uint32_t atpd_error_get_last_code(void) {
-    return g_atpd_ctx.last_error.last_error_code;
-}
-
-/* === Session Functions === */
-
-void atpd_session_register_to_ctx(struct atpd_session *s) {
-    if (!s) return;
-
-    struct atpd_session_list *node = calloc(1, sizeof(struct atpd_session_list));
-    if (!node) {
-        LOG_ERROR("ATPd Context: failed to allocate session list node");
-        return;
+static bool runtime_transition_allowed(atpd_runtime_state_t old_state,
+                                       atpd_runtime_state_t new_state) {
+    switch (old_state) {
+        case ATPD_RUNTIME_STATE_UNINITIALIZED:
+            return new_state == ATPD_RUNTIME_STATE_INITIALIZING;
+        case ATPD_RUNTIME_STATE_INITIALIZING:
+            return new_state == ATPD_RUNTIME_STATE_RUNNING ||
+                   new_state == ATPD_RUNTIME_STATE_FAILED ||
+                   new_state == ATPD_RUNTIME_STATE_STOPPING;
+        case ATPD_RUNTIME_STATE_RUNNING:
+            return new_state == ATPD_RUNTIME_STATE_RELOADING ||
+                   new_state == ATPD_RUNTIME_STATE_STOPPING ||
+                   new_state == ATPD_RUNTIME_STATE_FAILED;
+        case ATPD_RUNTIME_STATE_RELOADING:
+            return new_state == ATPD_RUNTIME_STATE_RUNNING ||
+                   new_state == ATPD_RUNTIME_STATE_STOPPING;
+        case ATPD_RUNTIME_STATE_STOPPING:
+            return new_state == ATPD_RUNTIME_STATE_STOPPED;
+        case ATPD_RUNTIME_STATE_FAILED:
+            return new_state == ATPD_RUNTIME_STATE_STOPPING ||
+                   new_state == ATPD_RUNTIME_STATE_STOPPED;
+        case ATPD_RUNTIME_STATE_STOPPED:
+            return false;
     }
-    node->session = s;
-    node->next = g_atpd_ctx.sessions;
-    g_atpd_ctx.sessions = node;
-
-    LOG_DEBUG("ATPd Context: session registered");
+    return false;
 }
 
-void atpd_session_unregister_from_ctx(struct atpd_session *s) {
-    if (!s || !g_atpd_ctx.sessions) return;
+int atpd_runtime_state_transition(atpd_runtime_state_t new_state) {
+    atpd_runtime_state_t old_state;
 
-    struct atpd_session_list **pp = &g_atpd_ctx.sessions;
-    while (*pp) {
-        if ((*pp)->session == s) {
-            struct atpd_session_list *to_free = *pp;
-            *pp = (*pp)->next;
-            free(to_free);
-            LOG_DEBUG("ATPd Context: session unregistered");
-            return;
-        }
-        pp = &(*pp)->next;
-    }
-}
-
-void atpd_vpn_killswitch(void) {
-    int closed = 0;
-
-    struct atpd_session *session_ptrs[256];
-    int count = 0;
-    struct atpd_session_list *node = g_atpd_ctx.sessions;
-
-    while (node && count < 256) {
-        if (node->session) {
-            session_ptrs[count++] = node->session;
-        }
-        node = node->next;
+    if (new_state < ATPD_RUNTIME_STATE_UNINITIALIZED ||
+        new_state > ATPD_RUNTIME_STATE_FAILED) {
+        LOG_ERROR("Invalid runtime state %d", new_state);
+        return -1;
     }
 
-    for (int i = 0; i < count; i++) {
-        if (session_ptrs[i]) {
-            atpd_session_destroy(session_ptrs[i]);
-            closed++;
-        }
+    pthread_mutex_lock(&g_context.lock);
+    old_state = g_context.runtime_state;
+    if (old_state == new_state) {
+        pthread_mutex_unlock(&g_context.lock);
+        return 0;
+    }
+    if (!runtime_transition_allowed(old_state, new_state)) {
+        pthread_mutex_unlock(&g_context.lock);
+        LOG_ERROR("Rejected runtime transition %s -> %s",
+                  atpd_runtime_state_string(old_state),
+                  atpd_runtime_state_string(new_state));
+        return -1;
+    }
+    g_context.runtime_state = new_state;
+    pthread_mutex_unlock(&g_context.lock);
+
+    LOG_INFO("RUNTIME_STATE: %s -> %s",
+             atpd_runtime_state_string(old_state),
+             atpd_runtime_state_string(new_state));
+    return 0;
+}
+
+int atpd_runtime_is_running(void) {
+    int running;
+
+    pthread_mutex_lock(&g_context.lock);
+    running = g_context.runtime_state == ATPD_RUNTIME_STATE_RUNNING;
+    pthread_mutex_unlock(&g_context.lock);
+    return running;
+}
+
+int atpd_runtime_can_reload(void) {
+    int can_reload;
+
+    pthread_mutex_lock(&g_context.lock);
+    can_reload = g_context.runtime_state == ATPD_RUNTIME_STATE_RUNNING;
+    pthread_mutex_unlock(&g_context.lock);
+    return can_reload;
+}
+
+uint64_t atpd_runtime_get_uptime(void) {
+    struct timespec started;
+    struct timespec now;
+
+    pthread_mutex_lock(&g_context.lock);
+    started = g_context.started_at_mono;
+    pthread_mutex_unlock(&g_context.lock);
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (now.tv_sec < started.tv_sec ||
+        (now.tv_sec == started.tv_sec && now.tv_nsec < started.tv_nsec)) {
+        return 0;
+    }
+    return (uint64_t)(now.tv_sec - started.tv_sec);
+}
+
+int atpd_vpn_state_transition(vpn_state_t new_state, uint32_t if_id, const char *iface) {
+    atpd_vpn_mode_callback_t mode_callback;
+    void (*teardown_callback)(void);
+    void *userdata;
+    vpn_state_t old_state;
+    char callback_iface[sizeof(g_context.vpn.iface)];
+    struct timespec now;
+    bool identity_changed;
+    bool teardown_edge;
+
+    if (new_state < VPN_STATE_IDLE || new_state > VPN_STATE_TEARDOWN) {
+        LOG_ERROR("Invalid VPN state %d", new_state);
+        return -1;
     }
 
-    node = g_atpd_ctx.sessions;
-    while (node) {
-        struct atpd_session_list *next = node->next;
-        if (node->session) {
-            atpd_session_destroy(node->session);
-            closed++;
-        }
-        free(node);
-        node = next;
+    callback_iface[0] = '\0';
+    if (iface && iface[0]) {
+        snprintf(callback_iface, sizeof(callback_iface), "%s", iface);
     }
-    g_atpd_ctx.sessions = NULL;
 
-    LOG_WARN("ATPd Context: Kill-switch destroyed %d sessions", closed);
+    pthread_mutex_lock(&g_context.lock);
+    old_state = g_context.vpn.state;
+    identity_changed = g_context.vpn.if_id != if_id ||
+                       strcmp(g_context.vpn.iface, callback_iface) != 0;
+    if (old_state == new_state && !identity_changed) {
+        pthread_mutex_unlock(&g_context.lock);
+        return 0;
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    g_context.vpn.state = new_state;
+    g_context.vpn.if_id = if_id;
+    snprintf(g_context.vpn.iface, sizeof(g_context.vpn.iface), "%s", callback_iface);
+    g_context.vpn.changed_at = now;
+    g_context.vpn.transitions++;
+    mode_callback = g_context.vpn_mode_callback;
+    teardown_callback = g_context.vpn_teardown_callback;
+    userdata = g_context.vpn_mode_userdata;
+    teardown_edge = old_state != VPN_STATE_TEARDOWN &&
+                    new_state == VPN_STATE_TEARDOWN;
+    pthread_mutex_unlock(&g_context.lock);
+
+    LOG_INFO("VPN_STATE: %s -> %s (IF_ID=%u)",
+             vpn_state_string(old_state), vpn_state_string(new_state), if_id);
+    if (mode_callback) {
+        mode_callback(new_state, callback_iface[0] ? callback_iface : NULL, userdata);
+    }
+    if (teardown_edge && teardown_callback) {
+        LOG_WARN("VPN_STATE: teardown observer requested session cleanup");
+        teardown_callback();
+    }
+    return 0;
+}
+
+void atpd_vpn_get_snapshot(atpd_vpn_snapshot_t *out) {
+    if (!out) return;
+
+    pthread_mutex_lock(&g_context.lock);
+    *out = g_context.vpn;
+    pthread_mutex_unlock(&g_context.lock);
+}
+
+void atpd_set_vpn_mode_callback(atpd_vpn_mode_callback_t callback, void *userdata) {
+    pthread_mutex_lock(&g_context.lock);
+    g_context.vpn_mode_callback = callback;
+    g_context.vpn_mode_userdata = userdata;
+    pthread_mutex_unlock(&g_context.lock);
+}
+
+void atpd_set_vpn_teardown_callback(void (*callback)(void)) {
+    pthread_mutex_lock(&g_context.lock);
+    g_context.vpn_teardown_callback = callback;
+    pthread_mutex_unlock(&g_context.lock);
 }

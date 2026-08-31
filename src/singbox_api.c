@@ -9,7 +9,6 @@
 #include "singbox_api.h"
 #include "logger.h"
 #include "utils.h"
-#include "atpd_context.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

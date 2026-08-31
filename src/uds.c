@@ -13,6 +13,7 @@
 #include "status.h"
 #include "ui.h"
 #include "session.h"
+#include "atpd_error.h"
 #include "version.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -163,7 +164,7 @@ static void handle_sessions(int fd) {
 
     off = append_response(response, sizeof(response), off,
                           "Active Sessions: %d\n",
-                          g_atpd_ctx.sessions ? 1 : 0);
+                          atpd_session_active_count());
 
     if (off >= sizeof(response)) {
         send_string_all(fd, "ERROR: response too large\n");
@@ -193,21 +194,22 @@ static void handle_version(int fd) {
 static void handle_stats(int fd) {
     char response[UDS_RESPONSE_SIZE];
     size_t off = 0;
+    const reactor_stats_t *stats = reactor_get_stats(g_uds_reactor);
 
     off = append_response(response, sizeof(response), off,
                           "=== Statistics ===\n");
     off = append_response(response, sizeof(response), off,
                           "Events Processed: %" PRIu64 "\n",
-                          g_atpd_ctx.stats.events_processed);
+                          stats ? stats->events_processed : 0);
     off = append_response(response, sizeof(response), off,
                           "Timers Fired: %" PRIu64 "\n",
-                          g_atpd_ctx.stats.timers_fired);
+                          stats ? stats->timers_fired : 0);
     off = append_response(response, sizeof(response), off,
                           "Signals Received: %" PRIu64 "\n",
-                          g_atpd_ctx.stats.signals_received);
+                          stats ? stats->signals_received : 0);
     off = append_response(response, sizeof(response), off,
                           "Errors: %" PRIu64 "\n",
-                          g_atpd_ctx.stats.errors_total);
+                          atpd_error_total());
 
     if (off >= sizeof(response)) {
         send_string_all(fd, "ERROR: response too large\n");

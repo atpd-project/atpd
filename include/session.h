@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define ATPD_SESSION_PIPE_SIZE (64 * 1024)
 
@@ -78,6 +79,7 @@ struct atpd_session {
     /* === Linked List === */
     struct atpd_session *next;
     struct atpd_session *prev;
+    bool registry_registered;
 };
 
 /* ========== Public API ========== */
@@ -100,5 +102,6 @@ void atpd_session_gc_process(reactor_t *r);
 
 /* Emergency */
 void atpd_session_emergency_drain_all(void);
+size_t atpd_session_active_count(void);
 
 #endif

@@ -503,7 +503,9 @@ static void status_show_engine_v2(const atp_config_t *cfg) {
         fclose(fp_pid);
     }
 
-    vpn_state_t vpn_st = (vpn_state_t)atomic_load(&g_atpd_ctx.vpn_state);
+    atpd_vpn_snapshot_t vpn_snapshot;
+    atpd_vpn_get_snapshot(&vpn_snapshot);
+    vpn_state_t vpn_st = vpn_snapshot.state;
 
     if (daemon_alive) {
         switch (vpn_st) {
@@ -540,7 +542,7 @@ static void status_show_engine_v2(const atp_config_t *cfg) {
     const char *xfrm_status = "IDLE (Direct Routing)";
     const char *xfrm_color = COLOR_GREEN;
 
-    if (g_atpd_ctx.xfrm_if_id == 41) {
+    if (vpn_snapshot.if_id == 41) {
         xfrm_status = "LOCKED (IF_ID=41)";
         xfrm_color = COLOR_GREEN;
     } else if (vpn_st == VPN_STATE_READY) {

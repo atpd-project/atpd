@@ -252,9 +252,7 @@ static void on_idle(reactor_t *r, void *userdata) {
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
             } else {
                 atp_timezone_init();
-                g_atpd_ctx.reload_count++;
-                LOG_INFO("Config reload completed successfully (generation=%u)",
-                         g_atpd_ctx.reload_count);
+                LOG_INFO("Config reload completed successfully");
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
             }
         }
@@ -405,7 +403,6 @@ static int do_start(atp_options_t *opts) {
 
     atpd_init_context_t init_ctx = {
         .config = &daemon_config,
-        .ctx = &g_atpd_ctx,
         .reactor = NULL,
         .service = NULL,
         .api = &daemon_api,
@@ -423,8 +420,6 @@ static int do_start(atp_options_t *opts) {
         goto cleanup_return;
     }
     pid_written = true;
-
-    atpd_context_init();
 
     if (atpd_init_run(&init_ctx) != 0) {
         LOG_ERROR("Initialization failed");
@@ -649,7 +644,10 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Cannot read configuration: %s\n", cfg_path);
         return 1;
     }
-    atpd_context_init();
+    if (atpd_context_init() != 0) {
+        return 1;
+    }
+    atpd_set_vpn_teardown_callback(atpd_session_emergency_drain_all);
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_INITIALIZING);
 
     switch (opts.command) {

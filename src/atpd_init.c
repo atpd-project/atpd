@@ -13,7 +13,6 @@
 #include "service.h"
 #include "api.h"
 #include "cleanup.h"
-#include "atpd_context.h"
 #include "cli.h"
 
 #include <stdlib.h>
