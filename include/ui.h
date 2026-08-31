@@ -3,6 +3,7 @@
 
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 /* Color definitions (compatible with logger.h) */
 #ifndef COLOR_RESET
@@ -42,6 +43,7 @@ void ui_set_width(int width);
 
 /* Set custom output stream (default: stdout) */
 void ui_set_output_file(FILE *fp);
+void ui_set_emoji_enabled(int enable);
 
 /* ============================================ */
 /* Basic output functions (auto-formatted)     */

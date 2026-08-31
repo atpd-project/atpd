@@ -5,7 +5,6 @@
  * Status display
  */
 
-#include "atpd_global.h"
 #include "status.h"
 #include "logger.h"
 #include "utils.h"
@@ -28,14 +27,14 @@
 #define THERMAL_TEMP_WARN 75000
 #define THERMAL_TEMP_CRITICAL 85000
 
-static void get_daemon_pid_path(char *path, size_t size) {
-    const char *configured = g_config.core.pid_file[0] ?
-        g_config.core.pid_file : ATP_PID_FILE;
+static void get_daemon_pid_path(const atp_config_t *cfg, char *path, size_t size) {
+    const char *configured = cfg && cfg->core.pid_file[0] ?
+        cfg->core.pid_file : ATP_PID_FILE;
     if (configured[0] == '/') {
         snprintf(path, size, "%s", configured);
     } else {
         snprintf(path, size, "%s/%s",
-                 g_config.core.data_dir[0] ? g_config.core.data_dir : ".",
+                 cfg && cfg->core.data_dir[0] ? cfg->core.data_dir : ".",
                  configured);
     }
 }
@@ -146,8 +145,7 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
 
     singbox_status_t core_status;
     memset(&core_status, 0, sizeof(core_status));
-    api_ctx_t *status_api = api ? api : &g_api_ctx;
-    int core_status_ok = api_get_status_sync(status_api, &core_status) == 0;
+    int core_status_ok = api && api_get_status_sync(api, &core_status) == 0;
 
     double cpu = get_process_cpu_percent(pid);
     int threads = get_process_threads(pid);
@@ -219,15 +217,13 @@ static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_confi
     }
 
     int port = (api && api->native_ctx.port > 0) ? api->native_ctx.port :
-               (cfg && cfg->api.port > 0 ? cfg->api.port :
-               (g_config.api.port > 0 ? g_config.api.port : DEFAULT_API_PORT));
+               (cfg && cfg->api.port > 0 ? cfg->api.port : DEFAULT_API_PORT);
 
     char api_info[128];
     snprintf(api_info, sizeof(api_info), "Native API (Port %d)", port);
     ui_table_subrow_color("├─", "API Engine", api_info, COLOR_GREEN);
 
-    api_ctx_t *mode_api = api ? api : &g_api_ctx;
-    if (api_get_mode_sync(mode_api, current_mode, sizeof(current_mode)) == 0 && current_mode[0]) {
+    if (api && api_get_mode_sync(api, current_mode, sizeof(current_mode)) == 0 && current_mode[0]) {
         const char *color = COLOR_GREEN;
         if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
@@ -307,12 +303,12 @@ static int check_fcm_status(char *status_buf, size_t size, int *is_connected) {
     return 0;
 }
 
-static void status_show_monitors(void) {
+static void status_show_monitors(const atp_config_t *cfg) {
     ui_table_begin();
     ui_table_header("MONITORS & SENSING");
 
     char pid_path[PATH_MAX];
-    get_daemon_pid_path(pid_path, sizeof(pid_path));
+    get_daemon_pid_path(cfg, pid_path, sizeof(pid_path));
     int daemon_running = (access(pid_path, F_OK) == 0);
 
     if (daemon_running || netlink_get_fd() >= 0) {
@@ -370,14 +366,14 @@ static int get_iface_traffic(const char *iface, unsigned long long *rx_bytes, un
     return found ? 0 : -1;
 }
 
-static void get_traffic_state_file(char *buf, size_t size) {
-    const char *base_dir = g_config.core.data_dir[0] ? g_config.core.data_dir : ".";
+static void get_traffic_state_file(const atp_config_t *cfg, char *buf, size_t size) {
+    const char *base_dir = cfg && cfg->core.data_dir[0] ? cfg->core.data_dir : ".";
     snprintf(buf, size, "%s/%s", base_dir, TRAFFIC_STATE_FILE);
 }
 
-static int load_traffic_state(iface_stats_t *stats) {
+static int load_traffic_state(const atp_config_t *cfg, iface_stats_t *stats) {
     char state_file[PATH_MAX];
-    get_traffic_state_file(state_file, sizeof(state_file));
+    get_traffic_state_file(cfg, state_file, sizeof(state_file));
     FILE *fp = fopen(state_file, "r");
     if (!fp) return -1;
 
@@ -388,9 +384,9 @@ static int load_traffic_state(iface_stats_t *stats) {
     return (ret == 4 && stats->iface[0] != '\0') ? 0 : -1;
 }
 
-static int save_traffic_state(const iface_stats_t *stats) {
+static int save_traffic_state(const atp_config_t *cfg, const iface_stats_t *stats) {
     char state_file[PATH_MAX];
-    get_traffic_state_file(state_file, sizeof(state_file));
+    get_traffic_state_file(cfg, state_file, sizeof(state_file));
     char dir[PATH_MAX];
     strncpy(dir, state_file, sizeof(dir) - 1);
     char *slash = strrchr(dir, '/');
@@ -407,7 +403,7 @@ static int save_traffic_state(const iface_stats_t *stats) {
     return 0;
 }
 
-static void status_show_vpn(void) {
+static void status_show_vpn(const atp_config_t *cfg) {
     char vpn_iface[IFNAMSIZ] = {0};
     unsigned long long rx_bytes = 0, tx_bytes = 0;
     char rx_str[32], tx_str[32];
@@ -449,7 +445,7 @@ static void status_show_vpn(void) {
         current_stats.tx_bytes = tx_bytes;
         current_stats.timestamp = time(NULL);
 
-        if (load_traffic_state(&prev_stats) == 0 &&
+        if (load_traffic_state(cfg, &prev_stats) == 0 &&
             strcmp(prev_stats.iface, vpn_iface) == 0 &&
             prev_stats.timestamp > 0) {
             double elapsed = difftime(current_stats.timestamp, prev_stats.timestamp);
@@ -475,7 +471,7 @@ static void status_show_vpn(void) {
             ui_table_subrow("├─", "📈 Avg RX Speed", "(first sample)");
             ui_table_subrow("└─", "📉 Avg TX Speed", "(first sample)");
         }
-        save_traffic_state(&current_stats);
+        save_traffic_state(cfg, &current_stats);
     } else {
         ui_table_subrow("├─", "📥 Total RX", "N/A");
         ui_table_subrow("├─", "📤 Total TX", "N/A");
@@ -486,7 +482,7 @@ static void status_show_vpn(void) {
     ui_table_end();
 }
 
-static void status_show_engine_v2(void) {
+static void status_show_engine_v2(const atp_config_t *cfg) {
     char buf[128];
     const char *stage = "STANDALONE";
     const char *color = COLOR_GREEN;
@@ -496,7 +492,7 @@ static void status_show_engine_v2(void) {
     ui_table_header("REACTOR ENGINE (v2.0)");
 
     char pid_path[PATH_MAX];
-    get_daemon_pid_path(pid_path, sizeof(pid_path));
+    get_daemon_pid_path(cfg, pid_path, sizeof(pid_path));
     FILE *fp_pid = fopen(pid_path, "r");
     int daemon_pid = 0;
     int daemon_alive = 0;
@@ -561,7 +557,7 @@ static void status_show_engine_v2(void) {
     ui_table_end();
 }
 
-static void status_show_system(void) {
+static void status_show_system(const atp_config_t *cfg) {
     int temp = get_cpu_temperature();
     char pid_path[PATH_MAX];
     char uptime_str[64];
@@ -586,7 +582,7 @@ static void status_show_system(void) {
         ui_table_subrow("├─", "🌡️ CPU Temp", "N/A");
     }
 
-    get_daemon_pid_path(pid_path, sizeof(pid_path));
+    get_daemon_pid_path(cfg, pid_path, sizeof(pid_path));
     FILE *fp_pid = fopen(pid_path, "r");
     int daemon_pid = 0;
     if (fp_pid) {
@@ -606,7 +602,7 @@ static void status_show_system(void) {
 }
 
 void status_show_config(atp_config_t *cfg) {
-    (void)cfg;
+    ui_set_emoji_enabled(cfg ? cfg->core.ui_emoji_enabled : 1);
     ui_title("ATPD Configuration");
 
     ui_table_begin();
@@ -618,7 +614,7 @@ void status_show_config(atp_config_t *cfg) {
 }
 
 void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
-    (void)cfg;
+    ui_set_emoji_enabled(cfg ? cfg->core.ui_emoji_enabled : 1);
     ui_title("ATPD Status");
 
     status_show_proxy_core(svc, api);
@@ -627,14 +623,14 @@ void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
     status_show_proxy_mode(api, svc, cfg);
     ui_blank();
 
-    status_show_monitors();
+    status_show_monitors(cfg);
     ui_blank();
 
-    status_show_vpn();
+    status_show_vpn(cfg);
     ui_blank();
 
-    status_show_engine_v2();
+    status_show_engine_v2(cfg);
     ui_blank();
 
-    status_show_system();
+    status_show_system(cfg);
 }

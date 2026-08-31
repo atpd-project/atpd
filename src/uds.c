@@ -7,9 +7,9 @@
  */
 
 #include "reactor.h"
+#include "uds.h"
 #include "logger.h"
 #include "atpd_context.h"
-#include "atpd_global.h"
 #include "status.h"
 #include "ui.h"
 #include "session.h"
@@ -37,6 +37,7 @@ static int g_uds_fd = -1;
 static char g_uds_path[UDS_PATH_MAX] = {0};
 static reactor_t *g_uds_reactor = NULL;
 static int g_uds_stop_requested = 0;
+static uds_dependencies_t g_uds_dependencies;
 
 /* ========== Safe Response Builder ========== */
 
@@ -121,7 +122,9 @@ static void handle_status(int fd) {
     FILE *mem = open_memstream(&buf, &size);
     if (mem) {
         ui_set_output_file(mem);
-        status_show(&g_config, g_atpd.svc, &g_atpd.api_ctx);
+        status_show(g_uds_dependencies.config,
+                    g_uds_dependencies.service,
+                    g_uds_dependencies.api);
         ui_set_output_file(NULL);
         fclose(mem);
 
@@ -142,7 +145,9 @@ static void handle_stop(int fd) {
     atpd_session_emergency_drain_all();
 
     g_uds_stop_requested = 1;
-    g_running = 0;
+    if (g_uds_dependencies.shutdown_requested) {
+        *g_uds_dependencies.shutdown_requested = 1;
+    }
     if (g_uds_reactor) {
         reactor_stop(g_uds_reactor);
     }
@@ -379,14 +384,15 @@ static void uds_accept_cb(reactor_t *r, int listen_fd, uint32_t events, void *us
 
 /* ========== Init/Cleanup ========== */
 
-int uds_init(reactor_t *r, const char *path) {
+int uds_init(reactor_t *r, const char *path, const uds_dependencies_t *deps) {
     struct sockaddr_un addr;
     size_t path_len;
 
-    if (!r || !path) {
+    if (!r || !path || !deps) {
         return -1;
     }
 
+    g_uds_dependencies = *deps;
     path_len = strlen(path);
     if (path_len >= sizeof(addr.sun_path)) {
         LOG_ERROR("UDS: socket path too long: %zu (max %zu)",
@@ -462,6 +468,7 @@ void uds_cleanup(void) {
 
     g_uds_reactor = NULL;
     g_uds_stop_requested = 0;
+    memset(&g_uds_dependencies, 0, sizeof(g_uds_dependencies));
 }
 
 int uds_get_fd(void) {

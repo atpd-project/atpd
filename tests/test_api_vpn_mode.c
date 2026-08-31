@@ -1,12 +1,9 @@
 #include "api.h"
-#include "atpd_global.h"
 #include "logger.h"
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-
-atpd_global_t g_atpd;
 
 static singbox_clash_mode_status_t mock_status;
 static int set_calls;
@@ -72,12 +69,13 @@ static void set_current_mode(const char *mode) {
 
 int main(void) {
     api_ctx_t ctx = {0};
-    memset(&g_atpd, 0, sizeof(g_atpd));
-    g_config.interface.vpn_auto_mode = true;
-    snprintf(g_config.interface.vpn_target_mode,
-             sizeof(g_config.interface.vpn_target_mode), "Google VPN");
-    snprintf(g_config.interface.vpn_fallback_mode,
-             sizeof(g_config.interface.vpn_fallback_mode), "Rule");
+    atp_config_t config = {0};
+    ctx.config = &config;
+    config.interface.vpn_auto_mode = true;
+    snprintf(config.interface.vpn_target_mode,
+             sizeof(config.interface.vpn_target_mode), "Google VPN");
+    snprintf(config.interface.vpn_fallback_mode,
+             sizeof(config.interface.vpn_fallback_mode), "Rule");
 
     const char *modes[] = {"Rule", "Global", "Direct", "Google VPN"};
     mock_status.mode_count = sizeof(modes) / sizeof(modes[0]);

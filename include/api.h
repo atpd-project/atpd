@@ -10,6 +10,7 @@
 
 typedef struct api_ctx_s {
     singbox_api_ctx_t native_ctx;
+    const atp_config_t *config;
     char base_url[128];
     char secret[128];
     char default_mode[SINGBOX_CLASH_MODE_SIZE];

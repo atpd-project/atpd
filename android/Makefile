@@ -24,7 +24,6 @@ LOCAL_SRC_FILES := \
     ../src/version.c \
     ../src/atpd_context.c \
     ../src/atpd_error.c \
-    ../src/atpd_global.c \
     ../src/atpd_init.c \
     ../src/cleanup.c \
     ../src/yyjson.c

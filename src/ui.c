@@ -1,4 +1,3 @@
-#include "atpd_global.h"
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2025 ATP Project
@@ -27,6 +26,11 @@ void ui_set_output_file(FILE *fp) {
 
 /* Force disable color output */
 static int g_force_no_color = 0;
+static int g_emoji_enabled = 1;
+
+void ui_set_emoji_enabled(int enable) {
+    g_emoji_enabled = enable != 0;
+}
 
 void ui_set_no_color(int enable) {
     g_force_no_color = enable;
@@ -386,98 +390,98 @@ void ui_banner_with_version(const char *version) {
 /* ============================================ */
 
 const char* ui_emoji_ok(void) { 
-    return g_config.core.ui_emoji_enabled ? "✓" : "[OK]"; 
+    return g_emoji_enabled ? "✓" : "[OK]";
 }
 
 const char* ui_emoji_fail(void) { 
-    return g_config.core.ui_emoji_enabled ? "✗" : "[FAIL]"; 
+    return g_emoji_enabled ? "✗" : "[FAIL]";
 }
 
 const char* ui_emoji_warning(void) { 
-    return g_config.core.ui_emoji_enabled ? "⚠" : "[WARN]"; 
+    return g_emoji_enabled ? "⚠" : "[WARN]";
 }
 
 const char* ui_emoji_info(void) { 
-    return g_config.core.ui_emoji_enabled ? "ℹ" : "[INFO]"; 
+    return g_emoji_enabled ? "ℹ" : "[INFO]";
 }
 
 const char* ui_emoji_success(void) { 
-    return g_config.core.ui_emoji_enabled ? "✅" : "[OK]"; 
+    return g_emoji_enabled ? "✅" : "[OK]";
 }
 
 const char* ui_emoji_vpn(int connected) {
-    if (g_config.core.ui_emoji_enabled) {
+    if (g_emoji_enabled) {
         return connected ? "🔒" : "🔓";
     }
     return "[VPN]";
 }
 
 const char* ui_emoji_service(int running) {
-    if (g_config.core.ui_emoji_enabled) {
+    if (g_emoji_enabled) {
         return running ? "🚀" : "⏹️";
     }
     return running ? "[RUNNING]" : "[STOPPED]";
 }
 
 const char* ui_emoji_mobile(void) { 
-    return g_config.core.ui_emoji_enabled ? "📱" : "[MOBILE]"; 
+    return g_emoji_enabled ? "📱" : "[MOBILE]";
 }
 
 const char* ui_emoji_wifi(int connected) {
-    if (g_config.core.ui_emoji_enabled) {
+    if (g_emoji_enabled) {
         return connected ? "📶" : "⚠";
     }
     return "[WIFI]";
 }
 
 const char* ui_emoji_hotspot(void) { 
-    return g_config.core.ui_emoji_enabled ? "🔥" : "[HOTSPOT]"; 
+    return g_emoji_enabled ? "🔥" : "[HOTSPOT]";
 }
 
 const char* ui_emoji_usb(void) { 
-    return g_config.core.ui_emoji_enabled ? "🔌" : "[USB]"; 
+    return g_emoji_enabled ? "🔌" : "[USB]";
 }
 
 const char* ui_emoji_app_filter(void) { 
-    return g_config.core.ui_emoji_enabled ? "📱" : "[APP]"; 
+    return g_emoji_enabled ? "📱" : "[APP]";
 }
 
 const char* ui_emoji_mac_filter(void) { 
-    return g_config.core.ui_emoji_enabled ? "🔢" : "[MAC]"; 
+    return g_emoji_enabled ? "🔢" : "[MAC]";
 }
 
 const char* ui_emoji_geo_bypass(void) { 
-    return g_config.core.ui_emoji_enabled ? "🌏" : "[CN]"; 
+    return g_emoji_enabled ? "🌏" : "[CN]";
 }
 
 const char* ui_emoji_download(void) { 
-    return g_config.core.ui_emoji_enabled ? "📥" : "[RX]"; 
+    return g_emoji_enabled ? "📥" : "[RX]";
 }
 
 const char* ui_emoji_upload(void) { 
-    return g_config.core.ui_emoji_enabled ? "📤" : "[TX]"; 
+    return g_emoji_enabled ? "📤" : "[TX]";
 }
 
 const char* ui_emoji_speed_up(void) { 
-    return g_config.core.ui_emoji_enabled ? "📈" : "[RX SPD]"; 
+    return g_emoji_enabled ? "📈" : "[RX SPD]";
 }
 
 const char* ui_emoji_speed_down(void) { 
-    return g_config.core.ui_emoji_enabled ? "📉" : "[TX SPD]"; 
+    return g_emoji_enabled ? "📉" : "[TX SPD]";
 }
 
 const char* ui_emoji_temperature(void) { 
-    return g_config.core.ui_emoji_enabled ? "🌡️" : "[TEMP]"; 
+    return g_emoji_enabled ? "🌡️" : "[TEMP]";
 }
 
 const char* ui_emoji_uptime(void) { 
-    return g_config.core.ui_emoji_enabled ? "⏱️" : "[UPTIME]"; 
+    return g_emoji_enabled ? "⏱️" : "[UPTIME]";
 }
 
 const char* ui_emoji_cpu(void) { 
-    return g_config.core.ui_emoji_enabled ? "⚙️" : "[CPU]"; 
+    return g_emoji_enabled ? "⚙️" : "[CPU]";
 }
 
 const char* ui_emoji_memory(void) { 
-    return g_config.core.ui_emoji_enabled ? "💾" : "[MEM]"; 
+    return g_emoji_enabled ? "💾" : "[MEM]";
 }

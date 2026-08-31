@@ -7,7 +7,6 @@
 
 #include "config.h"
 #include "atpd_init.h"
-#include "atpd_global.h"
 #include "logger.h"
 #include "utils.h"
 #include "netlink.h"

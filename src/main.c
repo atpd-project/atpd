@@ -6,7 +6,6 @@
  */
 
 #include "atp.h"
-#include "atpd_global.h"
 #include "atpd_context.h"
 #include "atpd_init.h"
 #include "logger.h"
@@ -45,14 +44,6 @@
 #define SIGNAL_RETRY_MAX 5
 #define SIGNAL_RETRY_DELAY_US 10000
 
-#define g_config g_atpd.config
-#define g_api_ctx g_atpd.api_ctx
-#define g_reactor g_atpd.reactor
-#define g_svc g_atpd.svc
-#define g_running g_atpd.running
-#define g_reload g_atpd.reload
-#define g_show_status g_atpd.show_status
-
 static void run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
 static void on_idle(reactor_t *r, void *userdata);
@@ -62,15 +53,22 @@ static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static void daemonize(void);
 static int process_is_atpd(pid_t pid);
 
+static atp_config_t daemon_config;
+static api_ctx_t daemon_api;
+static reactor_t *daemon_reactor = NULL;
+static service_ctx_t *daemon_service = NULL;
+static volatile sig_atomic_t shutdown_requested = 0;
+static volatile sig_atomic_t reload_requested = 0;
+static volatile sig_atomic_t status_requested = 0;
 static int g_pid_fd = -1;
 
 static void resolve_socket_path(char *path, size_t size) {
-    const char *run_dir = g_config.core.run_dir[0] ? g_config.core.run_dir : ATP_RUN_DIR;
+    const char *run_dir = daemon_config.core.run_dir[0] ? daemon_config.core.run_dir : ATP_RUN_DIR;
     if (run_dir[0] == '/') {
         snprintf(path, size, "%s/atpd.sock", run_dir);
     } else {
         snprintf(path, size, "%s/%s/atpd.sock",
-                 g_config.core.data_dir[0] ? g_config.core.data_dir : ".", run_dir);
+                 daemon_config.core.data_dir[0] ? daemon_config.core.data_dir : ".", run_dir);
     }
 }
 
@@ -78,13 +76,13 @@ static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
     if (opts->pid_file[0]) {
         snprintf(pp, size, "%s", opts->pid_file);
     } else {
-        const char *configured = g_config.core.pid_file[0] ?
-            g_config.core.pid_file : ATP_PID_FILE;
+        const char *configured = daemon_config.core.pid_file[0] ?
+            daemon_config.core.pid_file : ATP_PID_FILE;
         if (configured[0] == '/') {
             snprintf(pp, size, "%s", configured);
         } else {
             snprintf(pp, size, "%s/%s",
-                     g_config.core.data_dir[0] ? g_config.core.data_dir : ".",
+                     daemon_config.core.data_dir[0] ? daemon_config.core.data_dir : ".",
                      configured);
         }
     }
@@ -216,14 +214,14 @@ static void daemonize(void) {
 static void on_signal(reactor_t *r, int sig, void *userdata) {
     (void)userdata;
     if (sig == SIGCHLD) {
-        service_sigchld_cb(r, sig, g_svc);
+        service_sigchld_cb(r, sig, daemon_service);
     } else if (sig == SIGHUP) {
         atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING);
-        g_reload = 1;
+        reload_requested = 1;
     } else if (sig == SIGUSR1) {
-        g_show_status = 1;
+        status_requested = 1;
     } else {
-        g_running = 0;
+        shutdown_requested = 1;
         reactor_stop(r);
     }
 }
@@ -234,22 +232,22 @@ static void on_idle(reactor_t *r, void *userdata) {
 
     atpd_session_gc_process(r);
 
-    if (g_reload) {
-        g_reload = 0;
+    if (reload_requested) {
+        reload_requested = 0;
         LOG_INFO("Processing config reload...");
-        atp_config_t previous_config = g_config;
-        if (config_reload(&g_config) != ATP_OK) {
+        atp_config_t previous_config = daemon_config;
+        if (config_reload(&daemon_config) != ATP_OK) {
             LOG_ERROR("Config reload failed");
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
         } else {
-            int apply_failed = g_svc && service_apply_config(g_svc, &g_config) < 0;
-            if (!apply_failed && api_init(&g_api_ctx, &g_config) < 0) {
+            int apply_failed = daemon_service && service_apply_config(daemon_service, &daemon_config) < 0;
+            if (!apply_failed && api_init(&daemon_api, &daemon_config) < 0) {
                 apply_failed = 1;
             }
             if (apply_failed) {
-                g_config = previous_config;
-                if (g_svc) service_apply_config(g_svc, &previous_config);
-                api_init(&g_api_ctx, &previous_config);
+                daemon_config = previous_config;
+                if (daemon_service) service_apply_config(daemon_service, &previous_config);
+                api_init(&daemon_api, &daemon_config);
                 LOG_ERROR("Config reload apply failed; previous configuration restored");
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
             } else {
@@ -262,13 +260,13 @@ static void on_idle(reactor_t *r, void *userdata) {
         }
     }
 
-    if (g_show_status) {
-        g_show_status = 0;
+    if (status_requested) {
+        status_requested = 0;
         LOG_INFO("Processing status display...");
-        status_show(&g_config, g_svc, &g_api_ctx);
+        status_show(&daemon_config, daemon_service, &daemon_api);
     }
 
-    if (!g_running) {
+    if (shutdown_requested) {
         LOG_INFO("Stopping reactor...");
         atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPED);
         reactor_stop(r);
@@ -332,65 +330,71 @@ static void service_stop_sync(service_ctx_t *ctx) {
 static void run_event_loop(void) {
     LOG_INFO("Initializing ATPD control-plane Reactor event loop...");
 
-    g_reactor = reactor_create();
-    if (!g_reactor) {
+    daemon_reactor = reactor_create();
+    if (!daemon_reactor) {
         LOG_ERROR("Failed to create reactor");
         return;
     }
 
-    reactor_set_signal_cb(g_reactor, on_signal);
-    reactor_set_idle_cb(g_reactor, on_idle);
+    reactor_set_signal_cb(daemon_reactor, on_signal);
+    reactor_set_idle_cb(daemon_reactor, on_idle);
 
     const int watched_signals[] = { SIGTERM, SIGINT, SIGHUP, SIGUSR1, SIGCHLD };
     for (size_t i = 0; i < sizeof(watched_signals) / sizeof(watched_signals[0]); i++) {
-        if (reactor_watch_signal(g_reactor, watched_signals[i]) != 0) {
+        if (reactor_watch_signal(daemon_reactor, watched_signals[i]) != 0) {
             LOG_WARN("Failed to watch signal %d", watched_signals[i]);
         }
     }
 
     int nl_fd = netlink_get_fd();
     if (nl_fd >= 0) {
-        reactor_add_fd(g_reactor, nl_fd, REACTOR_EVENT_READ, netlink_handle_event, NULL);
+        reactor_add_fd(daemon_reactor, nl_fd, REACTOR_EVENT_READ, netlink_handle_event, NULL);
     }
 
-    netlink_set_reactor(g_reactor);
-    netlink_xfrm_init(g_reactor);
+    netlink_set_reactor(daemon_reactor);
+    netlink_xfrm_init(daemon_reactor);
 
-    if (g_svc) {
-        service_set_reactor(g_svc, g_reactor);
+    if (daemon_service) {
+        service_set_reactor(daemon_service, daemon_reactor);
     }
 
     char uds_path[SAFE_PATH_MAX];
     resolve_socket_path(uds_path, sizeof(uds_path));
-    if (uds_init(g_reactor, uds_path) < 0) {
+    uds_dependencies_t uds_dependencies = {
+        .config = &daemon_config,
+        .service = daemon_service,
+        .api = &daemon_api,
+        .shutdown_requested = &shutdown_requested
+    };
+    if (uds_init(daemon_reactor, uds_path, &uds_dependencies) < 0) {
         LOG_WARN("Failed to initialize UDS command socket");
     }
 
-    if (service_start_async(g_svc) < 0) {
+    if (service_start_async(daemon_service) < 0) {
         LOG_ERROR("Failed to start service");
-        reactor_destroy(g_reactor);
-        g_reactor = NULL;
+        reactor_destroy(daemon_reactor);
+        daemon_reactor = NULL;
         return;
     }
 
     /* Reconcile an already-present VPN after sing-box has been spawned. */
-    netlink_refresh_state(g_reactor);
+    netlink_refresh_state(daemon_reactor);
 
-    g_running = 1;
+    shutdown_requested = 0;
 #if defined(__GLIBC__) && !defined(__ANDROID__)
     malloc_trim(0);
 #endif
     LOG_INFO("ATPD control-plane Reactor running, entering event loop");
-    reactor_run(g_reactor);
+    reactor_run(daemon_reactor);
 
     LOG_INFO("Reactor exited, cleaning up...");
-    atpd_session_gc_process(g_reactor);
+    atpd_session_gc_process(daemon_reactor);
     uds_cleanup();
-    service_stop_sync(g_svc);
+    service_stop_sync(daemon_service);
 
-    if (g_reactor) {
-        reactor_destroy(g_reactor);
-        g_reactor = NULL;
+    if (daemon_reactor) {
+        reactor_destroy(daemon_reactor);
+        daemon_reactor = NULL;
     }
 }
 
@@ -400,11 +404,11 @@ static int do_start(atp_options_t *opts) {
     bool pid_written = false;
 
     atpd_init_context_t init_ctx = {
-        .config = &g_config,
+        .config = &daemon_config,
         .ctx = &g_atpd_ctx,
         .reactor = NULL,
         .service = NULL,
-        .api = &g_api_ctx,
+        .api = &daemon_api,
         .opts = opts
     };
 
@@ -429,7 +433,7 @@ static int do_start(atp_options_t *opts) {
         goto cleanup;
     }
 
-    g_svc = init_ctx.service;
+    daemon_service = init_ctx.service;
     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
 
     LOG_INFO("ATPD control plane active; sing-box owns the ebpf-in datapath");
@@ -440,10 +444,10 @@ static int do_start(atp_options_t *opts) {
 cleanup:
     netlink_cleanup();
     uds_cleanup();
-    api_cleanup(&g_api_ctx);
-    if (g_svc) {
-        free(g_svc);
-        g_svc = NULL;
+    api_cleanup(&daemon_api);
+    if (daemon_service) {
+        free(daemon_service);
+        daemon_service = NULL;
     }
 
 cleanup_return:
@@ -562,13 +566,13 @@ static int do_status(atp_options_t *opts) {
     /* 2. Standalone Fallback: Offline inspection when daemon is stopped */
     service_ctx_t local_svc;
     memset(&local_svc, 0, sizeof(local_svc));
-    service_init(&local_svc, &g_config);
+    service_init(&local_svc, &daemon_config);
 
     api_ctx_t local_api;
     memset(&local_api, 0, sizeof(local_api));
-    api_init(&local_api, &g_config);
+    api_init(&local_api, &daemon_config);
 
-    status_show(&g_config, &local_svc, &local_api);
+    status_show(&daemon_config, &local_svc, &local_api);
     return 0;
 }
 
@@ -608,7 +612,7 @@ static int do_reload(atp_options_t *opts) {
 static int do_check(atp_options_t *opts) {
     (void)opts;
     printf("Validating ATPD configuration...\n");
-    if (config_validate_values(&g_config) == 0) {
+    if (config_validate_values(&daemon_config) == 0) {
         printf("Configuration is valid\n");
         return 0;
     } else {
@@ -625,19 +629,19 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    config_set_defaults(&g_config);
+    config_set_defaults(&daemon_config);
     char auto_cfg_path[PATH_MAX];
     const char *cfg_path = opts.config_file[0] ? opts.config_file : NULL;
     if (!cfg_path) {
         if (snprintf(auto_cfg_path, sizeof(auto_cfg_path), "%s/%s",
-                     g_config.core.data_dir, ATP_CONF_FILE) >= (int)sizeof(auto_cfg_path)) {
+                     daemon_config.core.data_dir, ATP_CONF_FILE) >= (int)sizeof(auto_cfg_path)) {
             fprintf(stderr, "Configuration path is too long\n");
             return 1;
         }
         cfg_path = auto_cfg_path;
     }
     if (access(cfg_path, R_OK) == 0) {
-        if (config_load(cfg_path, &g_config) != ATP_OK) {
+        if (config_load(cfg_path, &daemon_config) != ATP_OK) {
             fprintf(stderr, "Invalid configuration: %s\n", cfg_path);
             return 1;
         }

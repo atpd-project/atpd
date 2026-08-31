@@ -1,4 +1,3 @@
-#include "atpd_global.h"
 /*
  * ATP - Advanced Transparent Proxy
  * Copyright (C) 2024-2026 ATP Project
@@ -22,6 +21,7 @@ static reactor_t *g_api_reactor = NULL;
 int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     if (!ctx) return -1;
     memset(ctx, 0, sizeof(api_ctx_t));
+    ctx->config = cfg;
 
     singbox_api_init(&ctx->native_ctx, cfg);
 
@@ -91,7 +91,7 @@ void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata)
     api_ctx_t *ctx = userdata;
     if (!ctx) return;
 
-    if (!g_config.interface.vpn_auto_mode) {
+    if (!ctx->config || !ctx->config->interface.vpn_auto_mode) {
         return;
     }
 
@@ -100,10 +100,10 @@ void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata)
         return;
     }
 
-    const char *target_mode = g_config.interface.vpn_target_mode[0] ?
-                              g_config.interface.vpn_target_mode : "Google VPN";
-    const char *fallback_mode = g_config.interface.vpn_fallback_mode[0] ?
-                                g_config.interface.vpn_fallback_mode : "Rule";
+    const char *target_mode = ctx->config->interface.vpn_target_mode[0] ?
+                              ctx->config->interface.vpn_target_mode : "Google VPN";
+    const char *fallback_mode = ctx->config->interface.vpn_fallback_mode[0] ?
+                                ctx->config->interface.vpn_fallback_mode : "Rule";
 
     singbox_clash_mode_status_t status;
     if (singbox_api_get_clash_mode_status(&ctx->native_ctx, &status) != 0) {
