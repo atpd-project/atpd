@@ -41,6 +41,7 @@
 - Step 17: Session refcount/state transitions are terminal-safe; registry close-all uses a dynamic snapshot and deferred GC.
 - Step 18: Session remains the production splice datapath owner; standalone splice helpers are utility-only and retry EINTR safely.
 - Step 19: Async validation owns one child-reap path and drains validator output before completing callbacks.
+- Step 20: UDS owns bounded client state, buffered responses, idle cleanup, peer checks, and safe socket-path replacement.
 
 ## Update rule
 
