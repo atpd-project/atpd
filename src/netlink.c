@@ -290,6 +290,8 @@ int netlink_init(nl_callback_t callback, void *userdata) {
     if (g_async_fd < 0) {
         close(g_sync_fd);
         g_sync_fd = -1;
+        g_callback = NULL;
+        g_userdata = NULL;
         pthread_mutex_unlock(&g_nl_mutex);
         return -1;
     }
@@ -302,7 +304,10 @@ int netlink_init(nl_callback_t callback, void *userdata) {
 int netlink_xfrm_init(reactor_t *r) {
     if (g_xfrm_fd >= 0) {
         if (r && !atomic_load(&g_xfrm_registered)) {
-            reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
+            if (reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL) != 0) {
+                LOG_ERROR("[XFRM] failed to register existing listener with reactor");
+                return -1;
+            }
             g_xfrm_reactor = r;
             atomic_store(&g_xfrm_registered, 1);
         }
@@ -332,7 +337,12 @@ int netlink_xfrm_init(reactor_t *r) {
     g_xfrm_fd = fd;
 
     if (r) {
-        reactor_add_fd(r, fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
+        if (reactor_add_fd(r, fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL) != 0) {
+            LOG_ERROR("[XFRM] failed to register listener with reactor");
+            close(fd);
+            g_xfrm_fd = -1;
+            return -1;
+        }
         g_xfrm_reactor = r;
         atomic_store(&g_xfrm_registered, 1);
     }
@@ -569,9 +579,12 @@ void netlink_set_reactor(reactor_t *r) {
     g_debounce_reactor = r;
 
     if (g_xfrm_fd >= 0 && r && !atomic_load(&g_xfrm_registered)) {
-        reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL);
-        g_xfrm_reactor = r;
-        atomic_store(&g_xfrm_registered, 1);
+        if (reactor_add_fd(r, g_xfrm_fd, REACTOR_EVENT_READ, netlink_xfrm_event_cb, NULL) == 0) {
+            g_xfrm_reactor = r;
+            atomic_store(&g_xfrm_registered, 1);
+        } else {
+            LOG_ERROR("[XFRM] failed to register listener with reactor");
+        }
     }
 }
 
