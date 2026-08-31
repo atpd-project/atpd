@@ -39,6 +39,7 @@
 - Step 15: API context is a thin control facade with no duplicated transport configuration or reactor ownership.
 - Step 16: Netlink owns XFRM FD registration and only publishes successful attachment state.
 - Step 17: Session refcount/state transitions are terminal-safe; registry close-all uses a dynamic snapshot and deferred GC.
+- Step 18: Session remains the production splice datapath owner; standalone splice helpers are utility-only and retry EINTR safely.
 
 ## Update rule
 

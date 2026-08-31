@@ -137,6 +137,7 @@ ssize_t atpd_bridge_splice_stateful(int fd_in, int fd_out,
                                SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
 
             if (n < 0) {
+                if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     if (drained > 0) {
                         state->pipe_pending -= drained;
@@ -213,8 +214,11 @@ ssize_t atpd_bridge_splice_stateful(int fd_in, int fd_out,
 
         LOG_DEBUG("[SPLICE] reading from fd_in: %zu bytes", read_chunk);
 
-        ssize_t n = splice(fd_in, NULL, state->pipe_fds[1], NULL,
-                           read_chunk, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+        ssize_t n;
+        do {
+            n = splice(fd_in, NULL, state->pipe_fds[1], NULL,
+                       read_chunk, SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
+        } while (n < 0 && errno == EINTR);
 
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -264,6 +268,7 @@ ssize_t atpd_bridge_splice_stateful(int fd_in, int fd_out,
                                SPLICE_F_MOVE | SPLICE_F_NONBLOCK);
 
             if (n < 0) {
+                if (errno == EINTR) continue;
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     if (written > 0) {
                         state->pipe_pending -= written;
