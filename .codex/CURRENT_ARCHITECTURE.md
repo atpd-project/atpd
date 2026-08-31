@@ -36,6 +36,7 @@
 - Step 12: Reactor initialization and signal replacement are transactional; cached FD interests follow successful kernel updates.
 - Step 13: Service stop/reap is the sole child lifecycle owner; async stop uses one bounded reactor timer path.
 - Step 14: Native API transport reports unavailable/unsupported operations explicitly; process lifecycle remains service-owned.
+- Step 15: API context is a thin control facade with no duplicated transport configuration or reactor ownership.
 
 ## Update rule
 

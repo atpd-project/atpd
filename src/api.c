@@ -23,15 +23,6 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
 
     if (singbox_api_init(&ctx->native_ctx, cfg) != 0) return -1;
 
-    snprintf(ctx->base_url, sizeof(ctx->base_url), "http://%s:%d",
-             ctx->native_ctx.host, ctx->native_ctx.port);
-
-    if (ctx->native_ctx.secret[0]) {
-        snprintf(ctx->secret, sizeof(ctx->secret), "%s", ctx->native_ctx.secret);
-    }
-
-    ctx->timeout_sec = 2;
-
     LOG_INFO("sing-box Native API dispatcher ready on %s:%d",
              ctx->native_ctx.host, ctx->native_ctx.port);
     return 0;
