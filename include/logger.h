@@ -46,7 +46,6 @@ typedef enum {
 typedef enum {
     LOG_TARGET_STDERR = 1 << 0,
     LOG_TARGET_FILE   = 1 << 1,
-    LOG_TARGET_SYSLOG = 1 << 2,
 } log_target_t;
 
 typedef struct {
@@ -54,7 +53,6 @@ typedef struct {
     char log_file[256];
     uint32_t targets;
     int enable_color;
-    int enable_timestamp;
     size_t max_file_size;
     int rotate_count;
     pthread_mutex_t mutex;
@@ -85,23 +83,23 @@ void log_write_v(log_level_t level, const char *file, int line, const char *func
 #endif
 
 #define LOG_DEBUG(fmt, ...) do { \
-    log_write(LOG_LEVEL_DEBUG, __FILE__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__); \
+    log_write(LOG_LEVEL_DEBUG, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); \
 } while(0)
 
 #define LOG_INFO(fmt, ...) do { \
-    log_write(LOG_LEVEL_INFO, __FILE__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__); \
+    log_write(LOG_LEVEL_INFO, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); \
 } while(0)
 
 #define LOG_WARN(fmt, ...) do { \
-    log_write(LOG_LEVEL_WARN, __FILE__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__); \
+    log_write(LOG_LEVEL_WARN, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); \
 } while(0)
 
 #define LOG_ERROR(fmt, ...) do { \
-    log_write(LOG_LEVEL_ERROR, __FILE__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__); \
+    log_write(LOG_LEVEL_ERROR, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); \
 } while(0)
 
 #define LOG_FATAL(fmt, ...) do { \
-    log_write(LOG_LEVEL_FATAL, __FILE__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__); \
+    log_write(LOG_LEVEL_FATAL, __FILE__, __LINE__, __func__, fmt, ##__VA_ARGS__); \
 } while(0)
 
 #define LOG_SERVICE(level, fmt, ...) do { \

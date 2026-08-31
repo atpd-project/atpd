@@ -36,7 +36,6 @@ log_config_t g_log_config = {
     .min_level = LOG_LEVEL_INFO,
     .targets = LOG_TARGET_STDERR | LOG_TARGET_FILE,
     .log_file = "",
-    .enable_timestamp = 1,
     .enable_color = 1,
     .max_file_size = 10 * 1024 * 1024,
     .rotate_count = 5,
@@ -45,16 +44,18 @@ log_config_t g_log_config = {
 
 #ifdef __ANDROID__
 static int (*atpd_log_print)(int prio, const char *tag, const char *fmt, ...) = NULL;
-static int atpd_log_initialized = 0;
+static pthread_once_t atpd_log_once = PTHREAD_ONCE_INIT;
 
-static void atpd_log_init(void) {
-    if (atpd_log_initialized) return;
-    atpd_log_initialized = 1;
+static void atpd_log_init_once(void) {
     void *handle = dlopen("liblog.so", RTLD_LAZY);
     if (handle) {
         atpd_log_print = (int (*)(int, const char *, const char *, ...))
             dlsym(handle, "__android_log_print");
     }
+}
+
+static void atpd_log_init(void) {
+    pthread_once(&atpd_log_once, atpd_log_init_once);
 }
 
 static int android_log_level(log_level_t level) {
@@ -84,6 +85,10 @@ static const char *level_colors[] = {
     [LOG_LEVEL_ERROR] = COLOR_RED,
     [LOG_LEVEL_FATAL] = COLOR_RED COLOR_BOLD
 };
+
+static int log_level_is_emittable(log_level_t level) {
+    return level >= LOG_LEVEL_DEBUG && level <= LOG_LEVEL_FATAL;
+}
 
 static void get_timestamp(char *buf, size_t size) {
     time_t now = time(NULL);
@@ -190,12 +195,14 @@ void logger_close(void) {
 }
 
 void log_set_level(log_level_t level) {
+    if (level < LOG_LEVEL_DEBUG || level > LOG_LEVEL_NONE) return;
     pthread_mutex_lock(&g_log_config.mutex);
     g_log_config.min_level = level;
     pthread_mutex_unlock(&g_log_config.mutex);
 }
 
 void log_set_target(int targets) {
+    targets &= LOG_TARGET_STDERR | LOG_TARGET_FILE;
     pthread_mutex_lock(&g_log_config.mutex);
     g_log_config.targets = targets;
     if ((targets & LOG_TARGET_FILE) && !g_log_fp && g_log_config.log_file[0]) {
@@ -264,7 +271,11 @@ static void log_write_file_unlocked(log_level_t level, const char *file, int lin
 
 void log_write_v(log_level_t level, const char *file, int line, const char *func,
                  const char *fmt, va_list args) {
-    if (level < g_log_config.min_level) return;
+    log_level_t min_level;
+    pthread_mutex_lock(&g_log_config.mutex);
+    min_level = g_log_config.min_level;
+    pthread_mutex_unlock(&g_log_config.mutex);
+    if (!log_level_is_emittable(level) || level < min_level) return;
 
     char msg[MAX_LOG_MSG];
     vsnprintf(msg, sizeof(msg), fmt, args);
@@ -311,8 +322,6 @@ void log_write_v(log_level_t level, const char *file, int line, const char *func
 
 void log_write(log_level_t level, const char *file, int line, const char *func,
                const char *fmt, ...) {
-    if (level < g_log_config.min_level) return;
-
     va_list args;
     va_start(args, fmt);
     log_write_v(level, file, line, func, fmt, args);
@@ -320,5 +329,9 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
 }
 
 log_level_t log_get_level(void) {
-    return g_log_config.min_level;
+    log_level_t level;
+    pthread_mutex_lock(&g_log_config.mutex);
+    level = g_log_config.min_level;
+    pthread_mutex_unlock(&g_log_config.mutex);
+    return level;
 }
