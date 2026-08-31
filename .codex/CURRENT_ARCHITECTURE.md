@@ -46,6 +46,7 @@
 - Step 22: Logger validates emitted levels, synchronizes threshold access, and exposes only implemented sinks.
 - Step 23: Utility command execution is bounded and shell-free; process ownership and proc metrics use starttime-aware identity.
 - Step 24: CLI parsing is a pure, strict typed boundary; paths reject truncation, conflicts/trailing arguments fail, and CLI types do not depend on logger internals.
+- Step 25: Status collection has a bounded owner-snapshot boundary; render paths do not synchronously poll Native API or invent eBPF metrics.
 
 ## Update rule
 
