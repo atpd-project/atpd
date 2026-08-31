@@ -22,6 +22,8 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/time.h>
 
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
 #define THERMAL_TEMP_WARN 75000
@@ -82,6 +84,28 @@ static void format_speed(char *buf, size_t size, unsigned long long bytes_per_se
     }
 }
 
+int status_collect_snapshot(const atp_config_t *cfg, service_ctx_t *svc,
+                            status_snapshot_t *out) {
+    (void)cfg;
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    out->collected_at_ms = (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_usec / 1000u;
+    out->atpd_pid = getpid();
+    out->atpd_uptime_sec = get_process_uptime_sec(out->atpd_pid);
+    out->atpd_fd_count = get_process_fd_count(out->atpd_pid);
+    out->atpd_thread_count = get_process_threads(out->atpd_pid);
+    out->singbox_pid = service_get_pid(svc);
+    if (out->singbox_pid <= 0) out->singbox_pid = get_pid_by_name("sing-box");
+    if (out->singbox_pid > 0) {
+        out->singbox_uptime_sec = get_process_uptime_sec(out->singbox_pid);
+        out->singbox_fd_count = get_process_fd_count(out->singbox_pid);
+        out->singbox_thread_count = get_process_threads(out->singbox_pid);
+    }
+    return 0;
+}
+
 static int get_cpu_temperature(void) {
     DIR *dir;
     struct dirent *entry;
@@ -115,11 +139,8 @@ static int get_cpu_temperature(void) {
     return -1;
 }
 
-static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
-    int pid = service_get_pid(svc);
-    if (pid <= 0) {
-        pid = get_pid_by_name("sing-box");
-    }
+static void status_show_proxy_core(const status_snapshot_t *snapshot) {
+    int pid = snapshot ? snapshot->singbox_pid : 0;
 
     char uptime_str[64] = "N/A";
     char mem_str[32] = "N/A";
@@ -145,7 +166,7 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
 
     singbox_status_t core_status;
     memset(&core_status, 0, sizeof(core_status));
-    int core_status_ok = api && api_get_status_sync(api, &core_status) == 0;
+    int core_status_ok = 0;
 
     double cpu = get_process_cpu_percent(pid);
     int threads = get_process_threads(pid);
@@ -176,9 +197,7 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
     }
 
     /* Version is authoritative only when returned by StartedService.GetVersion. */
-    if (!api || api_get_version_sync(api, version_str, sizeof(version_str)) != 0 || !version_str[0]) {
-        snprintf(version_str, sizeof(version_str), "unknown");
-    }
+    snprintf(version_str, sizeof(version_str), "N/A (snapshot unavailable)");
 
     ui_table_row_color(ui_emoji_service(1), "sing-box", COLOR_GREEN);
     ui_table_subrow_int("├─", "PID", pid);
@@ -199,16 +218,14 @@ static void status_show_proxy_core(service_ctx_t *svc, api_ctx_t *api) {
     ui_table_end();
 }
 
-static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_config_t *cfg) {
+static void status_show_proxy_mode(api_ctx_t *api, const status_snapshot_t *snapshot, atp_config_t *cfg) {
+    (void)api;
     char current_mode[64] = {0};
 
     ui_table_begin();
     ui_table_header("NATIVE API & MODE");
 
-    int pid = service_get_pid(svc);
-    if (pid <= 0) {
-        pid = get_pid_by_name("sing-box");
-    }
+    int pid = snapshot ? snapshot->singbox_pid : 0;
 
     if (pid <= 0) {
         ui_table_row_color("STATUS", "N/A (service stopped)", COLOR_YELLOW);
@@ -223,7 +240,7 @@ static void status_show_proxy_mode(api_ctx_t *api, service_ctx_t *svc, atp_confi
     snprintf(api_info, sizeof(api_info), "Native API (Port %d)", port);
     ui_table_subrow_color("├─", "API Engine", api_info, COLOR_GREEN);
 
-    if (api && api_get_mode_sync(api, current_mode, sizeof(current_mode)) == 0 && current_mode[0]) {
+    if (current_mode[0]) {
         const char *color = COLOR_GREEN;
         if (strcmp(current_mode, "Rule") == 0) color = COLOR_CYAN;
         else if (strcmp(current_mode, "Global") == 0) color = COLOR_YELLOW;
@@ -619,10 +636,13 @@ void status_show(atp_config_t *cfg, service_ctx_t *svc, api_ctx_t *api) {
     ui_set_emoji_enabled(cfg ? cfg->core.ui_emoji_enabled : 1);
     ui_title("ATPD Status");
 
-    status_show_proxy_core(svc, api);
+    status_snapshot_t snapshot;
+    status_collect_snapshot(cfg, svc, &snapshot);
+
+    status_show_proxy_core(&snapshot);
     ui_blank();
 
-    status_show_proxy_mode(api, svc, cfg);
+    status_show_proxy_mode(api, &snapshot, cfg);
     ui_blank();
 
     status_show_monitors(cfg);
