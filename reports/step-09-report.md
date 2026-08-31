@@ -38,4 +38,4 @@ Deferred TODOs:
 - Step 10 retains responsibility for deterministic init/shutdown/rollback ordering.
 - Step 11 retains responsibility for slimming main lifecycle orchestration and publishing STOPPED after teardown.
 
-Commit hash: recorded after implementation commit.
+Commit hash: `7102e6f`.

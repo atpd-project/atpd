@@ -30,6 +30,7 @@
 - Step 06: Reload validates and merges a stack candidate before commit; active config/runtime are retained on failure and reload generation advances only after successful apply.
 - Step 07: ATPD-owned eBPF files/sys_bpf probing removed; sing-box is sole ebpf-in owner.
 - Step 08: atpd_global container and aliases removed; daemon orchestration owns explicit private dependencies and request flags.
+- Step 09: atpd_context is opaque and only owns lifecycle/VPN snapshots; session, XFRM, readiness, statistics, and error state remain with their subsystem owners.
 
 ## Update rule
 
