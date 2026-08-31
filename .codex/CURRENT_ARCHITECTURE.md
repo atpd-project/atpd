@@ -49,6 +49,7 @@
 - Step 25: Status collection has a bounded owner-snapshot boundary; render paths do not synchronously poll Native API or invent eBPF metrics.
 - Step 26: UI rendering centralizes ANSI filtering, keeps UDS status plain, and truncates UTF-8 at codepoint boundaries.
 - Step 27: CLI and UI implementation units no longer depend on the legacy `atp.h` umbrella; no replacement umbrella header exists.
+- Step 28: Lifecycle failure paths explicitly handle timer/FD registration failures and retain child ownership until reap.
 
 ## Update rule
 
