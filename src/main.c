@@ -662,6 +662,7 @@ int main(int argc, char *argv[]) {
         print_usage(argv[0]);
         return 0;
     }
+    ui_set_no_color(opts.no_color);
 
     config_set_defaults(&daemon_config);
     char auto_cfg_path[PATH_MAX];

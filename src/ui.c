@@ -16,16 +16,55 @@
 
 /* Custom output stream support (for UDS buffer or stdout) */
 static FILE *g_ui_out = NULL;
+static int g_force_no_color = 0;
 #define OUT_FP (g_ui_out ? g_ui_out : stdout)
-#define printf(...) fprintf(OUT_FP, __VA_ARGS__)
-#define vprintf(...) vfprintf(OUT_FP, __VA_ARGS__)
+
+static void ui_write_plain(const char *text, size_t len) {
+    if (!g_force_no_color) {
+        fwrite(text, 1, len, OUT_FP);
+        return;
+    }
+    size_t start = 0;
+    for (size_t i = 0; i < len; i++) {
+        if ((unsigned char)text[i] == 0x1b && i + 1 < len && text[i + 1] == '[') {
+            if (i > start) fwrite(text + start, 1, i - start, OUT_FP);
+            i += 2;
+            while (i < len && text[i] != 'm') i++;
+            start = i < len ? i + 1 : len;
+        }
+    }
+    if (start < len) fwrite(text + start, 1, len - start, OUT_FP);
+}
+
+static void ui_printf(const char *fmt, ...) {
+    char buf[4096];
+    va_list args;
+    va_start(args, fmt);
+    int len = vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    if (len > 0) {
+        size_t out_len = (size_t)len < sizeof(buf) ? (size_t)len : sizeof(buf) - 1;
+        ui_write_plain(buf, out_len);
+    }
+}
+
+static void ui_vprintf(const char *fmt, va_list args) {
+    char buf[4096];
+    int len = vsnprintf(buf, sizeof(buf), fmt, args);
+    if (len > 0) {
+        size_t out_len = (size_t)len < sizeof(buf) ? (size_t)len : sizeof(buf) - 1;
+        ui_write_plain(buf, out_len);
+    }
+}
+
+#define printf(...) ui_printf(__VA_ARGS__)
+#define vprintf(...) ui_vprintf(__VA_ARGS__)
 
 void ui_set_output_file(FILE *fp) {
     g_ui_out = fp;
 }
 
-/* Force disable color output */
-static int g_force_no_color = 0;
+/* Presentation preferences. */
 static int g_emoji_enabled = 1;
 
 void ui_set_emoji_enabled(int enable) {
@@ -34,6 +73,10 @@ void ui_set_emoji_enabled(int enable) {
 
 void ui_set_no_color(int enable) {
     g_force_no_color = enable;
+}
+
+int ui_get_no_color(void) {
+    return g_force_no_color;
 }
 
 /* External global configuration */
@@ -93,13 +136,25 @@ static int get_label_width(void) {
 
 /* Helper: truncate string to fit width */
 static void truncate_string(const char *src, char *dst, int max_len) {
-    int len = strlen(src);
+    if (!src || !dst || max_len <= 0) {
+        if (dst) dst[0] = '\0';
+        return;
+    }
+    int len = (int)strlen(src);
     if (len <= max_len) {
         strcpy(dst, src);
     } else if (max_len > 3) {
-        strncpy(dst, src, max_len - 3);
-        dst[max_len - 3] = '\0';
-        strcat(dst, "...");
+        int keep = max_len - 3;
+        int used = 0;
+        while (used < keep && src[used]) {
+            unsigned char c = (unsigned char)src[used];
+            int width = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 :
+                        (c & 0xf0) == 0xe0 ? 3 : (c & 0xf8) == 0xf0 ? 4 : 1;
+            if (used + width > keep || used + width > len) break;
+            used += width;
+        }
+        memcpy(dst, src, (size_t)used);
+        memcpy(dst + used, "...", 4);
     } else {
         dst[0] = '\0';
     }
