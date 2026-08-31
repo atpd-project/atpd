@@ -50,6 +50,7 @@
 - Step 26: UI rendering centralizes ANSI filtering, keeps UDS status plain, and truncates UTF-8 at codepoint boundaries.
 - Step 27: CLI and UI implementation units no longer depend on the legacy `atp.h` umbrella; no replacement umbrella header exists.
 - Step 28: Lifecycle failure paths explicitly handle timer/FD registration failures and retain child ownership until reap.
+- Step 29: Resource regression scripts record memory/FD/thread baseline and recovery, enforce growth gates, and clean only test-owned processes/resources.
 
 ## Update rule
 
