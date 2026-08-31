@@ -380,7 +380,9 @@ static void uds_client_cb(reactor_t *r, int fd, uint32_t events, void *userdata)
             if (client->input_len == sizeof(client->input) - 1) {
                 client_queue_string(client, "ERROR: command too long\n");
                 client->state = UDS_CLIENT_WRITING;
-                reactor_modify_fd(r, fd, REACTOR_EVENT_WRITE | REACTOR_EVENT_EDGE);
+                if (reactor_modify_fd(r, fd, REACTOR_EVENT_WRITE | REACTOR_EVENT_EDGE) != 0) {
+                    uds_client_close(r, client);
+                }
                 return;
             }
             continue;

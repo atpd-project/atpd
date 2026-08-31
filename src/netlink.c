@@ -614,6 +614,9 @@ static void trigger_network_refresh_delay(reactor_t *r, int delay_ms) {
         g_debounce_timer = NULL;
     }
     g_debounce_timer = reactor_add_timer(r, delay_ms, 0, debounce_timer_cb, NULL);
+    if (!g_debounce_timer) {
+        LOG_ERROR("Netlink: failed to schedule refresh timer");
+    }
     pthread_mutex_unlock(&g_debounce_lock);
 }
 

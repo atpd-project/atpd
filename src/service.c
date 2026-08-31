@@ -612,7 +612,8 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
     if (state->attempts >= state->max_attempts) {
         LOG_ERROR("Service: stop timeout, forcing kill");
         kill(ctx->child_pid, SIGKILL);
-        waitpid(ctx->child_pid, NULL, WNOHANG);
+        while (waitpid(ctx->child_pid, NULL, 0) < 0 && errno == EINTR) {
+        }
         ctx->child_pid = -1;
         ctx->child_starttime_ticks = 0;
         ctx->validated_pid = 0;
@@ -626,7 +627,12 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
         return;
     }
 
-    reactor_add_timer(r, 100, 0, service_stop_wait_cb, state);
+    if (!reactor_add_timer(r, 100, 0, service_stop_wait_cb, state)) {
+        LOG_ERROR("Service: failed to schedule stop retry; forcing synchronous cleanup");
+        free(state);
+        service_stop_sync(ctx);
+        return;
+    }
 }
 
 static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
@@ -672,6 +678,10 @@ void service_schedule_retry(service_ctx_t *ctx) {
     }
     ctx->retry_timer = reactor_add_timer(ctx->reactor, delay, 0,
                                           service_delayed_spawn_cb, ctx);
+    if (!ctx->retry_timer) {
+        LOG_ERROR("Service: failed to schedule retry");
+        ctx->state = SERVICE_FAILED;
+    }
 }
 
 void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
@@ -774,6 +784,8 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                     } else {
                         LOG_WARN("Service: PID %d validation failed, killing", ctx->child_pid);
                         kill(ctx->child_pid, SIGKILL);
+                        while (waitpid(ctx->child_pid, NULL, 0) < 0 && errno == EINTR) {
+                        }
                         ctx->child_pid = -1;
                     }
                 }
@@ -800,6 +812,10 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                             ctx->reactor, ctx->health_check_interval_ms,
                             ctx->health_check_interval_ms,
                             service_health_check_cb, ctx);
+                        if (!ctx->health_timer) {
+                            LOG_ERROR("Service: failed to schedule health timer");
+                            ctx->state = SERVICE_FAILED;
+                        }
                     }
                 }
             } else {
@@ -939,6 +955,11 @@ int service_apply_config(service_ctx_t *ctx, const atp_config_t *cfg) {
         ctx->health_timer = reactor_add_timer(ctx->reactor, ctx->health_check_interval_ms,
                                                ctx->health_check_interval_ms,
                                                service_health_check_cb, ctx);
+        if (!ctx->health_timer) {
+            LOG_ERROR("Service: failed to recreate health timer");
+            ctx->state = SERVICE_FAILED;
+            return -1;
+        }
     }
     return 0;
 }
