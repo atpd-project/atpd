@@ -15,8 +15,6 @@ typedef enum {
     ATPD_ERR_SERVICE_START,
     ATPD_ERR_SERVICE_STOP,
     ATPD_ERR_NETLINK_INIT,
-    ATPD_ERR_APP_FILTER,
-    ATPD_ERR_GEOIP_UPDATE,
     ATPD_ERR_IPC,
     ATPD_ERR_TIMEOUT,
     ATPD_ERR_MEMORY,
@@ -47,12 +45,13 @@ void atpd_error_init(void);
 void atpd_error_push(atpd_error_code_t code, const char *msg, const char *file, int line, const char *func);
 void atpd_error_clear(void);
 int atpd_error_count(void);
-const atpd_error_entry_t* atpd_error_get(int index);
-const atpd_error_entry_t* atpd_error_get_last(void);
+int atpd_error_get(int index, atpd_error_entry_t *out);
+int atpd_error_get_last(atpd_error_entry_t *out);
 void atpd_error_print_all(void);
 uint64_t atpd_error_total(void);
+const char *atpd_error_code_string(atpd_error_code_t code);
 
 #define ATPD_ERROR(code, msg) \
-    atpd_error_push(code, msg, __FILE__, __LINE__, __FUNCTION__)
+    atpd_error_push(code, msg, __FILE__, __LINE__, __func__)
 
 #endif
