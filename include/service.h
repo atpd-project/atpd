@@ -33,12 +33,6 @@ typedef struct {
 } service_stop_state_t;
 
 typedef struct {
-    service_ctx_t *ctx;
-    int attempts;
-    int max_attempts;
-} kill_state_t;
-
-typedef struct {
     int consecutive_failures;
     int threshold;
     int cooldown_seconds;
