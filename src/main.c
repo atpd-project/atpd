@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -40,12 +41,14 @@
 #endif
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
+#define DAEMON_PARENT_SUCCESS 1
+#define DAEMON_PARENT_FAILURE 2
 static int run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
 static void on_idle(reactor_t *r, void *userdata);
 static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
-static void daemonize(void);
+static int daemonize(void);
 static int process_is_atpd(pid_t pid);
 
 static atp_config_t daemon_config;
@@ -56,6 +59,23 @@ static volatile sig_atomic_t shutdown_requested = 0;
 static volatile sig_atomic_t reload_requested = 0;
 static volatile sig_atomic_t status_requested = 0;
 static int g_pid_fd = -1;
+static int g_startup_notify_fd = -1;
+static bool g_startup_notified = false;
+
+static void notify_startup(int result) {
+    if (g_startup_notified || g_startup_notify_fd < 0) return;
+
+    unsigned char status = result == 0 ? 0 : 1;
+    for (;;) {
+        ssize_t written = write(g_startup_notify_fd, &status, sizeof(status));
+        if (written == (ssize_t)sizeof(status)) break;
+        if (written < 0 && errno == EINTR) continue;
+        break;
+    }
+    close(g_startup_notify_fd);
+    g_startup_notify_fd = -1;
+    g_startup_notified = true;
+}
 
 static void resolve_socket_path(char *path, size_t size) {
     const char *run_dir = daemon_config.core.run_dir[0] ? daemon_config.core.run_dir : ATP_RUN_DIR;
@@ -175,25 +195,48 @@ static int write_pid_file(const char *pid_file) {
     return 0;
 }
 
-static void daemonize(void) {
+static int daemonize(void) {
+    int startup_pipe[2];
+    if (pipe2(startup_pipe, O_CLOEXEC) < 0) {
+        perror("pipe2");
+        return -1;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
-        exit(1);
+        close(startup_pipe[0]);
+        close(startup_pipe[1]);
+        return -1;
     }
-    if (pid > 0) exit(0);
+    if (pid > 0) {
+        unsigned char status;
+        ssize_t n;
+        close(startup_pipe[1]);
+        do {
+            n = read(startup_pipe[0], &status, sizeof(status));
+        } while (n < 0 && errno == EINTR);
+        close(startup_pipe[0]);
+        return n == (ssize_t)sizeof(status) && status == 0
+            ? DAEMON_PARENT_SUCCESS : DAEMON_PARENT_FAILURE;
+    }
+
+    close(startup_pipe[0]);
+    g_startup_notify_fd = startup_pipe[1];
 
     if (setsid() < 0) {
         perror("setsid");
-        exit(1);
+        notify_startup(1);
+        _exit(1);
     }
 
     pid = fork();
     if (pid < 0) {
         perror("fork");
-        exit(1);
+        notify_startup(1);
+        _exit(1);
     }
-    if (pid > 0) exit(0);
+    if (pid > 0) _exit(0);
 
     umask(027);
 
@@ -204,6 +247,7 @@ static void daemonize(void) {
         dup2(null_fd, STDERR_FILENO);
         if (null_fd > 2) close(null_fd);
     }
+    return 0;
 }
 
 static void on_signal(reactor_t *r, int sig, void *userdata) {
@@ -211,7 +255,6 @@ static void on_signal(reactor_t *r, int sig, void *userdata) {
     if (sig == SIGCHLD) {
         service_sigchld_cb(r, sig, daemon_service);
     } else if (sig == SIGHUP) {
-        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING);
         reload_requested = 1;
     } else if (sig == SIGUSR1) {
         status_requested = 1;
@@ -230,31 +273,34 @@ static void on_idle(reactor_t *r, void *userdata) {
 
     if (reload_requested) {
         reload_requested = 0;
-        LOG_INFO("Processing config reload...");
-        atp_config_t previous_config = daemon_config;
-        if (config_reload(&daemon_config) != ATP_OK) {
-            LOG_ERROR("Config reload failed");
-            atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
-        } else {
-            int apply_failed = daemon_service && service_apply_config(daemon_service, &daemon_config) < 0;
-            if (!apply_failed && api_init(&daemon_api, &daemon_config) < 0) {
-                apply_failed = 1;
-            }
-            if (apply_failed) {
-                daemon_config = previous_config;
-                if (daemon_service) service_apply_config(daemon_service, &previous_config);
-                api_init(&daemon_api, &daemon_config);
-                LOG_ERROR("Config reload apply failed; previous configuration restored");
+        if (!shutdown_requested && atpd_runtime_can_reload() &&
+            atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING) == 0) {
+            LOG_INFO("Processing config reload...");
+            atp_config_t previous_config = daemon_config;
+            if (config_reload(&daemon_config) != ATP_OK) {
+                LOG_ERROR("Config reload failed");
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
             } else {
-                atp_timezone_init();
-                LOG_INFO("Config reload completed successfully");
-                atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+                int apply_failed = daemon_service && service_apply_config(daemon_service, &daemon_config) < 0;
+                if (!apply_failed && api_init(&daemon_api, &daemon_config) < 0) {
+                    apply_failed = 1;
+                }
+                if (apply_failed) {
+                    daemon_config = previous_config;
+                    if (daemon_service) service_apply_config(daemon_service, &previous_config);
+                    api_init(&daemon_api, &daemon_config);
+                    LOG_ERROR("Config reload apply failed; previous configuration restored");
+                    atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+                } else {
+                    atp_timezone_init();
+                    LOG_INFO("Config reload completed successfully");
+                    atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+                }
             }
         }
     }
 
-    if (status_requested) {
+    if (status_requested && !shutdown_requested) {
         status_requested = 0;
         LOG_INFO("Processing status display...");
         status_show(&daemon_config, daemon_service, &daemon_api);
@@ -331,6 +377,7 @@ static int run_event_loop(void) {
     malloc_trim(0);
 #endif
     LOG_INFO("ATPD control-plane Reactor running, entering event loop");
+    notify_startup(0);
     result = reactor_run(daemon_reactor);
 
 cleanup:
@@ -358,6 +405,9 @@ cleanup:
         LOG_ERROR("Failed to publish stopped runtime state");
         result = -1;
     }
+    if (!g_startup_notified) {
+        notify_startup(result);
+    }
     return result;
 }
 
@@ -378,21 +428,27 @@ static int do_start(atp_options_t *opts) {
     resolve_pid_path(opts, pp, sizeof(pp));
 
     if (opts->daemon && !opts->foreground) {
-        daemonize();
+        int daemon_role = daemonize();
+        if (daemon_role == DAEMON_PARENT_SUCCESS) return 0;
+        if (daemon_role == DAEMON_PARENT_FAILURE) return 1;
+        if (daemon_role < 0) return 1;
     }
 
     if (write_pid_file(pp) < 0) {
+        notify_startup(1);
         ret = 1;
         goto cleanup_return;
     }
     pid_written = true;
 
     if (atpd_context_init() != 0) {
+        notify_startup(1);
         ret = 1;
         goto cleanup_return;
     }
     atpd_set_vpn_teardown_callback(atpd_session_emergency_drain_all);
     if (atpd_runtime_state_transition(ATPD_RUNTIME_STATE_INITIALIZING) != 0) {
+        notify_startup(1);
         ret = 1;
         goto cleanup_return;
     }
@@ -400,6 +456,7 @@ static int do_start(atp_options_t *opts) {
     if (atpd_init_run(&init_ctx) != 0) {
         LOG_ERROR("Initialization failed");
         atpd_runtime_state_transition(ATPD_RUNTIME_STATE_FAILED);
+        notify_startup(1);
         ret = 1;
         goto cleanup_return;
     }
@@ -488,7 +545,9 @@ static int do_stop(atp_options_t *opts) {
 
 static int do_restart(atp_options_t *opts) {
     printf("Restarting atpd...\n");
-    do_stop(opts);
+    if (do_stop(opts) != 0) {
+        return 1;
+    }
     usleep(500000);
     return do_start(opts);
 }
