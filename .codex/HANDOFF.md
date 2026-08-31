@@ -2,17 +2,17 @@
 
 Repository: `/home/ezhang/atpd`
 Branch: `ebpf-native-api`
-HEAD: `1a512f77e7131e8f9aa5744e796ac955790047d5`
+HEAD: `7788c02`
 
-Last completed Step: 11
-Next Step: 12
+Last completed Step: 17
+Next Step: 18
 
 Current `.rework-state`:
 
 ```text
-current_step=12
-last_completed_step=11
-last_commit=041fbea
+current_step=18
+last_completed_step=17
+last_commit=c95a2f2
 status=ready
 blocked_reason=
 ```
@@ -27,7 +27,7 @@ Working tree: product source is clean. The only remaining changes are the preser
 
 Key commits:
 
-- Step 11: `041fbea3 refactor(main): reduce daemon lifecycle orchestration`
+- Step 17: `c95a2f2 refactor(session): centralize session lifecycle ownership`
 - Resume-gate harness: `1a512f77 chore(codex): add explicit current-step resume gate`
 
 Authoritative navigation:
@@ -49,4 +49,4 @@ Known unresolved issues: none.
 
 Preserved historical reports remain untracked and must not be modified or removed as part of startup or handoff. Treat them as historical artifacts, not as current implementation state.
 
-Unattended unsigned commits: `bf9c6ef`, `c21f3be`, `167b256`, `4114564`, `e36b8b9`, `2ba27c9`, `c95a2f2`.
+Unattended unsigned commits: `bf9c6ef`, `c21f3be`, `167b256`, `4114564`, `e36b8b9`, `2ba27c9`, `c95a2f2`, `34ca744`, `7788c02`.
