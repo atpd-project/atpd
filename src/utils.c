@@ -18,6 +18,8 @@
 #include <limits.h>
 #include <pthread.h>
 #include <arpa/inet.h>
+#include <poll.h>
+#include <stdint.h>
 
 #if defined(__ANDROID__)
 #include <sys/system_properties.h>
@@ -27,13 +29,18 @@
 
 struct cpu_cache_entry {
     pid_t pid;
+    unsigned long long starttime_ticks;
     double last_total;
-    time_t last_time;
+    uint64_t last_time_ms;
 };
 
 static struct cpu_cache_entry g_cpu_cache[CPU_CACHE_MAX];
 static int g_cpu_cache_count = 0;
 static pthread_mutex_t g_cpu_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static int read_proc_stat(pid_t pid, unsigned long long *utime_out,
+                          unsigned long long *stime_out,
+                          unsigned long long *starttime_out);
 
 int file_exists(const char *path) {
     return access(path, F_OK) == 0;
@@ -46,7 +53,11 @@ int mkdir_recursive(const char *path, mode_t mode) {
 
     if (!path || !*path) return -1;
 
-    snprintf(tmp, sizeof(tmp), "%s", path);
+    int written = snprintf(tmp, sizeof(tmp), "%s", path);
+    if (written < 0 || (size_t)written >= sizeof(tmp)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
     len = strlen(tmp);
 
     if (len == 0) return -1;
@@ -58,66 +69,33 @@ int mkdir_recursive(const char *path, mode_t mode) {
     for (p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
-            if (mkdir(tmp, mode) == -1 && errno != EEXIST) {
+            int mkdir_result = mkdir(tmp, mode);
+            if (mkdir_result < 0 && errno != EEXIST) {
                 *p = '/';
                 return -1;
+            }
+            if (mkdir_result < 0 && errno == EEXIST) {
+                struct stat st;
+                if (stat(tmp, &st) != 0 || !S_ISDIR(st.st_mode)) {
+                    *p = '/';
+                    errno = ENOTDIR;
+                    return -1;
+                }
             }
             *p = '/';
         }
     }
 
-    if (mkdir(tmp, mode) == -1 && errno != EEXIST) {
-        return -1;
-    }
-
-    return 0;
-}
-
-int exec_cmd(const char *cmd, char *output, size_t output_size, int timeout_sec) {
-    if (!cmd) return -1;
-
-    LOG_EXEC(cmd);
-
-    char timeout_cmd[MAX_CMD_LEN];
-    int ret = snprintf(timeout_cmd, sizeof(timeout_cmd), "timeout %d %s", timeout_sec, cmd);
-    if (ret < 0 || ret >= (int)sizeof(timeout_cmd)) {
-        LOG_ERROR("command too long");
-        return -1;
-    }
-
-    FILE *fp = popen(timeout_cmd, "r");
-    if (!fp) {
-        LOG_ERROR("popen failed: %s", strerror(errno));
-        return -1;
-    }
-
-    if (output && output_size > 0) {
-        if (output_size < 2) {
-            output[0] = '\0';
-        } else {
-            size_t len = fread(output, 1, output_size - 1, fp);
-            if (ferror(fp)) {
-                LOG_ERROR("fread failed");
-                pclose(fp);
-                return -1;
-            }
-            output[len] = '\0';
-            trim(output);
+    if (mkdir(tmp, mode) == -1) {
+        if (errno != EEXIST) return -1;
+        struct stat st;
+        if (stat(tmp, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            errno = ENOTDIR;
+            return -1;
         }
     }
 
-    int status = pclose(fp);
-    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-
-    if (exit_code == 124) {
-        LOG_ERROR("Command timed out after %d seconds: %s", timeout_sec, cmd);
-    }
-
-    return exit_code;
-}
-
-int exec_cmd_simple(const char *cmd, int timeout_sec) {
-    return exec_cmd(cmd, NULL, 0, timeout_sec);
+    return 0;
 }
 
 int exec_cmd_argv(const char *cmd_path, char *const argv[], char *output, size_t output_size, int timeout_sec) {
@@ -126,8 +104,9 @@ int exec_cmd_argv(const char *cmd_path, char *const argv[], char *output, size_t
         return -1;
     }
 
+    if (timeout_sec < 0) timeout_sec = 0;
     int pipefd[2];
-    if (pipe(pipefd) != 0) {
+    if (pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) != 0) {
         LOG_ERROR("pipe failed: %s", strerror(errno));
         return -1;
     }
@@ -142,8 +121,9 @@ int exec_cmd_argv(const char *cmd_path, char *const argv[], char *output, size_t
 
     if (pid == 0) {
         close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        dup2(pipefd[1], STDERR_FILENO);
+        int flags = fcntl(pipefd[1], F_GETFL, 0);
+        if (flags >= 0) fcntl(pipefd[1], F_SETFL, flags & ~O_NONBLOCK);
+        if (dup2(pipefd[1], STDOUT_FILENO) < 0 || dup2(pipefd[1], STDERR_FILENO) < 0) _exit(126);
         close(pipefd[1]);
 
         execvp(cmd_path, argv);
@@ -151,66 +131,60 @@ int exec_cmd_argv(const char *cmd_path, char *const argv[], char *output, size_t
     }
 
     close(pipefd[1]);
-
-    if (output && output_size > 0) {
-        size_t total = 0;
-
-        while (total < output_size - 1) {
-            ssize_t n = read(pipefd[0], output + total, output_size - 1 - total);
-
-            if (n < 0) {
-                if (errno == EINTR) {
-                    continue;
-                }
-                LOG_ERROR("read failed: %s", strerror(errno));
-                output[0] = '\0';
-                break;
-            }
-
-            if (n == 0) {
-                break;
-            }
-
-            total += n;
-        }
-
-        if (total >= output_size - 1) {
-            LOG_WARN("output truncated (%zu bytes)", output_size);
-        }
-
-        output[total] = '\0';
-        trim(output);
-    }
-
-    close(pipefd[0]);
-
-    int status;
+    if (output && output_size > 0) output[0] = '\0';
+    size_t total = 0;
+    int status = 0, child_done = 0, pipe_done = 0, truncated = 0;
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
-
-    while (1) {
+    uint64_t deadline = (uint64_t)start.tv_sec * 1000 + (uint64_t)start.tv_nsec / 1000000 +
+                        (uint64_t)timeout_sec * 1000;
+    while (!child_done || !pipe_done) {
         pid_t result = waitpid(pid, &status, WNOHANG);
-        if (result == pid) {
-            if (WIFEXITED(status)) {
-                return WEXITSTATUS(status);
-            }
-            return -1;
-        }
+        if (result == pid) child_done = 1;
+        else if (result < 0 && errno != EINTR) child_done = 1;
 
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
-        double elapsed = (now.tv_sec - start.tv_sec) +
-                         (now.tv_nsec - start.tv_nsec) / 1000000000.0;
-
-        if (elapsed >= timeout_sec) {
-            kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
+        uint64_t now_ms = (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+        if (now_ms >= deadline) {
+            if (!child_done) {
+                kill(pid, SIGKILL);
+                while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+            }
+            close(pipefd[0]);
+            if (output && output_size > 0) output[total] = '\0';
             LOG_ERROR("command timeout: %s", cmd_path);
             return 124;
         }
 
-        usleep(100000);
+        struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
+        int wait_ms = (int)((deadline - now_ms) > 100 ? 100 : (deadline - now_ms));
+        int ready;
+        do { ready = poll(&pfd, 1, wait_ms); } while (ready < 0 && errno == EINTR);
+        if (ready < 0) break;
+        if (ready == 0) continue;
+        for (;;) {
+            char discard[256];
+            char *dst = output && output_size > 0 && total < output_size - 1 ? output + total : discard;
+            size_t cap = dst == discard ? sizeof(discard) : output_size - 1 - total;
+            ssize_t n = read(pipefd[0], dst, cap);
+            if (n > 0) {
+                if (dst != discard) total += (size_t)n;
+                else truncated = 1;
+                continue;
+            }
+            if (n == 0) { pipe_done = 1; close(pipefd[0]); break; }
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+            pipe_done = 1;
+            close(pipefd[0]);
+            break;
+        }
     }
+    if (output && output_size > 0) { output[total] = '\0'; trim(output); }
+    if (truncated) LOG_WARN("output truncated (%zu bytes)", output_size);
+    if (!child_done || !WIFEXITED(status)) return -1;
+    return WEXITSTATUS(status);
 }
 
 int read_file(const char *path, char *buf, size_t buf_size) {
@@ -314,7 +288,16 @@ char *str_replace(const char *str, const char *old, const char *new_str) {
         p += old_len;
     }
 
-    size_t buf_len = str_len + count * (new_len - old_len) + 1;
+    size_t buf_len;
+    if (new_len >= old_len) {
+        size_t delta = new_len - old_len;
+        if (delta != 0 && count > (SIZE_MAX - str_len - 1) / delta) return NULL;
+        buf_len = str_len + count * delta + 1;
+    } else {
+        size_t delta = old_len - new_len;
+        if (count > str_len / delta) return NULL;
+        buf_len = str_len - count * delta + 1;
+    }
     char *buf = malloc(buf_len);
     if (!buf) {
         LOG_ERROR("str_replace: malloc failed");
@@ -437,20 +420,6 @@ int get_pid_by_name(const char *name) {
             }
         }
 
-        /* 3. Check cmdline */
-        snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
-        fp = fopen(path, "r");
-        if (fp) {
-            size_t n = fread(line, 1, sizeof(line) - 1, fp);
-            fclose(fp);
-            if (n > 0) {
-                line[n] = '\0';
-                if (strstr(line, name) != NULL) {
-                    found_pid = pid;
-                    break;
-                }
-            }
-        }
     }
 
     closedir(dir);
@@ -458,7 +427,14 @@ int get_pid_by_name(const char *name) {
 }
 
 int process_exists(pid_t pid) {
-    return kill(pid, 0) == 0;
+    if (pid <= 0) return 0;
+    if (kill(pid, 0) == 0) return 1;
+    return errno == EPERM;
+}
+
+int get_process_starttime(pid_t pid, unsigned long long *out_ticks) {
+    if (!out_ticks) return -1;
+    return read_proc_stat(pid, NULL, NULL, out_ticks);
 }
 
 long get_process_memory_kb(pid_t pid) {
@@ -545,23 +521,50 @@ int get_process_socket_count(pid_t pid) {
     return count;
 }
 
-double get_process_cpu_percent(pid_t pid) {
+static int read_proc_stat(pid_t pid, unsigned long long *utime_out,
+                          unsigned long long *stime_out,
+                          unsigned long long *starttime_out) {
     char path[PATH_MAX];
-    char line[256];
-    unsigned long utime = 0, stime = 0;
+    char line[4096];
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    FILE *fp = fopen(path, "r");
+    if (!fp || !fgets(line, sizeof(line), fp)) {
+        if (fp) fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    char *close_comm = strrchr(line, ')');
+    if (!close_comm) return -1;
+    char *cursor = close_comm + 1;
+    while (*cursor == ' ') cursor++;
+    if (!*cursor) return -1;
+    char *end;
+    (void)strtol(cursor, &end, 10); /* state (field 3) */
+    if (end == cursor) return -1;
+    cursor = end;
+    unsigned long long utime = 0, stime = 0, starttime = 0;
+    for (int field = 4; field <= 22; field++) {
+        while (*cursor == ' ') cursor++;
+        if (!*cursor) return -1;
+        unsigned long long value = strtoull(cursor, &end, 10);
+        if (end == cursor) return -1;
+        if (field == 14) utime = value;
+        else if (field == 15) stime = value;
+        else if (field == 22) starttime = value;
+        cursor = end;
+    }
+    if (utime_out) *utime_out = utime;
+    if (stime_out) *stime_out = stime;
+    if (starttime_out) *starttime_out = starttime;
+    return 0;
+}
+
+double get_process_cpu_percent(pid_t pid) {
+    unsigned long long utime = 0, stime = 0, starttime = 0;
     long ticks_per_sec = sysconf(_SC_CLK_TCK);
 
     if (ticks_per_sec <= 0) return 0.0;
-
-    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
-    FILE *fp = fopen(path, "r");
-    if (!fp) return 0.0;
-
-    if (fgets(line, sizeof(line), fp)) {
-        sscanf(line, "%*d %*s %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu",
-               &utime, &stime);
-    }
-    fclose(fp);
+    if (read_proc_stat(pid, &utime, &stime, &starttime) != 0) return 0.0;
 
     double total_time = (double)(utime + stime) / ticks_per_sec;
 
@@ -569,7 +572,9 @@ double get_process_cpu_percent(pid_t pid) {
 
     double cpu_percent = 0.0;
     int found = -1;
-    time_t now = time(NULL);
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t now = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
 
     for (int i = 0; i < g_cpu_cache_count; i++) {
         if (g_cpu_cache[i].pid == pid) {
@@ -580,8 +585,15 @@ double get_process_cpu_percent(pid_t pid) {
 
     if (found >= 0) {
         struct cpu_cache_entry *entry = &g_cpu_cache[found];
-        if (entry->last_time > 0 && now > entry->last_time) {
-            double elapsed = now - entry->last_time;
+        if (entry->starttime_ticks != starttime) {
+            entry->starttime_ticks = starttime;
+            entry->last_total = total_time;
+            entry->last_time_ms = now;
+            pthread_mutex_unlock(&g_cpu_cache_mutex);
+            return 0.0;
+        }
+        if (entry->last_time_ms > 0 && now > entry->last_time_ms) {
+            double elapsed = (double)(now - entry->last_time_ms) / 1000.0;
             if (elapsed > 0) {
                 cpu_percent = ((total_time - entry->last_total) / elapsed) * 100.0;
                 if (cpu_percent < 0) cpu_percent = 0;
@@ -589,11 +601,12 @@ double get_process_cpu_percent(pid_t pid) {
             }
         }
         entry->last_total = total_time;
-        entry->last_time = now;
+        entry->last_time_ms = now;
     } else if (g_cpu_cache_count < CPU_CACHE_MAX) {
         g_cpu_cache[g_cpu_cache_count].pid = pid;
+        g_cpu_cache[g_cpu_cache_count].starttime_ticks = starttime;
         g_cpu_cache[g_cpu_cache_count].last_total = total_time;
-        g_cpu_cache[g_cpu_cache_count].last_time = now;
+        g_cpu_cache[g_cpu_cache_count].last_time_ms = now;
         g_cpu_cache_count++;
     }
 
@@ -603,33 +616,12 @@ double get_process_cpu_percent(pid_t pid) {
 }
 
 int get_process_uptime_sec(pid_t pid) {
-    char path[PATH_MAX];
-    char line[256];
     unsigned long long start_time = 0;
     long ticks_per_sec = sysconf(_SC_CLK_TCK);
 
     if (ticks_per_sec <= 0) return 0;
 
-    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
-    FILE *fp = fopen(path, "r");
-    if (!fp) return 0;
-
-    if (fgets(line, sizeof(line), fp)) {
-        char *p = line;
-        int field = 0;
-        char *saveptr;
-        char *token = strtok_r(p, " ", &saveptr);
-        while (token && field < 21) {
-            token = strtok_r(NULL, " ", &saveptr);
-            field++;
-        }
-        if (token && field == 21) {
-            start_time = strtoull(token, NULL, 10);
-        }
-    }
-    fclose(fp);
-
-    if (start_time == 0) return 0;
+    if (read_proc_stat(pid, NULL, NULL, &start_time) != 0 || start_time == 0) return 0;
 
     FILE *fp_uptime = fopen("/proc/uptime", "r");
     if (!fp_uptime) return 0;
@@ -655,6 +647,8 @@ int get_process_user_group(pid_t pid, char *user, char *group, size_t size) {
     char line[256];
     uid_t uid = 0;
     gid_t gid = 0;
+    int have_uid = 0;
+    int have_gid = 0;
 
     snprintf(path, sizeof(path), "/proc/%d/status", pid);
     FILE *fp = fopen(path, "r");
@@ -662,15 +656,15 @@ int get_process_user_group(pid_t pid, char *user, char *group, size_t size) {
 
     while (fgets(line, sizeof(line), fp)) {
         if (strncmp(line, "Uid:", 4) == 0) {
-            sscanf(line, "Uid: %u", &uid);
+            have_uid = sscanf(line, "Uid: %u", &uid) == 1;
         } else if (strncmp(line, "Gid:", 4) == 0) {
-            sscanf(line, "Gid: %u", &gid);
+            have_gid = sscanf(line, "Gid: %u", &gid) == 1;
         }
     }
     fclose(fp);
 
-    if (snprintf(user, size, "%u", uid) < 0) return -1;
-    if (snprintf(group, size, "%u", gid) < 0) return -1;
+    if (!have_uid || !have_gid) return -1;
+    if (snprintf(user, size, "%u", uid) < 0 || snprintf(group, size, "%u", gid) < 0) return -1;
     return 0;
 }
 
@@ -729,71 +723,6 @@ void format_uptime(int seconds, char *buf, size_t size) {
     } else {
         snprintf(buf, size, "%ds", secs);
     }
-}
-
-int kill_process(pid_t pid, int signal) {
-    return kill(pid, signal);
-}
-
-int kill_all_by_name(const char *name, int signal) {
-    int killed = 0;
-    DIR *dir = opendir("/proc");
-    if (!dir) return -1;
-
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (!isdigit((unsigned char)entry->d_name[0])) continue;
-
-        char *endptr;
-        long pid_long = strtol(entry->d_name, &endptr, 10);
-        if (*endptr != '\0' || pid_long <= 0 || pid_long > INT_MAX) {
-            continue;
-        }
-        pid_t pid = (pid_t)pid_long;
-
-        char path[PATH_MAX];
-        char line[256];
-
-        snprintf(path, sizeof(path), "/proc/%d/comm", pid);
-        FILE *fp = fopen(path, "r");
-        if (fp) {
-            if (fgets(line, sizeof(line), fp)) {
-                trim(line);
-                if (strcmp(line, name) == 0) {
-                    kill(pid, signal);
-                    killed++;
-                }
-            }
-            fclose(fp);
-        }
-    }
-
-    closedir(dir);
-    return killed;
-}
-
-int wait_for_pid_exit(pid_t pid, int timeout_sec) {
-    struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-
-    while (1) {
-        if (kill(pid, 0) != 0) {
-            return 0;
-        }
-
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double elapsed = (now.tv_sec - start.tv_sec) +
-                         (now.tv_nsec - start.tv_nsec) / 1000000000.0;
-
-        if (elapsed >= timeout_sec) {
-            break;
-        }
-
-        usleep(200000);
-    }
-
-    return -1;
 }
 
 int get_app_dir(char *buf, size_t size) {

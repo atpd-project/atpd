@@ -52,6 +52,7 @@ struct service_ctx_t {
     char service_env[512];
     int api_port;
     pid_t child_pid;
+    unsigned long long child_starttime_ticks;
     int validated_pid;
     service_state_t state;
     int fail_count;

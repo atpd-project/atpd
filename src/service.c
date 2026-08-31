@@ -146,7 +146,10 @@ static int wait_connect_result(int sock, int timeout_ms) {
 }
 
 static int validate_process(service_ctx_t *ctx, pid_t pid) {
-    if (kill(pid, 0) != 0) return 0;
+    unsigned long long starttime = 0;
+    if (!ctx || pid <= 0 || !process_exists(pid) ||
+        get_process_starttime(pid, &starttime) != 0 ||
+        (ctx->child_starttime_ticks != 0 && starttime != ctx->child_starttime_ticks)) return 0;
 
     char path[PATH_MAX];
     char exe_buf[PATH_MAX];
@@ -171,9 +174,6 @@ static int validate_process(service_ctx_t *ctx, pid_t pid) {
             return 1;
         }
 
-        if (strstr(exe_buf, PROXY_BIN_NAME) != NULL) {
-            return 1;
-        }
     }
 
     /* Fallback to /proc/<pid>/comm */
@@ -183,7 +183,7 @@ static int validate_process(service_ctx_t *ctx, pid_t pid) {
         char comm[64] = {0};
         if (fgets(comm, sizeof(comm), fp)) {
             trim(comm);
-            if (strstr(comm, PROXY_BIN_NAME) != NULL || strcmp(comm, "sing-box") == 0) {
+            if (strcmp(comm, PROXY_BIN_NAME) == 0) {
                 fclose(fp);
                 return 1;
             }
@@ -195,8 +195,11 @@ static int validate_process(service_ctx_t *ctx, pid_t pid) {
 }
 
 static int service_is_alive(service_ctx_t *ctx) {
-    if (!ctx || ctx->child_pid <= 0) return 0;
-    return kill(ctx->child_pid, 0) == 0;
+    unsigned long long starttime = 0;
+    if (!ctx || ctx->child_pid <= 0 || !process_exists(ctx->child_pid)) return 0;
+    return ctx->child_starttime_ticks != 0 &&
+           get_process_starttime(ctx->child_pid, &starttime) == 0 &&
+           starttime == ctx->child_starttime_ticks;
 }
 
 static int service_probe_port(int port) {
@@ -548,6 +551,13 @@ static int service_spawn(service_ctx_t *ctx) {
     }
 
     ctx->child_pid = pid;
+    if (get_process_starttime(pid, &ctx->child_starttime_ticks) != 0) {
+        LOG_ERROR("Service: failed to capture child starttime");
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        ctx->child_pid = -1;
+        return -1;
+    }
     ctx->validated_pid = 1;
     ctx->start_time = time(NULL);
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
@@ -564,6 +574,7 @@ static int service_spawn(service_ctx_t *ctx) {
         waitpid(pid, NULL, 0);
         unlink(pid_path);
         ctx->child_pid = -1;
+        ctx->child_starttime_ticks = 0;
         ctx->validated_pid = 0;
         return -1;
     }
@@ -584,6 +595,9 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
 
     if (!service_is_alive(ctx)) {
         LOG_INFO("Service: stopped successfully");
+        ctx->child_pid = -1;
+        ctx->child_starttime_ticks = 0;
+        ctx->validated_pid = 0;
         ctx->state = SERVICE_STOPPED;
         ctx->running_healthy = 0;
         service_unlink_pid(ctx);
@@ -600,6 +614,7 @@ static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *use
         kill(ctx->child_pid, SIGKILL);
         waitpid(ctx->child_pid, NULL, WNOHANG);
         ctx->child_pid = -1;
+        ctx->child_starttime_ticks = 0;
         ctx->validated_pid = 0;
         ctx->state = SERVICE_STOPPED;
         ctx->running_healthy = 0;
@@ -676,6 +691,7 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
             }
 
             ctx->child_pid = -1;
+            ctx->child_starttime_ticks = 0;
             ctx->validated_pid = 0;
             ctx->running_healthy = 0;
 
@@ -872,6 +888,7 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
 
     ctx->api_port = cfg->api.port;
     ctx->child_pid = -1;
+    ctx->child_starttime_ticks = 0;
     ctx->validated_pid = 0;
     ctx->state = SERVICE_STOPPED;
     ctx->fail_count = 0;
@@ -1032,6 +1049,7 @@ int service_stop_sync(service_ctx_t *ctx) {
     }
 
     ctx->child_pid = -1;
+    ctx->child_starttime_ticks = 0;
     ctx->validated_pid = 0;
     ctx->running_healthy = 0;
     ctx->state = SERVICE_STOPPED;
@@ -1122,13 +1140,19 @@ int service_get_pid(service_ctx_t *ctx) {
     if (f) {
         int pid;
         if (fscanf(f, "%d", &pid) == 1 && pid > 0) {
-            if (validate_process(ctx, pid)) {
-                fclose(f);
-                ctx->child_pid = pid;
-                ctx->validated_pid = 1;
-                return pid;
+            unsigned long long starttime = 0;
+            if (get_process_starttime((pid_t)pid, &starttime) != 0) {
+                LOG_WARN("Service: stale PID file has no process starttime");
             } else {
+                ctx->child_starttime_ticks = starttime;
+                if (validate_process(ctx, pid)) {
+                    fclose(f);
+                    ctx->child_pid = pid;
+                    ctx->validated_pid = 1;
+                    return pid;
+                }
                 LOG_WARN("Service: stale PID file");
+                ctx->child_starttime_ticks = 0;
             }
         }
         fclose(f);
