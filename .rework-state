@@ -1,6 +1,6 @@
 # ATPD Codex automatic refactor state
-current_step=14
-last_completed_step=13
-last_commit=c21f3be
+current_step=17
+last_completed_step=16
+last_commit=c95a2f2
 status=ready
 blocked_reason=

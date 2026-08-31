@@ -49,4 +49,4 @@ Known unresolved issues: none.
 
 Preserved historical reports remain untracked and must not be modified or removed as part of startup or handoff. Treat them as historical artifacts, not as current implementation state.
 
-Unattended unsigned commits: `bf9c6ef`, `c21f3be`.
+Unattended unsigned commits: `bf9c6ef`, `c21f3be`, `167b256`, `4114564`, `e36b8b9`, `2ba27c9`, `c95a2f2`.
