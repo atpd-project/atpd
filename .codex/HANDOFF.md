@@ -2,17 +2,17 @@
 
 Repository: `/home/ezhang/atpd`
 Branch: `ebpf-native-api`
-HEAD: `e7311b4`
+HEAD: `6d9f138`
 
-Last completed Step: 20
-Next Step: 21
+Last completed Step: 21
+Next Step: 22
 
 Current `.rework-state`:
 
 ```text
-current_step=21
-last_completed_step=20
-last_commit=e7311b496b1aa3817a4d7c86c090b056fed00608
+current_step=22
+last_completed_step=21
+last_commit=6d9f138f1d33d416541dd296e920c7d2d161f607
 status=ready
 blocked_reason=
 ```
@@ -27,6 +27,7 @@ Working tree: product source is clean. The only remaining changes are the preser
 
 Key commits:
 
+- Step 21: `6d9f138 refactor(error): centralize diagnostic event history`
 - Step 20: `e7311b4 fix(uds): harden local control socket lifecycle`
 - Step 17: `c95a2f2 refactor(session): centralize session lifecycle ownership`
 - Resume-gate harness: `1a512f77 chore(codex): add explicit current-step resume gate`
