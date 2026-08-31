@@ -9,6 +9,32 @@ BENCH_DIR="${TMPDIR:-/tmp}/atp_bench"
 ATP_BIN="${1:-./build/bin/atpd}"
 SINGBOX_BIN="${2:-$(command -v sing-box || echo "")}"
 BENCH_API_PORT="${API_PORT:-9080}"
+STATUS_QUERIES="${STATUS_QUERIES:-200}"
+MAX_RSS_GROWTH_KB="${MAX_RSS_GROWTH_KB:-512}"
+MAX_FD_GROWTH="${MAX_FD_GROWTH:-1}"
+MAX_THREAD_GROWTH="${MAX_THREAD_GROWTH:-0}"
+
+collect_atpd_resources() {
+    local pid="$1" phase="$2" status="/proc/${pid}/status" rss hwm vm fd threads pss
+    rss=$(awk '/^VmRSS:/ {print $2; exit}' "$status" 2>/dev/null || true)
+    hwm=$(awk '/^VmHWM:/ {print $2; exit}' "$status" 2>/dev/null || true)
+    vm=$(awk '/^VmSize:/ {print $2; exit}' "$status" 2>/dev/null || true)
+    threads=$(awk '/^Threads:/ {print $2; exit}' "$status" 2>/dev/null || true)
+    fd=$(find "/proc/${pid}/fd" -mindepth 1 -maxdepth 1 -type l 2>/dev/null | wc -l || true)
+    pss=$(awk '/^Pss:/ {print $2; exit}' "/proc/${pid}/smaps_rollup" 2>/dev/null || true)
+    rss=${rss:-N/A}; hwm=${hwm:-N/A}; vm=${vm:-N/A}; threads=${threads:-N/A}; fd=${fd:-N/A}; pss=${pss:-N/A}
+    LAST_RSS="$rss"; LAST_HWM="$hwm"; LAST_FD="$fd"; LAST_THREADS="$threads"
+    printf '%s,%s,%s,%s,%s,%s,%s\n' "$(date +%s)" "$phase" "$rss" "$hwm" "$vm" "$pss" "$fd" >> "${BENCH_DIR}/resources.csv"
+    echo "    -> ${phase}: RSS=${rss}KB HWM=${hwm}KB PSS=${pss}KB FDs=${fd} Threads=${threads}"
+}
+
+cleanup() {
+    if [ -n "${ATPD_PID:-}" ] && kill -0 "${ATPD_PID}" 2>/dev/null; then
+        "${BENCH_DIR}/atpd" stop >/dev/null 2>&1 || true
+    fi
+    rm -rf "${BENCH_DIR}"
+}
+trap cleanup EXIT INT TERM
 
 echo "================================================================"
 echo "          ATPd Automated Performance Benchmark Suite           "
@@ -20,8 +46,6 @@ if [ ! -f "${ATP_BIN}" ]; then
 fi
 
 # 1. 清理并准备测试沙盒
-pkill -9 -x "atpd" 2>/dev/null || true
-pkill -9 -x "sing-box" 2>/dev/null || true
 rm -rf "${BENCH_DIR}"
 mkdir -p "${BENCH_DIR}/run" "${BENCH_DIR}/bin"
 cp "${ATP_BIN}" "${BENCH_DIR}/atpd"
@@ -66,6 +90,11 @@ fi
 
 ATPD_PID=$(cat "${PID_FILE}")
 echo "[BENCH-INFO] atpd running with PID: ${ATPD_PID}"
+printf 'epoch,phase,rss_kb,hwm_kb,vm_kb,pss_kb,fd_count\n' > "${BENCH_DIR}/resources.csv"
+collect_atpd_resources "${ATPD_PID}" baseline
+BASE_RSS="${LAST_RSS}"
+BASE_FD="${LAST_FD}"
+BASE_THREADS="${LAST_THREADS}"
 
 # ------------------------------------------------------------------------------
 # Benchmark 1: 内存与待机资源基线 (RSS)
@@ -80,11 +109,13 @@ echo "    -> ATPd Baseline RSS: ${RSS_MB} MB (${RSS_KB} KB)"
 # ------------------------------------------------------------------------------
 echo ">>> [2/4] Benchmarking UDS Command Latency (200 queries)..."
 START_NS=$(date +%s%N)
-TOTAL_QUERIES=200
+TOTAL_QUERIES="${STATUS_QUERIES}"
 
 for ((i=1; i<=TOTAL_QUERIES; i++)); do
     "${BENCH_DIR}/atpd" -c "${BENCH_DIR}/atp.conf" status >/dev/null 2>&1 || true
 done
+
+collect_atpd_resources "${ATPD_PID}" status_stress
 
 END_NS=$(date +%s%N)
 ELAPSED_MS=$(( (END_NS - START_NS) / 1000000 ))
@@ -137,9 +168,22 @@ STATUS_OUT=$("${BENCH_DIR}/atpd" status 2>&1 || true)
 GOROUTINES_VAL=$(echo "${STATUS_OUT}" | grep -i "Goroutines" | awk '{print $NF}' || echo "N/A")
 echo "    -> Active Goroutines: ${GOROUTINES_VAL}"
 
+collect_atpd_resources "${ATPD_PID}" recovery
+if [ "${BASE_RSS:-N/A}" != N/A ] && [ "${LAST_RSS}" != N/A ]; then
+    rss_growth=$((LAST_RSS - BASE_RSS))
+    [ "${rss_growth}" -le "${MAX_RSS_GROWTH_KB}" ] || echo "[BENCH-WARN] RSS growth ${rss_growth}KB exceeds ${MAX_RSS_GROWTH_KB}KB"
+fi
+if [ "${BASE_FD:-N/A}" != N/A ] && [ "${LAST_FD}" != N/A ]; then
+    fd_growth=$((LAST_FD - BASE_FD))
+    [ "${fd_growth}" -le "${MAX_FD_GROWTH}" ] || echo "[BENCH-WARN] FD growth ${fd_growth} exceeds ${MAX_FD_GROWTH}"
+fi
+if [ "${BASE_THREADS:-N/A}" != N/A ] && [ "${LAST_THREADS}" != N/A ]; then
+    thread_growth=$((LAST_THREADS - BASE_THREADS))
+    [ "${thread_growth}" -le "${MAX_THREAD_GROWTH}" ] || echo "[BENCH-WARN] thread growth ${thread_growth} exceeds ${MAX_THREAD_GROWTH}"
+fi
+
 # 停止沙盒进程
 "${BENCH_DIR}/atpd" stop || true
-pkill -9 -x "sing-box" 2>/dev/null || true
 
 # 5. 输出汇总 Markdown 报告
 cat << EOF
