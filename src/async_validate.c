@@ -22,6 +22,28 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
 static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *userdata);
 static void validate_cleanup(async_validate_ctx_t *ctx, int result, const char *output);
 
+static pid_t reap_child(async_validate_ctx_t *ctx, int blocking, int *status_out) {
+    pid_t result;
+    if (!ctx || ctx->child_pid <= 0) return -1;
+    if (atomic_load(&ctx->child_reaped)) {
+        if (status_out && ctx->child_status_valid) *status_out = ctx->child_status;
+        return ctx->child_pid;
+    }
+    do {
+        result = waitpid(ctx->child_pid, status_out, blocking ? 0 : WNOHANG);
+    } while (result < 0 && errno == EINTR);
+    if (result == ctx->child_pid) {
+        if (status_out) {
+            ctx->child_status = *status_out;
+            ctx->child_status_valid = 1;
+        }
+        atomic_store(&ctx->child_reaped, 1);
+    } else if (result < 0 && errno == ECHILD) {
+        atomic_store(&ctx->child_reaped, 1);
+    }
+    return result;
+}
+
 /*
  * ============================================================================
  * Async Validation Lifecycle
@@ -75,6 +97,9 @@ int async_validate_config(async_validate_ctx_t *ctx, reactor_t *r,
 
     memset(ctx, 0, sizeof(async_validate_ctx_t));
     atomic_init(&ctx->completed, 0);
+    atomic_init(&ctx->child_reaped, 0);
+    ctx->child_status = 0;
+    ctx->child_status_valid = 0;
     ctx->reactor = r;
     ctx->callback = callback;
     ctx->userdata = userdata;
@@ -85,24 +110,8 @@ int async_validate_config(async_validate_ctx_t *ctx, reactor_t *r,
     ctx->output_truncated = 0;
     ctx->output[0] = '\0';
 
-    if (pipe(pipe_fds) < 0) {
+    if (pipe2(pipe_fds, O_NONBLOCK | O_CLOEXEC) < 0) {
         LOG_ERROR("AsyncValidate: pipe failed: %s", strerror(errno));
-        return -1;
-    }
-
-    /* Set read end non-blocking */
-    int flags = fcntl(pipe_fds[0], F_GETFL);
-    if (flags < 0) {
-        LOG_ERROR("AsyncValidate: fcntl F_GETFL failed: %s", strerror(errno));
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
-        return -1;
-    }
-
-    if (fcntl(pipe_fds[0], F_SETFL, flags | O_NONBLOCK) < 0) {
-        LOG_ERROR("AsyncValidate: fcntl F_SETFL failed: %s", strerror(errno));
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
         return -1;
     }
 
@@ -188,7 +197,7 @@ fail:
     }
     if (ctx->child_pid > 0) {
         kill(ctx->child_pid, SIGKILL);
-        waitpid(ctx->child_pid, NULL, 0);
+        (void)reap_child(ctx, 1, NULL);
         ctx->child_pid = -1;
     }
     return -1;
@@ -213,43 +222,45 @@ static void validate_io_cb(reactor_t *r, int fd, uint32_t events, void *userdata
     }
 
     char buf[1024];
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-
-    if (n > 0) {
-        if (ctx->output_len + (size_t)n < sizeof(ctx->output) - 1) {
-            memcpy(ctx->output + ctx->output_len, buf, (size_t)n);
-            ctx->output_len += (size_t)n;
-            ctx->output[ctx->output_len] = '\0';
-        } else {
-            ctx->output_truncated = 1;
-            LOG_WARN("AsyncValidate: output truncated");
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n > 0) {
+            size_t room = sizeof(ctx->output) - 1 - ctx->output_len;
+            size_t copy_len = (size_t)n < room ? (size_t)n : room;
+            if (copy_len) {
+                memcpy(ctx->output + ctx->output_len, buf, copy_len);
+                ctx->output_len += copy_len;
+                ctx->output[ctx->output_len] = '\0';
+            }
+            if (copy_len < (size_t)n && !ctx->output_truncated) {
+                ctx->output_truncated = 1;
+                LOG_WARN("AsyncValidate: output truncated");
+            }
+            continue;
         }
-        return;
-    } else if (n == 0) {
-        /* EOF - child should have exited */
-        int status = 0;
-        pid_t wr = waitpid(ctx->child_pid, &status, WNOHANG);
-
-        if (wr == 0) {
-            /* Child still running - keep waiting */
-            LOG_DEBUG("AsyncValidate: EOF but child still running, waiting");
-            return;
-        } else if (wr < 0) {
-            LOG_ERROR("AsyncValidate: waitpid failed: %s", strerror(errno));
-            validate_cleanup(ctx, 0, "waitpid error");
-            return;
-        } else if (wr == ctx->child_pid) {
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n == 0) {
+            int status = 0;
+            pid_t wr = reap_child(ctx, 0, &status);
+            if (wr == 0) {
+                LOG_DEBUG("AsyncValidate: EOF but child still running, waiting");
+                return;
+            }
+            if (wr < 0) {
+                LOG_ERROR("AsyncValidate: waitpid failed: %s", strerror(errno));
+                validate_cleanup(ctx, 0, "waitpid error");
+                return;
+            }
+            if (ctx->child_status_valid) status = ctx->child_status;
             int result = (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 1 : 0;
-            LOG_DEBUG("AsyncValidate: completed, result=%d", result);
             validate_cleanup(ctx, result, ctx->output);
             return;
         }
-    } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
         LOG_ERROR("AsyncValidate: read error: %s", strerror(errno));
         validate_cleanup(ctx, 0, "read error");
         return;
     }
-
 }
 
 static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
@@ -273,7 +284,8 @@ static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *use
     }
 
     /* Check if child already exited */
-    pid_t wr = waitpid(ctx->child_pid, NULL, WNOHANG);
+    int status = 0;
+    pid_t wr = reap_child(ctx, 0, &status);
     if (wr == ctx->child_pid) {
         /* Child already exited, wait for IO callback to handle */
         LOG_DEBUG("AsyncValidate: timeout but child already exited");
@@ -281,10 +293,13 @@ static void validate_timeout_cb(reactor_t *r, int fd, uint32_t events, void *use
     }
 
     LOG_WARN("AsyncValidate: timeout, killing child (PID: %d)", ctx->child_pid);
-    kill(ctx->child_pid, SIGKILL);
+    if (kill(ctx->child_pid, SIGKILL) < 0 && errno != ESRCH) {
+        validate_cleanup(ctx, 0, "timeout kill error");
+        return;
+    }
 
     /* Reap child */
-    waitpid(ctx->child_pid, NULL, 0);
+    (void)reap_child(ctx, 1, &status);
 
     validate_cleanup(ctx, 0, "timeout");
 }
@@ -333,11 +348,13 @@ static void validate_cleanup(async_validate_ctx_t *ctx, int result, const char *
     }
 
     /* Kill child if still running */
-    if (ctx->child_pid > 0) {
-        pid_t wr = waitpid(ctx->child_pid, NULL, WNOHANG);
+    if (ctx->child_pid > 0 && !atomic_load(&ctx->child_reaped)) {
+        pid_t wr = reap_child(ctx, 0, NULL);
         if (wr == 0) {
-            kill(ctx->child_pid, SIGKILL);
-            waitpid(ctx->child_pid, NULL, 0);
+            if (kill(ctx->child_pid, SIGKILL) < 0 && errno != ESRCH) {
+                LOG_WARN("AsyncValidate: failed to kill child: %s", strerror(errno));
+            }
+            (void)reap_child(ctx, 1, NULL);
         }
         ctx->child_pid = -1;
     }

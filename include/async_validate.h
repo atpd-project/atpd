@@ -18,6 +18,9 @@ typedef struct async_validate_ctx {
     size_t output_len;
     int output_truncated;
     atomic_int completed;
+    atomic_int child_reaped;
+    int child_status;
+    int child_status_valid;
     validate_callback_t callback;
     void *userdata;
 } async_validate_ctx_t;
