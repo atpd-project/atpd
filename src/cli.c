@@ -6,7 +6,6 @@
  */
 
 #include "cli.h"
-#include "atp.h"
 #include "version.h"
 #include <stdio.h>
 #include <string.h>
@@ -113,7 +112,7 @@ void print_usage(const char *progname) {
     const char *base = progname ? strrchr(progname, '/') : NULL;
     base = base ? base + 1 : (progname ? progname : "atpd");
 
-    printf(ATP_NAME " %s\n\n", atp_get_full_version());
+    printf("atpd %s\n\n", atp_get_full_version());
     printf("Usage: %s [options] command\n\n", base);
     printf("Options:\n");
     printf("  -c, --config FILE     Specify configuration file\n");
