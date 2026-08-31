@@ -79,15 +79,19 @@ int reactor_run(reactor_t *r);
 void reactor_stop(reactor_t *r);
 
 /* ========== I/O Handlers ========== */
+/* Registration owns the handler and invokes free_cb(userdata) on removal.
+ * The underlying fd remains caller-owned and is never closed by the reactor. */
 int reactor_add_fd(reactor_t *r, int fd, uint32_t events, reactor_io_cb cb, void *userdata);
 int reactor_add_fd_ex(reactor_t *r, int fd, uint32_t events,
                       reactor_io_cb cb, reactor_free_cb free_cb, void *userdata);
 int reactor_modify_fd(reactor_t *r, int fd, uint32_t events);
+/* Safe from an I/O callback, including removing the current or another fd. */
 int reactor_remove_fd(reactor_t *r, int fd);
 
 /* ========== Timers ========== */
 reactor_timer_t* reactor_add_timer(reactor_t *r, uint64_t timeout_ms, uint64_t interval_ms,
                                    reactor_timer_cb cb, void *userdata);
+/* Cancellation is immediate from the caller's perspective; do not reuse the handle. */
 int reactor_cancel_timer(reactor_t *r, reactor_timer_t *timer);
 void reactor_update_time(reactor_t *r);
 uint64_t reactor_now_ms(void);

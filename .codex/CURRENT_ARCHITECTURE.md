@@ -33,6 +33,7 @@
 - Step 09: atpd_context is opaque and only owns lifecycle/VPN snapshots; session, XFRM, readiness, statistics, and error state remain with their subsystem owners.
 - Step 10: Startup phases record completed ownership and roll back through registered reverse-order cleanup; service stop/reap/destroy is synchronous before context release, and reactor teardown follows its dependents.
 - Step 11: Daemon-mode parents wait for an explicit startup result; main delegates service lifecycle to its owner, prioritizes shutdown over pending control work, and publishes STOPPED only after teardown.
+- Step 12: Reactor initialization and signal replacement are transactional; cached FD interests follow successful kernel updates.
 
 ## Update rule
 

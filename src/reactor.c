@@ -180,29 +180,61 @@ static int reactor_signal_init(reactor_t *r, reactor_private_t *priv) {
     return 0;
 }
 
-static void reactor_signal_handle(reactor_t *r, reactor_private_t *priv) {
-    struct signalfd_siginfo si;
-    ssize_t n = read(r->signal_fd, &si, sizeof(si));
+static void reactor_cleanup_internal(reactor_t *r) {
+    if (!r) return;
+    reactor_private_t *priv = r->private_data;
+    if (!priv) return;
 
-    if (n != sizeof(si)) return;
+    reactor_timer_internal_t *timer = priv->timer_head;
+    while (timer) {
+        reactor_timer_internal_t *next = timer->next;
+        free(timer->public_timer);
+        free(timer);
+        timer = next;
+    }
+    priv->timer_head = NULL;
+    priv->timer_count = 0;
 
-    priv->stats.signals_received++;
-
-    switch (si.ssi_signo) {
-        case SIGINT:
-        case SIGTERM:
-            LOG_INFO("Received termination signal");
-            r->running = 0;
-            break;
-        case SIGHUP:
-            LOG_INFO("Received reload signal");
-            break;
-        default:
-            break;
+    for (int i = 0; i < REACTOR_MAX_FD; i++) {
+        reactor_handler_t *handler = priv->handlers[i];
+        if (!handler) continue;
+        if (handler->free_cb) handler->free_cb(handler->userdata);
+        free(handler);
+        priv->handlers[i] = NULL;
     }
 
-    if (priv->signal_cb) {
-        priv->signal_cb(r, si.ssi_signo, priv->userdata);
+    if (r->signal_fd >= 0) close(r->signal_fd);
+    if (r->event_fd >= 0) close(r->event_fd);
+    if (r->epoll_fd >= 0) close(r->epoll_fd);
+    free(priv);
+    free(r);
+}
+
+static void reactor_signal_handle(reactor_t *r, reactor_private_t *priv) {
+    struct signalfd_siginfo si;
+    for (;;) {
+        ssize_t n = read(r->signal_fd, &si, sizeof(si));
+        if (n == (ssize_t)sizeof(si)) {
+            priv->stats.signals_received++;
+            switch (si.ssi_signo) {
+                case SIGINT:
+                case SIGTERM:
+                    LOG_INFO("Received termination signal");
+                    r->running = 0;
+                    break;
+                case SIGHUP:
+                    LOG_INFO("Received reload signal");
+                    break;
+                default:
+                    break;
+            }
+            if (priv->signal_cb) priv->signal_cb(r, si.ssi_signo, priv->userdata);
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+        if (n != 0) LOG_WARN("short signalfd read: %zd", n);
+        break;
     }
 }
 
@@ -219,32 +251,30 @@ reactor_t* reactor_create(void) {
     }
 
     r->private_data = priv;
+    r->epoll_fd = r->event_fd = r->signal_fd = -1;
 
     r->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (r->epoll_fd < 0) {
-        free(priv);
-        free(r);
+        reactor_cleanup_internal(r);
         return NULL;
     }
 
     r->event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (r->event_fd < 0) {
-        close(r->epoll_fd);
-        free(priv);
-        free(r);
+        reactor_cleanup_internal(r);
         return NULL;
     }
 
     if (reactor_signal_init(r, priv) < 0) {
-        close(r->event_fd);
-        close(r->epoll_fd);
-        free(priv);
-        free(r);
+        reactor_cleanup_internal(r);
         return NULL;
     }
 
-    reactor_add_fd(r, r->signal_fd, REACTOR_EVENT_READ, NULL, r);
-    reactor_add_fd(r, r->event_fd, REACTOR_EVENT_READ, NULL, r);
+    if (reactor_add_fd(r, r->signal_fd, REACTOR_EVENT_READ, NULL, r) != 0 ||
+        reactor_add_fd(r, r->event_fd, REACTOR_EVENT_READ, NULL, r) != 0) {
+        reactor_cleanup_internal(r);
+        return NULL;
+    }
 
     priv->current_time_ms = get_monotonic_ms();
 
@@ -260,41 +290,8 @@ void reactor_destroy(reactor_t *r) {
         return;
     }
 
-    reactor_private_t *priv = r->private_data;
-
     reactor_stop(r);
-
-    reactor_timer_internal_t *timer = priv->timer_head;
-    while (timer) {
-        reactor_timer_internal_t *next = timer->next;
-        // FIX 3: Actually free the public_timer memory to stop the leak
-        if (timer->public_timer) {
-            timer->public_timer->internal = NULL;
-            free(timer->public_timer);
-            timer->public_timer = NULL;
-        }
-        free(timer);
-        timer = next;
-    }
-    priv->timer_head = NULL;
-    priv->timer_count = 0;
-
-    for (int i = 0; i < REACTOR_MAX_FD; i++) {
-        if (priv->handlers[i]) {
-            if (priv->handlers[i]->free_cb) {
-                priv->handlers[i]->free_cb(priv->handlers[i]->userdata);
-            }
-            free(priv->handlers[i]);
-            priv->handlers[i] = NULL;
-        }
-    }
-
-    close(r->signal_fd);
-    close(r->event_fd);
-    close(r->epoll_fd);
-
-    free(priv);
-    free(r);
+    reactor_cleanup_internal(r);
 
     LOG_INFO("Reactor destroyed");
 }
@@ -324,7 +321,8 @@ int reactor_run(reactor_t *r) {
             if (priv->error_cb) {
                 priv->error_cb(r, errno, strerror(errno), priv->userdata);
             }
-            continue;
+            r->running = 0;
+            break;
         }
 
         for (int i = 0; i < nfds; i++) {
@@ -440,14 +438,14 @@ int reactor_modify_fd(reactor_t *r, int fd, uint32_t events) {
     reactor_handler_t *h = priv->handlers[fd];
     if (!h) return -1;
 
-    h->events = events;
-
     struct epoll_event ev = {
         .events = events,
         .data = { .fd = fd }
     };
 
-    return epoll_ctl(r->epoll_fd, EPOLL_CTL_MOD, fd, &ev);
+    if (epoll_ctl(r->epoll_fd, EPOLL_CTL_MOD, fd, &ev) < 0) return -1;
+    h->events = events;
+    return 0;
 }
 
 int reactor_remove_fd(reactor_t *r, int fd) {
@@ -491,7 +489,7 @@ reactor_timer_t* reactor_add_timer(reactor_t *r, uint64_t timeout_ms, uint64_t i
         return NULL;
     }
 
-    timer->expires_ms = priv->current_time_ms + timeout_ms;
+    timer->expires_ms = get_monotonic_ms() + timeout_ms;
     timer->interval_ms = interval_ms;
     timer->callback = cb;
     timer->userdata = userdata;
@@ -571,26 +569,28 @@ int reactor_watch_signal(reactor_t *r, int signo) {
     if (!r || signo <= 0) return -1;
 
     reactor_private_t *priv = r->private_data;
-    sigaddset(&priv->sigmask, signo);
+    sigset_t new_mask = priv->sigmask;
+    if (sigaddset(&new_mask, signo) < 0) return -1;
 
-    if (sigprocmask(SIG_BLOCK, &priv->sigmask, NULL) < 0) {
-        LOG_ERROR("sigprocmask failed: %s", strerror(errno));
+    int new_fd = signalfd(-1, &new_mask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (new_fd < 0) return -1;
+    if (reactor_add_fd(r, new_fd, REACTOR_EVENT_READ, NULL, r) != 0) {
+        close(new_fd);
+        return -1;
+    }
+    if (sigprocmask(SIG_BLOCK, &new_mask, NULL) < 0) {
+        reactor_remove_fd(r, new_fd);
+        close(new_fd);
         return -1;
     }
 
-    int new_fd = signalfd(r->signal_fd, &priv->sigmask, SFD_NONBLOCK | SFD_CLOEXEC);
-    if (new_fd < 0) return -1;
-
-    if (new_fd != r->signal_fd) {
-        if (r->signal_fd >= 0) {
-            // FIX 4: Securely remove the old signalfd using the unified function
-            reactor_remove_fd(r, r->signal_fd);
-            close(r->signal_fd);
-        }
-        r->signal_fd = new_fd;
-        reactor_add_fd(r, r->signal_fd, REACTOR_EVENT_READ, NULL, r);
+    int old_fd = r->signal_fd;
+    r->signal_fd = new_fd;
+    priv->sigmask = new_mask;
+    if (old_fd >= 0) {
+        reactor_remove_fd(r, old_fd);
+        close(old_fd);
     }
-
     return 0;
 }
 
