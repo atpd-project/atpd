@@ -41,4 +41,4 @@ Deferred TODOs:
 - Step 09 will shrink context ownership and remove its public mutable boundary.
 - Generated `manifest.md` still contains a stale historical source mention; it is not a build consumer and is outside this Step's ownership change.
 
-Commit hash: recorded after implementation commit.
+Commit hash: `80816f6`.

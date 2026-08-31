@@ -29,6 +29,7 @@
 - Step 05: Configuration parsing uses one strict typed schema; unknown, malformed, duplicate, invalid-type, and truncating inputs are rejected before candidate acceptance.
 - Step 06: Reload validates and merges a stack candidate before commit; active config/runtime are retained on failure and reload generation advances only after successful apply.
 - Step 07: ATPD-owned eBPF files/sys_bpf probing removed; sing-box is sole ebpf-in owner.
+- Step 08: atpd_global container and aliases removed; daemon orchestration owns explicit private dependencies and request flags.
 
 ## Update rule
 
