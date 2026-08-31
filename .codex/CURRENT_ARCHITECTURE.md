@@ -45,6 +45,7 @@
 - Step 21: Diagnostic history is owned by `atpd_error`; getters return copies and logging occurs outside its mutex.
 - Step 22: Logger validates emitted levels, synchronizes threshold access, and exposes only implemented sinks.
 - Step 23: Utility command execution is bounded and shell-free; process ownership and proc metrics use starttime-aware identity.
+- Step 24: CLI parsing is a pure, strict typed boundary; paths reject truncation, conflicts/trailing arguments fail, and CLI types do not depend on logger internals.
 
 ## Update rule
 

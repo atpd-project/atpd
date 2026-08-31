@@ -6,7 +6,6 @@
  */
 
 #include "cli.h"
-#include "logger.h"
 #include "atp.h"
 #include "version.h"
 #include <stdio.h>
@@ -19,22 +18,103 @@ static const struct option long_options[] = {
     {"daemon",    no_argument,       0, 'd'},
     {"verbose",   no_argument,       0, 'V'},
     {"quiet",     no_argument,       0, 'q'},
-    {"force",     no_argument,       0, 'F'},
-    {"test",      no_argument,       0, 't'},
     {"no-color",  no_argument,       0, 'n'},
     {"help",      no_argument,       0, 'h'},
     {"version",   no_argument,       0, 'v'},
     {0, 0, 0, 0}
 };
 
-static const char *short_options = "c:p:fdqFtnhv";
+static const char *short_options = ":c:p:fdVqnhv";
+
+enum {
+    OPTION_CONFIG = 1u << 0,
+    OPTION_PID = 1u << 1,
+    OPTION_FOREGROUND = 1u << 2,
+    OPTION_DAEMON = 1u << 3,
+    OPTION_VERBOSE = 1u << 4,
+    OPTION_QUIET = 1u << 5,
+    OPTION_NO_COLOR = 1u << 6,
+    OPTION_HELP = 1u << 7,
+    OPTION_VERSION = 1u << 8
+};
+
+static int copy_cli_path(char *dst, size_t dst_size, const char *src, const char *option_name) {
+    size_t len;
+
+    if (!dst || dst_size == 0 || !src) return -1;
+    len = strlen(src);
+    if (len >= dst_size) {
+        fprintf(stderr, "%s: path too long\n", option_name);
+        return -1;
+    }
+    memcpy(dst, src, len + 1);
+    return 0;
+}
+
+static int command_from_string(const char *name, atp_command_t *command) {
+    static const struct {
+        const char *name;
+        atp_command_t command;
+    } commands[] = {
+        {"start", CMD_START}, {"stop", CMD_STOP}, {"restart", CMD_RESTART},
+        {"status", CMD_STATUS}, {"reload", CMD_RELOAD}, {"check", CMD_CHECK},
+        {"version", CMD_VERSION}, {"help", CMD_HELP}
+    };
+
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++) {
+        if (strcmp(name, commands[i].name) == 0) {
+            *command = commands[i].command;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int validate_options(atp_command_t command, unsigned seen) {
+    const unsigned mode = seen & (OPTION_FOREGROUND | OPTION_DAEMON);
+    const unsigned verbosity = seen & (OPTION_VERBOSE | OPTION_QUIET);
+
+    if (mode == (OPTION_FOREGROUND | OPTION_DAEMON)) {
+        fprintf(stderr, "--foreground and --daemon are mutually exclusive\n");
+        return -1;
+    }
+    if (verbosity == (OPTION_VERBOSE | OPTION_QUIET)) {
+        fprintf(stderr, "--verbose and --quiet are mutually exclusive\n");
+        return -1;
+    }
+    if (command != CMD_START && command != CMD_RESTART && mode) {
+        fprintf(stderr, "run mode is only valid with start/restart\n");
+        return -1;
+    }
+    if ((command == CMD_VERSION || command == CMD_HELP) && seen &
+        (OPTION_CONFIG | OPTION_PID | OPTION_VERBOSE | OPTION_QUIET | OPTION_NO_COLOR)) {
+        fprintf(stderr, "options are not valid with version/help\n");
+        return -1;
+    }
+    if ((command == CMD_STOP || command == CMD_STATUS || command == CMD_RELOAD) &&
+        (seen & OPTION_CONFIG)) {
+        fprintf(stderr, "--config is only valid with start/restart/check\n");
+        return -1;
+    }
+    if (command == CMD_CHECK && (seen & OPTION_PID)) {
+        fprintf(stderr, "--pid is not valid with check\n");
+        return -1;
+    }
+    if (seen & (OPTION_HELP | OPTION_VERSION)) {
+        if (command != (seen & OPTION_HELP ? CMD_HELP : CMD_VERSION)) {
+            fprintf(stderr, "help/version cannot be combined with a command\n");
+            return -1;
+        }
+    }
+    return 0;
+}
 
 void print_usage(const char *progname) {
-    const char *base = strrchr(progname, '/');
-    base = base ? base + 1 : progname;
+    const char *base = progname ? strrchr(progname, '/') : NULL;
+    base = base ? base + 1 : (progname ? progname : "atpd");
 
     printf(ATP_NAME " %s\n\n", atp_get_full_version());
-    printf("Usage: %s [options] command [subcommand] [args]\n\n", base);
+    printf("Usage: %s [options] command\n\n", base);
     printf("Options:\n");
     printf("  -c, --config FILE     Specify configuration file\n");
     printf("  -p, --pid FILE        Specify PID file path\n");
@@ -42,8 +122,6 @@ void print_usage(const char *progname) {
     printf("  -f, --foreground      Run in foreground (do not daemonize)\n");
     printf("  -V, --verbose         Verbose output (debug level)\n");
     printf("  -q, --quiet           Quiet output (errors only)\n");
-    printf("  -F, --force           Skip confirmation for dangerous operations\n");
-    printf("  -t, --test            Test configuration and exit\n");
     printf("  -n, --no-color        Disable colored output\n");
     printf("  -h, --help            Show this help\n");
     printf("  -v, --version         Print version and exit\n");
@@ -68,92 +146,85 @@ void print_help(const char *progname) {
 }
 
 int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
+    if (!opts || argc < 0 || (argc > 0 && !argv)) return -1;
     memset(opts, 0, sizeof(atp_options_t));
     opts->command = CMD_NONE;
-    opts->daemon = 1;
-    opts->log_level = LOG_LEVEL_INFO;
+    opts->run_mode = CLI_RUN_MODE_DEFAULT;
+    opts->verbosity = CLI_VERBOSITY_DEFAULT;
 
     int opt;
     int option_index = 0;
 
     optind = 1;
-    opterr = 1;
+    opterr = 0;
+    unsigned seen = 0;
+    int explicit_command = CMD_NONE;
 
     while ((opt = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1) {
         switch (opt) {
             case 'c':
-                strncpy(opts->config_file, optarg, sizeof(opts->config_file) - 1);
-                opts->config_file[sizeof(opts->config_file) - 1] = '\0';
+                if (copy_cli_path(opts->config_file, sizeof(opts->config_file), optarg, "--config") != 0) return -1;
+                seen |= OPTION_CONFIG;
                 break;
             case 'p':
-                strncpy(opts->pid_file, optarg, sizeof(opts->pid_file) - 1);
-                opts->pid_file[sizeof(opts->pid_file) - 1] = '\0';
+                if (copy_cli_path(opts->pid_file, sizeof(opts->pid_file), optarg, "--pid") != 0) return -1;
+                seen |= OPTION_PID;
                 break;
             case 'f':
-                opts->foreground = 1;
-                opts->daemon = 0;
+                opts->run_mode = CLI_RUN_MODE_FOREGROUND;
+                seen |= OPTION_FOREGROUND;
                 break;
             case 'd':
-                opts->daemon = 1;
-                opts->foreground = 0;
+                opts->run_mode = CLI_RUN_MODE_DAEMON;
+                seen |= OPTION_DAEMON;
                 break;
             case 'V':
-                opts->verbose = 1;
-                opts->log_level = LOG_LEVEL_DEBUG;
+                opts->verbosity = CLI_VERBOSITY_VERBOSE;
+                seen |= OPTION_VERBOSE;
                 break;
             case 'q':
-                opts->quiet = 1;
-                opts->log_level = LOG_LEVEL_ERROR;
-                break;
-            case 'F':
-                opts->force = 1;
-                break;
-            case 't':
-                opts->test_config = 1;
+                opts->verbosity = CLI_VERBOSITY_QUIET;
+                seen |= OPTION_QUIET;
                 break;
             case 'n':
-                opts->no_color = 1;
+                opts->no_color = true;
+                seen |= OPTION_NO_COLOR;
                 break;
             case 'h':
-                opts->command = CMD_HELP;
-                return 0;
+                explicit_command = CMD_HELP;
+                seen |= OPTION_HELP;
+                break;
             case 'v':
-                opts->command = CMD_VERSION;
-                return 0;
+                explicit_command = CMD_VERSION;
+                seen |= OPTION_VERSION;
+                break;
+            case ':':
+                fprintf(stderr, "option '-%c' requires an argument\n", optopt);
+                return -1;
+            case '?':
+                fprintf(stderr, "unknown option: %s\n", optopt ? argv[optind - 1] : "?");
+                return -1;
             default:
                 return -1;
         }
     }
 
     if (optind < argc) {
-        const char *cmd = argv[optind];
-        if (strcmp(cmd, "start") == 0) {
-            opts->command = CMD_START;
-        } else if (strcmp(cmd, "stop") == 0) {
-            opts->command = CMD_STOP;
-        } else if (strcmp(cmd, "restart") == 0) {
-            opts->command = CMD_RESTART;
-        } else if (strcmp(cmd, "status") == 0) {
-            opts->command = CMD_STATUS;
-        } else if (strcmp(cmd, "reload") == 0) {
-            opts->command = CMD_RELOAD;
-        } else if (strcmp(cmd, "check") == 0) {
-            opts->command = CMD_CHECK;
-        } else if (strcmp(cmd, "version") == 0) {
-            opts->command = CMD_VERSION;
-        } else if (strcmp(cmd, "help") == 0) {
-            opts->command = CMD_HELP;
-        } else {
-            fprintf(stderr, "Unknown command: %s\n", cmd);
+        if (argc - optind != 1 || command_from_string(argv[optind], &opts->command) != 0) {
+            fprintf(stderr, "unknown or trailing command argument: %s\n", argv[optind]);
             return -1;
         }
-    }
-
-    if (opts->command == CMD_NONE) {
+    } else if (explicit_command != CMD_NONE) {
+        opts->command = (atp_command_t)explicit_command;
+    } else {
         opts->command = CMD_HELP;
     }
 
-    return 0;
+    if (explicit_command != CMD_NONE && opts->command != (atp_command_t)explicit_command) {
+        fprintf(stderr, "help/version cannot be combined with a command\n");
+        return -1;
+    }
+    return validate_options(opts->command, seen);
 }
 
 const char* command_to_string(atp_command_t cmd) {

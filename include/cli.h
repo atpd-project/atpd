@@ -4,7 +4,6 @@
 #include <getopt.h>
 #include <stdbool.h>
 #include <limits.h>
-#include "logger.h"
 
 typedef enum {
     CMD_NONE = 0,
@@ -18,18 +17,25 @@ typedef enum {
     CMD_HELP
 } atp_command_t;
 
+typedef enum {
+    CLI_RUN_MODE_DEFAULT = 0,
+    CLI_RUN_MODE_FOREGROUND,
+    CLI_RUN_MODE_DAEMON
+} cli_run_mode_t;
+
+typedef enum {
+    CLI_VERBOSITY_DEFAULT = 0,
+    CLI_VERBOSITY_VERBOSE,
+    CLI_VERBOSITY_QUIET
+} cli_verbosity_t;
+
 typedef struct {
     atp_command_t command;
     char config_file[PATH_MAX];
     char pid_file[PATH_MAX];
-    int foreground;
-    int daemon;
-    int verbose;
-    int quiet;
-    int force;
-    int no_color;
-    int test_config;
-    log_level_t log_level;
+    cli_run_mode_t run_mode;
+    cli_verbosity_t verbosity;
+    bool no_color;
 } atp_options_t;
 
 void print_usage(const char *progname);

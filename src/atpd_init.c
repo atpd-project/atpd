@@ -116,7 +116,10 @@ int atpd_init_phase_logger(atpd_init_context_t *ctx) {
         }
         log_set_file(log_path);
     }
-    log_set_level(ctx->opts->log_level);
+    log_level_t level = LOG_LEVEL_INFO;
+    if (ctx->opts->verbosity == CLI_VERBOSITY_VERBOSE) level = LOG_LEVEL_DEBUG;
+    if (ctx->opts->verbosity == CLI_VERBOSITY_QUIET) level = LOG_LEVEL_ERROR;
+    log_set_level(level);
     if (ctx->opts->no_color) {
         log_set_color(0);
     }

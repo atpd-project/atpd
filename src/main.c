@@ -427,7 +427,7 @@ static int do_start(atp_options_t *opts) {
 
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    if (opts->daemon && !opts->foreground) {
+    if (opts->run_mode != CLI_RUN_MODE_FOREGROUND) {
         int daemon_role = daemonize();
         if (daemon_role == DAEMON_PARENT_SUCCESS) return 0;
         if (daemon_role == DAEMON_PARENT_FAILURE) return 1;
@@ -654,6 +654,15 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    if (opts.command == CMD_VERSION) {
+        print_version();
+        return 0;
+    }
+    if (opts.command == CMD_HELP) {
+        print_usage(argv[0]);
+        return 0;
+    }
+
     config_set_defaults(&daemon_config);
     char auto_cfg_path[PATH_MAX];
     const char *cfg_path = opts.config_file[0] ? opts.config_file : NULL;
@@ -687,12 +696,6 @@ int main(int argc, char *argv[]) {
             return do_reload(&opts);
         case CMD_CHECK:
             return do_check(&opts);
-        case CMD_VERSION:
-            print_version();
-            return 0;
-        case CMD_HELP:
-            print_usage(argv[0]);
-            return 0;
         default:
             print_usage(argv[0]);
             return 0;
