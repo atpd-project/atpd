@@ -118,19 +118,22 @@ atpd -c <valid-custom-config> stop/reload
 | status no traffic-state write check | PASS |
 | `git diff --check` | PASS |
 | source ownership/boundary invariant searches | PASS |
-| reduced resource benchmark | NOT PASS — `CAP_NET_ADMIN` unavailable |
-| reduced resource stress | NOT PASS — `CAP_NET_ADMIN` unavailable |
+| privileged resource benchmark | PASS — root run with `CAP_NET_ADMIN`; baseline/status/netlink/recovery gates completed |
+| privileged resource stress | PASS — root run; status/reload/restart/session/crash/netlink/recovery/resource gates completed |
 | `shellcheck` | N/A — tool unavailable |
 
-The resource commands were attempted without extra privileges. The environment has:
+The privileged resource commands were rerun as root. The environment has:
 
 ```text
-uid=1000
-CapEff=0000000000000000
+uid=0
+CapEff=000001ffffffffff
 ```
 
-Both resource harnesses stopped at the explicit capability probe before claiming any
-stress result.
+The benchmark reported `Result: PASS` with baseline RSS 1748KB, recovery RSS
+1820KB, RSS slope 0.000KB/min, and FD/thread growth 0/0. The full stress run
+reported `resource stress PASS` after status=5000, reload=100, restart=100,
+sessions=1000, singbox_crash=10, Netlink storm=200, and ten recovery samples;
+RSS delta was 124KB, RSS slope 0.000KB/min, and FD/thread delta 0/0.
 
 ## Findings
 
@@ -142,15 +145,12 @@ None.
 
 None.
 
-### MINOR-01 — privileged resource workload remains unexecuted in this environment
+### MINOR-01 — CLOSED: privileged resource workload executed
 
-The corrected benchmark/stress implementation, shell syntax, hard-gate paths,
-coverage markers, cleanup identity checks and capability behavior were audited.
-However, the full status/reload/restart/session/crash/netlink/recovery workload was
-not executed because the current process has no `CAP_NET_ADMIN`.
-
-This is not recorded as a PASS. A privileged Linux/Android runner must execute both
-harnesses before RC evidence is complete.
+The root rerun exercised the corrected benchmark and stress harnesses, including
+status/reload/restart/session churn, ten sing-box crash recoveries, Netlink storm,
+recovery sampling, and hard resource gates. Both harnesses passed without residual
+ATPD/sing-box processes, sockets, or test interfaces.
 
 ### INFO — commit signing environment
 
@@ -181,8 +181,7 @@ this handoff and the final audit without rewriting the unsigned commit.
 
 ## Final decision
 
-The four original MAJOR findings are closed. The code is eligible to remain at the
-Step 29 completed / Step 30 ready checkpoint, with privileged resource execution
-explicitly outstanding as a MINOR validation finding.
+The four original MAJOR findings and the privileged resource execution gap are
+closed. The code remains at the Step 29 completed / Step 30 ready checkpoint.
 
-Final verdict: `PASS_WITH_MINOR_FINDINGS`
+Final verdict: `PASS`

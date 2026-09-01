@@ -655,6 +655,10 @@ static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void 
 
     if (service_spawn(ctx) == 0) {
         ctx->state = SERVICE_STARTING;
+        /* Re-check replacement readiness before the next 1s monitor tick. */
+        if (!reactor_add_timer(ctx->reactor, 100, 0, service_monitor_cb, ctx)) {
+            LOG_WARN("Service: failed to schedule replacement readiness check");
+        }
     } else {
         ctx->fail_count++;
         circuit_breaker_record_failure(&ctx->breaker);
@@ -972,7 +976,8 @@ int service_set_reactor(service_ctx_t *ctx, reactor_t *r) {
             reactor_cancel_timer(r, ctx->monitor_timer);
             ctx->monitor_timer = NULL;
         }
-        ctx->monitor_timer = reactor_add_timer(r, 1000, 1000, service_monitor_cb, ctx);
+        /* Check startup readiness promptly; keep the steady-state cadence at 1s. */
+        ctx->monitor_timer = reactor_add_timer(r, 100, 1000, service_monitor_cb, ctx);
         if (!ctx->monitor_timer) return -1;
     }
     return 0;
