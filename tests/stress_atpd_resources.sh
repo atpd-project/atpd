@@ -32,7 +32,8 @@ run_timeout() {
 }
 
 collect_resources() {
-    local pid="$1" phase="$2" status="/proc/${pid}/status"
+    local pid="$1" phase="$2"
+    local status="/proc/${pid}/status"
     [ -r "$status" ] || { echo "stress: ATPD process ${pid} disappeared" >&2; return 1; }
     LAST_RSS=$(awk '/^VmRSS:/ {print $2; exit}' "$status")
     LAST_HWM=$(awk '/^VmHWM:/ {print $2; exit}' "$status")

@@ -53,12 +53,13 @@ CONFIG_VALUE_TEST = build/tests/test_config_value
 CONTEXT_TEST = build/tests/test_atpd_context
 CLI_TEST = build/tests/test_cli
 STATUS_RENDER_TEST = build/tests/test_status_render
+UTILS_PROC_STAT_TEST = build/tests/test_utils_proc_stat
 
 .PHONY: all test clean distclean install uninstall
 
 all: $(TARGET)
 
-test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST)
+test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST)
 	$(VPN_MODE_TEST)
 	$(LOGGER_SAFETY_TEST)
 	$(RESULT_TEST)
@@ -67,6 +68,7 @@ test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_
 	$(CONTEXT_TEST)
 	$(CLI_TEST)
 	$(STATUS_RENDER_TEST)
+	$(UTILS_PROC_STAT_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
 	sh tests/test_android_service.sh
 
@@ -101,6 +103,10 @@ $(CLI_TEST): tests/test_cli.c src/cli.c src/version.c $(VERSION_HEADER)
 $(STATUS_RENDER_TEST): tests/test_status_render.c src/status_render.c src/ui.c src/version.c $(VERSION_HEADER)
 	@mkdir -p $(dir $@)
 	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_status_render.c src/status_render.c src/ui.c src/version.c
+
+$(UTILS_PROC_STAT_TEST): tests/test_utils_proc_stat.c src/utils.c src/logger.c
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_utils_proc_stat.c src/utils.c src/logger.c -lpthread
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)

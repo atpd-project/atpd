@@ -537,11 +537,11 @@ static int read_proc_stat(pid_t pid, unsigned long long *utime_out,
     if (!close_comm) return -1;
     char *cursor = close_comm + 1;
     while (*cursor == ' ') cursor++;
-    if (!*cursor) return -1;
+    /* /proc/<pid>/stat field 3 (state) is a single character. */
+    if (!*cursor || isspace((unsigned char)*cursor)) return -1;
+    cursor++;
+    if (*cursor && !isspace((unsigned char)*cursor)) return -1;
     char *end;
-    (void)strtol(cursor, &end, 10); /* state (field 3) */
-    if (end == cursor) return -1;
-    cursor = end;
     unsigned long long utime = 0, stime = 0, starttime = 0;
     for (int field = 4; field <= 22; field++) {
         while (*cursor == ' ') cursor++;

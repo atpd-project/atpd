@@ -33,7 +33,8 @@ run_timeout() {
 }
 
 collect_atpd_resources() {
-    local pid="$1" phase="$2" status="/proc/${pid}/status"
+    local pid="$1" phase="$2"
+    local status="/proc/${pid}/status"
     local rss hwm vm fd threads pss
     [ -r "$status" ] || { fail_gate "ATPD process ${pid} is unavailable"; return 1; }
     rss=$(awk '/^VmRSS:/ {print $2; exit}' "$status" 2>/dev/null || true)
