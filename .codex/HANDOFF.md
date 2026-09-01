@@ -54,3 +54,11 @@ Known unresolved issues: none.
 Preserved historical reports remain untracked and must not be modified or removed as part of startup or handoff. Treat them as historical artifacts, not as current implementation state.
 
 Unattended unsigned commits: `bf9c6ef`, `c21f3be`, `167b256`, `4114564`, `e36b8b9`, `2ba27c9`, `c95a2f2`, `34ca744`, `7788c02`, `f6cf3b6`, `49a8ad5`, `6a9db29`.
+
+Step 29 privileged validation closure:
+
+- Benchmark: PASS under root with `CAP_NET_ADMIN`.
+- Full resource stress: PASS, including crash recovery `10/10` and Netlink storm `200`.
+- Resource gates: FD/thread delta `0/0`, RSS slope `0.000 KB/min`.
+- Cleanup: no residual ATPD/sing-box processes, sockets, or test interfaces.
+- The prior `CAP_NET_ADMIN` environment gap is closed; checkpoint remains Step 29 completed / Step 30 ready.

@@ -182,6 +182,7 @@ this handoff and the final audit without rewriting the unsigned commit.
 ## Final decision
 
 The four original MAJOR findings and the privileged resource execution gap are
-closed. The code remains at the Step 29 completed / Step 30 ready checkpoint.
+closed. The `CAP_NET_ADMIN` environment gap is closed by the root validation.
+The code remains at the Step 29 completed / Step 30 ready checkpoint.
 
 Final verdict: `PASS`
