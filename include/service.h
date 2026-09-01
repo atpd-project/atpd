@@ -15,6 +15,13 @@ typedef enum {
 } service_state_t;
 
 typedef struct {
+    pid_t child_pid;
+    service_state_t state;
+    int healthy;
+    time_t start_time;
+} service_snapshot_t;
+
+typedef struct {
     int base_delay_ms;
     int max_delay_ms;
     int current_delay_ms;
@@ -84,6 +91,7 @@ void service_destroy(service_ctx_t *ctx);
 int service_get_pid(service_ctx_t *ctx);
 int service_is_running(service_ctx_t *ctx);
 int service_is_healthy(service_ctx_t *ctx);
+void service_get_snapshot(const service_ctx_t *ctx, service_snapshot_t *out);
 void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
 void service_health_check_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
 void service_sigchld_cb(reactor_t *r, int signo, void *userdata);

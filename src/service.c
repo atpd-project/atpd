@@ -1189,3 +1189,16 @@ int service_is_running(service_ctx_t *ctx) {
 int service_is_healthy(service_ctx_t *ctx) {
     return ctx && service_is_running(ctx) && ctx->running_healthy;
 }
+
+void service_get_snapshot(const service_ctx_t *ctx, service_snapshot_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->child_pid = -1;
+    out->state = SERVICE_STOPPED;
+    if (!ctx) return;
+
+    out->child_pid = ctx->child_pid;
+    out->state = ctx->state;
+    out->healthy = ctx->running_healthy;
+    out->start_time = ctx->start_time;
+}

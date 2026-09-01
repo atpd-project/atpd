@@ -461,13 +461,9 @@ atp_result_t config_load(const char *path, atp_config_t *cfg) {
     return ATP_OK;
 }
 
-atp_result_t config_reload(atp_config_t *cfg) {
-    if (!cfg) return ATP_ERR_INVAL;
-    char cp[SAFE_PATH_MAX];
-    if (snprintf(cp, sizeof(cp), "%s/%s", cfg->core.data_dir, ATP_CONF_FILE) >= (int)sizeof(cp)) {
-        return ATP_ERR_INVAL;
-    }
-    if (!file_exists(cp)) {
+atp_result_t config_reload(const char *source_path, atp_config_t *cfg) {
+    if (!source_path || !source_path[0] || !cfg) return ATP_ERR_INVAL;
+    if (!file_exists(source_path)) {
         return ATP_ERR_NOENT;
     }
 
@@ -475,7 +471,7 @@ atp_result_t config_reload(atp_config_t *cfg) {
     config_presence_t presence = {0};
     config_set_defaults(&new_config);
 
-    atp_result_t ret = config_prepare(cp, &new_config, &presence);
+    atp_result_t ret = config_prepare(source_path, &new_config, &presence);
     if (ret != ATP_OK) {
         return ret;
     }
@@ -486,7 +482,7 @@ atp_result_t config_reload(atp_config_t *cfg) {
 
     *cfg = new_config;
 
-    LOG_INFO("Configuration reloaded successfully");
+    LOG_INFO("Configuration reloaded successfully: %s", source_path);
     return ATP_OK;
 }
 

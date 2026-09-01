@@ -90,11 +90,6 @@ static int validate_options(atp_command_t command, unsigned seen) {
         fprintf(stderr, "options are not valid with version/help\n");
         return -1;
     }
-    if ((command == CMD_STOP || command == CMD_STATUS || command == CMD_RELOAD) &&
-        (seen & OPTION_CONFIG)) {
-        fprintf(stderr, "--config is only valid with start/restart/check\n");
-        return -1;
-    }
     if (command == CMD_CHECK && (seen & OPTION_PID)) {
         fprintf(stderr, "--pid is not valid with check\n");
         return -1;

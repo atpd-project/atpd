@@ -11,7 +11,6 @@
 #include "logger.h"
 #include "atpd_context.h"
 #include "status.h"
-#include "ui.h"
 #include "session.h"
 #include "atpd_error.h"
 #include "version.h"
@@ -138,14 +137,8 @@ static void handle_status(uds_client_t *client) {
     size_t size = 0;
     FILE *mem = open_memstream(&buf, &size);
     if (mem) {
-        int previous_no_color = ui_get_no_color();
-        ui_set_output_file(mem);
-        ui_set_no_color(1);
-        status_show(g_uds_dependencies.config,
-                    g_uds_dependencies.service,
-                    g_uds_dependencies.api);
-        ui_set_no_color(previous_no_color);
-        ui_set_output_file(NULL);
+        status_show_to(mem, true, g_uds_dependencies.config,
+                       g_uds_dependencies.service);
         fclose(mem);
 
         if (buf && size > 0) {

@@ -15,7 +15,6 @@
 #include "api.h"
 #include "netlink.h"
 #include "status.h"
-#include "ui.h"
 #include "cli.h"
 #include "reactor.h"
 #include "uds.h"
@@ -53,6 +52,7 @@ static int process_is_atpd(pid_t pid);
 
 static atp_config_t daemon_config;
 static api_ctx_t daemon_api;
+static char daemon_config_path[PATH_MAX];
 static reactor_t *daemon_reactor = NULL;
 static service_ctx_t *daemon_service = NULL;
 static volatile sig_atomic_t shutdown_requested = 0;
@@ -85,6 +85,18 @@ static void resolve_socket_path(char *path, size_t size) {
         snprintf(path, size, "%s/%s/atpd.sock",
                  daemon_config.core.data_dir[0] ? daemon_config.core.data_dir : ".", run_dir);
     }
+}
+
+static int resolve_config_source_path(const char *path, char *resolved,
+                                      size_t size) {
+    if (!path || !path[0] || !resolved || size == 0) return -1;
+    if (path[0] == '/') {
+        return snprintf(resolved, size, "%s", path) < (int)size ? 0 : -1;
+    }
+
+    char cwd[PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd))) return -1;
+    return snprintf(resolved, size, "%s/%s", cwd, path) < (int)size ? 0 : -1;
 }
 
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size) {
@@ -277,7 +289,7 @@ static void on_idle(reactor_t *r, void *userdata) {
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING) == 0) {
             LOG_INFO("Processing config reload...");
             atp_config_t previous_config = daemon_config;
-            if (config_reload(&daemon_config) != ATP_OK) {
+            if (config_reload(daemon_config_path, &daemon_config) != ATP_OK) {
                 LOG_ERROR("Config reload failed");
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
             } else {
@@ -303,7 +315,7 @@ static void on_idle(reactor_t *r, void *userdata) {
     if (status_requested && !shutdown_requested) {
         status_requested = 0;
         LOG_INFO("Processing status display...");
-        status_show(&daemon_config, daemon_service, &daemon_api);
+        status_show_to(stdout, true, &daemon_config, daemon_service);
     }
 
     if (shutdown_requested) {
@@ -553,7 +565,6 @@ static int do_restart(atp_options_t *opts) {
 }
 
 static int do_status(atp_options_t *opts) {
-    (void)opts;
     char uds_path[SAFE_PATH_MAX];
     resolve_socket_path(uds_path, sizeof(uds_path));
 
@@ -593,11 +604,7 @@ static int do_status(atp_options_t *opts) {
     memset(&local_svc, 0, sizeof(local_svc));
     service_init(&local_svc, &daemon_config);
 
-    api_ctx_t local_api;
-    memset(&local_api, 0, sizeof(local_api));
-    api_init(&local_api, &daemon_config);
-
-    status_show(&daemon_config, &local_svc, &local_api);
+    status_show_to(stdout, opts->no_color, &daemon_config, &local_svc);
     return 0;
 }
 
@@ -662,8 +669,6 @@ int main(int argc, char *argv[]) {
         print_usage(argv[0]);
         return 0;
     }
-    ui_set_no_color(opts.no_color);
-
     config_set_defaults(&daemon_config);
     char auto_cfg_path[PATH_MAX];
     const char *cfg_path = opts.config_file[0] ? opts.config_file : NULL;
@@ -674,6 +679,11 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         cfg_path = auto_cfg_path;
+    }
+    if (resolve_config_source_path(cfg_path, daemon_config_path,
+                                   sizeof(daemon_config_path)) != 0) {
+        fprintf(stderr, "Configuration path is too long\n");
+        return 1;
     }
     if (access(cfg_path, R_OK) == 0) {
         if (config_load(cfg_path, &daemon_config) != ATP_OK) {
