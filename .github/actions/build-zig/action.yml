@@ -32,9 +32,8 @@ runs:
     - name: Generate Version
       shell: bash
       run: |
-        chmod +x scripts/gen_version.sh
-        ./scripts/gen_version.sh
-        cat include/version.h
+        ./scripts/gen_version.sh build/generated/version_build.h
+        cat build/generated/version_build.h
 
     - name: Setup Zig
       uses: mlugg/setup-zig@v2
@@ -61,7 +60,7 @@ runs:
           -s -Oz -flto -ffunction-sections -fdata-sections -static \
           -fno-unwind-tables -fno-asynchronous-unwind-tables \
           -fmerge-all-constants -fno-ident \
-          -Iinclude \
+          -Iinclude -Ibuild/generated \
           -D_GNU_SOURCE \
           -DNDEBUG \
           -DYYJSON_DISABLE_WRITER=1 \
