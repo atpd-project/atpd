@@ -158,7 +158,9 @@ GPG signing with key `56BBBCE870EF17D9` was attempted and reached an interactive
 passphrase prompt. The unattended session cannot provide the passphrase and did not
 modify GPG configuration. The repository's AGENTS.md unattended migration-safe
 exception therefore applies: the remediation commit is created with
-`--no-gpg-sign`, and its hash is recorded in `.codex/HANDOFF.md`.
+`--no-gpg-sign`, and its hash is recorded in `.codex/HANDOFF.md`. After the
+signing environment recovered, a separate signed attestation commit records
+this handoff and the final audit without rewriting the unsigned commit.
 
 ## Architecture invariant recheck
 
