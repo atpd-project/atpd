@@ -24,7 +24,6 @@ echo "STRIP: $STRIP"
 make clean
 
 # 3. 版本生成
-chmod +x scripts/gen_version.sh
 ./scripts/gen_version.sh build/generated/version_build.h
 if [ -f build/generated/version_build.h ]; then
     cat build/generated/version_build.h
@@ -48,7 +47,7 @@ $CC -Wall -Wextra -Oz -flto -D_GNU_SOURCE -DNDEBUG -Qunused-arguments \
     -DATP_PID_FILE=\"run/atpd.pid\" \
     -DATP_LOG_FILE=\"run/atp.log\" \
     -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
-    -Iinclude \
+    -Iinclude -Ibuild/generated \
     ${EXTRA_CFLAGS:-} \
     -fuse-ld=lld \
     -static \

@@ -22,6 +22,7 @@ on:
       - 'scripts/**'
       - '.github/scripts/**'
       - '.github/actions/**'
+      - 'Dockerfile'
       - 'Makefile'
       - '.github/workflows/build.yml'
   pull_request:

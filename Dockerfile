@@ -10,8 +10,7 @@ RUN apk add --no-cache \
 WORKDIR /app
 COPY . .
 
-RUN chmod +x scripts/build.sh && \
-    mkdir -p build/bin && \
+RUN mkdir -p build/bin && \
     ./scripts/build.sh
 
 FROM scratch AS bin
