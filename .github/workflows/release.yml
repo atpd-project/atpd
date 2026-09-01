@@ -7,31 +7,16 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-clang:
-    runs-on: ubuntu-latest
-    outputs:
-      binary_size: ${{ steps.clang-build.outputs.binary_size }}
-      atp_version: ${{ steps.clang-build.outputs.atp_version }}
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Get Short SHA
-        id: vars
-        run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-
-      - name: Build with Clang
-        id: clang-build
-        uses: ./.github/actions/build-clang
-        with:
-          artifact-suffix: '-release-${{ steps.vars.outputs.short_sha }}'
-
   build-zig:
     runs-on: ubuntu-latest
     outputs:
+      atp_version: ${{ steps.zig-build.outputs.atp_version }}
       zig_binary_size: ${{ steps.zig-build.outputs.zig_binary_size }}
       atpd_version_string: ${{ steps.zig-build.outputs.atpd_version_string }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Get Short SHA
         id: vars
@@ -45,7 +30,7 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [build-clang, build-zig]
+    needs: [build-zig]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -57,11 +42,6 @@ jobs:
       - name: Get Short SHA
         id: vars
         run: echo "short_sha=${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-
-      - name: Download Clang Artifact
-        uses: actions/download-artifact@v5
-        with:
-          name: atpd-clang-release-${{ steps.vars.outputs.short_sha }}
 
       - name: Download Zig Artifact
         uses: actions/download-artifact@v5
@@ -91,12 +71,11 @@ jobs:
           echo "" >> /tmp/changelog.md
           echo "| Toolchain | Size |" >> /tmp/changelog.md
           echo "|-----------|------|" >> /tmp/changelog.md
-          echo "| Clang 21 (Musl) | ${{ needs.build-clang.outputs.binary_size }} |" >> /tmp/changelog.md
           echo "| Zig CC (Musl) | ${{ needs.build-zig.outputs.zig_binary_size }} |" >> /tmp/changelog.md
           echo "" >> /tmp/changelog.md
           echo "### 🔧 Usage" >> /tmp/changelog.md
           echo '```bash' >> /tmp/changelog.md
-          echo "adb push atpd-clang /data/local/tmp/atpd" >> /tmp/changelog.md
+          echo "adb push atpd-zig /data/local/tmp/atpd" >> /tmp/changelog.md
           echo "adb shell chmod +x /data/local/tmp/atpd" >> /tmp/changelog.md
           echo '```' >> /tmp/changelog.md
           
@@ -105,7 +84,7 @@ jobs:
       - name: Create Release
         env:
           GH_TOKEN: ${{ github.token }}
-          ATP_VERSION: ${{ needs.build-clang.outputs.atp_version }}
+          ATP_VERSION: ${{ needs.build-zig.outputs.atp_version }}
         run: |
           IS_PRERELEASE=""
           if [[ "${{ github.ref_name }}" == *-beta* ]] || [[ "${{ github.ref_name }}" == *-alpha* ]] || [[ "${{ github.ref_name }}" == *-rc* ]]; then
@@ -113,7 +92,7 @@ jobs:
           fi
           
           gh release create ${{ github.ref_name }} \
-            atpd-clang-release-* atpd-zig-release-* \
+            atpd-zig-release-* \
             --title "ATPd ${ATP_VERSION}" \
             --notes-file /tmp/changelog.md \
             $IS_PRERELEASE

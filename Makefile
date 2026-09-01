@@ -6,19 +6,14 @@ BINDIR ?= $(PREFIX)/bin
 RUNDIR ?= $(PREFIX)/run
 SINGBOXDIR ?= $(PREFIX)/sing-box
 
-CC ?= $(shell which clang 2>/dev/null || echo gcc)
+ZIG_VERSION := $(strip $(shell cat .zig-version))
+override CC := zig cc
+.DEFAULT_GOAL := all
 
-ifeq ($(findstring clang,$(CC)),clang)
-CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC -Qunused-arguments
+CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC
 CFLAGS += -Oz -flto -ffunction-sections -fdata-sections
 CFLAGS += -fno-unwind-tables -fno-asynchronous-unwind-tables
 CFLAGS += -fmerge-all-constants -fno-ident
-else
-CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC
-CFLAGS += -O2 -flto -ffunction-sections -fdata-sections
-CFLAGS += -fno-unwind-tables -fno-asynchronous-unwind-tables
-CFLAGS += -fmerge-all-constants -fno-ident
-endif
 CFLAGS += -fstack-protector-strong
 CFLAGS += -DYYJSON_DISABLE_WRITER=1 -DYYJSON_DISABLE_FAST_FP_CONV=1 -DYYJSON_DISABLE_NON_STANDARD=1
 CFLAGS += -DATP_DEFAULT_DIR=\"$(PREFIX)\"
@@ -30,11 +25,12 @@ CFLAGS += -Iinclude
 
 ifdef DEBUG
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -DATP_DEBUG -O0 -fsanitize=address -Iinclude
+SANITIZER_LIBS = -l:libasan.so.8
 endif
 CFLAGS += -D_FORTIFY_SOURCE=3
 CFLAGS += -Ibuild/generated
 
-LIBS = -lpthread
+LIBS = -lpthread $(SANITIZER_LIBS)
 
 LDFLAGS = -flto
 LDFLAGS += -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-z,relro,-z,now
@@ -55,11 +51,15 @@ CLI_TEST = build/tests/test_cli
 STATUS_RENDER_TEST = build/tests/test_status_render
 UTILS_PROC_STAT_TEST = build/tests/test_utils_proc_stat
 
-.PHONY: all test clean distclean install uninstall
+.PHONY: all test clean distclean install uninstall check-zig
 
-all: $(TARGET)
+check-zig: .zig-version
+	@command -v zig >/dev/null 2>&1 || { echo "error: Zig $(ZIG_VERSION) is required but zig is not in PATH" >&2; exit 1; }
+	@actual="$$(zig version)"; [ "$$actual" = "$(ZIG_VERSION)" ] || { echo "error: Zig $(ZIG_VERSION) is required, found $$actual" >&2; exit 1; }
 
-test: $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST)
+all: check-zig $(TARGET)
+
+test: check-zig $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST)
 	$(VPN_MODE_TEST)
 	$(LOGGER_SAFETY_TEST)
 	$(RESULT_TEST)
@@ -127,6 +127,8 @@ $(VERSION_HEADER): FORCE VERSION scripts/gen_version.sh
 FORCE:
 
 $(OBJDIR)/src/version.o: $(VERSION_HEADER)
+
+$(OBJ) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST): | check-zig
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)

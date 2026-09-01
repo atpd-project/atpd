@@ -181,10 +181,14 @@ info "next step: $current_step"
 info "manifest: $manifest"
 
 if command -v make >/dev/null 2>&1; then info "make: $(command -v make)"; else printf 'PRECHECK WARNING: make not found.\n' >&2; fi
-if command -v cc >/dev/null 2>&1; then info "cc: $(command -v cc)";
-elif command -v gcc >/dev/null 2>&1; then info "gcc: $(command -v gcc)";
-elif command -v clang >/dev/null 2>&1; then info "clang: $(command -v clang)";
-else printf 'PRECHECK WARNING: no C compiler found in PATH.\n' >&2; fi
+zig_version="$(sed -n '1p' .zig-version)"
+if command -v zig >/dev/null 2>&1; then
+  actual_zig_version="$(zig version)"
+  [[ "$actual_zig_version" == "$zig_version" ]] || fail "Zig $zig_version is required, found $actual_zig_version"
+  info "zig: $(command -v zig) ($actual_zig_version)"
+else
+  fail "Zig $zig_version is required but zig is not in PATH"
+fi
 
 printf '\nPRECHECK PASS\n'
 if [[ "$MODE" == "resume-current-step" ]]; then

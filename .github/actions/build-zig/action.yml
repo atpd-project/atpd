@@ -1,11 +1,7 @@
-name: Build ATPd with Zig
-description: Build with Zig CC, extract metadata, upload artifact (requires prior checkout)
+name: Build ATPd with pinned Zig
+description: Build the Docker release artifact with the repository-pinned Zig CC toolchain
 
 inputs:
-  zig-version:
-    description: 'Zig version'
-    required: false
-    default: 'master'
   artifact-suffix:
     description: 'Suffix for artifact name'
     required: false
@@ -16,6 +12,9 @@ inputs:
     default: '7'
 
 outputs:
+  atp_version:
+    description: 'ATPd product version'
+    value: ${{ steps.zig-extract.outputs.atp_version }}
   zig_binary_size:
     description: 'Size of zig binary'
     value: ${{ steps.zig-extract.outputs.zig_binary_size }}
@@ -29,57 +28,24 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: Generate Version
-      shell: bash
-      run: |
-        ./scripts/gen_version.sh build/generated/version_build.h
-        cat build/generated/version_build.h
-
-    - name: Setup Zig
-      uses: mlugg/setup-zig@v2
-      with:
-        version: ${{ inputs.zig-version }}
-
-    - name: Cache Zig
-      uses: actions/cache@v6
-      with:
-        path: |
-          ~/.cache/zig
-          .zig-cache
-        key: zig-${{ runner.os }}-${{ inputs.zig-version }}-${{ hashFiles('.github/actions/build-zig/action.yml') }}
-        restore-keys: |
-          zig-${{ runner.os }}-${{ inputs.zig-version }}-
-
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
 
-    - name: Build with Zig CC
-      shell: bash
-      run: |
-        zig cc -target aarch64-linux \
-          -s -Oz -flto -ffunction-sections -fdata-sections -static \
-          -fno-unwind-tables -fno-asynchronous-unwind-tables \
-          -fmerge-all-constants -fno-ident \
-          -Iinclude -Ibuild/generated \
-          -D_GNU_SOURCE \
-          -DNDEBUG \
-          -DYYJSON_DISABLE_WRITER=1 \
-          -DYYJSON_DISABLE_FAST_FP_CONV=1 \
-          -DYYJSON_DISABLE_NON_STANDARD=1 \
-          -DLOG_LOCATION_ENABLED=0 \
-          -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
-          -DATP_CONF_FILE=\"atp.conf\" \
-          -DATP_PID_FILE=\"run/atpd.pid\" \
-          -DATP_LOG_FILE=\"run/atp.log\" \
-          -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
-          -o atpd-zig \
-          $(find src -name "*.c") \
-          -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
+    - name: Set up Buildx
+      uses: docker/setup-buildx-action@v4
 
-    - name: Install QEMU
+    - name: Build with Zig CC
+      id: build
       shell: bash
       run: |
-        sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+        set -euo pipefail
+        docker buildx build --platform linux/arm64 \
+          --target builder -t atpd-zig-builder --load .
+        container_id=$(docker create --platform linux/arm64 atpd-zig-builder)
+        docker cp "$container_id:/app/build/bin/atpd" ./atpd-zig
+        docker rm -v "$container_id"
+        echo "runtime_ver=$(docker run --rm --platform linux/arm64 --entrypoint /app/build/bin/atpd atpd-zig-builder -v | head -1)" >> "$GITHUB_OUTPUT"
+        echo "zig_compiler_ver=$(docker run --rm --platform linux/arm64 --entrypoint zig atpd-zig-builder version)" >> "$GITHUB_OUTPUT"
 
     - name: Verify Binary
       shell: bash
@@ -96,11 +62,10 @@ runs:
       shell: bash
       run: |
         ZIG_SIZE=$(du -h ./atpd-zig | cut -f1)
-        echo "zig_binary_size=$ZIG_SIZE" >> $GITHUB_OUTPUT
-        ZIG_VER=$(zig version 2>/dev/null || echo "0.11.0")
-        echo "zig_compiler_ver=$ZIG_VER" >> $GITHUB_OUTPUT
-        ATPD_VER=$(qemu-aarch64-static ./atpd-zig -v 2>/dev/null | head -1 || echo "N/A")
-        echo "atpd_version_string=$ATPD_VER" >> $GITHUB_OUTPUT
+        echo "atp_version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+        echo "zig_binary_size=$ZIG_SIZE" >> "$GITHUB_OUTPUT"
+        echo "zig_compiler_ver=${{ steps.build.outputs.zig_compiler_ver }}" >> "$GITHUB_OUTPUT"
+        echo "atpd_version_string=${{ steps.build.outputs.runtime_ver }}" >> "$GITHUB_OUTPUT"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v7

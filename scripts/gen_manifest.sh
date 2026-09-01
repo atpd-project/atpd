@@ -23,7 +23,7 @@ echo "| :--- | :--- | :--- | :--- |" >> $OUTPUT
 
 find src -name "*.c" -o -name "*.h" 2>/dev/null | while read file; do
     lines=$(wc -l < "$file")
-    # 扫描 GCC 15 敏感项
+    # 扫描编译器敏感项
     risks=$(grep -cE "strncpy|realloc" "$file")
     status="⏳ 待审计"
     [[ $risks -eq 0 ]] && status="🟢 形式合规"

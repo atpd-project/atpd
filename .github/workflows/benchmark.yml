@@ -20,6 +20,7 @@ on:
       - 'include/**'
       - 'tests/**'
       - 'Makefile'
+      - '.zig-version'
       - '.github/workflows/benchmark.yml'
   pull_request:
     branches: [main, dev, ebpf, pure-ebpf, ebpf-native-api]
@@ -40,10 +41,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential clang llvm libbpf-dev iproute2 curl jq procps
+          sudo apt-get install -y -qq make libbpf-dev iproute2 curl jq procps
 
       - name: Download & Install sing-box official package
         run: |
@@ -59,7 +65,6 @@ jobs:
 
       - name: Run Benchmark Suite
         run: |
-          chmod +x tests/benchmark_atpd.sh
           sudo -E ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
 
       - name: Publish Performance Summary to GitHub UI

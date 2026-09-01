@@ -1,24 +1,21 @@
 #!/bin/bash
 set -e
 
-# 1. 环境定义 (适配 Alpine Edge clang21 与通用环境)
-if [ -x "/usr/bin/clang-21" ]; then
-    CC="/usr/bin/clang-21"
-elif [ -x "/usr/bin/clang-19" ]; then
-    CC="/usr/bin/clang-19"
-else
-    CC="$(command -v clang || echo 'clang')"
+# 1. 唯一工具链
+ZIG_VERSION="$(cat .zig-version)"
+if ! command -v zig >/dev/null 2>&1; then
+    echo "error: Zig ${ZIG_VERSION} is required but zig is not in PATH" >&2
+    exit 1
 fi
-
-if [ -x "/usr/bin/llvm-strip" ]; then
-    STRIP="/usr/bin/llvm-strip"
-else
-    STRIP="$(command -v llvm-strip || command -v strip || echo 'strip')"
+ACTUAL_ZIG_VERSION="$(zig version)"
+if [ "${ACTUAL_ZIG_VERSION}" != "${ZIG_VERSION}" ]; then
+    echo "error: Zig ${ZIG_VERSION} is required, found ${ACTUAL_ZIG_VERSION}" >&2
+    exit 1
 fi
+CC="zig cc"
 
 echo "=== Starting Pure eBPF True Native Lean Build ==="
 echo "CC: $CC"
-echo "STRIP: $STRIP"
 
 # 2. 彻底清理
 make clean
@@ -33,10 +30,10 @@ fi
 mkdir -p build/bin
 
 # 5. 执行手动编译链接 (完全原生，零 UPX 壳)
-SRC_FILES=$(find src -name "*.c")
+SRC_FILES=(src/*.c)
 
 echo "Compiling with native instruction optimizations..."
-$CC -Wall -Wextra -Oz -flto -D_GNU_SOURCE -DNDEBUG -Qunused-arguments \
+$CC -Wall -Wextra -Oz -flto -D_GNU_SOURCE -DNDEBUG \
     -ffunction-sections -fdata-sections \
     -fno-unwind-tables -fno-asynchronous-unwind-tables \
     -fmerge-all-constants -fno-ident \
@@ -49,24 +46,14 @@ $CC -Wall -Wextra -Oz -flto -D_GNU_SOURCE -DNDEBUG -Qunused-arguments \
     -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
     -Iinclude -Ibuild/generated \
     ${EXTRA_CFLAGS:-} \
-    -fuse-ld=lld \
     -static \
     -s \
     -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none \
     -o build/bin/atpd \
-    $SRC_FILES \
+    "${SRC_FILES[@]}" \
     -lpthread
 
-# 6. 深度原生符号与段剥离 (不使用加壳压缩)
-echo "Stripping metadata and debug sections..."
-$STRIP --strip-all --strip-unneeded \
-       --remove-section=.comment \
-       --remove-section=.note* \
-       --remove-section=.ARM.exidx* \
-       --remove-section=.eh_frame* \
-       build/bin/atpd 2>/dev/null || true
-
-# 7. 验证
+# 6. 验证
 echo "=== Build Verification ==="
 file build/bin/atpd
 ls -lh build/bin/atpd

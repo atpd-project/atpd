@@ -36,12 +36,11 @@ notify_telegram() {
     [ -z "$chat_id" ] && { echo "  Telegram: TELEGRAM_CHAT_ID not set"; return 0; }
 
     local repo_esc=$(escape_md "$REPO")
-    local clang_esc=$(escape_md "${CLANG_SIZE:-N/A}")
     local zig_esc=$(escape_md "${ZIG_SIZE:-N/A}")
 
     local msg="📋 *Latest ATPd Build*%0A"
     msg+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
-    msg+="📦 Clang: ${clang_esc} \| Zig: ${zig_esc}%0A"
+    msg+="📦 Zig CC: ${zig_esc}%0A"
     msg+="🔗 https://github\.com/${repo_esc}/issues/6"
 
     curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" \
@@ -53,15 +52,8 @@ notify_telegram() {
 }
 
 notify_issue() {
-    if [ -f include/version.h ]; then
-        VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' include/version.h || echo "unknown")
-    else
-        VER="${ATP_VERSION:-unknown}"
-    fi
-
-    CLANG="${CLANG_SIZE:-N/A}"
+    VER="${ATP_VERSION:-unknown}"
     ZIG="${ZIG_SIZE:-N/A}"
-    COMPILER="${COMPILER_VER:-N/A}"
     RUNTIME="${ATPD_VERSION_STRING:-atpd ${VER}}"
     ZIG_COMPILER="${ZIG_COMPILER_VER:-N/A}"
 
@@ -76,7 +68,7 @@ notify_issue() {
     DISPLAY_MSG="${RAW_MSG:0:42}"
     [ ${#RAW_MSG} -gt 42 ] && DISPLAY_MSG="${DISPLAY_MSG}..."
 
-    SUMMARY_SIZE="${CLANG} (Clang 21) / ${ZIG} (Zig CC)"
+    SUMMARY_SIZE="${ZIG} (Zig CC)"
 
     TS=$(TZ='Asia/Shanghai' date +"%y%m%d %H:%M")
 
@@ -88,7 +80,6 @@ notify_issue() {
 * 📥 **[Download Build Artifact](${RUN_URL})**
 * 📝 **CI Version:** \`${VER}\`
 * 🔧 **ATPd Version (-v):** \`${RUNTIME}\`
-* ⚙️ **Clang 21:** \`${COMPILER}\` | 📦 \`${CLANG}\`
 * ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 \`${ZIG}\`
 * 💬 **Message:** \`${DISPLAY_MSG}\`
 * 🔗 **Source:** Commit [${COMMIT_SHORT}](${COMMIT_LINK})

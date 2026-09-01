@@ -20,6 +20,7 @@ on:
       - 'include/**'
       - 'tests/**'
       - 'Makefile'
+      - '.zig-version'
       - '.github/workflows/test-singbox.yml'
   pull_request:
     branches: [main, dev, ebpf, pure-ebpf, ebpf-native-api]
@@ -38,13 +39,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
       - name: Build ATPd and Netlink test
         shell: bash
         run: |
           set -euo pipefail
           make clean all
           mapfile -t objects < <(find build/obj/src -type f -name '*.o' ! -name 'main.o' -print)
-          cc -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude \
+          zig cc -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude \
             tests/test_netlink.c "${objects[@]}" -lpthread -o /tmp/atpd-test-netlink
           make test
 
@@ -61,12 +67,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            clang \
+            make \
             libcap-dev \
             curl \
             jq \
@@ -89,7 +99,6 @@ jobs:
 
       - name: Run sing-box Lifecycle Integration Tests
         run: |
-          chmod +x tests/test_singbox_lifecycle.sh
           sudo ./tests/test_singbox_lifecycle.sh
 
       - name: Prepare Test Logs for Upload
