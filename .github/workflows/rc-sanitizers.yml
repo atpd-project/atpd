@@ -1,0 +1,85 @@
+name: RC Sanitizer Validation
+
+on:
+  push:
+    branches:
+      - ebpf-native-api
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'Makefile'
+      - '.github/workflows/rc-sanitizers.yml'
+  pull_request:
+    branches: [ebpf-native-api]
+  workflow_dispatch:
+
+concurrency:
+  group: rc-sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sanitizer:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan
+            flag: address
+            options: abort_on_error=1:halt_on_error=1:detect_leaks=1
+          - name: UBSan
+            flag: undefined
+            options: halt_on_error=1:print_stacktrace=1
+          - name: TSan
+            flag: thread
+            options: halt_on_error=1:second_deadlock_stack=1
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential curl jq procps
+          curl -fSL -o /tmp/sing-box.deb \
+            https://github.com/debiansid/sing-box/releases/download/v1.14.0-beta.8/sing-box_1.14.0-beta.8_linux_amd64.deb
+          sudo dpkg -i /tmp/sing-box.deb
+          sing-box version
+
+      - name: Build with ${{ matrix.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean
+          make \
+            CFLAGS="-Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -O1 -fno-omit-frame-pointer -fsanitize=${{ matrix.flag }} -Iinclude -D_FORTIFY_SOURCE=3 -Ibuild/generated" \
+            LDFLAGS='' \
+            -j2
+
+      - name: Run unit and configuration tests
+        shell: bash
+        env:
+          ASAN_OPTIONS: ${{ matrix.options }}
+          UBSAN_OPTIONS: ${{ matrix.options }}
+          TSAN_OPTIONS: ${{ matrix.options }}
+        run: |
+          set -euo pipefail
+          make test
+
+      - name: Run lifecycle integration tests
+        shell: bash
+        env:
+          ASAN_OPTIONS: ${{ matrix.options }}
+          UBSAN_OPTIONS: ${{ matrix.options }}
+          TSAN_OPTIONS: ${{ matrix.options }}
+        run: |
+          set -euo pipefail
+          timeout 180s sudo -E bash tests/test_singbox_lifecycle.sh
+          timeout 180s sudo -E bash tests/test_service_crash_recovery.sh build/bin/atpd /usr/bin/sing-box
