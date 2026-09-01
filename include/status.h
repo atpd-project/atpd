@@ -3,6 +3,7 @@
 
 #include "atp.h"
 #include "atpd_context.h"
+#include "api.h"
 #include "service.h"
 
 #include <stdbool.h>
@@ -26,6 +27,7 @@ typedef struct {
     pid_t singbox_pid;
     service_state_t singbox_state;
     bool singbox_healthy;
+    api_snapshot_t native_api;
     int singbox_uptime_sec;
     int singbox_fd_count;
     int singbox_thread_count;
@@ -43,10 +45,11 @@ typedef struct {
 } status_snapshot_t;
 
 int status_collect_snapshot(const atp_config_t *cfg, const service_ctx_t *svc,
+                            const api_ctx_t *api,
                             status_snapshot_t *out);
 void status_render_snapshot(FILE *out, bool no_color,
                             const status_snapshot_t *snapshot);
 void status_show_to(FILE *out, bool no_color, const atp_config_t *cfg,
-                    const service_ctx_t *svc);
+                    const service_ctx_t *svc, const api_ctx_t *api);
 
 #endif

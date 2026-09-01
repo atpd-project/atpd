@@ -294,13 +294,20 @@ static void on_idle(reactor_t *r, void *userdata) {
                 atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
             } else {
                 int apply_failed = daemon_service && service_apply_config(daemon_service, &daemon_config) < 0;
-                if (!apply_failed && api_init(&daemon_api, &daemon_config) < 0) {
-                    apply_failed = 1;
+                if (!apply_failed) {
+                    api_cleanup(&daemon_api);
+                    if (api_init(&daemon_api, &daemon_config) < 0 ||
+                        api_start_with_reactor(&daemon_api, daemon_reactor) < 0) {
+                        apply_failed = 1;
+                    }
                 }
                 if (apply_failed) {
                     daemon_config = previous_config;
                     if (daemon_service) service_apply_config(daemon_service, &previous_config);
-                    api_init(&daemon_api, &daemon_config);
+                    api_cleanup(&daemon_api);
+                    if (api_init(&daemon_api, &daemon_config) == 0) {
+                        api_start_with_reactor(&daemon_api, daemon_reactor);
+                    }
                     LOG_ERROR("Config reload apply failed; previous configuration restored");
                     atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
                 } else {
@@ -315,7 +322,7 @@ static void on_idle(reactor_t *r, void *userdata) {
     if (status_requested && !shutdown_requested) {
         status_requested = 0;
         LOG_INFO("Processing status display...");
-        status_show_to(stdout, true, &daemon_config, daemon_service);
+        status_show_to(stdout, true, &daemon_config, daemon_service, &daemon_api);
     }
 
     if (shutdown_requested) {
@@ -604,7 +611,7 @@ static int do_status(atp_options_t *opts) {
     memset(&local_svc, 0, sizeof(local_svc));
     service_init(&local_svc, &daemon_config);
 
-    status_show_to(stdout, opts->no_color, &daemon_config, &local_svc);
+    status_show_to(stdout, opts->no_color, &daemon_config, &local_svc, NULL);
     return 0;
 }
 

@@ -10,18 +10,116 @@
 #include "utils.h"
 #include "reactor.h"
 #include "singbox_api.h"
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 #include <errno.h>
+
+#define API_REFRESH_INTERVAL_MS 1000
+#define API_SNAPSHOT_STALE_MS 3000
+
+_Static_assert(sizeof(api_snapshot_t) <= PIPE_BUF,
+               "api snapshot must fit in one atomic pipe write");
+
+static int api_native_lock(api_ctx_t *ctx) {
+    return ctx && ctx->initialized ? pthread_mutex_lock(&ctx->native_lock) : -1;
+}
+
+static void api_native_unlock(api_ctx_t *ctx) {
+    pthread_mutex_unlock(&ctx->native_lock);
+}
+
+static void api_refresh_candidate(api_ctx_t *ctx, api_snapshot_t *next) {
+    memset(next, 0, sizeof(*next));
+    if (api_native_lock(ctx) != 0) return;
+
+    if (singbox_api_get_status(&ctx->native_ctx, &next->status) == 0) {
+        next->valid = true;
+        next->version_valid =
+            singbox_api_get_version(&ctx->native_ctx, next->version,
+                                    sizeof(next->version)) == 0 &&
+            next->version[0] != '\0';
+
+        singbox_clash_mode_status_t mode_status;
+        next->clash_mode_valid =
+            singbox_api_get_clash_mode_status(&ctx->native_ctx, &mode_status) == 0 &&
+            mode_status.current_mode[0] != '\0';
+        if (next->clash_mode_valid) {
+            snprintf(next->clash_mode, sizeof(next->clash_mode), "%s",
+                     mode_status.current_mode);
+        }
+    }
+
+    api_native_unlock(ctx);
+}
+
+static void *api_refresh_worker(void *userdata) {
+    api_ctx_t *ctx = userdata;
+    struct pollfd stop = { .fd = ctx->stop_fd, .events = POLLIN };
+
+    for (;;) {
+        api_snapshot_t next;
+        api_refresh_candidate(ctx, &next);
+        ssize_t written;
+        do {
+            written = write(ctx->result_pipe[1], &next, sizeof(next));
+        } while (written < 0 && errno == EINTR);
+
+        int ready;
+        do {
+            ready = poll(&stop, 1, API_REFRESH_INTERVAL_MS);
+        } while (ready < 0 && errno == EINTR);
+        if (ready > 0 || (ready < 0 && errno != EINTR)) break;
+    }
+    return NULL;
+}
+
+static void api_result_cb(reactor_t *r, int fd, uint32_t events, void *userdata) {
+    (void)r;
+    (void)events;
+    api_ctx_t *ctx = userdata;
+    api_snapshot_t next;
+    bool received = false;
+
+    for (;;) {
+        api_snapshot_t candidate;
+        ssize_t size = read(fd, &candidate, sizeof(candidate));
+        if (size == (ssize_t)sizeof(candidate)) {
+            next = candidate;
+            received = true;
+            continue;
+        }
+        if (size < 0 && errno == EINTR) continue;
+        break;
+    }
+
+    if (!received) return;
+    next.generation = ctx->snapshot.generation + 1;
+    next.updated_at_ms = reactor_now_ms();
+    ctx->snapshot = next;
+}
 
 int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
     if (!ctx) return -1;
     memset(ctx, 0, sizeof(api_ctx_t));
+    ctx->result_pipe[0] = -1;
+    ctx->result_pipe[1] = -1;
+    ctx->stop_fd = -1;
     ctx->config = cfg;
 
-    if (singbox_api_init(&ctx->native_ctx, cfg) != 0) return -1;
+    if (pthread_mutex_init(&ctx->native_lock, NULL) != 0) return -1;
+    ctx->initialized = true;
+    if (singbox_api_init(&ctx->native_ctx, cfg) != 0) {
+        pthread_mutex_destroy(&ctx->native_lock);
+        ctx->initialized = false;
+        return -1;
+    }
 
     LOG_INFO("sing-box Native API dispatcher ready on %s:%d",
              ctx->native_ctx.host, ctx->native_ctx.port);
@@ -29,20 +127,101 @@ int api_init(api_ctx_t *ctx, atp_config_t *cfg) {
 }
 
 void api_cleanup(api_ctx_t *ctx) {
-    if (!ctx) return;
+    if (!ctx || !ctx->initialized) return;
+
+    if (ctx->worker_started) {
+        uint64_t stop = 1;
+        while (write(ctx->stop_fd, &stop, sizeof(stop)) < 0 && errno == EINTR) {
+        }
+        pthread_join(ctx->refresh_worker, NULL);
+        ctx->worker_started = false;
+    }
+    if (ctx->result_registered && ctx->reactor) {
+        reactor_remove_fd(ctx->reactor, ctx->result_pipe[0]);
+        ctx->result_registered = false;
+    }
+    if (ctx->result_pipe[0] >= 0) close(ctx->result_pipe[0]);
+    if (ctx->result_pipe[1] >= 0) close(ctx->result_pipe[1]);
+    if (ctx->stop_fd >= 0) close(ctx->stop_fd);
+
     singbox_api_cleanup(&ctx->native_ctx);
+    pthread_mutex_destroy(&ctx->native_lock);
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->result_pipe[0] = -1;
+    ctx->result_pipe[1] = -1;
+    ctx->stop_fd = -1;
 }
 
 int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r) {
-    if (!ctx || !r) return -1;
-    (void)r;
+    if (!ctx || !ctx->initialized || !r || ctx->worker_started) return -1;
+
+    if (pipe2(ctx->result_pipe, O_CLOEXEC | O_NONBLOCK) != 0) return -1;
+    ctx->stop_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (ctx->stop_fd < 0) goto fail;
+
+    ctx->reactor = r;
+    if (reactor_add_fd(r, ctx->result_pipe[0], REACTOR_EVENT_READ,
+                       api_result_cb, ctx) != 0) {
+        goto fail;
+    }
+    ctx->result_registered = true;
+    sigset_t all_signals;
+    sigset_t previous_signals;
+    sigfillset(&all_signals);
+    if (pthread_sigmask(SIG_SETMASK, &all_signals, &previous_signals) != 0) {
+        goto fail;
+    }
+    int thread_error = pthread_create(&ctx->refresh_worker, NULL,
+                                      api_refresh_worker, ctx);
+    int restore_error = pthread_sigmask(SIG_SETMASK, &previous_signals, NULL);
+    if (thread_error != 0 || restore_error != 0) {
+        if (thread_error == 0) {
+            ctx->worker_started = true;
+            api_cleanup(ctx);
+            return -1;
+        }
+        goto fail;
+    }
+    ctx->worker_started = true;
     LOG_INFO("sing-box Native API dispatcher bound to reactor");
+    return 0;
+
+fail:
+    if (ctx->result_registered) {
+        reactor_remove_fd(r, ctx->result_pipe[0]);
+        ctx->result_registered = false;
+    }
+    if (ctx->result_pipe[0] >= 0) close(ctx->result_pipe[0]);
+    if (ctx->result_pipe[1] >= 0) close(ctx->result_pipe[1]);
+    if (ctx->stop_fd >= 0) close(ctx->stop_fd);
+    ctx->result_pipe[0] = -1;
+    ctx->result_pipe[1] = -1;
+    ctx->stop_fd = -1;
+    ctx->reactor = NULL;
+    return -1;
+}
+
+int api_get_snapshot(const api_ctx_t *ctx, api_snapshot_t *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    if (!ctx || !ctx->initialized) return -1;
+
+    *out = ctx->snapshot;
+    uint64_t now = reactor_now_ms();
+    if (out->valid &&
+        (now < out->updated_at_ms || now - out->updated_at_ms > API_SNAPSHOT_STALE_MS)) {
+        out->valid = false;
+        out->version_valid = false;
+        out->clash_mode_valid = false;
+    }
     return 0;
 }
 
 int api_check_health_sync(api_ctx_t *ctx) {
-    if (!ctx) return -1;
-    return singbox_api_health_check(&ctx->native_ctx);
+    if (api_native_lock(ctx) != 0) return -1;
+    int result = singbox_api_health_check(&ctx->native_ctx);
+    api_native_unlock(ctx);
+    return result;
 }
 
 int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata) {
@@ -54,13 +233,16 @@ int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userda
 }
 
 int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
-    if (!ctx || !mode || size == 0) return -1;
-    return singbox_api_get_clash_mode(&ctx->native_ctx, mode, size);
+    if (!mode || size == 0 || api_native_lock(ctx) != 0) return -1;
+    int result = singbox_api_get_clash_mode(&ctx->native_ctx, mode, size);
+    api_native_unlock(ctx);
+    return result;
 }
 
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata) {
-    if (!ctx || !mode) return -1;
+    if (!mode || api_native_lock(ctx) != 0) return -1;
     int ret = singbox_api_set_clash_mode(&ctx->native_ctx, mode);
+    api_native_unlock(ctx);
     if (callback) {
         callback(ret == 0 ? 200 : 500, ret == 0 ? "OK" : "Failed", userdata);
     }
@@ -73,6 +255,14 @@ static int is_clash_mode_supported(const singbox_clash_mode_status_t *status, co
         if (strcmp(status->modes[i], mode) == 0) return 1;
     }
     return 0;
+}
+
+static int api_get_clash_mode_status_sync(api_ctx_t *ctx,
+                                          singbox_clash_mode_status_t *status) {
+    if (!status || api_native_lock(ctx) != 0) return -1;
+    int result = singbox_api_get_clash_mode_status(&ctx->native_ctx, status);
+    api_native_unlock(ctx);
+    return result;
 }
 
 void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata) {
@@ -94,7 +284,7 @@ void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata)
                                 ctx->config->interface.vpn_fallback_mode : "Rule";
 
     singbox_clash_mode_status_t status;
-    if (singbox_api_get_clash_mode_status(&ctx->native_ctx, &status) != 0) {
+    if (api_get_clash_mode_status_sync(ctx, &status) != 0) {
         LOG_WARN("Native API: Clash mode service unavailable during VPN sync");
         return;
     }
@@ -143,13 +333,17 @@ void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata)
 }
 
 int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size) {
-    if (!ctx || !version || size == 0) return -1;
-    return singbox_api_get_version(&ctx->native_ctx, version, size);
+    if (!version || size == 0 || api_native_lock(ctx) != 0) return -1;
+    int result = singbox_api_get_version(&ctx->native_ctx, version, size);
+    api_native_unlock(ctx);
+    return result;
 }
 
 int api_get_status_sync(api_ctx_t *ctx, singbox_status_t *status) {
-    if (!ctx || !status) return -1;
-    return singbox_api_get_status(&ctx->native_ctx, status);
+    if (!status || api_native_lock(ctx) != 0) return -1;
+    int result = singbox_api_get_status(&ctx->native_ctx, status);
+    api_native_unlock(ctx);
+    return result;
 }
 
 int api_get_goroutines_count(api_ctx_t *ctx) {

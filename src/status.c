@@ -73,6 +73,7 @@ static int read_cpu_temperature(void) {
 }
 
 int status_collect_snapshot(const atp_config_t *cfg, const service_ctx_t *svc,
+                            const api_ctx_t *api,
                             status_snapshot_t *out) {
     if (!out) return -1;
     memset(out, 0, sizeof(*out));
@@ -113,6 +114,7 @@ int status_collect_snapshot(const atp_config_t *cfg, const service_ctx_t *svc,
     out->singbox_pid = service_snapshot.child_pid;
     out->singbox_state = service_snapshot.state;
     out->singbox_healthy = service_snapshot.healthy != 0;
+    api_get_snapshot(api, &out->native_api);
     if (out->singbox_pid > 0) {
         out->singbox_uptime_sec = get_process_uptime_sec(out->singbox_pid);
         out->singbox_fd_count = get_process_fd_count(out->singbox_pid);
@@ -137,8 +139,8 @@ int status_collect_snapshot(const atp_config_t *cfg, const service_ctx_t *svc,
 }
 
 void status_show_to(FILE *out, bool no_color, const atp_config_t *cfg,
-                    const service_ctx_t *svc) {
+                    const service_ctx_t *svc, const api_ctx_t *api) {
     status_snapshot_t snapshot;
-    if (status_collect_snapshot(cfg, svc, &snapshot) != 0) return;
+    if (status_collect_snapshot(cfg, svc, api, &snapshot) != 0) return;
     status_render_snapshot(out, no_color, &snapshot);
 }

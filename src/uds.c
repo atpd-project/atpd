@@ -138,7 +138,7 @@ static void handle_status(uds_client_t *client) {
     FILE *mem = open_memstream(&buf, &size);
     if (mem) {
         status_show_to(mem, true, g_uds_dependencies.config,
-                       g_uds_dependencies.service);
+                       g_uds_dependencies.service, g_uds_dependencies.api);
         fclose(mem);
 
         if (buf && size > 0) {

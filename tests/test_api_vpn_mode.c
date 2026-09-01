@@ -32,6 +32,13 @@ int singbox_api_init(singbox_api_ctx_t *ctx, const atp_config_t *cfg) {
 }
 
 void singbox_api_cleanup(singbox_api_ctx_t *ctx) { (void)ctx; }
+int reactor_add_fd(reactor_t *r, int fd, uint32_t events,
+                   reactor_io_cb cb, void *userdata) {
+    (void)r; (void)fd; (void)events; (void)cb; (void)userdata;
+    return -1;
+}
+int reactor_remove_fd(reactor_t *r, int fd) { (void)r; (void)fd; return 0; }
+uint64_t reactor_now_ms(void) { return 0; }
 int singbox_api_health_check(singbox_api_ctx_t *ctx) { (void)ctx; return 0; }
 int singbox_api_get_status(singbox_api_ctx_t *ctx, singbox_status_t *status) {
     (void)ctx;
@@ -70,7 +77,7 @@ static void set_current_mode(const char *mode) {
 int main(void) {
     api_ctx_t ctx = {0};
     atp_config_t config = {0};
-    ctx.config = &config;
+    CHECK(api_init(&ctx, &config) == 0);
     config.interface.vpn_auto_mode = true;
     snprintf(config.interface.vpn_target_mode,
              sizeof(config.interface.vpn_target_mode), "Google VPN");
@@ -111,6 +118,7 @@ int main(void) {
     api_vpn_mode_callback(VPN_STATE_IDLE, "", &ctx);
     CHECK(set_calls == calls_before);
 
+    api_cleanup(&ctx);
     puts("VPN mode state tests passed");
     return 0;
 }

@@ -41,6 +41,7 @@ OBJDIR = build/obj
 OBJ = $(SRC:%.c=$(OBJDIR)/%.o)
 TARGET = build/bin/atpd
 VPN_MODE_TEST = build/tests/test_api_vpn_mode
+API_SNAPSHOT_TEST = build/tests/test_api_snapshot
 LOGGER_SAFETY_TEST = build/tests/test_logger_file_safety
 RESULT_TEST = build/tests/test_atp_result
 VERSION_HEADER = build/generated/version_build.h
@@ -59,8 +60,9 @@ check-zig: .zig-version
 
 all: check-zig $(TARGET)
 
-test: check-zig $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST)
+test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST)
 	$(VPN_MODE_TEST)
+	$(API_SNAPSHOT_TEST)
 	$(LOGGER_SAFETY_TEST)
 	$(RESULT_TEST)
 	$(VERSION_TEST)
@@ -73,6 +75,10 @@ test: check-zig $(TARGET) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) 
 	sh tests/test_android_service.sh
 
 $(VPN_MODE_TEST): tests/test_api_vpn_mode.c src/api.c
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
+
+$(API_SNAPSHOT_TEST): tests/test_api_snapshot.c src/api.c src/reactor.c
 	@mkdir -p $(dir $@)
 	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
 
@@ -128,7 +134,7 @@ FORCE:
 
 $(OBJDIR)/src/version.o: $(VERSION_HEADER)
 
-$(OBJ) $(VPN_MODE_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST): | check-zig
+$(OBJ) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST): | check-zig
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)

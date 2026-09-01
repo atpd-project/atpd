@@ -47,6 +47,7 @@
 - Step 23: Utility command execution is bounded and shell-free; process ownership and proc metrics use starttime-aware identity.
 - Step 24: CLI parsing is a pure, strict typed boundary; paths reject truncation, conflicts/trailing arguments fail, and CLI types do not depend on logger internals.
 - Step 25: Status collection has a bounded owner-snapshot boundary; render paths do not synchronously poll Native API or invent eBPF metrics.
+- Pre-RC Step 25/26 correction: `api_ctx` alone owns the mutable Native API snapshot; a bounded refresh worker publishes results back through the reactor, and status/UDS/UI consume only the generation-stamped copy-out snapshot.
 - Step 26: UI rendering centralizes ANSI filtering, keeps UDS status plain, and truncates UTF-8 at codepoint boundaries.
 - Step 27: CLI and UI implementation units no longer depend on the legacy `atp.h` umbrella; no replacement umbrella header exists.
 - Step 28: Lifecycle failure paths explicitly handle timer/FD registration failures and retain child ownership until reap.

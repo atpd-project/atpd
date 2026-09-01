@@ -60,6 +60,8 @@ fi
 log_info "Found sing-box binary at: ${SINGBOX_BIN}"
 cp "${SINGBOX_BIN}" "${TEST_DIR}/bin/sing-box"
 chmod +x "${TEST_DIR}/bin/sing-box"
+EXPECTED_SINGBOX_VERSION="$("${TEST_DIR}/bin/sing-box" version | awk '/^sing-box version /{print $3; exit}')"
+[ -n "${EXPECTED_SINGBOX_VERSION}" ] || log_fail "无法读取 sing-box 版本"
 
 TEST_API_PORT="${API_PORT:-9080}"
 
@@ -130,6 +132,13 @@ dump_logs() {
 }
 trap dump_logs ERR
 
+cleanup_test_processes() {
+    if [ -x "${TEST_DIR}/atpd" ]; then
+        (cd "${TEST_DIR}" && ./atpd stop >/dev/null 2>&1) || true
+    fi
+}
+trap cleanup_test_processes EXIT
+
 wait_for_api() {
     for _ in {1..20}; do
         if nc -z 127.0.0.1 "${TEST_API_PORT}" 2>/dev/null || \
@@ -139,6 +148,19 @@ wait_for_api() {
         sleep 0.25
     done
     return 1
+}
+
+status_values_valid() {
+    local output="$1"
+    local clean
+    clean="$(echo "${output}" | sed -r 's/\x1b\[[0-9;]*m//g')"
+    STATUS_GOROUTINES="$(echo "${clean}" | awk '/Goroutines/{print $NF; exit}')"
+    STATUS_VERSION="$(echo "${clean}" | awk '/Version/{print $NF; exit}')"
+    STATUS_CLASH_MODE="$(echo "${clean}" | awk '/Clash Mode/{print $NF; exit}')"
+    [[ "${STATUS_GOROUTINES}" =~ ^[1-9][0-9]*$ ]] &&
+        [ "${STATUS_VERSION}" = "${EXPECTED_SINGBOX_VERSION}" ] &&
+        [ "${STATUS_CLASH_MODE}" = "Rule" ] &&
+        echo "${clean}" | grep -qE 'FCM Push Sensing[[:space:]]+(ACTIVE|STANDBY) \(Native API Traffic\)'
 }
 
 # --- PRE-CHECK: Validate sing-box config syntax ---
@@ -199,10 +221,7 @@ fi
 STATUS_OUTPUT=""
 for i in {1..20}; do
     STATUS_OUTPUT="$(./atpd -n status 2>&1)"
-    GOROUTINES_VALUE="$(echo "${STATUS_OUTPUT}" | sed -r 's/\x1b\[[0-9;]*m//g' | awk '/Goroutines/{print $NF; exit}')"
-    if echo "${STATUS_OUTPUT}" | grep -q "PID" && \
-       echo "${STATUS_OUTPUT}" | sed -r 's/\x1b\[[0-9;]*m//g' | grep -qE 'Clash Mode[[:space:]]+Rule' && \
-       [[ "${GOROUTINES_VALUE}" =~ ^[1-9][0-9]*$ ]]; then
+    if echo "${STATUS_OUTPUT}" | grep -q "PID" && status_values_valid "${STATUS_OUTPUT}"; then
         break
     fi
     sleep 0.5
@@ -224,11 +243,72 @@ else
     log_fail "Goroutines 未从 Native API 返回整数值: ${GOROUTINES_VALUE:-N/A}"
 fi
 
+if status_values_valid "${STATUS_OUTPUT}" && [ "${STATUS_VERSION}" = "${EXPECTED_SINGBOX_VERSION}" ]; then
+    log_pass "Native API GetVersion 返回 Version=${STATUS_VERSION}"
+else
+    dump_logs
+    log_fail "Version 未从 Native API 返回真实值"
+fi
+
 if echo "${STATUS_OUTPUT}" | sed -r 's/\x1b\[[0-9;]*m//g' | grep -qE 'Clash Mode[[:space:]]+Rule'; then
     log_pass "Native API GetClashModeStatus 返回默认模式 Rule"
 else
     dump_logs
     log_fail "未能通过 Native API 读取默认 Clash mode"
+fi
+
+if echo "${STATUS_OUTPUT}" | sed -r 's/\x1b\[[0-9;]*m//g' | \
+   grep -qE 'FCM Push Sensing[[:space:]]+(ACTIVE|STANDBY) \(Native API Traffic\)'; then
+    log_pass "FCM Push Sensing 反映 Native API trafficAvailable 状态"
+else
+    dump_logs
+    log_fail "FCM Push Sensing 未从 Native API owner snapshot 返回真实状态"
+fi
+
+# Kill only the supervised child. The daemon-owned API snapshot must become
+# invalid while the endpoint is down, then republish after supervisor recovery.
+OLD_SINGBOX_PID="${SINGBOX_PID}"
+log_info "验证 sing-box crash 后 Native API snapshot 失效与重连恢复..."
+kill -9 "${OLD_SINGBOX_PID}"
+
+STALE_SEEN=0
+for _ in {1..40}; do
+    CRASH_STATUS="$(./atpd -n status 2>&1)"
+    if echo "${CRASH_STATUS}" | sed -r 's/\x1b\[[0-9;]*m//g' | \
+       grep -qE 'Clash Mode[[:space:]]+N/A' && \
+       echo "${CRASH_STATUS}" | sed -r 's/\x1b\[[0-9;]*m//g' | \
+       grep -qE 'FCM Push Sensing[[:space:]]+N/A'; then
+        STALE_SEEN=1
+        break
+    fi
+    sleep 0.25
+done
+[ "${STALE_SEEN}" -eq 1 ] || { dump_logs; log_fail "sing-box crash 后 owner snapshot 未失效"; }
+
+RECOVERY_STATUS=""
+NEW_SINGBOX_PID=""
+for _ in {1..60}; do
+    if [ -s "${SINGBOX_PID_FILE}" ]; then
+        NEW_SINGBOX_PID="$(tr -d '[:space:]' < "${SINGBOX_PID_FILE}")"
+    fi
+    RECOVERY_STATUS="$(./atpd -n status 2>&1)"
+    if [[ "${NEW_SINGBOX_PID}" =~ ^[1-9][0-9]*$ ]] && \
+       [ "${NEW_SINGBOX_PID}" != "${OLD_SINGBOX_PID}" ] && \
+       kill -0 "${NEW_SINGBOX_PID}" 2>/dev/null && \
+       status_values_valid "${RECOVERY_STATUS}"; then
+        break
+    fi
+    sleep 0.25
+done
+echo "${RECOVERY_STATUS}"
+if [[ "${NEW_SINGBOX_PID}" =~ ^[1-9][0-9]*$ ]] && \
+   [ "${NEW_SINGBOX_PID}" != "${OLD_SINGBOX_PID}" ] && \
+   status_values_valid "${RECOVERY_STATUS}"; then
+    SINGBOX_PID="${NEW_SINGBOX_PID}"
+    log_pass "sing-box crash 后 owner snapshot 已失效并由新 PID ${NEW_SINGBOX_PID} 重连发布"
+else
+    dump_logs
+    log_fail "sing-box crash recovery 未重新发布有效 Native API snapshot"
 fi
 
 # ==============================================================================
@@ -262,10 +342,10 @@ else
 fi
 
 # ==============================================================================
-# 阶段 3: 重启 / 再次启动 (Restart / Re-start) -> 校验热恢复与新 PID
+# 阶段 3: 再次启动 (Re-start) -> 校验新进程与 Native API snapshot
 # ==============================================================================
-log_info "=== [STEP 3/4] 重启测试: 'atpd restart' ==="
-./atpd restart
+log_info "=== [STEP 3/4] 再次启动测试: 'atpd start' ==="
+./atpd start
 
 # 等待重启后 sing-box Native API 完成监听
 if wait_for_api; then
@@ -278,14 +358,14 @@ fi
 RESTART_STATUS=""
 for i in {1..20}; do
     RESTART_STATUS="$(./atpd -n status 2>&1)"
-    if echo "${RESTART_STATUS}" | grep -q "PID"; then
+    if echo "${RESTART_STATUS}" | grep -q "PID" && status_values_valid "${RESTART_STATUS}"; then
         break
     fi
     sleep 0.5
 done
 echo "${RESTART_STATUS}"
 
-if echo "${RESTART_STATUS}" | grep -q "PID"; then
+if echo "${RESTART_STATUS}" | grep -q "PID" && status_values_valid "${RESTART_STATUS}"; then
     log_pass "Step 3 PASS: atpd 成功重启 sing-box 并保持健康运行!"
 else
     dump_logs

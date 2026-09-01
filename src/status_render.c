@@ -82,7 +82,7 @@ static void render_proxy(ui_render_ctx_t *ui, const status_snapshot_t *snapshot)
         return;
     }
 
-    char uptime[64], rss[32], hwm[32], cpu[32], threads[16], fds[16];
+    char uptime[64], rss[32], hwm[32], cpu[32], threads[16], fds[16], goroutines[16];
     format_uptime(snapshot->singbox_uptime_sec, uptime, sizeof(uptime));
     format_kb(snapshot->singbox_rss_kb, rss, sizeof(rss));
     format_kb(snapshot->singbox_hwm_kb, hwm, sizeof(hwm));
@@ -90,6 +90,12 @@ static void render_proxy(ui_render_ctx_t *ui, const status_snapshot_t *snapshot)
     else snprintf(cpu, sizeof(cpu), "%.1f%%", snapshot->singbox_cpu_percent);
     format_int(snapshot->singbox_thread_count, threads, sizeof(threads));
     format_int(snapshot->singbox_fd_count, fds, sizeof(fds));
+    if (snapshot->native_api.valid) {
+        snprintf(goroutines, sizeof(goroutines), "%d",
+                 snapshot->native_api.status.goroutines);
+    } else {
+        snprintf(goroutines, sizeof(goroutines), "N/A");
+    }
 
     ui_table_row_color(ui, ui_emoji_service(ui, 1), "sing-box", COLOR_GREEN);
     ui_table_subrow_int(ui, "├─", "PID", snapshot->singbox_pid);
@@ -99,9 +105,11 @@ static void render_proxy(ui_render_ctx_t *ui, const status_snapshot_t *snapshot)
     ui_table_subrow(ui, "├─", "Peak Memory", hwm);
     ui_table_subrow(ui, "├─", "CPU", cpu);
     ui_table_subrow(ui, "├─", "Threads", threads);
-    ui_table_subrow(ui, "├─", "Goroutines", "N/A (owner snapshot unavailable)");
+    ui_table_subrow(ui, "├─", "Goroutines", goroutines);
     ui_table_subrow(ui, "├─", "FDs", fds);
-    ui_table_subrow(ui, "└─", "Version", "N/A (owner snapshot unavailable)");
+    ui_table_subrow(ui, "└─", "Version",
+                    snapshot->native_api.version_valid ?
+                    snapshot->native_api.version : "N/A");
     ui_table_end(ui);
 }
 
@@ -111,7 +119,10 @@ static void render_api(ui_render_ctx_t *ui, const status_snapshot_t *snapshot) {
     ui_table_begin(ui);
     ui_table_header(ui, "NATIVE API & MODE");
     ui_table_subrow(ui, "├─", "API Engine", api);
-    ui_table_subrow_color(ui, "└─", "Clash Mode", "N/A (owner snapshot unavailable)", COLOR_YELLOW);
+    ui_table_subrow_color(ui, "└─", "Clash Mode",
+                          snapshot->native_api.clash_mode_valid ?
+                          snapshot->native_api.clash_mode : "N/A",
+                          snapshot->native_api.clash_mode_valid ? COLOR_GREEN : COLOR_YELLOW);
     ui_table_end(ui);
 }
 
@@ -124,7 +135,12 @@ static void render_monitors(ui_render_ctx_t *ui, const status_snapshot_t *snapsh
     ui_table_subrow_color(ui, "├─", "XFRM SA Listener",
                           snapshot->xfrm_listener_active ? "ACTIVE" : "INACTIVE",
                           snapshot->xfrm_listener_active ? COLOR_GREEN : COLOR_YELLOW);
-    ui_table_subrow(ui, "└─", "FCM Push Sensing", "N/A (owner snapshot unavailable)");
+    const char *fcm = "N/A";
+    if (snapshot->native_api.valid) {
+        fcm = snapshot->native_api.status.traffic_available ?
+              "ACTIVE (Native API Traffic)" : "STANDBY (Native API Traffic)";
+    }
+    ui_table_subrow(ui, "└─", "FCM Push Sensing", fcm);
     ui_table_end(ui);
 }
 
