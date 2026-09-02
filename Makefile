@@ -51,6 +51,7 @@ CONTEXT_TEST = build/tests/test_atpd_context
 CLI_TEST = build/tests/test_cli
 STATUS_RENDER_TEST = build/tests/test_status_render
 UTILS_PROC_STAT_TEST = build/tests/test_utils_proc_stat
+SERVICE_CREDENTIALS_TEST = build/tests/test_service_credentials
 
 .PHONY: all test clean distclean install uninstall check-zig
 
@@ -60,7 +61,7 @@ check-zig: .zig-version
 
 all: check-zig $(TARGET)
 
-test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST)
+test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST) $(SERVICE_CREDENTIALS_TEST)
 	$(VPN_MODE_TEST)
 	$(API_SNAPSHOT_TEST)
 	$(LOGGER_SAFETY_TEST)
@@ -71,6 +72,7 @@ test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_
 	$(CLI_TEST)
 	$(STATUS_RENDER_TEST)
 	$(UTILS_PROC_STAT_TEST)
+	$(SERVICE_CREDENTIALS_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
 	sh tests/test_android_service.sh
 
@@ -114,6 +116,10 @@ $(UTILS_PROC_STAT_TEST): tests/test_utils_proc_stat.c src/utils.c src/logger.c
 	@mkdir -p $(dir $@)
 	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_utils_proc_stat.c src/utils.c src/logger.c -lpthread
 
+$(SERVICE_CREDENTIALS_TEST): tests/test_service_credentials.c src/service_credentials.c
+	@mkdir -p $(dir $@)
+	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^
+
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)
 	install -d $(DESTDIR)$(RUNDIR)
@@ -134,7 +140,7 @@ FORCE:
 
 $(OBJDIR)/src/version.o: $(VERSION_HEADER)
 
-$(OBJ) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST): | check-zig
+$(OBJ) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST) $(SERVICE_CREDENTIALS_TEST): | check-zig
 
 $(OBJDIR)/%.o: %.c
 	@mkdir -p $(dir $@)

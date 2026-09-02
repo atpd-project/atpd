@@ -8,6 +8,7 @@
  */
 
 #include "service.h"
+#include "service_credentials.h"
 #include "logger.h"
 #include "utils.h"
 #include <stdio.h>
@@ -24,7 +25,6 @@
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <pwd.h>
 #include <grp.h>
 #include <time.h>
 #include <libgen.h>
@@ -472,50 +472,17 @@ static int service_spawn(service_ctx_t *ctx) {
             }
         }
 
-        uid_t target_uid = getuid();
-        gid_t target_gid = getgid();
-
-        struct passwd *pwd = NULL;
-        if (ctx->user[0]) {
-            pwd = getpwnam(ctx->user);
-            if (pwd) {
-                target_uid = pwd->pw_uid;
-                target_gid = pwd->pw_gid;
-            } else if (is_number(ctx->user)) {
-                errno = 0;
-                unsigned long value = strtoul(ctx->user, NULL, 10);
-                target_uid = (uid_t)value;
-                if (errno == ERANGE || (unsigned long)target_uid != value) {
-                    LOG_ERROR("Service: invalid numeric user '%s'", ctx->user);
-                    _exit(127);
-                }
-            } else {
-                LOG_ERROR("Service: unknown user '%s'", ctx->user);
-                _exit(127);
-            }
-        }
-
-        if (ctx->group[0]) {
-            struct group *grp = getgrnam(ctx->group);
-            if (grp) {
-                target_gid = grp->gr_gid;
-            } else if (is_number(ctx->group)) {
-                errno = 0;
-                unsigned long value = strtoul(ctx->group, NULL, 10);
-                target_gid = (gid_t)value;
-                if (errno == ERANGE || (unsigned long)target_gid != value) {
-                    LOG_ERROR("Service: invalid numeric group '%s'", ctx->group);
-                    _exit(127);
-                }
-            } else {
-                LOG_ERROR("Service: unknown group '%s'", ctx->group);
-                _exit(127);
-            }
+        service_credentials_t credentials;
+        if (service_credentials_resolve(ctx->user, ctx->group,
+                                        getuid(), getgid(), &credentials) != 0) {
+            LOG_ERROR("Service: invalid credentials '%s:%s': %s",
+                      ctx->user, ctx->group, strerror(errno));
+            _exit(127);
         }
 
         if (geteuid() == 0) {
-            if (pwd) {
-                if (initgroups(pwd->pw_name, target_gid) != 0) {
+            if (credentials.init_groups) {
+                if (initgroups(credentials.user_name, credentials.gid) != 0) {
                     LOG_ERROR("Service: initgroups failed: %s", strerror(errno));
                     _exit(127);
                 }
@@ -523,11 +490,11 @@ static int service_spawn(service_ctx_t *ctx) {
                 LOG_ERROR("Service: setgroups failed: %s", strerror(errno));
                 _exit(127);
             }
-            if (setgid(target_gid) != 0) {
+            if (setgid(credentials.gid) != 0) {
                 LOG_ERROR("Service: setgid failed: %s", strerror(errno));
                 _exit(127);
             }
-            if (setuid(target_uid) != 0) {
+            if (setuid(credentials.uid) != 0) {
                 LOG_ERROR("Service: setuid failed: %s", strerror(errno));
                 _exit(127);
             }

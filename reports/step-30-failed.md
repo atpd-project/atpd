@@ -37,3 +37,66 @@ The required RC/stable evidence cannot be completed here:
 The previously completed privileged Step 29 benchmark/stress evidence remains
 valid, but it does not substitute for Step 30 Android matrix and soak evidence.
 No Step 30 PASS or RC/stable claim is made.
+
+## Android device attempt — 2026-09-02
+
+The real-device gate was attempted on the single connected Google Pixel 7 Pro
+(`29271FDH300EJK`, Android 16 / SDK 36, arm64-v8a, KernelSU root). The verified
+pre-test backup was rechecked before isolation:
+
+- archive: `atpd-device-backup.tar` (306,720,768 bytes);
+- SHA-256: `bce4cf8e927a0eeb654f9f093c773f1b06820d3ec6140ad6beb31f22b766d237`;
+- restoration inventory: 804/804 entries and 790/790 regular-file hashes.
+
+The old module watchdog, sentinel, sing-box, listeners, abstract socket, and
+`wlan0` BPF filters were isolated successfully. No new sing-box was installed:
+the test root reused `/data/adb/atp/bin/sing-box` 1.14.0-rc.1-4895c512
+(`with_ebpf`). HEAD `4c6641fb7c32bf9b109c49e27ab89b7f41011e1a` was built in a clean detached
+worktree with the pinned Zig 0.15.2 toolchain as a static arm64 musl binary;
+the deployed binary reported `1.0.0-dev+g4c6641fb7c32` and matched SHA-256
+`1c458d659459fd3708e2ef617f4003cc9af721d3ba3e6a5b98b2bf05d7b6be8a`.
+
+### Product blocker
+
+Android smoke failed at the first startup/authoritative-snapshot gate. ATPD
+became `RUNNING`, but every supervised sing-box child exited with code 127:
+
+```text
+Service: spawned sing-box
+Service: unknown user 'root'
+Service: sing-box exited with code 127
+```
+
+Consequently there was no `sing-box.pid`, ports 9080/9090/2080 were not
+listening, and Goroutines, Version, Clash Mode, and FCM Push Sensing could not
+become authoritative. This is a real Android product defect in service child
+credential resolution; it is not recorded as an environment PASS and was not
+worked around. The requested reload 10, restart 10, crash recovery 5, Netlink
+20, datapath/session/resource gates, and 1-hour soak were not run after this
+startup hard stop.
+
+### Cleanup and restoration
+
+Complete ATPD/device/log/dmesg evidence was captured before cleanup. The test
+daemon was stopped and `/data/local/tmp/atpd-step30` was removed. The backup
+archive was pushed back, re-verified on-device with the recorded SHA-256, and
+extracted over its original paths. Eight critical static files (ATPD/ATP
+scripts, configs, service entry, and the existing sing-box) matched their
+backup hashes 8/8. The original sing-box command line, Native API 9080, Clash
+API 9090, `@sing-box-ebpf-shared-47`, and `wlan0` `sb_share_in`/`sb_share_out`
+attachments were restored.
+
+The module watchdog could not be safely restored from an interactive `su`
+launch: its `pkill -0 -f` resolves to Android Toybox `pkill`, which rejects
+signal 0 and caused a sentinel fork storm. No wrapper or script modification
+was introduced. The storm was stopped; the device was left stable with one
+original sing-box and one original sentinel, but with the module watchdog
+stopped. This restoration-process gap is explicit and requires review before
+another Android attempt.
+
+Evidence directory:
+
+`C:\Users\EricZhang\ATPD-device-backups\20260902-085850-Pixel_7_Pro-29271FDH300EJK\step30-validation-20260902-121757`
+
+Checkpoint remains `last_completed_step=29`, `current_step=30`,
+`status=blocked`. No Step 30 PASS is claimed.
