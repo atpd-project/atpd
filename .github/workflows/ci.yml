@@ -165,7 +165,7 @@ jobs:
           set -euo pipefail
           make clean
           make -j2 \
-            CFLAGS="-Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -O1 -march=x86-64 -mtune=generic -fno-omit-frame-pointer -fsanitize=${{ matrix.flag }} -Iinclude -Ibuild/generated" \
+            CFLAGS="-Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -O1 -march=x86-64 -mtune=x86-64 -fno-omit-frame-pointer -fsanitize=${{ matrix.flag }} -Iinclude -Ibuild/generated" \
             LIBS="${{ matrix.libs }}" \
             LDFLAGS="-Wl,-z,relro,-z,now" \
             test
