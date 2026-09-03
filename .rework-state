@@ -1,6 +1,5 @@
 # ATPD Codex automatic refactor state
 current_step=30
-last_completed_step=29
-last_commit=e44b1b109788425b911ba3c8d6cbc316e343f69f
-status=blocked
-blocked_reason=Step 30 paused; clean Android smoke, ASan integration, native TSan/CI matrix, and final release gate remain
+last_completed_step=30
+last_commit=42b23b3e539f6c49d77c28fbf50abcda4049ab7d
+status=complete
