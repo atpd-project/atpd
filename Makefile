@@ -7,7 +7,11 @@ RUNDIR ?= $(PREFIX)/run
 SINGBOXDIR ?= $(PREFIX)/sing-box
 
 ZIG_VERSION := $(strip $(shell cat .zig-version))
+ifneq ($(filter 1 true yes,$(USE_CCACHE) $(CCACHE)),)
+override CC := ccache zig cc
+else
 override CC := zig cc
+endif
 .DEFAULT_GOAL := all
 
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -DNDEBUG -fPIC

@@ -32,62 +32,42 @@ concurrency:
 
 jobs:
   # ============================================================================
-  # Stage 1 — Sanitizer Prerequisites (Hard Gate)
-  # All 6 combinations (2 native runner arches x 3 sanitizers) must PASS.
-  # If any fails, Release build is blocked and will not run.
+  # Stage 1 — Sanitizer Prerequisites (AMD64 Native Runner)
+  # ASan, UBSan, TSan on ubuntu-24.04 with isolated ccache
   # ============================================================================
-  sanitizers:
-    name: "Sanitizer / ${{ matrix.arch }} / ${{ matrix.sanitizer }}"
-    runs-on: ${{ matrix.runner }}
+  sanitizer-amd64:
+    name: "Sanitizer AMD64 / ${{ matrix.name }}"
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          # x86_64 Native Runner
-          - arch: x86_64
-            runner: ubuntu-24.04
-            sanitizer: asan
+          - sanitizer: asan
+            name: ASan
             flag: address
             libs: '-lpthread -l:libasan.so.8'
             runtime_package: libasan8
             options: abort_on_error=1:halt_on_error=1:detect_leaks=1
-          - arch: x86_64
-            runner: ubuntu-24.04
-            sanitizer: ubsan
+          - sanitizer: ubsan
+            name: UBSan
             flag: undefined
             libs: '-lpthread -l:libubsan.so.1'
             runtime_package: libubsan1
             options: halt_on_error=1:print_stacktrace=1
-          - arch: x86_64
-            runner: ubuntu-24.04
-            sanitizer: tsan
+          - sanitizer: tsan
+            name: TSan
             flag: thread
             libs: '-lpthread'
             runtime_package: ''
             options: halt_on_error=1:second_deadlock_stack=1
 
-          # ARM64 Native Runner (Zero Emulation / Zero Docker)
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            sanitizer: asan
-            flag: address
-            libs: '-lpthread -l:libasan.so.8'
-            runtime_package: libasan8
-            options: abort_on_error=1:halt_on_error=1:detect_leaks=1
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            sanitizer: ubsan
-            flag: undefined
-            libs: '-lpthread -l:libubsan.so.1'
-            runtime_package: libubsan1
-            options: halt_on_error=1:print_stacktrace=1
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            sanitizer: tsan
-            flag: thread
-            libs: '-lpthread'
-            runtime_package: ''
-            options: halt_on_error=1:second_deadlock_stack=1
+    env:
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CCACHE_COMPRESS: "1"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "1"
+      CCACHE: "1"
 
     steps:
       - name: Checkout repository
@@ -102,14 +82,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Configure ASLR entropy for TSan shadow memory compatibility on Linux 6.8+
           sudo sysctl vm.mmap_rnd_bits=28 2>/dev/null || true
-
           sudo apt-get update -qq
-          sudo apt-get install -y -qq make curl jq procps
+          sudo apt-get install -y -qq make curl jq procps ccache
           if [ -n "${{ matrix.runtime_package }}" ]; then
             sudo apt-get install -y -qq ${{ matrix.runtime_package }}
           fi
+
+      - name: Restore isolated ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-amd64-zig0.16.0-${{ matrix.sanitizer }}-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-amd64-zig0.16.0-${{ matrix.sanitizer }}-
+
+      - name: Show toolchain & ccache initial statistics
+        shell: bash
+        run: |
+          zig version
+          ccache --version
+          ccache -s
 
       - name: Verify active sanitizer runtime with standalone probe
         if: matrix.sanitizer == 'asan' || matrix.sanitizer == 'tsan'
@@ -118,7 +111,7 @@ jobs:
           chmod +x tests/probe_sanitizer.sh
           ./tests/probe_sanitizer.sh ${{ matrix.sanitizer }}
 
-      - name: Build and run test suite under ${{ matrix.sanitizer }}
+      - name: Build and run test suite under ${{ matrix.name }}
         shell: bash
         env:
           ASAN_OPTIONS: ${{ matrix.sanitizer == 'asan' && matrix.options || '' }}
@@ -140,45 +133,56 @@ jobs:
           ASAN_OPTIONS: abort_on_error=1:halt_on_error=1:detect_leaks=0
         run: |
           set -euo pipefail
-          ARCH="$(uname -m)"
-          if [ "$ARCH" = "x86_64" ]; then
-            DEB_ARCH="amd64"
-          elif [ "$ARCH" = "aarch64" ]; then
-            DEB_ARCH="arm64"
-          else
-            echo "Unsupported arch: $ARCH" >&2
-            exit 1
-          fi
-          curl -fsSL -o /tmp/sing-box.deb "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_${DEB_ARCH}.deb"
+          curl -fsSL -o /tmp/sing-box.deb "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_amd64.deb"
           sudo dpkg -i /tmp/sing-box.deb
           sing-box version
 
           timeout 180s sudo -E bash tests/test_singbox_lifecycle.sh
           timeout 180s sudo -E bash tests/test_service_crash_recovery.sh build/bin/atpd /usr/bin/sing-box
 
+      - name: Show ccache final statistics
+        if: always()
+        shell: bash
+        run: |
+          ccache -s
+
   # ============================================================================
-  # Stage 2 — Release Build (Native x86_64 & Native ARM64)
-  # Hard dependency: executes ONLY if all 6 sanitizer jobs succeeded.
-  # Zero Docker. Zero QEMU emulation.
+  # Stage 1 — Sanitizer Prerequisites (ARM64 Native Runner)
+  # ASan, UBSan, TSan on ubuntu-24.04-arm with isolated ccache
   # ============================================================================
-  release-build:
-    name: "Release Build / ${{ matrix.arch }}"
-    needs: [sanitizers]
-    runs-on: ${{ matrix.runner }}
+  sanitizer-arm64:
+    name: "Sanitizer ARM64 / ${{ matrix.name }}"
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
-            runner: ubuntu-24.04
-            file_arch: 'x86-64'
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            file_arch: 'aarch64'
+          - sanitizer: asan
+            name: ASan
+            flag: address
+            libs: '-lpthread -l:libasan.so.8'
+            runtime_package: libasan8
+            options: abort_on_error=1:halt_on_error=1:detect_leaks=1
+          - sanitizer: ubsan
+            name: UBSan
+            flag: undefined
+            libs: '-lpthread -l:libubsan.so.1'
+            runtime_package: libubsan1
+            options: halt_on_error=1:print_stacktrace=1
+          - sanitizer: tsan
+            name: TSan
+            flag: thread
+            libs: '-lpthread'
+            runtime_package: ''
+            options: halt_on_error=1:second_deadlock_stack=1
 
-    outputs:
-      atp_version: ${{ steps.version-meta.outputs.atp_version }}
-      full_version: ${{ steps.version-meta.outputs.full_version }}
+    env:
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CCACHE_COMPRESS: "1"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "1"
+      CCACHE: "1"
 
     steps:
       - name: Checkout repository
@@ -188,6 +192,138 @@ jobs:
 
       - name: Set up Zig 0.16.0
         uses: ./.github/actions/setup-zig-0.16
+
+      - name: Configure runner environment & dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo sysctl vm.mmap_rnd_bits=28 2>/dev/null || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq make curl jq procps ccache
+          if [ -n "${{ matrix.runtime_package }}" ]; then
+            sudo apt-get install -y -qq ${{ matrix.runtime_package }}
+          fi
+
+      - name: Restore isolated ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-arm64-zig0.16.0-${{ matrix.sanitizer }}-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-arm64-zig0.16.0-${{ matrix.sanitizer }}-
+
+      - name: Show toolchain & ccache initial statistics
+        shell: bash
+        run: |
+          zig version
+          ccache --version
+          ccache -s
+
+      - name: Verify active sanitizer runtime with standalone probe
+        if: matrix.sanitizer == 'asan' || matrix.sanitizer == 'tsan'
+        shell: bash
+        run: |
+          chmod +x tests/probe_sanitizer.sh
+          ./tests/probe_sanitizer.sh ${{ matrix.sanitizer }}
+
+      - name: Build and run test suite under ${{ matrix.name }}
+        shell: bash
+        env:
+          ASAN_OPTIONS: ${{ matrix.sanitizer == 'asan' && matrix.options || '' }}
+          UBSAN_OPTIONS: ${{ matrix.sanitizer == 'ubsan' && matrix.options || '' }}
+          TSAN_OPTIONS: ${{ matrix.sanitizer == 'tsan' && matrix.options || '' }}
+        run: |
+          set -euo pipefail
+          make clean
+          make -j2 \
+            CFLAGS="-Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -O1 -fno-omit-frame-pointer -fsanitize=${{ matrix.flag }} -Iinclude -Ibuild/generated" \
+            LIBS="${{ matrix.libs }}" \
+            LDFLAGS="-Wl,-z,relro,-z,now" \
+            test
+
+      - name: Run sing-box integration under ASan
+        if: matrix.sanitizer == 'asan'
+        shell: bash
+        env:
+          ASAN_OPTIONS: abort_on_error=1:halt_on_error=1:detect_leaks=0
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/sing-box.deb "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_arm64.deb"
+          sudo dpkg -i /tmp/sing-box.deb
+          sing-box version
+
+          timeout 180s sudo -E bash tests/test_singbox_lifecycle.sh
+          timeout 180s sudo -E bash tests/test_service_crash_recovery.sh build/bin/atpd /usr/bin/sing-box
+
+      - name: Show ccache final statistics
+        if: always()
+        shell: bash
+        run: |
+          ccache -s
+
+  # ============================================================================
+  # Stage 2 — Release Build (AMD64 & ARM64)
+  # Hard dependency: executes ONLY if BOTH sanitizer-amd64 and sanitizer-arm64 PASS.
+  # ============================================================================
+  release-build:
+    name: "Release Build / ${{ matrix.name }}"
+    needs: [sanitizer-amd64, sanitizer-arm64]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            name: AMD64
+            runner: ubuntu-24.04
+            file_arch: 'x86-64'
+          - arch: arm64
+            name: ARM64
+            runner: ubuntu-24.04-arm
+            file_arch: 'aarch64'
+
+    outputs:
+      atp_version: ${{ steps.version-meta.outputs.atp_version }}
+      full_version: ${{ steps.version-meta.outputs.full_version }}
+
+    env:
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CCACHE_COMPRESS: "1"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "1"
+      CCACHE: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Zig 0.16.0
+        uses: ./.github/actions/setup-zig-0.16
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq make ccache file
+
+      - name: Restore isolated ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ matrix.arch }}-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ matrix.arch }}-zig0.16.0-release-
+
+      - name: Show toolchain & ccache initial statistics
+        shell: bash
+        run: |
+          zig version
+          ccache --version
+          ccache -s
 
       - name: Clean Native Build & Test
         shell: bash
@@ -207,7 +343,6 @@ jobs:
           echo "Product Version: ${PROD_VER}"
           echo "Full Runtime Version: ${FULL_VER}"
 
-          # Verify clean build does NOT contain dirty indicator
           if echo "${FULL_VER}" | grep -q "\.dirty"; then
             echo "ERROR: Clean CI release build produced .dirty version string!" >&2
             git status --porcelain >&2
@@ -232,6 +367,12 @@ jobs:
           name: atpd-native-${{ matrix.arch }}
           path: ./build/bin/atpd
           retention-days: 7
+
+      - name: Show ccache final statistics
+        if: always()
+        shell: bash
+        run: |
+          ccache -s
 
   # ============================================================================
   # Stage 3 — Integration & Final CI Gate
@@ -331,7 +472,7 @@ jobs:
   # ============================================================================
   final-ci-verdict:
     name: "Final CI Verdict"
-    needs: [sanitizers, release-build, integration-gate]
+    needs: [sanitizer-amd64, sanitizer-arm64, release-build, integration-gate]
     runs-on: ubuntu-latest
     steps:
       - name: Output Release Gate Summary
@@ -340,12 +481,12 @@ jobs:
           echo "================================================================================"
           echo "                    ATPD CI PIPELINE: ALL GATES PASSED"
           echo "================================================================================"
-          echo "  [PASS] Stage 1: Native Sanitizers Matrix (6/6)"
-          echo "         - x86_64: ASan (PASS), UBSan (PASS), TSan (PASS)"
-          echo "         - arm64:  ASan (PASS), UBSan (PASS), TSan (PASS)"
-          echo "  [PASS] Stage 2: Native Release Build Matrix (2/2)"
-          echo "         - x86_64: Native Linux build & test (PASS)"
-          echo "         - arm64:  Native Linux ARM64 build & test (PASS, zero Docker/QEMU)"
+          echo "  [PASS] Stage 1: Sanitizer Prerequisites"
+          echo "         - Sanitizer AMD64: ASan (PASS), UBSan (PASS), TSan (PASS)"
+          echo "         - Sanitizer ARM64: ASan (PASS), UBSan (PASS), TSan (PASS)"
+          echo "  [PASS] Stage 2: Native Release Build"
+          echo "         - Release Build AMD64: PASS"
+          echo "         - Release Build ARM64: PASS (zero Docker/QEMU)"
           echo "  [PASS] Stage 3: Integration & Invariants"
           echo "         - sing-box start/stop lifecycle (PASS)"
           echo "         - Process crash recovery & supervisor restart (PASS)"
