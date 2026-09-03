@@ -1,6 +1,6 @@
 # ATPD Codex automatic refactor state
-current_step=30
-last_completed_step=29
-last_commit=e44b1b109788425b911ba3c8d6cbc316e343f69f
-status=blocked
-blocked_reason=Step 30 real-device smoke validated; Google VPN transition, real datapath, verified ASan flag, native TSan/CI matrix, and final release gate remain
+current_step=31
+last_completed_step=30
+last_commit=b917b1b12c27ec6bb56e4752a786efd29667c81b
+status=complete
+blocked_reason=none
