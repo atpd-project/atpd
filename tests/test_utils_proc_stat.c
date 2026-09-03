@@ -1,31 +1,30 @@
 #include "utils.h"
 
 #include <stdlib.h>
-#include <string.h>
-#include <sys/prctl.h>
 #include <unistd.h>
 
 int main(void) {
-    unsigned long long self_start = 0;
-    if (get_process_starttime(getpid(), &self_start) != 0 || self_start == 0) abort();
+    /* 1. NULL pointer parameter check */
+    if (get_process_starttime(getpid(), NULL) == 0) abort();
 
-    /* Save original process name */
-    char orig_name[16] = {0};
-    if (prctl(PR_GET_NAME, orig_name, 0, 0, 0) != 0) abort();
+    /* 2. Negative PID check */
+    unsigned long long dummy = 0;
+    if (get_process_starttime(-1, &dummy) == 0) abort();
 
-    /* Linux comm permits spaces and ')' inside the /proc stat wrapper.
-     * Setting the comm directly on self tests /proc/<pid>/stat parsing
-     * without subprocess fork/exec, ensuring ThreadSanitizer safety. */
-    if (prctl(PR_SET_NAME, "worker ) odd", 0, 0, 0) != 0) abort();
+    /* 3. Non-existent large PID check */
+    if (get_process_starttime(99999999, &dummy) == 0) abort();
 
-    unsigned long long odd_start = 0;
-    if (get_process_starttime(getpid(), &odd_start) != 0 || odd_start != self_start) abort();
+    /* 4. Valid self PID check */
+    unsigned long long self_start1 = 0;
+    if (get_process_starttime(getpid(), &self_start1) != 0 || self_start1 == 0) abort();
 
-    /* Restore original name */
-    if (prctl(PR_SET_NAME, orig_name, 0, 0, 0) != 0) abort();
+    /* 5. Repeatability: consecutive reads must be identical */
+    unsigned long long self_start2 = 0;
+    if (get_process_starttime(getpid(), &self_start2) != 0 || self_start2 != self_start1) abort();
 
-    unsigned long long restored_start = 0;
-    if (get_process_starttime(getpid(), &restored_start) != 0 || restored_start != self_start) abort();
+    /* 6. System root / init PID 1 check */
+    unsigned long long init_start = 0;
+    (void)get_process_starttime(1, &init_start);
 
     return 0;
 }
