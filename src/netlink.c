@@ -238,9 +238,12 @@ static int parser_link_sync(struct nlmsghdr *h, void *userdata) {
         if (rta->rta_type == IFLA_IFNAME) {
             safe_copy_ifname(info->name, RTA_DATA(rta), RTA_PAYLOAD(rta));
         } else if (rta->rta_type == IFLA_STATS64) {
-            struct rtnl_link_stats64 *stats = (struct rtnl_link_stats64 *)RTA_DATA(rta);
-            info->rx_bytes = stats->rx_bytes;
-            info->tx_bytes = stats->tx_bytes;
+            if (RTA_PAYLOAD(rta) >= sizeof(struct rtnl_link_stats64)) {
+                struct rtnl_link_stats64 stats;
+                memcpy(&stats, RTA_DATA(rta), sizeof(stats));
+                info->rx_bytes = stats.rx_bytes;
+                info->tx_bytes = stats.tx_bytes;
+            }
         }
     }
 

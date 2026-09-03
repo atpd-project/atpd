@@ -26,14 +26,14 @@ CFLAGS += -Iinclude
 ifdef DEBUG
 CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -DATP_DEBUG -O0 -fsanitize=address -Iinclude
 SANITIZER_LIBS = -l:libasan.so.8
+LDFLAGS ?= -Wl,-z,relro,-z,now
 endif
 CFLAGS += -D_FORTIFY_SOURCE=3
 CFLAGS += -Ibuild/generated
 
 LIBS = -lpthread $(SANITIZER_LIBS)
 
-LDFLAGS = -flto
-LDFLAGS += -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-z,relro,-z,now
+LDFLAGS ?= -flto -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-z,relro,-z,now
 
 SRC = $(wildcard src/*.c)
 
@@ -78,47 +78,47 @@ test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_
 
 $(VPN_MODE_TEST): tests/test_api_vpn_mode.c src/api.c
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 $(API_SNAPSHOT_TEST): tests/test_api_snapshot.c src/api.c src/reactor.c
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 $(LOGGER_SAFETY_TEST): tests/test_logger_file_safety.c src/logger.c
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 $(RESULT_TEST): tests/test_atp_result.c
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 $(VERSION_TEST): tests/test_version.c src/version.c $(VERSION_HEADER)
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_version.c src/version.c
+	$(CC) $(CFLAGS) -o $@ tests/test_version.c src/version.c $(LIBS)
 
 $(CONFIG_VALUE_TEST): tests/test_config_value.c
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 $(CONTEXT_TEST): tests/test_atpd_context.c src/atpd_context.c
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^ -lpthread
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 $(CLI_TEST): tests/test_cli.c src/cli.c src/version.c $(VERSION_HEADER)
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_cli.c src/cli.c src/version.c
+	$(CC) $(CFLAGS) -o $@ tests/test_cli.c src/cli.c src/version.c $(LIBS)
 
 $(STATUS_RENDER_TEST): tests/test_status_render.c src/status_render.c src/ui.c src/version.c $(VERSION_HEADER)
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_status_render.c src/status_render.c src/ui.c src/version.c
+	$(CC) $(CFLAGS) -o $@ tests/test_status_render.c src/status_render.c src/ui.c src/version.c $(LIBS)
 
 $(UTILS_PROC_STAT_TEST): tests/test_utils_proc_stat.c src/utils.c src/logger.c
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated -o $@ tests/test_utils_proc_stat.c src/utils.c src/logger.c -lpthread
+	$(CC) $(CFLAGS) -o $@ tests/test_utils_proc_stat.c src/utils.c src/logger.c $(LIBS)
 
 $(SERVICE_CREDENTIALS_TEST): tests/test_service_credentials.c src/service_credentials.c
 	@mkdir -p $(dir $@)
-	$(CC) -Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)

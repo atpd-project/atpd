@@ -17,10 +17,7 @@
   "inbounds": [
     {
       "type": "ebpf",
-      "tag": "ebpf-in",
-      "cgroup_enabled": true,
-      "cgroup_path": "/sys/fs/cgroup",
-      "network": ["tcp", "udp"]
+      "tag": "ebpf-in"
     }
   ],
   "outbounds": [
