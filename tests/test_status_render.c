@@ -23,7 +23,7 @@ static char *render_with_pid(pid_t pid) {
     FILE *stream = open_memstream(&buffer, &size);
     assert(stream != NULL);
     status_render_snapshot(stream, true, &snapshot);
-    assert(fclose(stream) == 0);
+    if (fclose(stream) != 0) abort();
     assert(size > 0);
     return buffer;
 }
@@ -51,7 +51,7 @@ static char *render_with_native_api(bool traffic_available) {
     FILE *stream = open_memstream(&buffer, &size);
     assert(stream != NULL);
     status_render_snapshot(stream, true, &snapshot);
-    assert(fclose(stream) == 0);
+    if (fclose(stream) != 0) abort();
     assert(size > 0);
     return buffer;
 }
