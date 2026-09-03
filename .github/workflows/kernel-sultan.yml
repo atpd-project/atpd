@@ -28,7 +28,7 @@ jobs:
       kowsu_latest: ${{ steps.check.outputs.kowsu_latest }}
       should_build: ${{ steps.check.outputs.should_build }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       
       - name: Check Sultan Latest Tag
         id: sultan
@@ -154,7 +154,7 @@ jobs:
       s_tag: ${{ steps.meta.outputs.s_tag }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -303,7 +303,7 @@ jobs:
       contents: write
       issues: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           

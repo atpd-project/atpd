@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -115,7 +115,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -134,7 +134,7 @@ jobs:
           fi
 
       - name: Restore isolated ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-amd64-zig0.16.0-${{ matrix.sanitizer }}-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
@@ -209,7 +209,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -224,7 +224,7 @@ jobs:
           sudo apt-get install -y -qq make ccache file
 
       - name: Restore isolated ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-amd64-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
@@ -274,7 +274,7 @@ jobs:
           file ./build/bin/atpd | grep -i 'x86-64'
 
       - name: Upload Native Release Binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: atpd-native-amd64
           path: ./build/bin/atpd
@@ -292,7 +292,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -310,7 +310,7 @@ jobs:
           sing-box version
 
       - name: Download Native Release Binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: atpd-native-amd64
           path: build/bin
@@ -399,7 +399,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -418,7 +418,7 @@ jobs:
           fi
 
       - name: Restore isolated ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-arm64-zig0.16.0-${{ matrix.sanitizer }}-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
@@ -493,7 +493,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -508,7 +508,7 @@ jobs:
           sudo apt-get install -y -qq make ccache file
 
       - name: Restore isolated ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-arm64-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
@@ -558,7 +558,7 @@ jobs:
           file ./build/bin/atpd | grep -i 'aarch64'
 
       - name: Upload Native Release Binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: atpd-native-arm64
           path: ./build/bin/atpd
@@ -576,7 +576,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -594,7 +594,7 @@ jobs:
           sing-box version
 
       - name: Download Native Release Binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: atpd-native-arm64
           path: build/bin
