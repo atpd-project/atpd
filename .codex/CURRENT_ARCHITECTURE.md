@@ -53,7 +53,6 @@
 - Step 28: Lifecycle failure paths explicitly handle timer/FD registration failures and retain child ownership until reap.
 - Step 29: Resource regression scripts record memory/FD/thread baseline and recovery, enforce growth gates, and clean only test-owned processes/resources.
 - Pre-RC remediation: daemon orchestration retains the selected config source for reload; status renders only an immutable owner snapshot through a stack-owned UI context, and resource gates preserve metrics while validating test-owned process identity.
-- Step 30: Android platform and sanitizer matrix validated; authoritative Native API telemetry aggregates live child state without simulation, crash/reload/restart recoveries pass without FD/thread or RSS growth, and module restoration enforces BusyBox standalone execution.
 
 ## Update rule
 

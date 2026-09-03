@@ -1,20 +1,12 @@
-# ATPD Codex Handoff
+# Step 30 RC/Stable Validation
 
-Repository: `/home/ezhang/atpd`
-Branch: `ebpf-native-api`
-Product build under validation: `8de80df1a24482b402febcd13c415f842aafd26f`
+Result: `BLOCKED`
 
-Checkpoint (must remain unchanged while paused):
-
-```text
-last_completed_step=29
-current_step=30
-status=blocked
-```
+Step 30 Android clean smoke run succeeded from zero baseline, but the Step 30 RC/stable gate is blocked pending real-device VPN/traffic validation, explicit ASan execution proof, native Linux/CI TSan, and GitHub CI/release gates.
 
 ## Valid Evidence Retained
 
-- **2026-09-03 Real-Device Android Smoke (Pixel 7 Pro `29271FDH300EJK`)**:
+- **Real-Device Android Smoke (Pixel 7 Pro `29271FDH300EJK`)**:
   - Native API authoritative fields: PASS (live child state published: Goroutines 69, Version 1.14.0-rc.1-4895c512, Clash Mode Rule, FCM Push Sensing ACTIVE).
   - reload churn `10/10`: PASS (ATPD PID 5140 unchanged, authoritative status valid, 2080 session alive).
   - restart churn `10/10`: PASS (distinct new PIDs verified on each cycle, old PIDs reaped, authoritative status restored).
@@ -29,13 +21,8 @@ status=blocked
   - UBSan build and full suite: PASS.
   - Shell script syntax (`bash -n tests/*.sh scripts/*.sh`): PASS.
   - Architecture invariant search: PASS (zero forbidden hits).
-- Step 29 privileged benchmark and full resource stress PASS: crash recovery `10/10`, Netlink `200`, FD/thread delta `0/0`, RSS slope `0.000 KB/min`, no residual resources.
 
-## Device State at Pause
-
-The Step 30 deployment is removed. The original module is running with exactly one watchdog, sentinel, and sing-box. Watchdog environment contains `ASH_STANDALONE=1`; ports 9080/9090, `@sing-box-ebpf-shared-47`, and wlan0 `sb_share_in`/`sb_share_out` are active. PID identity was stable across the 30-second restoration check (`RESTORATION_VERIFIED`). No Step 30 process, socket, dummy interface, or device temporary file remains.
-
-## Remaining Gates to Complete Step 30
+## Missing Evidence / Remaining Gates
 
 1. **Google VPN ON/OFF Real-Device Transition**:
    - Verification of ATPD VPN interface observation, Clash Mode switching on connection, and clean restoration on disconnection without stale state retention.
@@ -51,7 +38,3 @@ The Step 30 deployment is removed. The original module is running with exactly o
    - Final release validation on resulting HEAD after all evidence is assembled.
 
 All time-based soak testing (1-hour / 24-hour) remains classified as `MANUAL POST-RC VALIDATION` outside the automated Step 30 gate.
-
-## Preserved Files
-
-Preserved historical reports remain untracked and must not be modified or removed: `reports/step-01-report.md`, `reports/step-02-report.md`, and `reports/step-03-report.md`.
