@@ -32,8 +32,52 @@ concurrency:
 
 jobs:
   # ============================================================================
-  # Stage 1 — Sanitizer Prerequisites (AMD64 Native Runner)
-  # ASan, UBSan, TSan on ubuntu-24.04 with isolated ccache
+  # Repository Hygiene & Architecture Invariant Checks (Architecture Independent)
+  # ============================================================================
+  repository-checks:
+    name: "Repository Checks"
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate Shell Script Syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking shell scripts syntax..."
+          bash -n tests/*.sh scripts/*.sh
+
+      - name: Verify Architecture Invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Checking architecture invariants..."
+          # Invariant 1: No direct libc printf in library core modules
+          ! grep -rn -w 'printf' src/reactor.c src/netlink.c src/service.c 2>/dev/null || {
+            echo "ERROR: Direct printf forbidden in core daemon reactor/netlink/service" >&2
+            exit 1
+          }
+
+          # Invariant 2: Version header is not tracked in git
+          ! git ls-files --error-unmatch build/generated/version_build.h 2>/dev/null || {
+            echo "ERROR: Generated version_build.h must not be tracked in git" >&2
+            exit 1
+          }
+
+          echo "All architecture invariants verified."
+
+      - name: Check Code Hygiene & Whitespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+
+  # ============================================================================
+  # LANE 1: AMD64 Native Runner (ubuntu-24.04)
+  # Sanitizer AMD64 -> Release AMD64 -> Integration AMD64
   # ============================================================================
   sanitizer-amd64:
     name: "Sanitizer AMD64 / ${{ matrix.name }}"
@@ -146,9 +190,178 @@ jobs:
         run: |
           ccache -s
 
+  release-amd64:
+    name: "Release AMD64"
+    needs: [sanitizer-amd64]
+    runs-on: ubuntu-24.04
+
+    outputs:
+      atp_version: ${{ steps.version-meta.outputs.atp_version }}
+      full_version: ${{ steps.version-meta.outputs.full_version }}
+
+    env:
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CCACHE_COMPRESS: "1"
+      CCACHE_MAXSIZE: "2G"
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "1"
+      CCACHE: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Zig 0.16.0
+        uses: ./.github/actions/setup-zig-0.16
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq make ccache file
+
+      - name: Restore isolated ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-amd64-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-amd64-zig0.16.0-release-
+
+      - name: Show toolchain & ccache initial statistics
+        shell: bash
+        run: |
+          zig version
+          ccache --version
+          ccache -s
+
+      - name: Clean Native Build & Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean
+          make -j2
+          make test
+
+      - name: Verify Version Metadata & Clean Tree
+        id: version-meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROD_VER="$(cat VERSION)"
+          FULL_VER="$(./build/bin/atpd -v | head -n 1)"
+          echo "Product Version: ${PROD_VER}"
+          echo "Full Runtime Version: ${FULL_VER}"
+
+          if echo "${FULL_VER}" | grep -q "\.dirty"; then
+            echo "ERROR: Clean CI release build produced .dirty version string!" >&2
+            git status --porcelain >&2
+            exit 1
+          fi
+
+          echo "atp_version=${PROD_VER}" >> "$GITHUB_OUTPUT"
+          echo "full_version=${FULL_VER}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Binary Architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          file ./build/bin/atpd
+          ls -lh ./build/bin/atpd
+          file ./build/bin/atpd | grep -i 'x86-64'
+
+      - name: Upload Native Release Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: atpd-native-amd64
+          path: ./build/bin/atpd
+          retention-days: 7
+
+      - name: Show ccache final statistics
+        if: always()
+        shell: bash
+        run: |
+          ccache -s
+
+  integration-amd64:
+    name: "Integration AMD64"
+    needs: [release-amd64]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Zig 0.16.0
+        uses: ./.github/actions/setup-zig-0.16
+
+      - name: Install System Dependencies & sing-box
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq make libbpf-dev iproute2 curl jq procps
+          curl -fsSL -o /tmp/sing-box.deb https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_amd64.deb
+          sudo dpkg -i /tmp/sing-box.deb
+          sing-box version
+
+      - name: Download Native Release Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: atpd-native-amd64
+          path: build/bin
+
+      - name: Make Binary Executable & Verify Architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ./build/bin/atpd
+          file ./build/bin/atpd | grep -i 'x86-64'
+          ./build/bin/atpd -v
+
+      - name: Run sing-box Lifecycle Integration Tests
+        shell: bash
+        run: |
+          sudo -E bash tests/test_singbox_lifecycle.sh
+
+      - name: Run Service Crash Recovery Tests
+        shell: bash
+        run: |
+          sudo -E bash tests/test_service_crash_recovery.sh ./build/bin/atpd /usr/bin/sing-box
+
+      - name: Run Configuration Validation Tests
+        shell: bash
+        run: |
+          bash tests/test_config_validation.sh ./build/bin/atpd
+
+      - name: Run Android Service Script Unit Tests
+        shell: bash
+        run: |
+          bash tests/test_android_service.sh
+
+      - name: Run Benchmark & Performance Regression
+        shell: bash
+        run: |
+          sudo -E ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
+
+      - name: Publish Performance Summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f bench_output.txt ]; then
+            echo "## 🚀 ATPd AMD64 Performance & Benchmark Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            cat bench_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
   # ============================================================================
-  # Stage 1 — Sanitizer Prerequisites (ARM64 Native Runner)
-  # ASan, UBSan, TSan on ubuntu-24.04-arm with isolated ccache
+  # LANE 2: ARM64 Native Runner (ubuntu-24.04-arm)
+  # Sanitizer ARM64 -> Release ARM64 -> Integration ARM64
   # ============================================================================
   sanitizer-arm64:
     name: "Sanitizer ARM64 / ${{ matrix.name }}"
@@ -261,26 +474,10 @@ jobs:
         run: |
           ccache -s
 
-  # ============================================================================
-  # Stage 2 — Release Build (AMD64 & ARM64)
-  # Hard dependency: executes ONLY if BOTH sanitizer-amd64 and sanitizer-arm64 PASS.
-  # ============================================================================
-  release-build:
-    name: "Release Build / ${{ matrix.name }}"
-    needs: [sanitizer-amd64, sanitizer-arm64]
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: amd64
-            name: AMD64
-            runner: ubuntu-24.04
-            file_arch: 'x86-64'
-          - arch: arm64
-            name: ARM64
-            runner: ubuntu-24.04-arm
-            file_arch: 'aarch64'
+  release-arm64:
+    name: "Release ARM64"
+    needs: [sanitizer-arm64]
+    runs-on: ubuntu-24.04-arm
 
     outputs:
       atp_version: ${{ steps.version-meta.outputs.atp_version }}
@@ -314,9 +511,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-${{ matrix.arch }}-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
+          key: ccache-${{ runner.os }}-arm64-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ matrix.arch }}-zig0.16.0-release-
+            ccache-${{ runner.os }}-arm64-zig0.16.0-release-
 
       - name: Show toolchain & ccache initial statistics
         shell: bash
@@ -352,19 +549,18 @@ jobs:
           echo "atp_version=${PROD_VER}" >> "$GITHUB_OUTPUT"
           echo "full_version=${FULL_VER}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify Binary Architecture & Code Hygiene
+      - name: Verify Binary Architecture
         shell: bash
         run: |
           set -euo pipefail
           file ./build/bin/atpd
           ls -lh ./build/bin/atpd
-          file ./build/bin/atpd | grep -i "${{ matrix.file_arch }}"
-          git diff --check
+          file ./build/bin/atpd | grep -i 'aarch64'
 
       - name: Upload Native Release Binary
         uses: actions/upload-artifact@v4
         with:
-          name: atpd-native-${{ matrix.arch }}
+          name: atpd-native-arm64
           path: ./build/bin/atpd
           retention-days: 7
 
@@ -374,15 +570,10 @@ jobs:
         run: |
           ccache -s
 
-  # ============================================================================
-  # Stage 3 — Integration & Final CI Gate
-  # Runs lifecycle integration, configuration validation, resource benchmark,
-  # architecture invariants, and syntax validation.
-  # ============================================================================
-  integration-gate:
-    name: "Integration & Final CI Gate"
-    needs: [release-build]
-    runs-on: ubuntu-24.04
+  integration-arm64:
+    name: "Integration ARM64"
+    needs: [release-arm64]
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -398,15 +589,23 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq make libbpf-dev iproute2 curl jq procps
-          curl -fsSL -o /tmp/sing-box.deb https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_amd64.deb
+          curl -fsSL -o /tmp/sing-box.deb https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_arm64.deb
           sudo dpkg -i /tmp/sing-box.deb
           sing-box version
 
-      - name: Build Native Release ATPd
+      - name: Download Native Release Binary
+        uses: actions/download-artifact@v4
+        with:
+          name: atpd-native-arm64
+          path: build/bin
+
+      - name: Make Binary Executable & Verify Architecture
         shell: bash
         run: |
-          make clean
-          make -j2
+          set -euo pipefail
+          chmod +x ./build/bin/atpd
+          file ./build/bin/atpd | grep -i 'aarch64'
+          ./build/bin/atpd -v
 
       - name: Run sing-box Lifecycle Integration Tests
         shell: bash
@@ -433,46 +632,24 @@ jobs:
         run: |
           sudo -E ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
 
-      - name: Architecture Invariant & Shell Syntax Checks
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Checking shell scripts syntax..."
-          bash -n tests/*.sh scripts/*.sh
-
-          echo "Checking architecture invariants..."
-          # Invariant 1: No direct libc printf in library core modules
-          ! grep -rn -w 'printf' src/reactor.c src/netlink.c src/service.c 2>/dev/null || {
-            echo "ERROR: Direct printf forbidden in core daemon reactor/netlink/service" >&2
-            exit 1
-          }
-
-          # Invariant 2: Version header is not tracked in git
-          ! git ls-files --error-unmatch build/generated/version_build.h 2>/dev/null || {
-            echo "ERROR: Generated version_build.h must not be tracked in git" >&2
-            exit 1
-          }
-
-          echo "All architecture invariants verified."
-
       - name: Publish Performance Summary
         if: always()
         shell: bash
         run: |
           if [ -f bench_output.txt ]; then
-            echo "## 🚀 ATPd Performance & Benchmark Summary" >> $GITHUB_STEP_SUMMARY
+            echo "## 🚀 ATPd ARM64 Performance & Benchmark Summary" >> $GITHUB_STEP_SUMMARY
             echo '```text' >> $GITHUB_STEP_SUMMARY
             cat bench_output.txt >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
 
   # ============================================================================
-  # Stage 4 — Final CI Verdict
-  # Reports final pass status across all gates.
+  # Final CI Verdict
+  # Reports final pass status across AMD64 lane, ARM64 lane, and Repository Checks.
   # ============================================================================
   final-ci-verdict:
     name: "Final CI Verdict"
-    needs: [sanitizer-amd64, sanitizer-arm64, release-build, integration-gate]
+    needs: [integration-amd64, integration-arm64, repository-checks]
     runs-on: ubuntu-latest
     steps:
       - name: Output Release Gate Summary
@@ -481,16 +658,15 @@ jobs:
           echo "================================================================================"
           echo "                    ATPD CI PIPELINE: ALL GATES PASSED"
           echo "================================================================================"
-          echo "  [PASS] Stage 1: Sanitizer Prerequisites"
-          echo "         - Sanitizer AMD64: ASan (PASS), UBSan (PASS), TSan (PASS)"
-          echo "         - Sanitizer ARM64: ASan (PASS), UBSan (PASS), TSan (PASS)"
-          echo "  [PASS] Stage 2: Native Release Build"
-          echo "         - Release Build AMD64: PASS"
-          echo "         - Release Build ARM64: PASS (zero Docker/QEMU)"
-          echo "  [PASS] Stage 3: Integration & Invariants"
-          echo "         - sing-box start/stop lifecycle (PASS)"
-          echo "         - Process crash recovery & supervisor restart (PASS)"
-          echo "         - Configuration validation (PASS)"
-          echo "         - Benchmark & performance regression (PASS)"
-          echo "         - Architecture invariant & shell syntax checks (PASS)"
+          echo "  [PASS] Repository Checks:"
+          echo "         - Shell syntax & code hygiene"
+          echo "         - Architecture invariants (no direct printf in core, untracked headers)"
+          echo "  [PASS] Lane 1 (AMD64):"
+          echo "         - Sanitizer AMD64: ASan, UBSan, TSan"
+          echo "         - Release AMD64: Native Clean Build & Packaging"
+          echo "         - Integration AMD64: Lifecycle, Crash Recovery, Config, Benchmark"
+          echo "  [PASS] Lane 2 (ARM64):"
+          echo "         - Sanitizer ARM64: ASan, UBSan, TSan"
+          echo "         - Release ARM64: Native Clean Build & Packaging"
+          echo "         - Integration ARM64: Lifecycle, Crash Recovery, Config, Benchmark"
           echo "================================================================================"
