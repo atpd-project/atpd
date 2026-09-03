@@ -67,13 +67,13 @@ kill -9 "${OLD_SINGBOX_PID}"
 NEW_SINGBOX_PID=""
 for _ in $(seq 1 100); do
     if [ -s "${SINGBOX_PID_FILE}" ]; then
-        NEW_SINGBOX_PID="$(tr -d '[:space:]' < "${SINGBOX_PID_FILE}")"
+        NEW_SINGBOX_PID="$(tr -d '[:space:]' < "${SINGBOX_PID_FILE}" 2>/dev/null || true)"
         if [[ "${NEW_SINGBOX_PID}" =~ ^[1-9][0-9]*$ ]] &&
            [ "${NEW_SINGBOX_PID}" != "${OLD_SINGBOX_PID}" ] &&
            kill -0 "${NEW_SINGBOX_PID}" 2>/dev/null &&
-           [ "$(tr -d '[:space:]' < "/proc/${NEW_SINGBOX_PID}/comm")" = "sing-box" ] &&
+           [ "$(cat "/proc/${NEW_SINGBOX_PID}/comm" 2>/dev/null || true)" = "sing-box" ] &&
            "${TEST_DIR}/atpd" -c "${CONF_FILE}" status 2>/dev/null | grep -q RUNNING &&
-           [ "$(tr -d '[:space:]' < "${PID_FILE}")" = "${ATPD_PID}" ]; then
+           [ "$(tr -d '[:space:]' < "${PID_FILE}" 2>/dev/null || true)" = "${ATPD_PID}" ]; then
             break
         fi
     fi

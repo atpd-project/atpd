@@ -60,6 +60,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq make curl jq procps ${{ matrix.runtime_package }}
+          sudo sysctl vm.mmap_rnd_bits=28 || true
           curl -fSL -o /tmp/sing-box.deb \
             https://github.com/debiansid/sing-box/releases/download/v1.14.0-beta.8/sing-box_1.14.0-beta.8_linux_amd64.deb
           sudo dpkg -i /tmp/sing-box.deb
