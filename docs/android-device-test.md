@@ -146,6 +146,14 @@ su -c 'cat /data/adb/atp/sing-box.log' > sing-box.log
 su -c 'dmesg | tail -n 300' > dmesg-tail.txt
 ```
 
-最终通过条件是 T01–T09 全部通过，连续运行 30 分钟无异常重启，ATPd 的 PID、FD 数和 RSS 无持续增长。代理节点速度、分流命中率和规则内容不作为 ATPd 验收结论。
+Step 30 自动化真机门槛要求完整执行启动、权威 Native API 字段、reload
+10/10、restart 10/10、crash recovery 5/5、Netlink/interface 20/20、
+datapath/session、FD/thread/RSS 以及清理/恢复验证。每轮必须保留原始计数
+证据，不能用汇总字符串替代实际执行次数。
+
+任何 1 小时、24 小时或其他定时 soak 均分类为
+`MANUAL POST-RC VALIDATION`，由操作者在自动化 Step 30 之外单独执行，
+不属于自动化 PASS 门槛。代理节点速度、分流命中率和规则内容不作为
+ATPd 验收结论。
 
 常见失败应先按边界归因：sing-box eBPF 探针的 `operation not permitted` 指向 root/SELinux/内核能力；只有 atpd PID 而无 sing-box PID 时查看 `sing-box.log`；PID 正常但没有 Native API/Goroutines 时核对 API 地址、端口和 secret。不要通过全局 permissive 或清空防火墙来掩盖失败。

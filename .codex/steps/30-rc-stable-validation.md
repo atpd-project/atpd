@@ -46,8 +46,14 @@ Open only relevant hits unless the audit mode is `repo-wide` and a broader owner
 ## Core gates
 
 - Sanitizer matrix completed where supported
-- Android recovery/transition scenarios documented
-- Stable requires soak/release gate, not build-only
+- Android startup, authoritative Native API status, recovery/transition,
+  datapath/session, resource, and cleanup/restoration gates completed
+- Release build/test and CI/build matrix completed
+
+Long-duration and other time-based soak testing is `MANUAL POST-RC VALIDATION`.
+It is performed separately by the operator and is not part of the automated
+Step 30 PASS gate. No non-soak functional, resource, sanitizer, or CI gate may
+be skipped or weakened as a substitute.
 
 ## Build/test policy
 

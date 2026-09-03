@@ -3,4 +3,4 @@ current_step=30
 last_completed_step=29
 last_commit=e44b1b109788425b911ba3c8d6cbc316e343f69f
 status=blocked
-blocked_reason=Step 30 RC validation requires unavailable Android device/24h soak; sanitizer coverage is incomplete in this WSL environment
+blocked_reason=Step 30 paused; clean Android smoke, ASan integration, native TSan/CI matrix, and final release gate remain

@@ -23,20 +23,23 @@ tests, scripts, or harness files were modified.
 - `docs/android-device-test.md` documents T01-T09 scenarios, but no `adb`
   executable or Android device is available in this environment.
 
-## Hard stop
+## Remaining automated gates
 
-The required RC/stable evidence cannot be completed here:
+Step 30 remains blocked pending:
 
-- No real Android device or `adb` is available for the Android recovery,
-  transition, and platform matrix (Android 12+, GKI/device, Magisk, KernelSU,
-  APatch).
-- No executable 24-hour real-device soak/release gate is available.
+- A clean, from-zero Android smoke run with raw per-iteration evidence.
 - TSan runtime is unavailable, and ASan integration coverage remains blocked by
   the existing shell-loop execution behavior.
+- Native Linux/CI sanitizer execution and the final CI/build matrix rerun.
+- The final release gate after all automated evidence is complete.
 
 The previously completed privileged Step 29 benchmark/stress evidence remains
-valid, but it does not substitute for Step 30 Android matrix and soak evidence.
+valid, but it does not substitute for the remaining Step 30 automated evidence.
 No Step 30 PASS or RC/stable claim is made.
+
+All time-based soak testing, including 1-hour and 24-hour runs, is classified as
+`MANUAL POST-RC VALIDATION`. It is performed separately by the operator and is
+not part of the automated Step 30 PASS gate.
 
 ## Android device attempt — 2026-09-02
 
@@ -91,8 +94,9 @@ launch: its `pkill -0 -f` resolves to Android Toybox `pkill`, which rejects
 signal 0 and caused a sentinel fork storm. No wrapper or script modification
 was introduced. The storm was stopped; the device was left stable with one
 original sing-box and one original sentinel, but with the module watchdog
-stopped. This restoration-process gap is explicit and requires review before
-another Android attempt.
+stopped. This historical restoration-process gap was closed before the resume
+attempt below by launching the original service under KernelSU BusyBox ash with
+`ASH_STANDALONE=1`.
 
 Evidence directory:
 
@@ -100,3 +104,31 @@ Evidence directory:
 
 Checkpoint remains `last_completed_step=29`, `current_step=30`,
 `status=blocked`. No Step 30 PASS is claimed.
+
+## Android resume and pause — 2026-09-02
+
+Signed commit `8de80df1a24482b402febcd13c415f842aafd26f` fixed Android
+root credential resolution and was deployed as a static arm64 build. Initial
+startup demonstrated that the existing sing-box could start and publish real
+Goroutines, Version, Clash Mode, and FCM Push Sensing values, but the workload
+result is not counted: a temporary runner helper overwrote its outer counter,
+so only one restart and one crash were executed while its summary claimed the
+target counts.
+
+A corrected runner began a second run, but it was interrupted when a stricter
+fresh-deployment requirement was issued. No Android smoke result from either
+run is reused. The required clean rerun remains startup plus reload `10/10`,
+restart `10/10`, crash recovery `5/5`, Netlink/interface `20/20`, authoritative
+Native API, datapath/session, FD/thread/RSS, and cleanup/restoration gates, with
+raw per-iteration evidence.
+
+Before pausing, the complete temporary test root was pulled to the host evidence
+directory and the device deployment was removed. The original module was
+started with KernelSU BusyBox standalone semantics. Restoration verification
+found exactly one stable watchdog, sentinel, and sing-box; ports 9080/9090,
+`@sing-box-ebpf-shared-47`, and `wlan0` `sb_share_in`/`sb_share_out` were active;
+no Step 30 process, socket, interface, or device temporary file remained.
+
+Resume evidence:
+
+`C:\Users\EricZhang\ATPD-device-backups\20260902-085850-Pixel_7_Pro-29271FDH300EJK\step30-resume-20260902-160321`
