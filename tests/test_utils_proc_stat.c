@@ -2,11 +2,20 @@
 
 #include <assert.h>
 #include <signal.h>
+#include <string.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-int main(void) {
+int main(int argc, char *argv[]) {
+    if (argc > 1 && strcmp(argv[1], "--child") == 0) {
+        /* Linux comm permits spaces and ')' inside the /proc stat wrapper. */
+        (void)prctl(PR_SET_NAME, "worker ) odd", 0, 0, 0);
+        char ch;
+        (void)read(STDIN_FILENO, &ch, 1);
+        _exit(0);
+    }
+
     unsigned long long self_start = 0;
     assert(get_process_starttime(getpid(), &self_start) == 0);
     assert(self_start != 0);
@@ -18,12 +27,10 @@ int main(void) {
     assert(child >= 0);
     if (child == 0) {
         close(sync_pipe[1]);
-        /* Linux comm permits spaces and ')' inside the /proc stat wrapper. */
-        (void)prctl(PR_SET_NAME, "worker ) odd", 0, 0, 0);
-        char ch;
-        (void)read(sync_pipe[0], &ch, 1);
+        if (dup2(sync_pipe[0], STDIN_FILENO) < 0) _exit(126);
         close(sync_pipe[0]);
-        _exit(0);
+        execl(argv[0], argv[0], "--child", (char *)NULL);
+        _exit(127);
     }
     close(sync_pipe[0]);
 
