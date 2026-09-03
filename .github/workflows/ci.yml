@@ -301,7 +301,7 @@ jobs:
 
           echo "Checking architecture invariants..."
           # Invariant 1: No direct libc printf in library core modules
-          ! grep -rn 'printf(' src/reactor.c src/netlink.c src/service.c 2>/dev/null || {
+          ! grep -rn -w 'printf' src/reactor.c src/netlink.c src/service.c 2>/dev/null || {
             echo "ERROR: Direct printf forbidden in core daemon reactor/netlink/service" >&2
             exit 1
           }
