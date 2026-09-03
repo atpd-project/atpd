@@ -7,9 +7,9 @@ Product build under validation: `8de80df1a24482b402febcd13c415f842aafd26f`
 Checkpoint (must remain unchanged while paused):
 
 ```text
-last_completed_step=30
-current_step=31
-status=complete
+last_completed_step=29
+current_step=30
+status=blocked
 ```
 
 ## Valid Evidence Retained

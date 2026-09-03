@@ -16,7 +16,7 @@ RELEASE_TAG=""
 if git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     COMMIT=$(git -C "$ROOT_DIR" rev-parse --short=12 HEAD 2>/dev/null || printf '%s' "unknown")
     RELEASE_TAG=$(git -C "$ROOT_DIR" describe --tags --exact-match HEAD 2>/dev/null || printf '%s' "")
-    if [ -n "$(git -C "$ROOT_DIR" status --porcelain --untracked-files=all -- . ':!build')" ]; then
+    if ! git -C "$ROOT_DIR" diff-index --quiet HEAD -- 2>/dev/null; then
         DIRTY=1
     fi
 fi

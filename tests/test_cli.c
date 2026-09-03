@@ -1,15 +1,13 @@
 #include "cli.h"
-
-#include <assert.h>
-#include <stddef.h>
+#include <stdlib.h>
 
 static void expect_custom_config_command(const char *command,
                                          atp_command_t expected) {
     char *argv[] = {"atpd", "-c", "/tmp/custom.conf", (char *)command, NULL};
     atp_options_t opts;
 
-    assert(parse_arguments(4, argv, &opts) == 0);
-    assert(opts.command == expected);
+    if (parse_arguments(4, argv, &opts) != 0) abort();
+    if (opts.command != expected) abort();
 }
 
 int main(void) {
@@ -19,9 +17,9 @@ int main(void) {
 
     char *trailing[] = {"atpd", "status", "extra", NULL};
     atp_options_t opts;
-    assert(parse_arguments(3, trailing, &opts) != 0);
+    if (parse_arguments(3, trailing, &opts) == 0) abort();
 
     char *invalid_mode[] = {"atpd", "--foreground", "status", NULL};
-    assert(parse_arguments(3, invalid_mode, &opts) != 0);
+    if (parse_arguments(3, invalid_mode, &opts) == 0) abort();
     return 0;
 }

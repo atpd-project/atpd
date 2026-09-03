@@ -28,7 +28,12 @@ CFLAGS = -Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -DATP_DEBUG -O0 -fsanitiz
 SANITIZER_LIBS = -l:libasan.so.8
 LDFLAGS ?= -Wl,-z,relro,-z,now
 endif
-CFLAGS += -D_FORTIFY_SOURCE=3
+# Authoritative single definition of _FORTIFY_SOURCE hardening
+ifeq ($(findstring _FORTIFY_SOURCE,$(CFLAGS)),)
+ifneq ($(findstring -O0,$(CFLAGS)),-O0)
+CFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
+endif
+endif
 CFLAGS += -Ibuild/generated
 
 LIBS = -lpthread $(SANITIZER_LIBS)
@@ -138,6 +143,7 @@ $(VERSION_HEADER): FORCE VERSION scripts/gen_version.sh
 
 FORCE:
 
+$(OBJ): $(VERSION_HEADER)
 $(OBJDIR)/src/version.o: $(VERSION_HEADER)
 
 $(OBJ) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST) $(SERVICE_CREDENTIALS_TEST): | check-zig

@@ -1,6 +1,6 @@
 # ATPD Codex automatic refactor state
-current_step=31
-last_completed_step=30
-last_commit=b917b1b12c27ec6bb56e4752a786efd29667c81b
-status=complete
-blocked_reason=none
+current_step=30
+last_completed_step=29
+last_commit=c5202ab91da6ff3e93cb0b1d5d052832f9adcd21
+status=blocked
+blocked_reason=Refactoring GitHub Actions CI to native matrix, upgrading toolchain to Zig 0.16.0, hard-blocking release on ASan/UBSan/TSan

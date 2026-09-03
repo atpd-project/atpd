@@ -1,6 +1,5 @@
 #include "atp_config.h"
-
-#include <assert.h>
+#include <stdlib.h>
 
 int main(void) {
     atp_config_t source = {0};
@@ -8,7 +7,7 @@ int main(void) {
     source.api.port = 9080;
 
     atp_config_t copy = source;
-    assert(copy.service.restart_delay_sec == source.service.restart_delay_sec);
-    assert(copy.api.port == source.api.port);
+    if (copy.service.restart_delay_sec != source.service.restart_delay_sec) abort();
+    if (copy.api.port != source.api.port) abort();
     return 0;
 }

@@ -1,2 +1,4 @@
 *.sublime-workspace
 build/
+.zig-cache/
+.zig-global-cache/
