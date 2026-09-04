@@ -548,6 +548,97 @@ static int service_spawn(service_ctx_t *ctx) {
     return 0;
 }
 
+int service_validate_config(service_ctx_t *ctx) {
+    if (!ctx || !service_binary_exists(ctx)) return -1;
+
+    char **args = build_service_args(ctx);
+    if (!args) return -1;
+    free(args[1]);
+    args[1] = strdup("check");
+    if (!args[1]) {
+        free_service_args(args);
+        return -1;
+    }
+
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) {
+        free_service_args(args);
+        return -1;
+    }
+    if (fcntl(pipe_fds[0], F_SETFL, O_NONBLOCK) != 0) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        free_service_args(args);
+        return -1;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        free_service_args(args);
+        return -1;
+    }
+    if (pid == 0) {
+        close(pipe_fds[0]);
+        dup2(pipe_fds[1], STDOUT_FILENO);
+        dup2(pipe_fds[1], STDERR_FILENO);
+        close(pipe_fds[1]);
+        execv(ctx->bin_path, args);
+        _exit(127);
+    }
+    close(pipe_fds[1]);
+    free_service_args(args);
+
+    int status = 0;
+    int done = 0;
+    int timed_out = 0;
+    int64_t deadline = (int64_t)time(NULL) + 5;
+    while (!done) {
+        struct pollfd pfd = { .fd = pipe_fds[0], .events = POLLIN };
+        int timeout = (int)((deadline - (int64_t)time(NULL)) * 1000);
+        if (timeout < 0) timeout = 0;
+        int polled = poll(&pfd, 1, timeout);
+        if (polled > 0 && (pfd.revents & (POLLIN | POLLHUP))) {
+            char buffer[1024];
+            ssize_t count;
+            while ((count = read(pipe_fds[0], buffer, sizeof(buffer))) > 0)
+                fwrite(buffer, 1, (size_t)count, stderr);
+        }
+        pid_t waited = waitpid(pid, &status, WNOHANG);
+        if (waited == pid) done = 1;
+        else if (waited < 0 && errno != EINTR) done = 1;
+        else if ((int64_t)time(NULL) >= deadline) {
+            timed_out = 1;
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+            done = 1;
+        }
+    }
+    char buffer[1024];
+    ssize_t count;
+    while ((count = read(pipe_fds[0], buffer, sizeof(buffer))) > 0)
+        fwrite(buffer, 1, (size_t)count, stderr);
+    close(pipe_fds[0]);
+    if (timed_out) {
+        fprintf(stderr, "sing-box check timed out\n");
+        return -1;
+    }
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+int service_wait_ready(service_ctx_t *ctx) {
+    if (!ctx) return -1;
+    time_t deadline = time(NULL) + (ctx->start_timeout_sec > 0 ? ctx->start_timeout_sec : 30);
+    while (time(NULL) < deadline) {
+        service_monitor_cb(ctx->reactor, NULL, ctx);
+        if (service_is_running(ctx)) return 0;
+        if (ctx->state == SERVICE_FAILED || ctx->child_pid <= 0) return -1;
+        usleep(100000);
+    }
+    service_monitor_cb(ctx->reactor, NULL, ctx);
+    return service_is_running(ctx) ? 0 : -1;
+}
+
 static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     service_stop_state_t *state = userdata;
     service_ctx_t *ctx = state->ctx;

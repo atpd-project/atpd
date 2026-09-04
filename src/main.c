@@ -42,6 +42,7 @@
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 #define DAEMON_PARENT_SUCCESS 1
 #define DAEMON_PARENT_FAILURE 2
+static int preflight_service_config(void);
 static int run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
 static void on_idle(reactor_t *r, void *userdata);
@@ -388,7 +389,13 @@ static int run_event_loop(void) {
         goto cleanup;
     }
 
-    /* Reconcile an already-present VPN after sing-box has been spawned. */
+    if (service_wait_ready(daemon_service) != 0) {
+        LOG_ERROR("sing-box failed to reach READY");
+        notify_startup(1);
+        goto cleanup;
+    }
+
+    /* Reconcile an already-present VPN after sing-box has reached READY. */
     netlink_refresh_state(daemon_reactor);
 
     shutdown_requested = 0;
@@ -430,6 +437,16 @@ cleanup:
     return result;
 }
 
+static int preflight_service_config(void) {
+    service_ctx_t service;
+    memset(&service, 0, sizeof(service));
+    if (service_init(&service, &daemon_config) != 0) return -1;
+    int result = service_validate_config(&service);
+    service_stop_sync(&service);
+    if (result != 0) fprintf(stderr, "sing-box configuration check failed\n");
+    return result;
+}
+
 static int do_start(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
     int ret = 0;
@@ -443,6 +460,7 @@ static int do_start(atp_options_t *opts) {
         .api = &daemon_api,
         .opts = opts
     };
+    if (preflight_service_config() != 0) return 1;
 
     resolve_pid_path(opts, pp, sizeof(pp));
 
@@ -563,6 +581,7 @@ static int do_stop(atp_options_t *opts) {
 }
 
 static int do_restart(atp_options_t *opts) {
+    if (preflight_service_config() != 0) return 1;
     printf("Restarting atpd...\n");
     if (do_stop(opts) != 0) {
         return 1;
