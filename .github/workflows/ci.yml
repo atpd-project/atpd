@@ -436,6 +436,11 @@ jobs:
         if: matrix.sanitizer == 'asan' || matrix.sanitizer == 'tsan'
         shell: bash
         run: |
+          set -euo pipefail
+          if [ "${{ matrix.sanitizer }}" = "tsan" ]; then
+            sudo sysctl -w vm.mmap_rnd_bits=28
+            test "$(cat /proc/sys/vm/mmap_rnd_bits)" = "28"
+          fi
           chmod +x tests/probe_sanitizer.sh
           ./tests/probe_sanitizer.sh ${{ matrix.sanitizer }}
 
