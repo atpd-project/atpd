@@ -42,7 +42,7 @@ CFLAGS += -Ibuild/generated
 
 LIBS = -lpthread $(SANITIZER_LIBS)
 
-LDFLAGS ?= -static -flto -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-z,relro,-z,now
+LDFLAGS ?= -flto -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-z,relro,-z,now
 
 SRC = $(wildcard src/*.c)
 
@@ -140,7 +140,6 @@ uninstall:
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
-	strip -s $@
 	@echo "  LD (Native Lean) $@"
 
 $(VERSION_HEADER): FORCE VERSION scripts/gen_version.sh
