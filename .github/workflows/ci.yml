@@ -522,13 +522,39 @@ jobs:
           ccache --version
           ccache -s
 
-      - name: Clean Native Build & Test
+      - name: Generate Version
         shell: bash
         run: |
           set -euo pipefail
-          make clean
-          make -j2
-          make test
+          chmod +x scripts/gen_version.sh
+          ./scripts/gen_version.sh
+          ln -sf ../build/generated/version_build.h include/version_build.h
+
+      - name: Build Native Release Binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/bin
+          zig cc -target aarch64-linux \
+            -s -Oz -flto -ffunction-sections -fdata-sections -static \
+            -fno-unwind-tables -fno-asynchronous-unwind-tables \
+            -fmerge-all-constants -fno-ident \
+            -Iinclude \
+            -D_GNU_SOURCE \
+            -DNDEBUG \
+            -DYYJSON_DISABLE_WRITER=1 \
+            -DYYJSON_DISABLE_FAST_FP_CONV=1 \
+            -DYYJSON_DISABLE_NON_STANDARD=1 \
+            -DLOG_LOCATION_ENABLED=0 \
+            -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
+            -DATP_CONF_FILE=\"atp.conf\" \
+            -DATP_PID_FILE=\"run/atpd.pid\" \
+            -DATP_LOG_FILE=\"run/atp.log\" \
+            -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
+            -o build/bin/atpd \
+            $(find src -name "*.c") \
+            -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
+          rm -f include/version_build.h
 
       - name: Verify Version Metadata & Clean Tree
         id: version-meta
@@ -556,6 +582,9 @@ jobs:
           file ./build/bin/atpd
           ls -lh ./build/bin/atpd
           file ./build/bin/atpd | grep -i 'aarch64'
+          file ./build/bin/atpd | grep -i 'statically linked'
+          file ./build/bin/atpd | grep -i 'stripped'
+          ! readelf -l ./build/bin/atpd | grep INTERP
 
       - name: Upload Native Release Binary
         uses: actions/upload-artifact@v7
