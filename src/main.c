@@ -42,13 +42,18 @@
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 #define DAEMON_PARENT_SUCCESS 1
 #define DAEMON_PARENT_FAILURE 2
-static int preflight_service_config(void);
+typedef struct {
+    uint8_t status;
+    pid_t pid;
+} startup_notify_msg_t;
+
+static int preflight_startup(void);
 static int run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
 static void on_idle(reactor_t *r, void *userdata);
 static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
-static int daemonize(void);
+static int daemonize(pid_t *out_pid);
 static int process_is_atpd(pid_t pid);
 
 static atp_config_t daemon_config;
@@ -66,10 +71,13 @@ static bool g_startup_notified = false;
 static void notify_startup(int result) {
     if (g_startup_notified || g_startup_notify_fd < 0) return;
 
-    unsigned char status = result == 0 ? 0 : 1;
+    startup_notify_msg_t msg = {
+        .status = (result == 0) ? 0 : 1,
+        .pid = getpid()
+    };
     for (;;) {
-        ssize_t written = write(g_startup_notify_fd, &status, sizeof(status));
-        if (written == (ssize_t)sizeof(status)) break;
+        ssize_t written = write(g_startup_notify_fd, &msg, sizeof(msg));
+        if (written == (ssize_t)sizeof(msg)) break;
         if (written < 0 && errno == EINTR) continue;
         break;
     }
@@ -208,7 +216,7 @@ static int write_pid_file(const char *pid_file) {
     return 0;
 }
 
-static int daemonize(void) {
+static int daemonize(pid_t *out_pid) {
     int startup_pipe[2];
     if (pipe2(startup_pipe, O_CLOEXEC) < 0) {
         perror("pipe2");
@@ -223,15 +231,18 @@ static int daemonize(void) {
         return -1;
     }
     if (pid > 0) {
-        unsigned char status;
+        startup_notify_msg_t msg = {0};
         ssize_t n;
         close(startup_pipe[1]);
         do {
-            n = read(startup_pipe[0], &status, sizeof(status));
+            n = read(startup_pipe[0], &msg, sizeof(msg));
         } while (n < 0 && errno == EINTR);
         close(startup_pipe[0]);
-        return n == (ssize_t)sizeof(status) && status == 0
-            ? DAEMON_PARENT_SUCCESS : DAEMON_PARENT_FAILURE;
+        if (n == (ssize_t)sizeof(msg) && msg.status == 0 && msg.pid > 0) {
+            if (out_pid) *out_pid = msg.pid;
+            return DAEMON_PARENT_SUCCESS;
+        }
+        return DAEMON_PARENT_FAILURE;
     }
 
     close(startup_pipe[0]);
@@ -437,14 +448,38 @@ cleanup:
     return result;
 }
 
-static int preflight_service_config(void) {
+static int preflight_startup(void) {
     service_ctx_t service;
     memset(&service, 0, sizeof(service));
-    if (service_init(&service, &daemon_config) != 0) return -1;
-    int result = service_validate_config(&service);
+    if (service_init(&service, &daemon_config) != 0) {
+        fprintf(stderr, "Error: Failed to initialize service context\n");
+        return 1;
+    }
+
+    /* Check A: sing-box configuration check */
+    printf("[1/2] Checking sing-box configuration (binary: %s, config: %s)...\n",
+           service.bin_path, service.conf_path);
+    if (service_validate_config(&service) != 0) {
+        printf("sing-box configuration check: FAIL\n");
+        fprintf(stderr, "Error: sing-box configuration validation failed\n");
+        service_stop_sync(&service);
+        return 1;
+    }
+    printf("sing-box configuration check: PASS\n");
+
+    /* Check B: Kernel/runtime state probe */
+    printf("[2/2] Probing kernel and runtime capabilities (binary: %s)...\n",
+           service.bin_path);
+    if (service_probe_kernel(&service) != 0) {
+        printf("Kernel and runtime capability probe: FAIL\n");
+        fprintf(stderr, "Error: Kernel/eBPF runtime capability probe failed\n");
+        service_stop_sync(&service);
+        return 1;
+    }
+    printf("Kernel and runtime capability probe: PASS\n");
+
     service_stop_sync(&service);
-    if (result != 0) fprintf(stderr, "sing-box configuration check failed\n");
-    return result;
+    return 0;
 }
 
 static int do_start(atp_options_t *opts) {
@@ -460,15 +495,32 @@ static int do_start(atp_options_t *opts) {
         .api = &daemon_api,
         .opts = opts
     };
-    if (preflight_service_config() != 0) return 1;
+
+    if (preflight_startup() != 0) return 1;
 
     resolve_pid_path(opts, pp, sizeof(pp));
 
+    printf("Starting atpd...\n");
+
     if (opts->run_mode != CLI_RUN_MODE_FOREGROUND) {
-        int daemon_role = daemonize();
-        if (daemon_role == DAEMON_PARENT_SUCCESS) return 0;
-        if (daemon_role == DAEMON_PARENT_FAILURE) return 1;
-        if (daemon_role < 0) return 1;
+        pid_t daemon_pid = 0;
+        int daemon_role = daemonize(&daemon_pid);
+        if (daemon_role == DAEMON_PARENT_SUCCESS) {
+            if (daemon_pid > 0 && kill(daemon_pid, 0) == 0 && process_is_atpd(daemon_pid)) {
+                printf("Daemon started successfully (PID: %d)\n", daemon_pid);
+                return 0;
+            }
+            fprintf(stderr, "Error: Daemon process %d is not running after startup\n", daemon_pid);
+            return 1;
+        }
+        if (daemon_role == DAEMON_PARENT_FAILURE) {
+            fprintf(stderr, "Error: Daemon failed to start\n");
+            return 1;
+        }
+        if (daemon_role < 0) {
+            fprintf(stderr, "Error: Failed to daemonize\n");
+            return 1;
+        }
     }
 
     if (write_pid_file(pp) < 0) {
@@ -572,7 +624,18 @@ static int do_stop(atp_options_t *opts) {
     if (!stopped) {
         fprintf(stderr, "Process %d did not terminate gracefully, sending SIGKILL\n", pid);
         kill(pid, SIGKILL);
-        usleep(100000);
+        for (int i = 0; i < 50; i++) {
+            usleep(100000);
+            if (kill(pid, 0) != 0 && errno == ESRCH) {
+                stopped = 1;
+                break;
+            }
+        }
+    }
+
+    if (!stopped) {
+        fprintf(stderr, "Error: Process %d could not be terminated\n", pid);
+        return 1;
     }
 
     unlink(pp);
@@ -581,12 +644,10 @@ static int do_stop(atp_options_t *opts) {
 }
 
 static int do_restart(atp_options_t *opts) {
-    if (preflight_service_config() != 0) return 1;
     printf("Restarting atpd...\n");
     if (do_stop(opts) != 0) {
         return 1;
     }
-    usleep(500000);
     return do_start(opts);
 }
 
