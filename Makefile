@@ -42,7 +42,7 @@ CFLAGS += -Ibuild/generated
 
 LIBS = -lpthread $(SANITIZER_LIBS)
 
-LDFLAGS ?= -flto -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-z,relro,-z,now
+LDFLAGS ?= -static -flto -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-z,relro,-z,now
 
 SRC = $(wildcard src/*.c)
 
