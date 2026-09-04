@@ -177,9 +177,10 @@ jobs:
           ASAN_OPTIONS: abort_on_error=1:halt_on_error=1:detect_leaks=0
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/sing-box.deb "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_amd64.deb"
+          curl -fsSL -o /tmp/sing-box.deb "https://github.com/debiansid/sing-box-build/releases/download/v1.14.0-rc.1/sing-box_1.14.0-rc.1_linux_amd64.deb"
           sudo dpkg -i /tmp/sing-box.deb
           sing-box version
+          sing-box tools ebpf status --help
 
           timeout 180s sudo -E bash tests/test_singbox_lifecycle.sh
           timeout 180s sudo -E bash tests/test_service_crash_recovery.sh build/bin/atpd /usr/bin/sing-box
@@ -305,9 +306,10 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq make libbpf-dev iproute2 curl jq procps
-          curl -fsSL -o /tmp/sing-box.deb https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_amd64.deb
+          curl -fsSL -o /tmp/sing-box.deb "https://github.com/debiansid/sing-box-build/releases/download/v1.14.0-rc.1/sing-box_1.14.0-rc.1_linux_amd64.deb"
           sudo dpkg -i /tmp/sing-box.deb
           sing-box version
+          sing-box tools ebpf status --help
 
       - name: Download Native Release Binary
         uses: actions/download-artifact@v8
@@ -466,9 +468,15 @@ jobs:
           ASAN_OPTIONS: abort_on_error=1:halt_on_error=1:detect_leaks=0
         run: |
           set -euo pipefail
-          curl -fsSL -o /tmp/sing-box.deb "https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_arm64.deb"
-          sudo dpkg -i /tmp/sing-box.deb
+          mkdir -p /tmp/sb-arm
+          if ! curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-linux-arm64-glibc.tar.gz"; then
+            curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-android-arm64.tar.gz"
+          fi
+          tar -xzf /tmp/sb-arm/sing-box.tar.gz -C /tmp/sb-arm/
+          sudo cp "$(find /tmp/sb-arm -type f -name sing-box)" /usr/bin/sing-box
+          sudo chmod +x /usr/bin/sing-box
           sing-box version
+          sing-box tools ebpf status --help
 
           timeout 180s sudo -E bash tests/test_singbox_lifecycle.sh
           timeout 180s sudo -E bash tests/test_service_crash_recovery.sh build/bin/atpd /usr/bin/sing-box
@@ -622,9 +630,15 @@ jobs:
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq make libbpf-dev iproute2 curl jq procps
-          curl -fsSL -o /tmp/sing-box.deb https://github.com/SagerNet/sing-box/releases/download/v1.14.0/sing-box_1.14.0_linux_arm64.deb
-          sudo dpkg -i /tmp/sing-box.deb
+          mkdir -p /tmp/sb-arm
+          if ! curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-linux-arm64-glibc.tar.gz"; then
+            curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-android-arm64.tar.gz"
+          fi
+          tar -xzf /tmp/sb-arm/sing-box.tar.gz -C /tmp/sb-arm/
+          sudo cp "$(find /tmp/sb-arm -type f -name sing-box)" /usr/bin/sing-box
+          sudo chmod +x /usr/bin/sing-box
           sing-box version
+          sing-box tools ebpf status --help
 
       - name: Download Native Release Binary
         uses: actions/download-artifact@v8
