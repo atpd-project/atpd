@@ -140,6 +140,7 @@ uninstall:
 $(TARGET): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+	strip -s $@
 	@echo "  LD (Native Lean) $@"
 
 $(VERSION_HEADER): FORCE VERSION scripts/gen_version.sh
