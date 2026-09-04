@@ -531,7 +531,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x scripts/gen_version.sh
           ./scripts/gen_version.sh
           ln -sf ../build/generated/version_build.h include/version_build.h
 

@@ -41,12 +41,13 @@ int main(void) {
 }
 EOF
     zig cc -fsanitize=thread -o /tmp/probe_tsan /tmp/probe_tsan.c -lpthread
-    out="$(/tmp/probe_tsan 2>&1 || true)"
+    rc=0
+    out="$(/tmp/probe_tsan 2>&1)" || rc=$?
     if echo "$out" | grep -q "ThreadSanitizer: data race"; then
       echo "PROBE_PASS: TSan runtime actively intercepting data races"
       exit 0
     else
-      echo "PROBE_FAIL: TSan runtime did not intercept data race" >&2
+      echo "PROBE_FAIL: TSan runtime did not intercept data race (exit code: $rc)" >&2
       echo "$out" >&2
       exit 1
     fi
