@@ -68,9 +68,6 @@ static void log_command(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
-    sigset_t signals;
-    sigemptyset(&signals);
-    sigprocmask(SIG_SETMASK, &signals, NULL);
     log_command(argc, argv);
     if (argc < 2) return 1;
     if (!strcmp(argv[1], "version")) {
@@ -81,6 +78,14 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[1], "check")) return fail_config && *fail_config ? 1 : 0;
     if (!strcmp(argv[1], "tools")) return 64;
     if (!strcmp(argv[1], "run")) {
+        sigset_t inherited_mask;
+        if (sigprocmask(SIG_SETMASK, NULL, &inherited_mask) != 0 ||
+            sigismember(&inherited_mask, SIGTERM) == 1 ||
+            sigismember(&inherited_mask, SIGHUP) == 1 ||
+            sigismember(&inherited_mask, SIGCHLD) == 1) {
+            fputs("mock sing-box inherited a blocked service signal\n", stderr);
+            return 73;
+        }
         const char *exit_during_ready = getenv("MOCK_EXIT_DURING_READY");
         if (exit_during_ready && *exit_during_ready) return 42;
         const char *fail_ready = getenv("MOCK_FAIL_READY");

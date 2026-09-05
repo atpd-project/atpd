@@ -517,6 +517,15 @@ static int service_spawn(service_ctx_t *ctx) {
             }
         }
 
+        sigset_t empty_mask;
+        if (sigemptyset(&empty_mask) != 0 ||
+            sigprocmask(SIG_SETMASK, &empty_mask, NULL) != 0) {
+            dprintf(STDERR_FILENO,
+                    "Service: failed to clear inherited signal mask: %s\n",
+                    strerror(errno));
+            _exit(127);
+        }
+
         service_credentials_t credentials;
         if (service_credentials_resolve(ctx->user, ctx->group,
                                         getuid(), getgid(), &credentials) != 0) {
