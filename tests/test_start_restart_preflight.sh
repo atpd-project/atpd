@@ -124,6 +124,18 @@ run_atp() {
         "$ATPD_BIN" -c "$root/atp.conf" "$@"
 }
 
+read_atpd_pid() {
+    sed -n '1p' "$1"
+}
+
+proc_starttime() {
+    stat_line=$(cat "/proc/$1/stat")
+    stat_fields=${stat_line##*) }
+    set -- $stat_fields
+    shift 19
+    printf '%s\n' "$1"
+}
+
 printf '%s\n' '=== config check failure blocks startup ==='
 if MOCK_FAIL_CONFIG=1 run_atp start >"$root/config-fail.out" 2>"$root/config-fail.err"; then
     echo "start unexpectedly succeeded" >&2; exit 1
@@ -138,7 +150,8 @@ run_atp start >"$root/start.out" 2>"$root/start.err"
 grep -q "sing-box configuration check: PASS" "$root/start.out"
 ! grep -q '^tools ' "$root/commands"
 grep -Eq 'Daemon started successfully \(PID: [0-9]+\)' "$root/start.out"
-pid=$(cat "$root/run/atpd.pid")
+pid=$(read_atpd_pid "$root/run/atpd.pid")
+[ "$(sed -n '2p' "$root/run/atpd.pid")" = "$(proc_starttime "$pid")" ]
 grep -q "Daemon started successfully (PID: $pid)" "$root/start.out"
 grep -q "Runtime status:" "$root/start.out"
 grep -q "ATPD:      RUNNING (PID: $pid)" "$root/start.out"
@@ -191,9 +204,71 @@ status_line=$(grep -n -m1 "Runtime status:" "$root/restart.out" | cut -d: -f1 ||
 [ "$start_line" -lt "$success_line" ]
 [ "$success_line" -lt "$status_line" ]
 ! grep -q '^tools ' "$root/commands"
-pid=$(cat "$root/run/atpd.pid")
+pid=$(read_atpd_pid "$root/run/atpd.pid")
 grep -q "Daemon started successfully (PID: $pid)" "$root/restart.out"
 kill -0 "$pid"
 run_atp stop >/dev/null 2>&1 || true
+
+printf '%s\n' '=== main PID identity rejects stale and foreign processes ==='
+mkdir -p "$root/identity/run"
+cat > "$root/identity_helper.c" <<'EOF'
+#include <unistd.h>
+int main(void) {
+    for (;;) pause();
+}
+EOF
+cc -O2 -o "$root/identity/atpd" "$root/identity_helper.c"
+cp "$root/identity/atpd" "$root/identity/atpd-helper"
+cat > "$root/identity.conf" <<EOF
+DATA_DIR=$root/identity
+EOF
+
+start_identity_process() {
+    "$1" &
+    identity_pid=$!
+    identity_starttime=$(proc_starttime "$identity_pid")
+}
+
+write_identity() {
+    printf '%s\n%s\n' "$1" "$2" > "$root/identity/run/atpd.pid"
+}
+
+# A matching PID, starttime, and exact executable name is accepted.
+start_identity_process "$root/identity/atpd"
+write_identity "$identity_pid" "$identity_starttime"
+"$ATPD_BIN" -c "$root/identity.conf" stop >/dev/null
+wait "$identity_pid" 2>/dev/null || true
+[ ! -e "$root/identity/run/atpd.pid" ]
+
+# Prefix matches are not identities: atpd-helper must never receive SIGHUP.
+start_identity_process "$root/identity/atpd-helper"
+write_identity "$identity_pid" "$identity_starttime"
+if "$ATPD_BIN" -c "$root/identity.conf" reload >/dev/null 2>&1; then
+    echo "reload accepted atpd-helper" >&2; exit 1
+fi
+kill -0 "$identity_pid"
+kill "$identity_pid"
+wait "$identity_pid" 2>/dev/null || true
+
+# A reused PID is represented by a starttime mismatch and must not be signalled.
+start_identity_process "$root/identity/atpd"
+write_identity "$identity_pid" "$((identity_starttime + 1))"
+if "$ATPD_BIN" -c "$root/identity.conf" stop >/dev/null 2>&1; then
+    echo "stop accepted mismatched starttime" >&2; exit 1
+fi
+kill -0 "$identity_pid"
+kill "$identity_pid"
+wait "$identity_pid" 2>/dev/null || true
+
+# Legacy PID-only records are unverified and therefore fail safe.
+start_identity_process "$root/identity/atpd"
+printf '%s\n' "$identity_pid" > "$root/identity/run/atpd.pid"
+if "$ATPD_BIN" -c "$root/identity.conf" stop >/dev/null 2>&1; then
+    echo "stop accepted legacy PID-only record" >&2; exit 1
+fi
+kill -0 "$identity_pid"
+kill "$identity_pid"
+wait "$identity_pid" 2>/dev/null || true
+rm -f "$root/identity/run/atpd.pid"
 
 printf '%s\n' 'start/restart startup regression tests passed'

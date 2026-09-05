@@ -35,6 +35,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <libgen.h>
+#include <limits.h>
 #if defined(__GLIBC__) && !defined(__ANDROID__)
 #include <malloc.h>
 #endif
@@ -47,6 +48,11 @@ typedef struct {
     pid_t pid;
 } startup_notify_msg_t;
 
+typedef struct {
+    pid_t pid;
+    unsigned long long starttime;
+} pid_identity_t;
+
 static int preflight_startup(void);
 static int run_event_loop(void);
 static void on_signal(reactor_t *r, int sig, void *userdata);
@@ -55,6 +61,8 @@ static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static int daemonize(pid_t *out_pid);
 static int process_is_atpd(pid_t pid);
+static int read_pid_identity(const char *pid_file, pid_identity_t *identity);
+static int process_matches_identity(const pid_identity_t *identity);
 static int query_daemon(const char *command);
 
 static atp_config_t daemon_config;
@@ -150,13 +158,93 @@ static int process_is_atpd(pid_t pid) {
     char *base = basename(exe_copy);
     if (!base) return 0;
 
-    return strncmp(base, "atpd", 4) == 0;
+    return strcmp(base, "atpd") == 0;
+}
+
+static int read_pid_identity(const char *pid_file, pid_identity_t *identity) {
+    char buf[128];
+    size_t used = 0;
+    long parsed_pid;
+    unsigned long long parsed_starttime;
+    char trailing;
+
+    if (!pid_file || !identity) return -1;
+
+    int fd = open(pid_file, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return -1;
+
+    while (used < sizeof(buf) - 1) {
+        ssize_t len = read(fd, buf + used, sizeof(buf) - 1 - used);
+        if (len > 0) {
+            used += (size_t)len;
+            continue;
+        }
+        if (len == 0) break;
+        if (errno == EINTR) continue;
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        return -1;
+    }
+
+    if (used == sizeof(buf) - 1) {
+        char extra;
+        ssize_t len;
+        do {
+            len = read(fd, &extra, 1);
+        } while (len < 0 && errno == EINTR);
+        if (len != 0) {
+            close(fd);
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    close(fd);
+
+    if (used == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    buf[used] = '\0';
+
+    if (sscanf(buf, " %ld %llu %c", &parsed_pid, &parsed_starttime,
+               &trailing) != 2 ||
+        parsed_pid <= 0 || parsed_pid > INT_MAX || parsed_starttime == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    identity->pid = (pid_t)parsed_pid;
+    identity->starttime = parsed_starttime;
+    return 0;
+}
+
+static int process_matches_identity(const pid_identity_t *identity) {
+    unsigned long long starttime_before;
+    unsigned long long starttime_after;
+
+    if (!identity || identity->pid <= 0 || identity->starttime == 0) return 0;
+    if (get_process_starttime(identity->pid, &starttime_before) != 0 ||
+        starttime_before != identity->starttime) {
+        return 0;
+    }
+    if (!process_is_atpd(identity->pid)) return 0;
+    if (get_process_starttime(identity->pid, &starttime_after) != 0 ||
+        starttime_after != identity->starttime) {
+        return 0;
+    }
+    return 1;
 }
 
 static int write_pid_file(const char *pid_file) {
     char dir[SAFE_PATH_MAX];
+    unsigned long long starttime;
 
     if (!pid_file) return -1;
+    if (get_process_starttime(getpid(), &starttime) != 0 || starttime == 0) {
+        fprintf(stderr, "Error: Failed to read daemon process identity\n");
+        return -1;
+    }
 
     int len = snprintf(dir, sizeof(dir), "%s", pid_file);
     if (len < 0 || (size_t)len >= sizeof(dir)) {
@@ -197,23 +285,17 @@ static int write_pid_file(const char *pid_file) {
         return -1;
     }
 
-    if (ftruncate(g_pid_fd, 0) < 0) {
+    char buf[64];
+    int buf_len = snprintf(buf, sizeof(buf), "%d\n%llu\n", getpid(), starttime);
+    if (buf_len <= 0 || (size_t)buf_len >= sizeof(buf) ||
+        pwrite(g_pid_fd, buf, (size_t)buf_len, 0) != buf_len ||
+        ftruncate(g_pid_fd, buf_len) < 0 || fsync(g_pid_fd) < 0) {
+        fprintf(stderr, "Error: Failed to write process identity to PID file\n");
         close(g_pid_fd);
         g_pid_fd = -1;
+        unlink(pid_file);
         return -1;
     }
-
-    char buf[32];
-    int buf_len = snprintf(buf, sizeof(buf), "%d\n", getpid());
-
-    if (write(g_pid_fd, buf, buf_len) != buf_len) {
-        fprintf(stderr, "Error: Failed to write PID to file\n");
-        close(g_pid_fd);
-        g_pid_fd = -1;
-        return -1;
-    }
-
-    fsync(g_pid_fd);
     return 0;
 }
 
@@ -602,40 +684,27 @@ cleanup_return:
 
 static int do_stop(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
+    pid_identity_t identity;
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    FILE *fp = fopen(pp, "r");
-    if (!fp) {
-        fprintf(stderr, "Daemon is not running (no PID file)\n");
+    if (read_pid_identity(pp, &identity) != 0) {
+        if (errno == ENOENT) {
+            fprintf(stderr, "Daemon is not running (no PID file)\n");
+        } else {
+            fprintf(stderr, "Invalid or legacy PID file; refusing to signal\n");
+        }
         return 1;
     }
 
-    char buf[32] = {0};
-    if (!fgets(buf, sizeof(buf), fp)) {
-        fclose(fp);
-        fprintf(stderr, "Failed to read PID from file\n");
-        unlink(pp);
-        return 1;
-    }
-    fclose(fp);
-
-    pid_t pid = (pid_t)atoi(buf);
-    if (pid <= 0) {
-        fprintf(stderr, "Invalid PID: %d\n", pid);
-        unlink(pp);
-        return 1;
-    }
-
-    if (!process_is_atpd(pid)) {
-        fprintf(stderr, "Process %d is not atpd (stale PID file)\n", pid);
-        unlink(pp);
+    pid_t pid = identity.pid;
+    if (!process_matches_identity(&identity)) {
+        fprintf(stderr, "Process %d identity does not match PID file (stale PID file)\n", pid);
         return 1;
     }
 
     if (kill(pid, SIGTERM) < 0) {
         if (errno == ESRCH) {
             fprintf(stderr, "Process %d not found (stale PID file)\n", pid);
-            unlink(pp);
             return 1;
         } else {
             perror("kill");
@@ -646,18 +715,25 @@ static int do_stop(atp_options_t *opts) {
     int stopped = 0;
     for (int i = 0; i < 50; i++) {
         usleep(100000);
-        if (kill(pid, 0) != 0 && errno == ESRCH) {
+        if (!process_matches_identity(&identity)) {
             stopped = 1;
             break;
         }
     }
 
     if (!stopped) {
-        fprintf(stderr, "Process %d did not terminate gracefully, sending SIGKILL\n", pid);
-        kill(pid, SIGKILL);
-        for (int i = 0; i < 50; i++) {
+        if (!process_matches_identity(&identity)) {
+            stopped = 1;
+        } else {
+            fprintf(stderr, "Process %d did not terminate gracefully, sending SIGKILL\n", pid);
+            if (kill(pid, SIGKILL) < 0 && errno != ESRCH) {
+                perror("kill(SIGKILL)");
+                return 1;
+            }
+        }
+        for (int i = 0; !stopped && i < 50; i++) {
             usleep(100000);
-            if (kill(pid, 0) != 0 && errno == ESRCH) {
+            if (!process_matches_identity(&identity)) {
                 stopped = 1;
                 break;
             }
@@ -697,25 +773,21 @@ static int do_status(atp_options_t *opts) {
 
 static int do_reload(atp_options_t *opts) {
     char pp[SAFE_PATH_MAX];
+    pid_identity_t identity;
     resolve_pid_path(opts, pp, sizeof(pp));
 
-    FILE *fp = fopen(pp, "r");
-    if (!fp) {
-        fprintf(stderr, "Daemon is not running (no PID file)\n");
+    if (read_pid_identity(pp, &identity) != 0) {
+        if (errno == ENOENT) {
+            fprintf(stderr, "Daemon is not running (no PID file)\n");
+        } else {
+            fprintf(stderr, "Invalid or legacy PID file; refusing to signal\n");
+        }
         return 1;
     }
 
-    char buf[32] = {0};
-    if (!fgets(buf, sizeof(buf), fp)) {
-        fclose(fp);
-        fprintf(stderr, "Failed to read PID file\n");
-        return 1;
-    }
-    fclose(fp);
-
-    pid_t pid = (pid_t)atoi(buf);
-    if (pid <= 0 || !process_is_atpd(pid)) {
-        fprintf(stderr, "Invalid or stale PID: %d\n", pid);
+    pid_t pid = identity.pid;
+    if (!process_matches_identity(&identity)) {
+        fprintf(stderr, "Process %d identity does not match PID file (stale PID file)\n", pid);
         return 1;
     }
 
