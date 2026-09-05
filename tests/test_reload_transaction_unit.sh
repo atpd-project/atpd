@@ -16,10 +16,14 @@ for object in build/obj/src/*.o; do
 done
 
 mkdir -p build/tests
-zig cc -Wall -Wextra -std=c11 -D_GNU_SOURCE \
-    -Iinclude -Ibuild/generated -flto -ffunction-sections -fdata-sections \
-    '-Wl,--gc-sections' '-Wl,-wrap,reactor_add_timer' \
+compiler=${CC:-zig cc}
+compile_flags=${CFLAGS:--Wall -Wextra -std=c11 -D_GNU_SOURCE -Iinclude -Ibuild/generated}
+link_flags=${LDFLAGS:--flto}
+libraries=${LIBS:--lpthread}
+
+$compiler $compile_flags -ffunction-sections -fdata-sections \
+    '-Wl,--gc-sections' '-Wl,-wrap,reactor_add_timer' $link_flags \
     -o build/tests/test_reload_transaction \
-    tests/test_reload_transaction.c "$@" -lpthread
+    tests/test_reload_transaction.c "$@" $libraries
 
 build/tests/test_reload_transaction

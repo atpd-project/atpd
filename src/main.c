@@ -580,24 +580,24 @@ static int query_daemon(const char *command) {
 }
 
 static int preflight_startup(void) {
-    service_ctx_t service;
-    memset(&service, 0, sizeof(service));
-    if (service_init(&service, &daemon_config) != 0) {
+    service_ctx_t *service = calloc(1, sizeof(*service));
+    if (!service || service_init(service, &daemon_config) != 0) {
         fprintf(stderr, "Error: Failed to initialize service context\n");
+        free(service);
         return 1;
     }
 
     printf("Checking sing-box configuration (binary: %s, config: %s)...\n",
-           service.bin_path, service.conf_path);
-    if (service_validate_config(&service) != 0) {
+           service->bin_path, service->conf_path);
+    if (service_validate_config(service) != 0) {
         printf("sing-box configuration check: FAIL\n");
         fprintf(stderr, "Error: sing-box configuration validation failed\n");
-        service_stop_sync(&service);
+        service_destroy(service);
         return 1;
     }
     printf("sing-box configuration check: PASS\n");
 
-    service_stop_sync(&service);
+    service_destroy(service);
     return 0;
 }
 
