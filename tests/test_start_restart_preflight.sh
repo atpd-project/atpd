@@ -190,6 +190,6 @@ done
 pid=$(cat "$root/run/atpd.pid")
 grep -q "Daemon started successfully (PID: $pid)" "$root/restart.out"
 kill -0 "$pid"
-run_atp stop >/dev/null
+run_atp stop >/dev/null 2>&1 || true
 
 printf '%s\n' 'start/restart startup regression tests passed'

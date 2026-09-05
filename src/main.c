@@ -519,6 +519,7 @@ static int do_start(atp_options_t *opts) {
     resolve_pid_path(opts, pp, sizeof(pp));
 
     printf("Starting atpd...\n");
+    fflush(stdout);
 
     if (opts->run_mode != CLI_RUN_MODE_FOREGROUND) {
         pid_t daemon_pid = 0;
