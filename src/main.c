@@ -64,6 +64,7 @@ static int process_is_atpd(pid_t pid);
 static int read_pid_identity(const char *pid_file, pid_identity_t *identity);
 static int process_matches_identity(const pid_identity_t *identity);
 static int query_daemon(const char *command);
+static void reload_return_to_running_or_shutdown(void);
 
 static atp_config_t daemon_config;
 static api_ctx_t daemon_api;
@@ -372,6 +373,14 @@ static void on_signal(reactor_t *r, int sig, void *userdata) {
     }
 }
 
+static void reload_return_to_running_or_shutdown(void) {
+    if (atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING) == 0) return;
+
+    LOG_ERROR("Config reload could not restore RUNNING state; shutting down");
+    shutdown_requested = 1;
+    if (daemon_reactor) reactor_stop(daemon_reactor);
+}
+
 static void on_idle(reactor_t *r, void *userdata) {
     (void)r;
     (void)userdata;
@@ -383,32 +392,31 @@ static void on_idle(reactor_t *r, void *userdata) {
         if (!shutdown_requested && atpd_runtime_can_reload() &&
             atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RELOADING) == 0) {
             LOG_INFO("Processing config reload...");
-            atp_config_t previous_config = daemon_config;
-            if (config_reload(daemon_config_path, &daemon_config) != ATP_OK) {
-                LOG_ERROR("Config reload failed");
-                atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+            atp_config_t candidate;
+            if (config_prepare_reload(daemon_config_path, &candidate) != ATP_OK) {
+                LOG_ERROR("Config reload result: INVALID_CANDIDATE; previous configuration retained");
+                reload_return_to_running_or_shutdown();
             } else {
-                int apply_failed = daemon_service && service_apply_config(daemon_service, &daemon_config) < 0;
-                if (!apply_failed) {
-                    api_cleanup(&daemon_api);
-                    if (api_init(&daemon_api, &daemon_config) < 0 ||
-                        api_start_with_reactor(&daemon_api, daemon_reactor) < 0) {
-                        apply_failed = 1;
-                    }
-                }
-                if (apply_failed) {
-                    daemon_config = previous_config;
-                    if (daemon_service) service_apply_config(daemon_service, &previous_config);
-                    api_cleanup(&daemon_api);
-                    if (api_init(&daemon_api, &daemon_config) == 0) {
-                        api_start_with_reactor(&daemon_api, daemon_reactor);
-                    }
-                    LOG_ERROR("Config reload apply failed; previous configuration restored");
-                    atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+                char restart_fields[512];
+                config_reload_changes_t changes =
+                    config_classify_reload(&daemon_config, &candidate,
+                                           restart_fields, sizeof(restart_fields));
+                if (changes & CONFIG_RELOAD_CHANGE_REQUIRES_RESTART) {
+                    LOG_WARN("Config reload result: REQUIRES_RESTART (%s); previous configuration retained",
+                             restart_fields[0] ? restart_fields : "unclassified field");
+                    reload_return_to_running_or_shutdown();
+                } else if (daemon_service &&
+                           service_apply_config(daemon_service, &candidate) < 0) {
+                    /* service_apply_config() is prepare-before-swap and leaves the
+                     * owner unchanged on failure, so no compensating rollback is
+                     * necessary or permitted here. */
+                    LOG_ERROR("Config reload result: APPLY_FAILED; previous configuration retained");
+                    reload_return_to_running_or_shutdown();
                 } else {
+                    daemon_config = candidate;
                     atp_timezone_init();
                     LOG_INFO("Config reload completed successfully");
-                    atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING);
+                    reload_return_to_running_or_shutdown();
                 }
             }
         }

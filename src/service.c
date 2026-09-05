@@ -1064,28 +1064,39 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
 
 int service_apply_config(service_ctx_t *ctx, const atp_config_t *cfg) {
     if (!ctx || !cfg) return -1;
-    if (service_set_native_probe_config(ctx, cfg) != 0) return -1;
-    ctx->api_port = cfg->api.port;
-    ctx->max_failures = cfg->service.max_failures > 0 ? cfg->service.max_failures : 5;
-    ctx->start_timeout_sec = cfg->service.start_timeout_sec > 0 ? cfg->service.start_timeout_sec : 30;
-    ctx->stop_timeout_sec = cfg->service.stop_timeout_sec > 0 ? cfg->service.stop_timeout_sec : 10;
-    ctx->grace_period_sec = cfg->service.grace_period_sec > 0 ? cfg->service.grace_period_sec : 3;
-    ctx->health_check_interval_ms = cfg->service.health_check_interval_ms > 0 ? cfg->service.health_check_interval_ms : 5000;
-    snprintf(ctx->user, sizeof(ctx->user), "%.63s", cfg->core.core_user);
-    snprintf(ctx->group, sizeof(ctx->group), "%.63s", cfg->core.core_group);
-    snprintf(ctx->service_args, sizeof(ctx->service_args), "%.511s", cfg->service.args);
-    snprintf(ctx->service_env, sizeof(ctx->service_env), "%.511s", cfg->service.env);
-    if (ctx->reactor && ctx->state == SERVICE_RUNNING && ctx->health_timer) {
-        reactor_cancel_timer(ctx->reactor, ctx->health_timer);
-        ctx->health_timer = reactor_add_timer(ctx->reactor, ctx->health_check_interval_ms,
-                                               ctx->health_check_interval_ms,
-                                               service_health_check_cb, ctx);
-        if (!ctx->health_timer) {
-            LOG_ERROR("Service: failed to recreate health timer");
-            ctx->state = SERVICE_FAILED;
+    const int max_failures = cfg->service.max_failures > 0 ?
+                             cfg->service.max_failures : 5;
+    const int start_timeout_sec = cfg->service.start_timeout_sec > 0 ?
+                                  cfg->service.start_timeout_sec : 30;
+    const int stop_timeout_sec = cfg->service.stop_timeout_sec > 0 ?
+                                 cfg->service.stop_timeout_sec : 10;
+    const int health_interval_ms = cfg->service.health_check_interval_ms > 0 ?
+                                   cfg->service.health_check_interval_ms : 5000;
+
+    reactor_timer_t *replacement = NULL;
+    if (health_interval_ms != ctx->health_check_interval_ms &&
+        ctx->reactor && ctx->state == SERVICE_RUNNING) {
+        replacement = reactor_add_timer(ctx->reactor, health_interval_ms,
+                                        health_interval_ms,
+                                        service_health_check_cb, ctx);
+        if (!replacement) {
+            LOG_ERROR("Service: failed to prepare replacement health timer");
+            return -1;
+        }
+
+        if (ctx->health_timer &&
+            reactor_cancel_timer(ctx->reactor, ctx->health_timer) != 0) {
+            reactor_cancel_timer(ctx->reactor, replacement);
+            LOG_ERROR("Service: failed to replace health timer");
             return -1;
         }
     }
+
+    ctx->max_failures = max_failures;
+    ctx->start_timeout_sec = start_timeout_sec;
+    ctx->stop_timeout_sec = stop_timeout_sec;
+    ctx->health_check_interval_ms = health_interval_ms;
+    if (replacement) ctx->health_timer = replacement;
     return 0;
 }
 

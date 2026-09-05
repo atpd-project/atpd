@@ -461,8 +461,8 @@ atp_result_t config_load(const char *path, atp_config_t *cfg) {
     return ATP_OK;
 }
 
-atp_result_t config_reload(const char *source_path, atp_config_t *cfg) {
-    if (!source_path || !source_path[0] || !cfg) return ATP_ERR_INVAL;
+atp_result_t config_prepare_reload(const char *source_path, atp_config_t *candidate) {
+    if (!source_path || !source_path[0] || !candidate) return ATP_ERR_INVAL;
     if (!file_exists(source_path)) {
         return ATP_ERR_NOENT;
     }
@@ -480,10 +480,94 @@ atp_result_t config_reload(const char *source_path, atp_config_t *cfg) {
         return ATP_ERR_CONFIG;
     }
 
-    *cfg = new_config;
-
-    LOG_INFO("Configuration reloaded successfully: %s", source_path);
+    *candidate = new_config;
     return ATP_OK;
+}
+
+static void config_record_changed_field(char *fields, size_t fields_size,
+                                        const char *name) {
+    if (!fields || fields_size == 0 || !name) return;
+
+    size_t used = strlen(fields);
+    if (used >= fields_size - 1) return;
+    snprintf(fields + used, fields_size - used, "%s%s", used ? ", " : "", name);
+}
+
+config_reload_changes_t config_classify_reload(const atp_config_t *current,
+                                               const atp_config_t *candidate,
+                                               char *changed_fields,
+                                               size_t changed_fields_size) {
+    if (changed_fields && changed_fields_size > 0) changed_fields[0] = '\0';
+    if (!current || !candidate) return CONFIG_RELOAD_CHANGE_REQUIRES_RESTART;
+
+    config_reload_changes_t changes = CONFIG_RELOAD_CHANGE_NONE;
+#define RESTART_IF_CHANGED(condition, name) do { \
+        if (condition) { \
+            changes |= CONFIG_RELOAD_CHANGE_REQUIRES_RESTART; \
+            config_record_changed_field(changed_fields, changed_fields_size, name); \
+        } \
+    } while (0)
+#define HOT_IF_CHANGED(condition) do { \
+        if (condition) changes |= CONFIG_RELOAD_CHANGE_HOT; \
+    } while (0)
+#define STATIC_IF_CHANGED(condition) do { \
+        if (condition) changes |= CONFIG_RELOAD_CHANGE_STATIC; \
+    } while (0)
+
+    HOT_IF_CHANGED(current->core.ui_emoji_enabled != candidate->core.ui_emoji_enabled);
+    HOT_IF_CHANGED(current->service.start_timeout_sec !=
+                   candidate->service.start_timeout_sec);
+    HOT_IF_CHANGED(current->service.stop_timeout_sec !=
+                   candidate->service.stop_timeout_sec);
+    HOT_IF_CHANGED(current->service.max_failures != candidate->service.max_failures);
+    HOT_IF_CHANGED(current->service.health_check_interval_ms !=
+                   candidate->service.health_check_interval_ms);
+
+    STATIC_IF_CHANGED(current->core.log_timestamp != candidate->core.log_timestamp);
+    STATIC_IF_CHANGED(current->service.restart_delay_sec !=
+                      candidate->service.restart_delay_sec);
+    STATIC_IF_CHANGED(current->service.grace_period_sec !=
+                      candidate->service.grace_period_sec);
+
+    RESTART_IF_CHANGED(strcmp(current->core.data_dir, candidate->core.data_dir) != 0,
+                       "DATA_DIR");
+    RESTART_IF_CHANGED(strcmp(current->core.run_dir, candidate->core.run_dir) != 0,
+                       "RUN_DIR");
+    RESTART_IF_CHANGED(strcmp(current->core.pid_file, candidate->core.pid_file) != 0,
+                       "PID_FILE");
+    RESTART_IF_CHANGED(strcmp(current->core.log_file, candidate->core.log_file) != 0,
+                       "LOG_FILE");
+    RESTART_IF_CHANGED(strcmp(current->core.core_user, candidate->core.core_user) != 0 ||
+                       strcmp(current->core.core_group, candidate->core.core_group) != 0,
+                       "CORE_USER_GROUP");
+    RESTART_IF_CHANGED(strcmp(current->service.args, candidate->service.args) != 0,
+                       "SERVICE_ARGS");
+    RESTART_IF_CHANGED(strcmp(current->service.env, candidate->service.env) != 0,
+                       "SERVICE_ENV");
+    RESTART_IF_CHANGED(strcmp(current->api.host, candidate->api.host) != 0,
+                       "API_HOST");
+    RESTART_IF_CHANGED(current->api.port != candidate->api.port, "API_PORT");
+    RESTART_IF_CHANGED(strcmp(current->api.secret, candidate->api.secret) != 0,
+                       "API_SECRET");
+    RESTART_IF_CHANGED(current->interface.vpn_auto_mode != candidate->interface.vpn_auto_mode,
+                       "VPN_AUTO_MODE");
+    RESTART_IF_CHANGED(strcmp(current->interface.vpn_target_mode,
+                              candidate->interface.vpn_target_mode) != 0,
+                       "VPN_TARGET_MODE");
+    RESTART_IF_CHANGED(strcmp(current->interface.vpn_fallback_mode,
+                              candidate->interface.vpn_fallback_mode) != 0,
+                       "VPN_FALLBACK_MODE");
+    RESTART_IF_CHANGED(current->service.circuit_threshold !=
+                       candidate->service.circuit_threshold,
+                       "SERVICE_CIRCUIT_THRESHOLD");
+    RESTART_IF_CHANGED(current->service.circuit_cooldown_sec !=
+                       candidate->service.circuit_cooldown_sec,
+                       "SERVICE_CIRCUIT_COOLDOWN");
+
+#undef RESTART_IF_CHANGED
+#undef HOT_IF_CHANGED
+#undef STATIC_IF_CHANGED
+    return changes;
 }
 
 atp_result_t validate_interface_name(const char *n) {

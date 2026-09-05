@@ -327,6 +327,96 @@ grep -q "Daemon started successfully (PID: $pid)" "$root/restart.out"
 kill -0 "$pid"
 run_atp stop >/dev/null 2>&1 || true
 
+printf '%s\n' '=== SIGHUP reload is transactional ==='
+cat > "$root/atp.conf" <<EOF
+DATA_DIR=$root
+API_PORT=19080
+UI_EMOJI_ENABLED=1
+SERVICE_START_TIMEOUT=2
+SERVICE_STOP_TIMEOUT=10
+SERVICE_MAX_FAILURES=5
+SERVICE_HEALTH_CHECK_INTERVAL=5000
+EOF
+run_atp start >"$root/reload-start.out" 2>"$root/reload-start.err"
+reload_pid=$(read_atpd_pid "$root/run/atpd.pid")
+reload_child_pid=$(sed -n '1p' "$root/run/sing-box.pid")
+
+wait_for_log() {
+    pattern=$1
+    previous=$2
+    attempts=0
+    while [ "$(grep -c "$pattern" "$root/run/atp.log" 2>/dev/null || true)" -le "$previous" ]; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -lt 100 ] || {
+            echo "timed out waiting for reload log: $pattern" >&2
+            return 1
+        }
+        sleep 0.05
+    done
+}
+
+# An invalid candidate is never published and does not disturb either process.
+invalid_before=$(grep -c 'INVALID_CANDIDATE' "$root/run/atp.log" 2>/dev/null || true)
+printf '%s\n' "DATA_DIR=$root" 'API_PORT=0' > "$root/atp.conf"
+kill -HUP "$reload_pid"
+wait_for_log 'INVALID_CANDIDATE' "$invalid_before"
+kill -0 "$reload_pid"
+kill -0 "$reload_child_pid"
+[ "$(read_atpd_pid "$root/run/atpd.pid")" = "$reload_pid" ]
+[ "$(sed -n '1p' "$root/run/sing-box.pid")" = "$reload_child_pid" ]
+cat > "$root/atp.conf" <<EOF
+DATA_DIR=$root
+API_PORT=19080
+UI_EMOJI_ENABLED=1
+SERVICE_START_TIMEOUT=2
+SERVICE_STOP_TIMEOUT=10
+SERVICE_MAX_FAILURES=5
+SERVICE_HEALTH_CHECK_INTERVAL=5000
+EOF
+run_atp status > "$root/invalid-candidate-status.out"
+grep -q 'Native API (Port 19080)' "$root/invalid-candidate-status.out"
+grep -q '🚀.*sing-box' "$root/invalid-candidate-status.out"
+
+# A resolved restart-required change is rejected before any owner is applied.
+restart_before=$(grep -c 'REQUIRES_RESTART' "$root/run/atp.log" 2>/dev/null || true)
+cat > "$root/atp.conf" <<EOF
+DATA_DIR=$root
+API_PORT=19081
+UI_EMOJI_ENABLED=0
+SERVICE_START_TIMEOUT=3
+SERVICE_STOP_TIMEOUT=11
+SERVICE_MAX_FAILURES=6
+SERVICE_HEALTH_CHECK_INTERVAL=250
+EOF
+kill -HUP "$reload_pid"
+wait_for_log 'REQUIRES_RESTART' "$restart_before"
+grep -q 'REQUIRES_RESTART (API_PORT)' "$root/run/atp.log"
+kill -0 "$reload_pid"
+kill -0 "$reload_child_pid"
+run_atp status > "$root/restart-required-status.out"
+grep -q 'Native API (Port 19080)' "$root/restart-required-status.out"
+grep -q '🚀.*sing-box' "$root/restart-required-status.out"
+
+# A hot-only candidate is applied without restarting ATPD or sing-box.
+success_before=$(grep -c 'Config reload completed successfully' "$root/run/atp.log" 2>/dev/null || true)
+cat > "$root/atp.conf" <<EOF
+DATA_DIR=$root
+API_PORT=19080
+UI_EMOJI_ENABLED=0
+SERVICE_START_TIMEOUT=3
+SERVICE_STOP_TIMEOUT=11
+SERVICE_MAX_FAILURES=6
+SERVICE_HEALTH_CHECK_INTERVAL=250
+EOF
+kill -HUP "$reload_pid"
+wait_for_log 'Config reload completed successfully' "$success_before"
+[ "$(read_atpd_pid "$root/run/atpd.pid")" = "$reload_pid" ]
+[ "$(sed -n '1p' "$root/run/sing-box.pid")" = "$reload_child_pid" ]
+run_atp status > "$root/hot-reload-status.out"
+grep -q '\[RUNNING\].*sing-box' "$root/hot-reload-status.out"
+! grep -q '🚀.*sing-box' "$root/hot-reload-status.out"
+run_atp stop >/dev/null
+
 printf '%s\n' '=== main PID identity rejects stale and foreign processes ==='
 mkdir -p "$root/identity/run"
 cat > "$root/identity_helper.c" <<'EOF'
@@ -388,5 +478,7 @@ kill -0 "$identity_pid"
 kill "$identity_pid"
 wait "$identity_pid" 2>/dev/null || true
 rm -f "$root/identity/run/atpd.pid"
+
+sh tests/test_reload_transaction_unit.sh
 
 printf '%s\n' 'start/restart startup regression tests passed'
