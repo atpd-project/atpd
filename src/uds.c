@@ -132,13 +132,18 @@ static int check_client_uid(int fd) {
     return 1;
 }
 
-static void handle_status(uds_client_t *client) {
+static void handle_status(uds_client_t *client, bool summary) {
     char *buf = NULL;
     size_t size = 0;
     FILE *mem = open_memstream(&buf, &size);
     if (mem) {
-        status_show_to(mem, true, g_uds_dependencies.config,
-                       g_uds_dependencies.service, g_uds_dependencies.api);
+        if (summary) {
+            status_show_summary_to(mem, g_uds_dependencies.config,
+                                   g_uds_dependencies.service, g_uds_dependencies.api);
+        } else {
+            status_show_to(mem, true, g_uds_dependencies.config,
+                           g_uds_dependencies.service, g_uds_dependencies.api);
+        }
         fclose(mem);
 
         if (buf && size > 0) {
@@ -227,8 +232,9 @@ static void handle_stats(uds_client_t *client) {
 static void handle_help(uds_client_t *client) {
     const char *help =
         "Available commands:\n"
-        "  status    - Show runtime status\n"
-        "  stop      - Shutdown ATPd\n"
+        "  status          - Show runtime status\n"
+        "  status-summary  - Show concise runtime status\n"
+        "  stop            - Shutdown ATPd\n"
         "  ping      - Check if ATPd is alive\n"
         "  sessions  - Show active sessions\n"
         "  version   - Show version information\n"
@@ -271,7 +277,9 @@ static void process_command(uds_client_t *client, const char *cmd, size_t cmd_le
     }
 
     if (strcmp(buf, "status") == 0) {
-        handle_status(client);
+        handle_status(client, false);
+    } else if (strcmp(buf, "status-summary") == 0) {
+        handle_status(client, true);
     } else if (strcmp(buf, "stop") == 0) {
         handle_stop(client);
     } else if (strcmp(buf, "ping") == 0) {

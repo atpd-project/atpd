@@ -9,6 +9,7 @@ static char *render_with_pid(pid_t pid) {
     snapshot.emoji_enabled = true;
     snapshot.daemon_running = true;
     snapshot.api_port = 9080;
+    snprintf(snapshot.kernel_release, sizeof(snapshot.kernel_release), "6.1.0-test");
     snapshot.atpd_pid = pid;
     snapshot.atpd_uptime_sec = 5;
     snapshot.atpd_fd_count = 7;
@@ -66,6 +67,28 @@ int main(void) {
     assert(strstr(second, "20202") != NULL);
     assert(strstr(second, "10101") == NULL);
     assert(strstr(first, "Peak RSS") != NULL);
+    assert(strstr(first, "6.1.0-test") != NULL);
+
+    status_snapshot_t summary_snapshot = {0};
+    summary_snapshot.daemon_running = true;
+    summary_snapshot.atpd_pid = 10101;
+    summary_snapshot.atpd_uptime_sec = 2;
+    summary_snapshot.atpd_rss_kb = 1024;
+    summary_snapshot.singbox_pid = 30303;
+    summary_snapshot.singbox_state = SERVICE_RUNNING;
+    summary_snapshot.singbox_uptime_sec = 1;
+    summary_snapshot.singbox_rss_kb = 2048;
+    snprintf(summary_snapshot.kernel_release, sizeof(summary_snapshot.kernel_release), "6.1.0-test");
+    char *summary = NULL;
+    size_t summary_size = 0;
+    FILE *summary_stream = open_memstream(&summary, &summary_size);
+    assert(summary_stream != NULL);
+    status_render_summary(summary_stream, &summary_snapshot);
+    assert(fclose(summary_stream) == 0);
+    assert(strstr(summary, "ATPD:      RUNNING (PID: 10101)") != NULL);
+    assert(strstr(summary, "sing-box:  RUNNING (PID: 30303)") != NULL);
+    assert(strstr(summary, "Kernel:    6.1.0-test") != NULL);
+    assert(strstr(summary, "Data path: sing-box ebpf inbound") != NULL);
 
     char *active = render_with_native_api(true);
     char *standby = render_with_native_api(false);
@@ -79,6 +102,7 @@ int main(void) {
 
     free(first);
     free(second);
+    free(summary);
     free(active);
     free(standby);
     return 0;

@@ -177,6 +177,8 @@ static void render_system(ui_render_ctx_t *ui, const status_snapshot_t *snapshot
     ui_table_begin(ui);
     ui_table_header(ui, "SYSTEM");
     ui_table_subrow(ui, "├─", "ATPD Version", atp_get_full_version());
+    ui_table_subrow(ui, "├─", "Kernel",
+                    snapshot->kernel_release[0] ? snapshot->kernel_release : "N/A");
     ui_table_subrow(ui, "└─", "CPU Temp", temperature);
     ui_table_end(ui);
 }
@@ -201,4 +203,27 @@ void status_render_snapshot(FILE *out, bool no_color,
     render_vpn(&ui, snapshot);
     ui_blank(&ui);
     render_system(&ui, snapshot);
+}
+
+void status_render_summary(FILE *out, const status_snapshot_t *snapshot) {
+    if (!snapshot) return;
+    FILE *target = out ? out : stdout;
+    char atpd_uptime[64], atpd_rss[32], singbox_uptime[64], singbox_rss[32];
+    format_uptime(snapshot->atpd_uptime_sec, atpd_uptime, sizeof(atpd_uptime));
+    format_kb(snapshot->atpd_rss_kb, atpd_rss, sizeof(atpd_rss));
+    format_uptime(snapshot->singbox_uptime_sec, singbox_uptime, sizeof(singbox_uptime));
+    format_kb(snapshot->singbox_rss_kb, singbox_rss, sizeof(singbox_rss));
+
+    fprintf(target, "Runtime status:\n");
+    fprintf(target, "  ATPD:      %s", snapshot->daemon_running ? "RUNNING" : "STOPPED");
+    if (snapshot->atpd_pid > 0) fprintf(target, " (PID: %d)", snapshot->atpd_pid);
+    fprintf(target, ", uptime %s, RSS %s\n", atpd_uptime, atpd_rss);
+    bool singbox_running = snapshot->singbox_pid > 0 &&
+                           snapshot->singbox_state == SERVICE_RUNNING;
+    fprintf(target, "  sing-box:  %s", singbox_running ? "RUNNING" : "STOPPED");
+    if (snapshot->singbox_pid > 0) fprintf(target, " (PID: %d)", snapshot->singbox_pid);
+    fprintf(target, ", uptime %s, memory %s\n", singbox_uptime, singbox_rss);
+    fprintf(target, "  Kernel:    %s\n",
+            snapshot->kernel_release[0] ? snapshot->kernel_release : "N/A");
+    fprintf(target, "  Data path: sing-box ebpf inbound\n");
 }

@@ -1,190 +1,193 @@
 #!/bin/sh
 set -eu
 
-# Start and restart preflight regression test suite.
 ATPD_BIN=${ATPD_BIN:-build/bin/atpd}
-if [ ! -x "$ATPD_BIN" ]; then
-    echo "ATPD binary not found at $ATPD_BIN" >&2
-    exit 1
-fi
+[ -x "$ATPD_BIN" ] || { echo "ATPD binary not found at $ATPD_BIN" >&2; exit 1; }
+command -v cc >/dev/null 2>&1 || { echo "C compiler required" >&2; exit 1; }
 
 root=$(mktemp -d)
-trap 'rm -rf "$root"' EXIT
-
+cleanup() {
+    "$ATPD_BIN" -c "$root/atp.conf" stop >/dev/null 2>&1 || true
+    rm -rf "$root"
+}
+trap cleanup EXIT INT TERM
 mkdir -p "$root/bin" "$root/run"
 
-SINGBOX_BIN=${SINGBOX_BIN:-}
-if [ -z "$SINGBOX_BIN" ] || [ ! -x "$SINGBOX_BIN" ]; then
-    cat << 'EOF' > "$root/mock_singbox.c"
+cat > "$root/mock_singbox.c" <<'EOF'
+#include <arpa/inet.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
-int main(int argc, char *argv[]) {
+static void log_command(int argc, char **argv) {
+    const char *path = getenv("MOCK_LOG");
+    if (!path) return;
+    FILE *file = fopen(path, "a");
+    if (!file) return;
+    for (int i = 1; i < argc; i++) fprintf(file, "%s%s", i == 1 ? "" : " ", argv[i]);
+    fputc('\n', file);
+    fclose(file);
+}
+
+int main(int argc, char **argv) {
+    sigset_t signals;
+    sigemptyset(&signals);
+    sigprocmask(SIG_SETMASK, &signals, NULL);
+    log_command(argc, argv);
     if (argc < 2) return 1;
-    if (strcmp(argv[1], "version") == 0) {
-        printf("sing-box version 1.14.0 with_ebpf\n");
+    if (!strcmp(argv[1], "version")) {
+        puts("sing-box version test with_ebpf");
         return 0;
     }
-    if (strcmp(argv[1], "check") == 0) {
-        for (int i = 2; i < argc; i++) {
-            if (strcmp(argv[i], "-D") == 0 && i + 1 < argc) {
-                char fail_file[512];
-                snprintf(fail_file, sizeof(fail_file), "%s/mock_fail_config", argv[i + 1]);
-                if (access(fail_file, F_OK) == 0) {
-                    fprintf(stderr, "sing-box error: invalid configuration detected\n");
-                    return 1;
-                }
-            }
-        }
-        return 0;
-    }
-    if (strcmp(argv[1], "tools") == 0) {
-        if (argc >= 4 && strcmp(argv[2], "ebpf") == 0 && strcmp(argv[3], "status") == 0) {
-            for (int i = 4; i < argc; i++) {
-                if (strcmp(argv[i], "--cgroup") == 0 && i + 1 < argc) {
-                    char fail_file[512];
-                    snprintf(fail_file, sizeof(fail_file), "%s/mock_fail_probe", argv[i + 1]);
-                    if (access(fail_file, F_OK) == 0) {
-                        fprintf(stderr, "sing-box eBPF probe: required cgroup failed\n");
-                        return 1;
-                    }
-                }
-            }
-            if (getenv("MOCK_FAIL_PROBE")) {
-                fprintf(stderr, "sing-box eBPF probe: missing required kernel capability\n");
-                return 1;
-            }
-            printf("sing-box eBPF inbound kernel capability probe\n");
-            printf("Platform: linux; mode: local\n");
-            printf("Summary: PASS=4 WARN=0 FAIL=0 UNKNOWN=0\n");
+    const char *fail_config = getenv("MOCK_FAIL_CONFIG");
+    if (!strcmp(argv[1], "check")) return fail_config && *fail_config ? 1 : 0;
+    if (!strcmp(argv[1], "tools")) return 64;
+    if (!strcmp(argv[1], "run")) {
+        const char *fail_ready = getenv("MOCK_FAIL_READY");
+        if (fail_ready && *fail_ready) {
+            pause();
             return 0;
         }
-    }
-    if (strcmp(argv[1], "run") == 0) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        struct sockaddr_in addr = {
+            .sin_family = AF_INET,
+            .sin_port = htons((unsigned short)atoi(getenv("MOCK_API_PORT"))),
+            .sin_addr.s_addr = htonl(INADDR_LOOPBACK)
+        };
+        if (fd < 0 || bind(fd, (struct sockaddr *)&addr, sizeof(addr)) || listen(fd, 8)) return 1;
         pause();
         return 0;
     }
     return 0;
 }
 EOF
-    if command -v zig >/dev/null 2>&1; then
-        zig cc -target aarch64-linux -o "$root/bin/sing-box" "$root/mock_singbox.c" 2>/dev/null || \
-        zig cc -o "$root/bin/sing-box" "$root/mock_singbox.c"
-    elif command -v cc >/dev/null 2>&1; then
-        cc -o "$root/bin/sing-box" "$root/mock_singbox.c"
-    else
-        echo "No compiler found to build mock sing-box" >&2
-        exit 1
-    fi
-else
-    cp "$SINGBOX_BIN" "$root/bin/sing-box"
-fi
+cc -O2 -o "$root/bin/sing-box" "$root/mock_singbox.c"
+
+# Let lifecycle checks run in unprivileged CI containers that cannot subscribe
+# to XFRM multicast groups; production behavior is unchanged.
+cat > "$root/netlink_shim.c" <<'EOF'
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <linux/netlink.h>
+#include <signal.h>
+#include <stdio.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+int bind(int fd, const struct sockaddr *addr, socklen_t len) {
+    static int (*real_bind)(int, const struct sockaddr *, socklen_t);
+    if (!real_bind) real_bind = dlsym(RTLD_NEXT, "bind");
+    int result = real_bind(fd, addr, len);
+    if (result < 0 && errno == EPERM && addr && addr->sa_family == AF_NETLINK) return 0;
+    return result;
+}
+
+int kill(pid_t pid, int sig) {
+    static int (*real_kill)(pid_t, int);
+    static pid_t terminating;
+    if (!real_kill) real_kill = dlsym(RTLD_NEXT, "kill");
+    if (sig == SIGTERM) terminating = pid;
+    int result = real_kill(pid, sig);
+    if (result == 0 && sig == 0 && pid == terminating) {
+        char path[64], state = 0;
+        snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+        FILE *file = fopen(path, "r");
+        if (file) {
+            fscanf(file, "%*d %*s %c", &state);
+            fclose(file);
+        }
+        if (state == 'Z') { errno = ESRCH; return -1; }
+    }
+    return result;
+}
+EOF
+cc -shared -fPIC -o "$root/netlink_shim.so" "$root/netlink_shim.c" -ldl
 
 cat > "$root/atp.conf" <<EOF
 DATA_DIR=$root
 API_PORT=19080
+SERVICE_START_TIMEOUT=1
 EOF
 printf '%s\n' '{"inbounds":[]}' > "$root/config.json"
-
-# Build helper to simulate existing atpd process for restart tests
-echo "#include <unistd.h>
-int main(){pause();return 0;}" | {
-    if command -v zig >/dev/null 2>&1; then
-        zig cc -target aarch64-linux -x c - -o "$root/atpd" 2>/dev/null || zig cc -x c - -o "$root/atpd"
-    elif command -v cc >/dev/null 2>&1; then
-        cc -x c - -o "$root/atpd"
-    fi
+run_atp() {
+    env LD_PRELOAD="$root/netlink_shim.so" MOCK_LOG="$root/commands" MOCK_API_PORT=19080 \
+        MOCK_FAIL_CONFIG="${MOCK_FAIL_CONFIG:-}" MOCK_FAIL_READY="${MOCK_FAIL_READY:-}" \
+        "$ATPD_BIN" -c "$root/atp.conf" "$@"
 }
 
-echo "=== Scenario 1: Start with config check failure (Check A) ==="
-touch "$root/mock_fail_config"
-set +e
-"$ATPD_BIN" -c "$root/atp.conf" start >"$root/out.1" 2>"$root/err.1"
-rc=$?
-set -e
-[ "$rc" -ne 0 ] || { echo "Scenario 1 failed: start unexpectedly succeeded on invalid config" >&2; exit 1; }
-grep -q "sing-box configuration check: FAIL" "$root/out.1" || { echo "Scenario 1 failed: missing check FAIL in output" >&2; cat "$root/out.1"; exit 1; }
-[ ! -e "$root/run/atpd.pid" ] || { echo "Scenario 1 failed: daemon PID file exists after config check failure" >&2; exit 1; }
-echo "PASS: Scenario 1"
+printf '%s\n' '=== config check failure blocks startup ==='
+if MOCK_FAIL_CONFIG=1 run_atp start >"$root/config-fail.out" 2>"$root/config-fail.err"; then
+    echo "start unexpectedly succeeded" >&2; exit 1
+fi
+grep -q "sing-box configuration check: FAIL" "$root/config-fail.out"
+! grep -q '^run ' "$root/commands"
+[ ! -e "$root/run/atpd.pid" ]
 
-echo "=== Scenario 2: Start with kernel runtime probe failure (Check B) ==="
-rm -f "$root/mock_fail_config"
-set +e
-MOCK_FAIL_PROBE=1 "$ATPD_BIN" -c "$root/atp.conf" start >"$root/out.2" 2>"$root/err.2"
-rc=$?
-set -e
-[ "$rc" -ne 0 ] || { echo "Scenario 2 failed: start unexpectedly succeeded on failed kernel probe" >&2; exit 1; }
-grep -q "sing-box configuration check: PASS" "$root/out.2" || { echo "Scenario 2 failed: missing config PASS in output" >&2; cat "$root/out.2"; exit 1; }
-grep -q "Kernel and runtime capability probe: FAIL" "$root/out.2" || { echo "Scenario 2 failed: missing probe FAIL in output" >&2; cat "$root/out.2"; exit 1; }
-[ ! -e "$root/run/atpd.pid" ] || { echo "Scenario 2 failed: daemon PID file exists after probe failure" >&2; exit 1; }
-echo "PASS: Scenario 2"
+printf '%s\n' '=== config pass starts without eBPF capability probe ==='
+: > "$root/commands"
+run_atp start >"$root/start.out" 2>"$root/start.err"
+grep -q "sing-box configuration check: PASS" "$root/start.out"
+! grep -q '^tools ' "$root/commands"
+grep -Eq 'Daemon started successfully \(PID: [0-9]+\)' "$root/start.out"
+pid=$(cat "$root/run/atpd.pid")
+grep -q "Daemon started successfully (PID: $pid)" "$root/start.out"
+grep -q "Runtime status:" "$root/start.out"
+grep -q "ATPD:      RUNNING (PID: $pid)" "$root/start.out"
+grep -q "sing-box:  RUNNING (PID:" "$root/start.out"
+grep -q "Kernel:" "$root/start.out"
+grep -q "Data path: sing-box ebpf inbound" "$root/start.out"
+grep -q "uptime" "$root/start.out"
+grep -q "RSS" "$root/start.out"
+kill -0 "$pid"
+run_atp stop >/dev/null
 
-echo "=== Scenario 3: Preflight invocation order and start sequence ==="
-rm -f "$root/mock_fail_config"
-set +e
-"$ATPD_BIN" -c "$root/atp.conf" start >"$root/out.3" 2>"$root/err.3"
-rc=$?
-set -e
-# Verify that [1/2] appears before [2/2], and [2/2] appears before "Starting atpd..."
-idx1=$(grep -n "\[1/2\] Checking sing-box configuration" "$root/out.3" | cut -d: -f1)
-idx2=$(grep -n "\[2/2\] Probing kernel and runtime capabilities" "$root/out.3" | cut -d: -f1)
-idx3=$(grep -n "Starting atpd..." "$root/out.3" | cut -d: -f1)
-[ -n "$idx1" ] && [ -n "$idx2" ] && [ -n "$idx3" ] || { echo "Scenario 3 failed: missing expected sequence lines" >&2; cat "$root/out.3"; exit 1; }
-[ "$idx1" -lt "$idx2" ] && [ "$idx2" -lt "$idx3" ] || { echo "Scenario 3 failed: incorrect sequence order" >&2; exit 1; }
-echo "PASS: Scenario 3"
+printf '%s\n' '=== readiness failure is reported ==='
+: > "$root/commands"
+if MOCK_FAIL_READY=1 run_atp start >"$root/ready-fail.out" 2>"$root/ready-fail.err"; then
+    echo "start unexpectedly succeeded without readiness" >&2; exit 1
+fi
+! grep -q "Daemon started successfully" "$root/ready-fail.out"
+grep -q "Daemon failed to start" "$root/ready-fail.err"
+run_atp stop >/dev/null 2>&1 || true
 
-echo "=== Scenario 4: Restart sequence (stop -> preflight -> start) ==="
-"$root/atpd" &
-dummy_pid=$!
-echo "$dummy_pid" > "$root/run/atpd.pid"
+printf '%s\n' '=== restart stops before a failing config check ==='
+run_atp start >"$root/before-failed-restart.out" 2>"$root/before-failed-restart.err"
+if MOCK_FAIL_CONFIG=1 run_atp restart >"$root/failed-restart.out" 2>"$root/failed-restart.err"; then
+    echo "restart unexpectedly succeeded with invalid config" >&2; exit 1
+fi
+stop_line=$(grep -n "Daemon stopped successfully" "$root/failed-restart.out" | cut -d: -f1)
+fail_line=$(grep -n "sing-box configuration check: FAIL" "$root/failed-restart.out" | cut -d: -f1)
+[ "$stop_line" -lt "$fail_line" ]
+! grep -q "Starting atpd..." "$root/failed-restart.out"
+[ ! -e "$root/run/atpd.pid" ]
 
-set +e
-"$ATPD_BIN" -c "$root/atp.conf" restart >"$root/out.4" 2>"$root/err.4"
-rc=$?
-set -e
-kill "$dummy_pid" 2>/dev/null || true
+printf '%s\n' '=== restart uses stop then the same startup path ==='
+: > "$root/commands"
+run_atp start >"$root/first-start.out" 2>"$root/first-start.err"
+run_atp restart >"$root/restart.out" 2>"$root/restart.err"
+stop_line=$(grep -n "Daemon stopped successfully" "$root/restart.out" | cut -d: -f1)
+check_line=$(grep -n "Checking sing-box configuration" "$root/restart.out" | cut -d: -f1)
+start_line=$(grep -n "Starting atpd..." "$root/restart.out" | cut -d: -f1)
+success_line=$(grep -n "Daemon started successfully" "$root/restart.out" | cut -d: -f1)
+status_line=$(grep -n "Runtime status:" "$root/restart.out" | cut -d: -f1)
+[ "$stop_line" -lt "$check_line" ]
+[ "$check_line" -lt "$start_line" ]
+[ "$start_line" -lt "$success_line" ]
+[ "$success_line" -lt "$status_line" ]
+for text in "Checking sing-box configuration" "Starting atpd..." "Daemon started successfully" "Runtime status:"; do
+    grep -q "$text" "$root/first-start.out"
+    grep -q "$text" "$root/restart.out"
+done
+! grep -q '^tools ' "$root/commands"
+pid=$(cat "$root/run/atpd.pid")
+grep -q "Daemon started successfully (PID: $pid)" "$root/restart.out"
+kill -0 "$pid"
+run_atp stop >/dev/null
 
-# Verify order in restart:
-# 1. Restarting atpd...
-# 2. Daemon stopped successfully
-# 3. [1/2] Checking sing-box configuration
-# 4. [2/2] Probing kernel and runtime capabilities
-# 5. Starting atpd...
-ridx0=$(grep -n "Restarting atpd..." "$root/out.4" | cut -d: -f1)
-ridx1=$(grep -n "Daemon stopped successfully" "$root/out.4" | cut -d: -f1)
-ridx2=$(grep -n "\[1/2\] Checking sing-box configuration" "$root/out.4" | cut -d: -f1)
-ridx3=$(grep -n "\[2/2\] Probing kernel and runtime capabilities" "$root/out.4" | cut -d: -f1)
-ridx4=$(grep -n "Starting atpd..." "$root/out.4" | cut -d: -f1)
-
-[ -n "$ridx0" ] && [ -n "$ridx1" ] && [ -n "$ridx2" ] && [ -n "$ridx3" ] && [ -n "$ridx4" ] || {
-    echo "Scenario 4 failed: missing expected restart sequence lines" >&2
-    cat "$root/out.4"
-    exit 1
-}
-[ "$ridx0" -lt "$ridx1" ] && [ "$ridx1" -lt "$ridx2" ] && [ "$ridx2" -lt "$ridx3" ] && [ "$ridx3" -lt "$ridx4" ] || {
-    echo "Scenario 4 failed: incorrect restart sequence order" >&2
-    exit 1
-}
-echo "PASS: Scenario 4"
-
-echo "=== Scenario 5: Restart with preflight failure after stop succeeds ==="
-"$root/atpd" &
-dummy_pid=$!
-echo "$dummy_pid" > "$root/run/atpd.pid"
-touch "$root/mock_fail_config"
-
-set +e
-"$ATPD_BIN" -c "$root/atp.conf" restart >"$root/out.5" 2>"$root/err.5"
-rc=$?
-set -e
-kill "$dummy_pid" 2>/dev/null || true
-
-[ "$rc" -ne 0 ] || { echo "Scenario 5 failed: restart succeeded despite preflight failure" >&2; exit 1; }
-grep -q "Daemon stopped successfully" "$root/out.5" || { echo "Scenario 5 failed: daemon stop not reported" >&2; cat "$root/out.5"; exit 1; }
-grep -q "sing-box configuration check: FAIL" "$root/out.5" || { echo "Scenario 5 failed: check FAIL not reported" >&2; cat "$root/out.5"; exit 1; }
-[ ! -e "$root/run/atpd.pid" ] || { echo "Scenario 5 failed: daemon PID file exists after failed restart" >&2; exit 1; }
-echo "PASS: Scenario 5"
-
-echo "All start/restart preflight regression tests passed successfully."
+printf '%s\n' 'start/restart startup regression tests passed'

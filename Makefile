@@ -83,6 +83,7 @@ test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_
 	$(UTILS_PROC_STAT_TEST)
 	$(SERVICE_CREDENTIALS_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
+	sh tests/test_start_restart_preflight.sh
 	sh tests/test_android_service.sh
 
 $(VPN_MODE_TEST): tests/test_api_vpn_mode.c src/api.c

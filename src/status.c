@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 #define THERMAL_ZONE_BASE "/sys/class/thermal"
@@ -98,6 +99,11 @@ int status_collect_snapshot(const atp_config_t *cfg, const service_ctx_t *svc,
                            (uint64_t)now.tv_usec / 1000u;
     out->emoji_enabled = !cfg || cfg->core.ui_emoji_enabled;
     out->api_port = cfg && cfg->api.port > 0 ? cfg->api.port : DEFAULT_API_PORT;
+    struct utsname system_info;
+    if (uname(&system_info) == 0) {
+        snprintf(out->kernel_release, sizeof(out->kernel_release), "%s",
+                 system_info.release);
+    }
 
     out->daemon_running = atpd_runtime_is_running() != 0;
     if (out->daemon_running) {
@@ -143,4 +149,11 @@ void status_show_to(FILE *out, bool no_color, const atp_config_t *cfg,
     status_snapshot_t snapshot;
     if (status_collect_snapshot(cfg, svc, api, &snapshot) != 0) return;
     status_render_snapshot(out, no_color, &snapshot);
+}
+
+void status_show_summary_to(FILE *out, const atp_config_t *cfg,
+                            const service_ctx_t *svc, const api_ctx_t *api) {
+    status_snapshot_t snapshot;
+    if (status_collect_snapshot(cfg, svc, api, &snapshot) != 0) return;
+    status_render_summary(out, &snapshot);
 }

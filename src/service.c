@@ -548,20 +548,34 @@ static int service_spawn(service_ctx_t *ctx) {
     return 0;
 }
 
-static int run_service_command(const char *bin_path, char *const argv[], FILE *out_stream, int timeout_sec) {
-    if (!bin_path || !argv || !argv[0]) return -1;
+int service_validate_config(service_ctx_t *ctx) {
+    if (!ctx || !service_binary_exists(ctx)) return -1;
+
+    char **args = build_service_args(ctx);
+    if (!args) return -1;
+    free(args[1]);
+    args[1] = strdup("check");
+    if (!args[1]) {
+        free_service_args(args);
+        return -1;
+    }
 
     int pipe_fds[2];
-    if (pipe(pipe_fds) != 0) return -1;
+    if (pipe(pipe_fds) != 0) {
+        free_service_args(args);
+        return -1;
+    }
     if (fcntl(pipe_fds[0], F_SETFL, O_NONBLOCK) != 0) {
         close(pipe_fds[0]);
         close(pipe_fds[1]);
+        free_service_args(args);
         return -1;
     }
     pid_t pid = fork();
     if (pid < 0) {
         close(pipe_fds[0]);
         close(pipe_fds[1]);
+        free_service_args(args);
         return -1;
     }
     if (pid == 0) {
@@ -569,17 +583,16 @@ static int run_service_command(const char *bin_path, char *const argv[], FILE *o
         dup2(pipe_fds[1], STDOUT_FILENO);
         dup2(pipe_fds[1], STDERR_FILENO);
         close(pipe_fds[1]);
-        execv(bin_path, argv);
+        execv(ctx->bin_path, args);
         _exit(127);
     }
     close(pipe_fds[1]);
-
-    if (!out_stream) out_stream = stdout;
+    free_service_args(args);
 
     int status = 0;
     int done = 0;
     int timed_out = 0;
-    int64_t deadline = (int64_t)time(NULL) + (timeout_sec > 0 ? timeout_sec : 5);
+    int64_t deadline = (int64_t)time(NULL) + 5;
     while (!done) {
         struct pollfd pfd = { .fd = pipe_fds[0], .events = POLLIN };
         int timeout = (int)((deadline - (int64_t)time(NULL)) * 1000);
@@ -589,7 +602,7 @@ static int run_service_command(const char *bin_path, char *const argv[], FILE *o
             char buffer[1024];
             ssize_t count;
             while ((count = read(pipe_fds[0], buffer, sizeof(buffer))) > 0)
-                fwrite(buffer, 1, (size_t)count, out_stream);
+                fwrite(buffer, 1, (size_t)count, stderr);
         }
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) done = 1;
@@ -604,54 +617,13 @@ static int run_service_command(const char *bin_path, char *const argv[], FILE *o
     char buffer[1024];
     ssize_t count;
     while ((count = read(pipe_fds[0], buffer, sizeof(buffer))) > 0)
-        fwrite(buffer, 1, (size_t)count, out_stream);
+        fwrite(buffer, 1, (size_t)count, stderr);
     close(pipe_fds[0]);
-    fflush(out_stream);
     if (timed_out) {
-        fprintf(out_stream, "Command timed out\n");
+        fprintf(stderr, "sing-box check timed out\n");
         return -1;
     }
     return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
-}
-
-int service_validate_config(service_ctx_t *ctx) {
-    if (!ctx || !service_binary_exists(ctx)) return -1;
-
-    char **args = build_service_args(ctx);
-    if (!args) return -1;
-    free(args[1]);
-    args[1] = strdup("check");
-    if (!args[1]) {
-        free_service_args(args);
-        return -1;
-    }
-
-    int res = run_service_command(ctx->bin_path, args, stderr, 5);
-    free_service_args(args);
-    return res;
-}
-
-int service_probe_kernel(service_ctx_t *ctx) {
-    if (!ctx || !service_binary_exists(ctx)) return -1;
-
-    const char *cgroup_path = "/sys/fs/cgroup";
-    int has_cgroup = (access(cgroup_path, F_OK) == 0);
-
-    char *args[9];
-    int idx = 0;
-    args[idx++] = ctx->bin_path;
-    args[idx++] = "tools";
-    args[idx++] = "ebpf";
-    args[idx++] = "status";
-    args[idx++] = "--mode";
-    args[idx++] = "local";
-    if (has_cgroup) {
-        args[idx++] = "--cgroup";
-        args[idx++] = (char *)cgroup_path;
-    }
-    args[idx] = NULL;
-
-    return run_service_command(ctx->bin_path, args, stdout, 5);
 }
 
 int service_wait_ready(service_ctx_t *ctx) {

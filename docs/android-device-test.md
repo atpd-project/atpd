@@ -48,7 +48,7 @@ chmod 0755 /data/adb/service.d/atpd_service.sh
 
 ```sh
 su -c '/data/adb/service.d/atpd_service.sh check'
-su -c '/data/adb/atp/bin/sing-box tools ebpf status --mode local --cgroup /sys/fs/cgroup'
+su -c '/data/adb/atp/bin/sing-box tools ebpf status --mode local'
 ```
 
 通过标准：

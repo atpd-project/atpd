@@ -55,6 +55,7 @@ static int write_pid_file(const char *pid_file);
 static void resolve_pid_path(atp_options_t *opts, char *pp, size_t size);
 static int daemonize(pid_t *out_pid);
 static int process_is_atpd(pid_t pid);
+static int query_daemon(const char *command);
 
 static atp_config_t daemon_config;
 static api_ctx_t daemon_api;
@@ -448,6 +449,35 @@ cleanup:
     return result;
 }
 
+static int query_daemon(const char *command) {
+    char uds_path[SAFE_PATH_MAX];
+    resolve_socket_path(uds_path, sizeof(uds_path));
+
+    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_un sun;
+    memset(&sun, 0, sizeof(sun));
+    sun.sun_family = AF_UNIX;
+    strncpy(sun.sun_path, uds_path, sizeof(sun.sun_path) - 1);
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    int result = -1;
+    if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == 0 &&
+        send(fd, command, strlen(command), MSG_NOSIGNAL) == (ssize_t)strlen(command)) {
+        char buf[4096];
+        ssize_t n;
+        while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
+            fwrite(buf, 1, (size_t)n, stdout);
+            result = 0;
+        }
+    }
+    close(fd);
+    return result;
+}
+
 static int preflight_startup(void) {
     service_ctx_t service;
     memset(&service, 0, sizeof(service));
@@ -456,8 +486,7 @@ static int preflight_startup(void) {
         return 1;
     }
 
-    /* Check A: sing-box configuration check */
-    printf("[1/2] Checking sing-box configuration (binary: %s, config: %s)...\n",
+    printf("Checking sing-box configuration (binary: %s, config: %s)...\n",
            service.bin_path, service.conf_path);
     if (service_validate_config(&service) != 0) {
         printf("sing-box configuration check: FAIL\n");
@@ -466,17 +495,6 @@ static int preflight_startup(void) {
         return 1;
     }
     printf("sing-box configuration check: PASS\n");
-
-    /* Check B: Kernel/runtime state probe */
-    printf("[2/2] Probing kernel and runtime capabilities (binary: %s)...\n",
-           service.bin_path);
-    if (service_probe_kernel(&service) != 0) {
-        printf("Kernel and runtime capability probe: FAIL\n");
-        fprintf(stderr, "Error: Kernel/eBPF runtime capability probe failed\n");
-        service_stop_sync(&service);
-        return 1;
-    }
-    printf("Kernel and runtime capability probe: PASS\n");
 
     service_stop_sync(&service);
     return 0;
@@ -508,6 +526,7 @@ static int do_start(atp_options_t *opts) {
         if (daemon_role == DAEMON_PARENT_SUCCESS) {
             if (daemon_pid > 0 && kill(daemon_pid, 0) == 0 && process_is_atpd(daemon_pid)) {
                 printf("Daemon started successfully (PID: %d)\n", daemon_pid);
+                query_daemon("status-summary\n");
                 return 0;
             }
             fprintf(stderr, "Error: Daemon process %d is not running after startup\n", daemon_pid);
@@ -652,39 +671,8 @@ static int do_restart(atp_options_t *opts) {
 }
 
 static int do_status(atp_options_t *opts) {
-    char uds_path[SAFE_PATH_MAX];
-    resolve_socket_path(uds_path, sizeof(uds_path));
-
     /* 1. Fast-Path: Query running daemon over Unix Domain Socket (< 0.5 ms) */
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd >= 0) {
-        struct sockaddr_un sun;
-        memset(&sun, 0, sizeof(sun));
-        sun.sun_family = AF_UNIX;
-        strncpy(sun.sun_path, uds_path, sizeof(sun.sun_path) - 1);
-
-        struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-
-        if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == 0) {
-            const char *cmd = "status\n";
-            if (send(fd, cmd, strlen(cmd), MSG_NOSIGNAL) == (ssize_t)strlen(cmd)) {
-                char buf[4096];
-                ssize_t n;
-                int read_any = 0;
-                while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {
-                    fwrite(buf, 1, (size_t)n, stdout);
-                    read_any = 1;
-                }
-                if (read_any) {
-                    close(fd);
-                    return 0;
-                }
-            }
-        }
-        close(fd);
-    }
+    if (query_daemon("status\n") == 0) return 0;
 
     /* 2. Standalone Fallback: Offline inspection when daemon is stopped */
     service_ctx_t local_svc;
