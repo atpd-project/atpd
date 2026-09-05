@@ -108,6 +108,8 @@ int kill(pid_t pid, int sig) {
 }
 EOF
 cc -shared -fPIC -o "$root/netlink_shim.so" "$root/netlink_shim.c" -ldl
+sanitizer_runtime=$(ldd "$ATPD_BIN" 2>/dev/null | awk '/lib(asan|tsan)\.so/ { print $3; exit }')
+preload=${sanitizer_runtime:+$sanitizer_runtime:}$root/netlink_shim.so
 
 cat > "$root/atp.conf" <<EOF
 DATA_DIR=$root
@@ -116,7 +118,7 @@ SERVICE_START_TIMEOUT=1
 EOF
 printf '%s\n' '{"inbounds":[]}' > "$root/config.json"
 run_atp() {
-    env LD_PRELOAD="$root/netlink_shim.so" MOCK_LOG="$root/commands" MOCK_API_PORT=19080 \
+    env LD_PRELOAD="$preload" MOCK_LOG="$root/commands" MOCK_API_PORT=19080 \
         MOCK_FAIL_CONFIG="${MOCK_FAIL_CONFIG:-}" MOCK_FAIL_READY="${MOCK_FAIL_READY:-}" \
         "$ATPD_BIN" -c "$root/atp.conf" "$@"
 }
@@ -161,8 +163,8 @@ run_atp start >"$root/before-failed-restart.out" 2>"$root/before-failed-restart.
 if MOCK_FAIL_CONFIG=1 run_atp restart >"$root/failed-restart.out" 2>"$root/failed-restart.err"; then
     echo "restart unexpectedly succeeded with invalid config" >&2; exit 1
 fi
-stop_line=$(grep -n "Daemon stopped successfully" "$root/failed-restart.out" | cut -d: -f1)
-fail_line=$(grep -n "sing-box configuration check: FAIL" "$root/failed-restart.out" | cut -d: -f1)
+stop_line=$(grep -n -m1 "Daemon stopped successfully" "$root/failed-restart.out" | cut -d: -f1)
+fail_line=$(grep -n -m1 "sing-box configuration check: FAIL" "$root/failed-restart.out" | cut -d: -f1)
 [ "$stop_line" -lt "$fail_line" ]
 ! grep -q "Starting atpd..." "$root/failed-restart.out"
 [ ! -e "$root/run/atpd.pid" ]
@@ -171,11 +173,11 @@ printf '%s\n' '=== restart uses stop then the same startup path ==='
 : > "$root/commands"
 run_atp start >"$root/first-start.out" 2>"$root/first-start.err"
 run_atp restart >"$root/restart.out" 2>"$root/restart.err"
-stop_line=$(grep -n "Daemon stopped successfully" "$root/restart.out" | cut -d: -f1)
-check_line=$(grep -n "Checking sing-box configuration" "$root/restart.out" | cut -d: -f1)
-start_line=$(grep -n "Starting atpd..." "$root/restart.out" | cut -d: -f1)
-success_line=$(grep -n "Daemon started successfully" "$root/restart.out" | cut -d: -f1)
-status_line=$(grep -n "Runtime status:" "$root/restart.out" | cut -d: -f1)
+stop_line=$(grep -n -m1 "Daemon stopped successfully" "$root/restart.out" | cut -d: -f1)
+check_line=$(grep -n -m1 "Checking sing-box configuration" "$root/restart.out" | cut -d: -f1)
+start_line=$(grep -n -m1 "Starting atpd..." "$root/restart.out" | cut -d: -f1)
+success_line=$(grep -n -m1 "Daemon started successfully" "$root/restart.out" | cut -d: -f1)
+status_line=$(grep -n -m1 "Runtime status:" "$root/restart.out" | cut -d: -f1)
 [ "$stop_line" -lt "$check_line" ]
 [ "$check_line" -lt "$start_line" ]
 [ "$start_line" -lt "$success_line" ]

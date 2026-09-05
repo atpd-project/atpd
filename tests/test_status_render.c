@@ -84,7 +84,7 @@ int main(void) {
     FILE *summary_stream = open_memstream(&summary, &summary_size);
     assert(summary_stream != NULL);
     status_render_summary(summary_stream, &summary_snapshot);
-    assert(fclose(summary_stream) == 0);
+    if (fclose(summary_stream) != 0) abort();
     assert(strstr(summary, "ATPD:      RUNNING (PID: 10101)") != NULL);
     assert(strstr(summary, "sing-box:  RUNNING (PID: 30303)") != NULL);
     assert(strstr(summary, "Kernel:    6.1.0-test") != NULL);

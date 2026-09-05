@@ -29,14 +29,22 @@ EOF
   tsan)
     cat << 'EOF' > /tmp/probe_tsan.c
 #include <pthread.h>
-#include <stdio.h>
-static int val = 0;
-static void *worker(void *arg) { (void)arg; val = 1; return NULL; }
+static volatile int val;
+static pthread_barrier_t barrier;
+static void *worker(void *arg) {
+    (void)arg;
+    pthread_barrier_wait(&barrier);
+    for (int i = 0; i < 100000; i++) val++;
+    return NULL;
+}
 int main(void) {
     pthread_t t;
+    pthread_barrier_init(&barrier, NULL, 2);
     pthread_create(&t, NULL, worker, NULL);
-    val = 2;
+    pthread_barrier_wait(&barrier);
+    for (int i = 0; i < 100000; i++) val++;
     pthread_join(t, NULL);
+    pthread_barrier_destroy(&barrier);
     return 0;
 }
 EOF
