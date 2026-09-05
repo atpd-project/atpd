@@ -232,7 +232,7 @@ pid=$(read_atpd_pid "$root/run/atpd.pid")
 grep -q "Daemon started successfully (PID: $pid)" "$root/start.out"
 grep -q "Runtime status:" "$root/start.out"
 grep -q "ATPD:      RUNNING (PID: $pid)" "$root/start.out"
-grep -q "sing-box:  RUNNING (PID:" "$root/start.out"
+grep -q "sing-box:  RUNNING / healthy (PID:" "$root/start.out"
 grep -q "Kernel:" "$root/start.out"
 grep -q "Data path: sing-box ebpf inbound" "$root/start.out"
 grep -q "uptime" "$root/start.out"
