@@ -59,21 +59,21 @@ done
     echo "daemon did not become ready" >&2
     exit 1
 }
-ATPD_PID="$(tr -d '[:space:]' < "${PID_FILE}")"
-OLD_SINGBOX_PID="$(tr -d '[:space:]' < "${SINGBOX_PID_FILE}")"
+ATPD_PID="$(sed -n '1p' "${PID_FILE}")"
+OLD_SINGBOX_PID="$(sed -n '1p' "${SINGBOX_PID_FILE}")"
 BASE_FD="$(find "/proc/${ATPD_PID}/fd" -mindepth 1 -maxdepth 1 -type l | wc -l)"
 kill -9 "${OLD_SINGBOX_PID}"
 
 NEW_SINGBOX_PID=""
 for _ in $(seq 1 100); do
     if [ -s "${SINGBOX_PID_FILE}" ]; then
-        NEW_SINGBOX_PID="$(tr -d '[:space:]' < "${SINGBOX_PID_FILE}" 2>/dev/null || true)"
+        NEW_SINGBOX_PID="$(sed -n '1p' "${SINGBOX_PID_FILE}" 2>/dev/null || true)"
         if [[ "${NEW_SINGBOX_PID}" =~ ^[1-9][0-9]*$ ]] &&
            [ "${NEW_SINGBOX_PID}" != "${OLD_SINGBOX_PID}" ] &&
            kill -0 "${NEW_SINGBOX_PID}" 2>/dev/null &&
            [ "$(cat "/proc/${NEW_SINGBOX_PID}/comm" 2>/dev/null || true)" = "sing-box" ] &&
            "${TEST_DIR}/atpd" -c "${CONF_FILE}" status 2>/dev/null | grep -q RUNNING &&
-           [ "$(tr -d '[:space:]' < "${PID_FILE}" 2>/dev/null || true)" = "${ATPD_PID}" ]; then
+           [ "$(sed -n '1p' "${PID_FILE}" 2>/dev/null || true)" = "${ATPD_PID}" ]; then
             break
         fi
     fi
