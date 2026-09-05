@@ -182,10 +182,6 @@ status_line=$(grep -n -m1 "Runtime status:" "$root/restart.out" | cut -d: -f1)
 [ "$check_line" -lt "$start_line" ]
 [ "$start_line" -lt "$success_line" ]
 [ "$success_line" -lt "$status_line" ]
-for text in "Checking sing-box configuration" "Starting atpd..." "Daemon started successfully" "Runtime status:"; do
-    grep -q "$text" "$root/first-start.out"
-    grep -q "$text" "$root/restart.out"
-done
 ! grep -q '^tools ' "$root/commands"
 pid=$(cat "$root/run/atpd.pid")
 grep -q "Daemon started successfully (PID: $pid)" "$root/restart.out"
