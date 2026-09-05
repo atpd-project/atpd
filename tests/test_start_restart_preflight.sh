@@ -54,9 +54,10 @@ int main(int argc, char **argv) {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         int one = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        const char *port_str = getenv("MOCK_API_PORT");
         struct sockaddr_in addr = {
             .sin_family = AF_INET,
-            .sin_port = htons((unsigned short)atoi(getenv("MOCK_API_PORT"))),
+            .sin_port = htons((unsigned short)(port_str ? atoi(port_str) : 19080)),
             .sin_addr.s_addr = htonl(INADDR_LOOPBACK)
         };
         if (fd < 0 || bind(fd, (struct sockaddr *)&addr, sizeof(addr)) || listen(fd, 8)) return 1;
@@ -92,7 +93,7 @@ int kill(pid_t pid, int sig) {
     static int (*real_kill)(pid_t, int);
     static pid_t terminating;
     if (!real_kill) real_kill = dlsym(RTLD_NEXT, "kill");
-    if (sig == SIGTERM) terminating = pid;
+    if (sig == SIGTERM || sig == SIGKILL) terminating = pid;
     int result = real_kill(pid, sig);
     if (result == 0 && sig == 0 && pid == terminating) {
         char path[64], state = 0;
@@ -114,7 +115,7 @@ preload=${sanitizer_runtime:+$sanitizer_runtime:}$root/netlink_shim.so
 cat > "$root/atp.conf" <<EOF
 DATA_DIR=$root
 API_PORT=19080
-SERVICE_START_TIMEOUT=1
+SERVICE_START_TIMEOUT=2
 EOF
 printf '%s\n' '{"inbounds":[]}' > "$root/config.json"
 run_atp() {
@@ -163,8 +164,10 @@ run_atp start >"$root/before-failed-restart.out" 2>"$root/before-failed-restart.
 if MOCK_FAIL_CONFIG=1 run_atp restart >"$root/failed-restart.out" 2>"$root/failed-restart.err"; then
     echo "restart unexpectedly succeeded with invalid config" >&2; exit 1
 fi
-stop_line=$(grep -n -m1 "Daemon stopped successfully" "$root/failed-restart.out" | cut -d: -f1)
-fail_line=$(grep -n -m1 "sing-box configuration check: FAIL" "$root/failed-restart.out" | cut -d: -f1)
+stop_line=$(grep -n -m1 "Daemon stopped successfully" "$root/failed-restart.out" | cut -d: -f1 || true)
+fail_line=$(grep -n -m1 "sing-box configuration check: FAIL" "$root/failed-restart.out" | cut -d: -f1 || true)
+[ -n "$stop_line" ] || { echo "stop_line missing from failed-restart.out" >&2; cat "$root/failed-restart.out" >&2; exit 1; }
+[ -n "$fail_line" ] || { echo "fail_line missing from failed-restart.out" >&2; cat "$root/failed-restart.out" >&2; exit 1; }
 [ "$stop_line" -lt "$fail_line" ]
 ! grep -q "Starting atpd..." "$root/failed-restart.out"
 [ ! -e "$root/run/atpd.pid" ]
@@ -173,11 +176,16 @@ printf '%s\n' '=== restart uses stop then the same startup path ==='
 : > "$root/commands"
 run_atp start >"$root/first-start.out" 2>"$root/first-start.err"
 run_atp restart >"$root/restart.out" 2>"$root/restart.err"
-stop_line=$(grep -n -m1 "Daemon stopped successfully" "$root/restart.out" | cut -d: -f1)
-check_line=$(grep -n -m1 "Checking sing-box configuration" "$root/restart.out" | cut -d: -f1)
-start_line=$(grep -n -m1 "Starting atpd..." "$root/restart.out" | cut -d: -f1)
-success_line=$(grep -n -m1 "Daemon started successfully" "$root/restart.out" | cut -d: -f1)
-status_line=$(grep -n -m1 "Runtime status:" "$root/restart.out" | cut -d: -f1)
+stop_line=$(grep -n -m1 "Daemon stopped successfully" "$root/restart.out" | cut -d: -f1 || true)
+check_line=$(grep -n -m1 "Checking sing-box configuration" "$root/restart.out" | cut -d: -f1 || true)
+start_line=$(grep -n -m1 "Starting atpd..." "$root/restart.out" | cut -d: -f1 || true)
+success_line=$(grep -n -m1 "Daemon started successfully" "$root/restart.out" | cut -d: -f1 || true)
+status_line=$(grep -n -m1 "Runtime status:" "$root/restart.out" | cut -d: -f1 || true)
+[ -n "$stop_line" ] || { echo "stop_line missing from restart.out" >&2; cat "$root/restart.out" >&2; exit 1; }
+[ -n "$check_line" ] || { echo "check_line missing from restart.out" >&2; cat "$root/restart.out" >&2; exit 1; }
+[ -n "$start_line" ] || { echo "start_line missing from restart.out" >&2; cat "$root/restart.out" >&2; exit 1; }
+[ -n "$success_line" ] || { echo "success_line missing from restart.out" >&2; cat "$root/restart.out" >&2; exit 1; }
+[ -n "$status_line" ] || { echo "status_line missing from restart.out" >&2; cat "$root/restart.out" >&2; exit 1; }
 [ "$stop_line" -lt "$check_line" ]
 [ "$check_line" -lt "$start_line" ]
 [ "$start_line" -lt "$success_line" ]

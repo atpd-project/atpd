@@ -136,6 +136,7 @@ int async_validate_config(async_validate_ctx_t *ctx, reactor_t *r,
             close(null_fd);
         }
 
+        unsetenv("LD_PRELOAD");
         if (conf_path && conf_path[0]) {
             execl(bin_path, bin_path, "check", "-D", work_dir, "-c", conf_path, NULL);
         } else {

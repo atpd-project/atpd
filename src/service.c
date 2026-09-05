@@ -63,6 +63,12 @@ static int format_path(char *path, size_t size, const char *format, ...) {
     return length >= 0 && (size_t)length < size ? 0 : -1;
 }
 
+static uint64_t get_monotonic_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
 static void backoff_init(backoff_t *b) {
     b->base_delay_ms = 1000;
     b->max_delay_ms = 60000;
@@ -219,7 +225,7 @@ static int service_probe_port(int port) {
     }
 
     if (errno == EINPROGRESS) {
-        int ok = wait_connect_result(sock, 3000);
+        int ok = wait_connect_result(sock, 200);
         close(sock);
         return ok;
     }
@@ -500,6 +506,7 @@ static int service_spawn(service_ctx_t *ctx) {
             }
         }
 
+        unsetenv("LD_PRELOAD");
         set_service_environment(ctx);
 
         if (ctx->work_dir[0]) {
@@ -527,6 +534,7 @@ static int service_spawn(service_ctx_t *ctx) {
     }
     ctx->validated_pid = 1;
     ctx->start_time = time(NULL);
+    ctx->start_time_ms = get_monotonic_ms();
     LOG_INFO("Service: spawned sing-box (PID: %d)", pid);
 
     int pid_fd = open_regular_file(pid_path, O_WRONLY | O_CREAT, 0644);
@@ -583,6 +591,7 @@ int service_validate_config(service_ctx_t *ctx) {
         dup2(pipe_fds[1], STDOUT_FILENO);
         dup2(pipe_fds[1], STDERR_FILENO);
         close(pipe_fds[1]);
+        unsetenv("LD_PRELOAD");
         execv(ctx->bin_path, args);
         _exit(127);
     }
@@ -592,11 +601,11 @@ int service_validate_config(service_ctx_t *ctx) {
     int status = 0;
     int done = 0;
     int timed_out = 0;
-    int64_t deadline = (int64_t)time(NULL) + 5;
+    uint64_t deadline_ms = get_monotonic_ms() + 5000;
     while (!done) {
         struct pollfd pfd = { .fd = pipe_fds[0], .events = POLLIN };
-        int timeout = (int)((deadline - (int64_t)time(NULL)) * 1000);
-        if (timeout < 0) timeout = 0;
+        uint64_t now_ms = get_monotonic_ms();
+        int timeout = (now_ms < deadline_ms) ? (int)(deadline_ms - now_ms) : 0;
         int polled = poll(&pfd, 1, timeout);
         if (polled > 0 && (pfd.revents & (POLLIN | POLLHUP))) {
             char buffer[1024];
@@ -607,7 +616,7 @@ int service_validate_config(service_ctx_t *ctx) {
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) done = 1;
         else if (waited < 0 && errno != EINTR) done = 1;
-        else if ((int64_t)time(NULL) >= deadline) {
+        else if (get_monotonic_ms() >= deadline_ms) {
             timed_out = 1;
             kill(pid, SIGKILL);
             while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
@@ -628,12 +637,13 @@ int service_validate_config(service_ctx_t *ctx) {
 
 int service_wait_ready(service_ctx_t *ctx) {
     if (!ctx) return -1;
-    time_t deadline = time(NULL) + (ctx->start_timeout_sec > 0 ? ctx->start_timeout_sec : 30);
-    while (time(NULL) < deadline) {
+    uint64_t timeout_ms = (uint64_t)(ctx->start_timeout_sec > 0 ? ctx->start_timeout_sec : 30) * 1000;
+    uint64_t deadline_ms = get_monotonic_ms() + timeout_ms;
+    while (get_monotonic_ms() < deadline_ms) {
         service_monitor_cb(ctx->reactor, NULL, ctx);
         if (service_is_running(ctx)) return 0;
         if (ctx->state == SERVICE_FAILED || ctx->child_pid <= 0) return -1;
-        usleep(100000);
+        usleep(50000);
     }
     service_monitor_cb(ctx->reactor, NULL, ctx);
     return service_is_running(ctx) ? 0 : -1;
@@ -829,8 +839,9 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
         case SERVICE_STOPPED:
             break;
 
-        case SERVICE_STARTING:
-            if (ctx->start_time > 0 && time(NULL) - ctx->start_time >= ctx->start_timeout_sec) {
+        case SERVICE_STARTING: {
+            uint64_t timeout_ms = (uint64_t)(ctx->start_timeout_sec > 0 ? ctx->start_timeout_sec : 30) * 1000;
+            if (ctx->start_time_ms > 0 && get_monotonic_ms() - ctx->start_time_ms >= timeout_ms) {
                 LOG_WARN("Service: startup timed out after %ds", ctx->start_timeout_sec);
                 if (ctx->child_pid > 0) kill(ctx->child_pid, SIGKILL);
                 ctx->state = SERVICE_FAILED;
@@ -892,6 +903,7 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                 }
             }
             break;
+        }
 
         case SERVICE_RUNNING:
             if (!service_is_alive(ctx)) {
@@ -977,6 +989,7 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     ctx->health_check_interval_ms = cfg->service.health_check_interval_ms > 0 ? cfg->service.health_check_interval_ms : 5000;
     ctx->stop_attempts = 0;
     ctx->start_time = 0;
+    ctx->start_time_ms = 0;
     ctx->running_healthy = 0;
     ctx->last_health_check = 0;
     ctx->retry_timer = NULL;
@@ -1069,6 +1082,7 @@ int service_start_async(service_ctx_t *ctx) {
     if (service_spawn(ctx) == 0) {
         ctx->state = SERVICE_STARTING;
         ctx->start_time = time(NULL);
+        ctx->start_time_ms = get_monotonic_ms();
         ctx->fail_count = 0;
         backoff_reset(&ctx->backoff);
         return 0;

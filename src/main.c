@@ -453,20 +453,31 @@ static int query_daemon(const char *command) {
     char uds_path[SAFE_PATH_MAX];
     resolve_socket_path(uds_path, sizeof(uds_path));
 
-    int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd < 0) return -1;
-
     struct sockaddr_un sun;
     memset(&sun, 0, sizeof(sun));
     sun.sun_family = AF_UNIX;
     strncpy(sun.sun_path, uds_path, sizeof(sun.sun_path) - 1);
     struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    int fd = -1;
+    for (int retry = 0; retry < 10; retry++) {
+        fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) return -1;
+
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == 0) {
+            break;
+        }
+        close(fd);
+        fd = -1;
+        usleep(50000);
+    }
+    if (fd < 0) return -1;
 
     int result = -1;
-    if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == 0 &&
-        send(fd, command, strlen(command), MSG_NOSIGNAL) == (ssize_t)strlen(command)) {
+    if (send(fd, command, strlen(command), MSG_NOSIGNAL) == (ssize_t)strlen(command)) {
         char buf[4096];
         ssize_t n;
         while ((n = recv(fd, buf, sizeof(buf), 0)) > 0) {

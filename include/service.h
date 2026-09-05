@@ -5,6 +5,7 @@
 #include "reactor.h"
 #include <sys/types.h>
 #include <time.h>
+#include <stdint.h>
 
 typedef enum {
     SERVICE_STOPPED = 0,
@@ -79,6 +80,7 @@ struct service_ctx_t {
     int running_healthy;
     int stop_attempts;
     time_t start_time;
+    uint64_t start_time_ms;
 };
 
 int service_init(service_ctx_t *ctx, atp_config_t *cfg);

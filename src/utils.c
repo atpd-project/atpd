@@ -125,7 +125,7 @@ int exec_cmd_argv(const char *cmd_path, char *const argv[], char *output, size_t
         if (flags >= 0) fcntl(pipefd[1], F_SETFL, flags & ~O_NONBLOCK);
         if (dup2(pipefd[1], STDOUT_FILENO) < 0 || dup2(pipefd[1], STDERR_FILENO) < 0) _exit(126);
         close(pipefd[1]);
-
+        unsetenv("LD_PRELOAD");
         execvp(cmd_path, argv);
         _exit(127);
     }
