@@ -6,7 +6,12 @@ ATPD_BIN=${ATPD_BIN:-build/bin/atpd}
 command -v cc >/dev/null 2>&1 || { echo "C compiler required" >&2; exit 1; }
 
 root=$(mktemp -d)
+foreign_pid=
 cleanup() {
+    if [ -n "${foreign_pid:-}" ]; then
+        kill "$foreign_pid" >/dev/null 2>&1 || true
+        wait "$foreign_pid" 2>/dev/null || true
+    fi
     "$ATPD_BIN" -c "$root/atp.conf" stop >/dev/null 2>&1 || true
     rm -rf "$root"
 }
@@ -21,6 +26,36 @@ cat > "$root/mock_singbox.c" <<'EOF'
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+static int serve_native_api(int fd) {
+    static const unsigned char response[] =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/grpc-web+proto\r\n"
+        "Content-Length: 7\r\n\r\n"
+        "\x00\x00\x00\x00\x02\x10\x01";
+    char request[2048];
+    size_t used = 0;
+
+    while (used < sizeof(request) - 1) {
+        ssize_t size = recv(fd, request + used, sizeof(request) - 1 - used, 0);
+        if (size <= 0) return -1;
+        used += (size_t)size;
+        request[used] = '\0';
+        char *header_end = strstr(request, "\r\n\r\n");
+        if (header_end) {
+            if (!strstr(request, "POST /daemon.StartedService/SubscribeStatus ")) return -1;
+            if (used >= (size_t)(header_end - request) + 4 + 11) break;
+        }
+    }
+
+    size_t sent = 0;
+    while (sent < sizeof(response) - 1) {
+        ssize_t size = send(fd, response + sent, sizeof(response) - 1 - sent, 0);
+        if (size <= 0) return -1;
+        sent += (size_t)size;
+    }
+    return 0;
+}
 
 static void log_command(int argc, char **argv) {
     const char *path = getenv("MOCK_LOG");
@@ -46,6 +81,8 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[1], "check")) return fail_config && *fail_config ? 1 : 0;
     if (!strcmp(argv[1], "tools")) return 64;
     if (!strcmp(argv[1], "run")) {
+        const char *exit_during_ready = getenv("MOCK_EXIT_DURING_READY");
+        if (exit_during_ready && *exit_during_ready) return 42;
         const char *fail_ready = getenv("MOCK_FAIL_READY");
         if (fail_ready && *fail_ready) {
             pause();
@@ -61,13 +98,47 @@ int main(int argc, char **argv) {
             .sin_addr.s_addr = htonl(INADDR_LOOPBACK)
         };
         if (fd < 0 || bind(fd, (struct sockaddr *)&addr, sizeof(addr)) || listen(fd, 8)) return 1;
-        pause();
-        return 0;
+        for (;;) {
+            int client = accept(fd, NULL, NULL);
+            if (client >= 0) {
+                serve_native_api(client);
+                close(client);
+            }
+        }
     }
     return 0;
 }
 EOF
 cc -O2 -o "$root/bin/sing-box" "$root/mock_singbox.c"
+
+cat > "$root/foreign_listener.c" <<'EOF'
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc != 3) return 2;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    struct sockaddr_in addr = {
+        .sin_family = AF_INET,
+        .sin_port = htons((unsigned short)atoi(argv[1])),
+        .sin_addr.s_addr = htonl(INADDR_LOOPBACK)
+    };
+    if (fd < 0 || bind(fd, (struct sockaddr *)&addr, sizeof(addr)) || listen(fd, 8)) return 1;
+    FILE *ready = fopen(argv[2], "w");
+    if (!ready) return 1;
+    fputs("ready\n", ready);
+    fclose(ready);
+    for (;;) {
+        int client = accept(fd, NULL, NULL);
+        if (client >= 0) close(client);
+    }
+}
+EOF
+cc -O2 -o "$root/foreign-listener" "$root/foreign_listener.c"
 
 # Let lifecycle checks run in unprivileged CI containers that cannot subscribe
 # to XFRM multicast groups; production behavior is unchanged.
@@ -121,6 +192,7 @@ printf '%s\n' '{"inbounds":[]}' > "$root/config.json"
 run_atp() {
     env LD_PRELOAD="$preload" MOCK_LOG="$root/commands" MOCK_API_PORT=19080 \
         MOCK_FAIL_CONFIG="${MOCK_FAIL_CONFIG:-}" MOCK_FAIL_READY="${MOCK_FAIL_READY:-}" \
+        MOCK_EXIT_DURING_READY="${MOCK_EXIT_DURING_READY:-}" \
         "$ATPD_BIN" -c "$root/atp.conf" "$@"
 }
 
@@ -172,8 +244,49 @@ fi
 grep -q "Daemon failed to start" "$root/ready-fail.err"
 run_atp stop >/dev/null 2>&1 || true
 
+printf '%s\n' '=== foreign TCP listener cannot satisfy Native API readiness ==='
+cat > "$root/atp.conf" <<EOF
+DATA_DIR=$root
+API_PORT=19081
+SERVICE_START_TIMEOUT=2
+EOF
+"$root/foreign-listener" 19081 "$root/foreign.ready" &
+foreign_pid=$!
+while [ ! -s "$root/foreign.ready" ]; do
+    kill -0 "$foreign_pid"
+done
+if MOCK_FAIL_READY=1 run_atp start >"$root/foreign-fail.out" 2>"$root/foreign-fail.err"; then
+    echo "foreign listener falsely satisfied readiness" >&2; exit 1
+fi
+kill -0 "$foreign_pid"
+kill "$foreign_pid"
+wait "$foreign_pid" 2>/dev/null || true
+foreign_pid=
+! grep -q "Daemon started successfully" "$root/foreign-fail.out"
+grep -q "Daemon failed to start" "$root/foreign-fail.err"
+run_atp stop >/dev/null 2>&1 || true
+cat > "$root/atp.conf" <<EOF
+DATA_DIR=$root
+API_PORT=19080
+SERVICE_START_TIMEOUT=2
+EOF
+
+printf '%s\n' '=== child exit during readiness fails startup ==='
+if MOCK_EXIT_DURING_READY=1 run_atp start >"$root/child-exit.out" 2>"$root/child-exit.err"; then
+    echo "exited child falsely satisfied readiness" >&2; exit 1
+fi
+! grep -q "Daemon started successfully" "$root/child-exit.out"
+grep -q "Daemon failed to start" "$root/child-exit.err"
+run_atp stop >/dev/null 2>&1 || true
+
 printf '%s\n' '=== restart stops before a failing config check ==='
-run_atp start >"$root/before-failed-restart.out" 2>"$root/before-failed-restart.err"
+if ! run_atp start >"$root/before-failed-restart.out" 2>"$root/before-failed-restart.err"; then
+    cat "$root/before-failed-restart.out" "$root/before-failed-restart.err" >&2
+    [ ! -r "$root/run/atp.log" ] || cat "$root/run/atp.log" >&2
+    [ ! -r "$root/sing-box.log" ] || cat "$root/sing-box.log" >&2
+    echo "setup start for failed restart test did not become ready" >&2
+    exit 1
+fi
 if MOCK_FAIL_CONFIG=1 run_atp restart >"$root/failed-restart.out" 2>"$root/failed-restart.err"; then
     echo "restart unexpectedly succeeded with invalid config" >&2; exit 1
 fi

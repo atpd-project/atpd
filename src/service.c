@@ -30,11 +30,36 @@
 #include <libgen.h>
 #include "async_validate.h"
 #include "netlink.h"
+#include "singbox_api.h"
 
 /* Forward declarations */
 void service_schedule_retry(service_ctx_t *ctx);
+static void service_unlink_pid(service_ctx_t *ctx);
 
 #define MAX_LOG_SIZE (10 * 1024 * 1024)
+
+typedef struct {
+    char host[64];
+    char secret[128];
+} service_native_probe_config_t;
+
+static int service_set_native_probe_config(service_ctx_t *ctx,
+                                           const atp_config_t *cfg) {
+    service_native_probe_config_t *probe_config;
+
+    if (!ctx || !cfg) return -1;
+    probe_config = ctx->validate_ctx;
+    if (!probe_config) {
+        probe_config = calloc(1, sizeof(*probe_config));
+        if (!probe_config) return -1;
+        ctx->validate_ctx = probe_config;
+    }
+    snprintf(probe_config->host, sizeof(probe_config->host), "%s",
+             cfg->api.host[0] ? cfg->api.host : DEFAULT_API_HOST);
+    snprintf(probe_config->secret, sizeof(probe_config->secret), "%s",
+             cfg->api.secret);
+    return 0;
+}
 
 static int open_regular_file(const char *path, int flags, mode_t mode) {
     int fd = open(path, flags | O_NOFOLLOW | O_CLOEXEC, mode);
@@ -208,30 +233,44 @@ static int service_is_alive(service_ctx_t *ctx) {
            starttime == ctx->child_starttime_ticks;
 }
 
-static int service_probe_port(int port) {
-    int sock = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (sock < 0) return 0;
+static int service_starting_child_alive(service_ctx_t *ctx) {
+    int status;
+    pid_t waited;
 
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(port);
-    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (!service_is_alive(ctx)) return 0;
 
-    int ret = connect(sock, (struct sockaddr *)&sa, sizeof(sa));
-    if (ret == 0) {
-        close(sock);
-        return 1;
+    do {
+        waited = waitpid(ctx->child_pid, &status, WNOHANG);
+    } while (waited < 0 && errno == EINTR);
+
+    if (waited == 0) return 1;
+    if (waited == ctx->child_pid || (waited < 0 && errno == ECHILD)) {
+        ctx->child_pid = -1;
+        ctx->child_starttime_ticks = 0;
+        ctx->validated_pid = 0;
+        service_unlink_pid(ctx);
     }
-
-    if (errno == EINPROGRESS) {
-        int ok = wait_connect_result(sock, 200);
-        close(sock);
-        return ok;
-    }
-
-    close(sock);
     return 0;
+}
+
+static int service_probe_native_api(service_ctx_t *ctx) {
+    const service_native_probe_config_t *probe_config;
+    singbox_api_ctx_t api_ctx;
+    singbox_status_t status;
+
+    if (!ctx || !service_starting_child_alive(ctx)) return 0;
+
+    memset(&api_ctx, 0, sizeof(api_ctx));
+    probe_config = ctx->validate_ctx;
+    if (!probe_config) return 0;
+    snprintf(api_ctx.host, sizeof(api_ctx.host), "%s",
+             probe_config->host);
+    api_ctx.port = ctx->api_port > 0 ? ctx->api_port : DEFAULT_API_PORT;
+    snprintf(api_ctx.secret, sizeof(api_ctx.secret), "%s", probe_config->secret);
+    api_ctx.timeout_sec = 1;
+
+    if (singbox_api_get_status(&api_ctx, &status) != 0) return 0;
+    return service_starting_child_alive(ctx);
 }
 
 static int service_api_health_check(service_ctx_t *ctx) {
@@ -850,7 +889,7 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                 if (ctx->reactor && ctx->fail_count < ctx->max_failures) service_schedule_retry(ctx);
                 break;
             }
-            if (service_is_alive(ctx)) {
+            if (service_starting_child_alive(ctx)) {
                 if (!ctx->validated_pid) {
                     if (validate_process(ctx, ctx->child_pid)) {
                         ctx->validated_pid = 1;
@@ -863,8 +902,8 @@ void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
                     }
                 }
 
-                if (ctx->validated_pid && service_probe_port(ctx->api_port)) {
-                    LOG_INFO("Service: ready on port %d", ctx->api_port);
+                if (ctx->validated_pid && service_probe_native_api(ctx)) {
+                    LOG_INFO("Service: Native API ready on port %d", ctx->api_port);
                     ctx->state = SERVICE_RUNNING;
                     ctx->fail_count = 0;
                     ctx->running_healthy = 1;
@@ -994,6 +1033,7 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
     ctx->last_health_check = 0;
     ctx->retry_timer = NULL;
     ctx->health_timer = NULL;
+    if (service_set_native_probe_config(ctx, cfg) != 0) return -1;
 
     if (cfg->service.args[0]) {
         snprintf(ctx->service_args, sizeof(ctx->service_args), "%s", cfg->service.args);
@@ -1015,6 +1055,7 @@ int service_init(service_ctx_t *ctx, atp_config_t *cfg) {
 
 int service_apply_config(service_ctx_t *ctx, const atp_config_t *cfg) {
     if (!ctx || !cfg) return -1;
+    if (service_set_native_probe_config(ctx, cfg) != 0) return -1;
     ctx->api_port = cfg->api.port;
     ctx->max_failures = cfg->service.max_failures > 0 ? cfg->service.max_failures : 5;
     ctx->start_timeout_sec = cfg->service.start_timeout_sec > 0 ? cfg->service.start_timeout_sec : 30;
@@ -1160,6 +1201,8 @@ void service_destroy(service_ctx_t *ctx) {
     if (service_stop_sync(ctx) != 0) {
         LOG_WARN("Service: synchronous shutdown reported an error");
     }
+    free(ctx->validate_ctx);
+    ctx->validate_ctx = NULL;
     free(ctx);
 }
 
