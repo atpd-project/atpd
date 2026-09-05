@@ -4,6 +4,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* This test is built with the release CFLAGS, including NDEBUG. */
+#undef assert
+#define assert(condition) do { \
+    if (!(condition)) { \
+        fprintf(stderr, "assertion failed at %s:%d: %s\n", \
+                __FILE__, __LINE__, #condition); \
+        abort(); \
+    } \
+} while (0)
+
 static char *render_with_pid(pid_t pid) {
     status_snapshot_t snapshot = {0};
     snapshot.emoji_enabled = true;
@@ -34,6 +44,7 @@ static char *render_with_native_api(bool traffic_available) {
     snapshot.api_port = 9080;
     snapshot.singbox_pid = 30303;
     snapshot.singbox_state = SERVICE_RUNNING;
+    snapshot.singbox_healthy = true;
     snapshot.singbox_uptime_sec = 10;
     snapshot.singbox_fd_count = 8;
     snapshot.singbox_thread_count = 4;
@@ -46,6 +57,34 @@ static char *render_with_native_api(bool traffic_available) {
     snapshot.native_api.status.traffic_available = traffic_available;
     snprintf(snapshot.native_api.version, sizeof(snapshot.native_api.version), "1.12.0");
     snprintf(snapshot.native_api.clash_mode, sizeof(snapshot.native_api.clash_mode), "Rule");
+
+    char *buffer = NULL;
+    size_t size = 0;
+    FILE *stream = open_memstream(&buffer, &size);
+    assert(stream != NULL);
+    status_render_snapshot(stream, true, &snapshot);
+    if (fclose(stream) != 0) abort();
+    assert(size > 0);
+    return buffer;
+}
+
+static char *render_service_state(service_state_t state, pid_t pid, bool healthy) {
+    status_snapshot_t snapshot = {0};
+    snapshot.singbox_state = state;
+    snapshot.singbox_pid = pid;
+    snapshot.singbox_healthy = healthy;
+    snapshot.singbox_uptime_sec = -1;
+    snapshot.singbox_fd_count = -1;
+    snapshot.singbox_thread_count = -1;
+    snapshot.singbox_rss_kb = -1;
+    snapshot.singbox_hwm_kb = -1;
+    snapshot.singbox_cpu_percent = -1;
+    snapshot.atpd_uptime_sec = -1;
+    snapshot.atpd_fd_count = -1;
+    snapshot.atpd_thread_count = -1;
+    snapshot.atpd_rss_kb = -1;
+    snapshot.atpd_hwm_kb = -1;
+    snapshot.cpu_temperature_c = -1;
 
     char *buffer = NULL;
     size_t size = 0;
@@ -76,6 +115,7 @@ int main(void) {
     summary_snapshot.atpd_rss_kb = 1024;
     summary_snapshot.singbox_pid = 30303;
     summary_snapshot.singbox_state = SERVICE_RUNNING;
+    summary_snapshot.singbox_healthy = true;
     summary_snapshot.singbox_uptime_sec = 1;
     summary_snapshot.singbox_rss_kb = 2048;
     snprintf(summary_snapshot.kernel_release, sizeof(summary_snapshot.kernel_release), "6.1.0-test");
@@ -86,7 +126,7 @@ int main(void) {
     status_render_summary(summary_stream, &summary_snapshot);
     if (fclose(summary_stream) != 0) abort();
     assert(strstr(summary, "ATPD:      RUNNING (PID: 10101)") != NULL);
-    assert(strstr(summary, "sing-box:  RUNNING (PID: 30303)") != NULL);
+    assert(strstr(summary, "sing-box:  RUNNING / healthy (PID: 30303)") != NULL);
     assert(strstr(summary, "Kernel:    6.1.0-test") != NULL);
     assert(strstr(summary, "Data path: sing-box ebpf inbound") != NULL);
 
@@ -100,10 +140,25 @@ int main(void) {
     assert(strstr(standby, "STANDBY (Native API Traffic)") != NULL);
     assert(strstr(active, "owner snapshot unavailable") == NULL);
 
+    char *healthy = render_service_state(SERVICE_RUNNING, 40401, true);
+    char *unhealthy = render_service_state(SERVICE_RUNNING, 40402, false);
+    char *failed = render_service_state(SERVICE_FAILED, 40403, false);
+    char *starting = render_service_state(SERVICE_STARTING, 40404, false);
+    assert(strstr(healthy, "RUNNING / healthy") != NULL);
+    assert(strstr(healthy, "RUNNING / unhealthy") == NULL);
+    assert(strstr(unhealthy, "RUNNING / unhealthy") != NULL);
+    assert(strstr(failed, "FAILED") != NULL);
+    assert(strstr(failed, "40403") != NULL);
+    assert(strstr(starting, "STARTING") != NULL);
+
     free(first);
     free(second);
     free(summary);
     free(active);
     free(standby);
+    free(healthy);
+    free(unhealthy);
+    free(failed);
+    free(starting);
     return 0;
 }

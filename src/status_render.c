@@ -42,14 +42,31 @@ static void format_int(int value, char *buf, size_t size) {
     else snprintf(buf, size, "%d", value);
 }
 
-static const char *service_state_name(service_state_t state) {
-    switch (state) {
-        case SERVICE_STARTING: return "STARTING";
-        case SERVICE_RUNNING: return "RUNNING";
-        case SERVICE_FAILED: return "FAILED";
-        case SERVICE_STOPPING: return "STOPPING";
-        default: return "STOPPED";
+static const char *service_display_state(const status_snapshot_t *snapshot) {
+    switch (snapshot->singbox_state) {
+        case SERVICE_RUNNING:
+            return snapshot->singbox_healthy ? "RUNNING / healthy" :
+                                               "RUNNING / unhealthy";
+        case SERVICE_STARTING:
+            return "STARTING";
+        case SERVICE_FAILED:
+            return "FAILED";
+        case SERVICE_STOPPING:
+            return "STOPPING";
+        default:
+            return "STOPPED";
     }
+}
+
+static const char *service_display_color(const status_snapshot_t *snapshot) {
+    if (snapshot->singbox_state == SERVICE_RUNNING) {
+        return snapshot->singbox_healthy ? COLOR_GREEN : COLOR_YELLOW;
+    }
+    if (snapshot->singbox_state == SERVICE_STARTING ||
+        snapshot->singbox_state == SERVICE_STOPPING) {
+        return COLOR_YELLOW;
+    }
+    return COLOR_RED;
 }
 
 static void render_atpd(ui_render_ctx_t *ui, const status_snapshot_t *snapshot) {
@@ -76,8 +93,9 @@ static void render_atpd(ui_render_ctx_t *ui, const status_snapshot_t *snapshot) 
 static void render_proxy(ui_render_ctx_t *ui, const status_snapshot_t *snapshot) {
     ui_table_begin(ui);
     ui_table_header(ui, "PROXY CORE");
+    ui_table_row_color(ui, "STATUS", service_display_state(snapshot),
+                       service_display_color(snapshot));
     if (snapshot->singbox_pid <= 0) {
-        ui_table_row_color(ui, "STATUS", "sing-box (STOPPED)", COLOR_RED);
         ui_table_end(ui);
         return;
     }
@@ -97,9 +115,8 @@ static void render_proxy(ui_render_ctx_t *ui, const status_snapshot_t *snapshot)
         snprintf(goroutines, sizeof(goroutines), "N/A");
     }
 
-    ui_table_row_color(ui, ui_emoji_service(ui, 1), "sing-box", COLOR_GREEN);
     ui_table_subrow_int(ui, "├─", "PID", snapshot->singbox_pid);
-    ui_table_subrow(ui, "├─", "State", service_state_name(snapshot->singbox_state));
+    ui_table_subrow(ui, "├─", "State", service_display_state(snapshot));
     ui_table_subrow(ui, "├─", "Uptime", uptime);
     ui_table_subrow(ui, "├─", "Memory", rss);
     ui_table_subrow(ui, "├─", "Peak Memory", hwm);
@@ -218,9 +235,7 @@ void status_render_summary(FILE *out, const status_snapshot_t *snapshot) {
     fprintf(target, "  ATPD:      %s", snapshot->daemon_running ? "RUNNING" : "STOPPED");
     if (snapshot->atpd_pid > 0) fprintf(target, " (PID: %d)", snapshot->atpd_pid);
     fprintf(target, ", uptime %s, RSS %s\n", atpd_uptime, atpd_rss);
-    bool singbox_running = snapshot->singbox_pid > 0 &&
-                           snapshot->singbox_state == SERVICE_RUNNING;
-    fprintf(target, "  sing-box:  %s", singbox_running ? "RUNNING" : "STOPPED");
+    fprintf(target, "  sing-box:  %s", service_display_state(snapshot));
     if (snapshot->singbox_pid > 0) fprintf(target, " (PID: %d)", snapshot->singbox_pid);
     fprintf(target, ", uptime %s, memory %s\n", singbox_uptime, singbox_rss);
     fprintf(target, "  Kernel:    %s\n",

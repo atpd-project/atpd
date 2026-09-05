@@ -22,7 +22,21 @@
 #include <errno.h>
 
 #define API_REFRESH_INTERVAL_MS 1000
-#define API_SNAPSHOT_STALE_MS 3000
+#define API_REFRESH_RPC_COUNT 3
+/* Each local Native API RPC has a bounded 1s connect wait and 1s socket I/O
+ * timeout.  A snapshot must survive one complete serial refresh round, the
+ * refresh wait, and a small scheduling margin. */
+#define API_REFRESH_RPC_BUDGET_MS 2000
+#define API_SNAPSHOT_STALE_MARGIN_MS 1000
+#define API_SNAPSHOT_STALE_MS \
+    (API_REFRESH_INTERVAL_MS + \
+     API_REFRESH_RPC_COUNT * API_REFRESH_RPC_BUDGET_MS + \
+     API_SNAPSHOT_STALE_MARGIN_MS)
+
+_Static_assert(API_SNAPSHOT_STALE_MS >
+               API_REFRESH_INTERVAL_MS +
+               API_REFRESH_RPC_COUNT * API_REFRESH_RPC_BUDGET_MS,
+               "snapshot stale threshold must exceed a full refresh cycle");
 
 _Static_assert(sizeof(api_snapshot_t) <= PIPE_BUF,
                "api snapshot must fit in one atomic pipe write");

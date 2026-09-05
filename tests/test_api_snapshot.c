@@ -3,9 +3,12 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static int status_calls;
 static int failures;
+static int fail_second_status = 1;
+static useconds_t rpc_delay_us;
 
 #define CHECK(condition) do { \
     if (!(condition)) { \
@@ -26,19 +29,24 @@ void singbox_api_cleanup(singbox_api_ctx_t *ctx) { (void)ctx; }
 int singbox_api_health_check(singbox_api_ctx_t *ctx) { (void)ctx; return 0; }
 int singbox_api_get_status(singbox_api_ctx_t *ctx, singbox_status_t *status) {
     (void)ctx;
+    if (rpc_delay_us) usleep(rpc_delay_us);
     status_calls++;
-    if (status_calls == 2) return -1;
+    if (fail_second_status && status_calls == 2) return -1;
     memset(status, 0, sizeof(*status));
     status->goroutines = status_calls == 1 ? 11 : 13;
     status->traffic_available = status_calls >= 3;
     return 0;
 }
 int singbox_api_get_version(singbox_api_ctx_t *ctx, char *version, size_t size) {
-    (void)ctx; snprintf(version, size, "1.12.%d", status_calls); return 0;
+    (void)ctx;
+    if (rpc_delay_us) usleep(rpc_delay_us);
+    snprintf(version, size, "1.12.%d", status_calls);
+    return 0;
 }
 int singbox_api_get_clash_mode_status(singbox_api_ctx_t *ctx,
                                       singbox_clash_mode_status_t *status) {
     (void)ctx;
+    if (rpc_delay_us) usleep(rpc_delay_us);
     memset(status, 0, sizeof(*status));
     snprintf(status->current_mode, sizeof(status->current_mode), "Rule");
     return 0;
@@ -89,6 +97,38 @@ static void stop_cb(reactor_t *reactor, reactor_timer_t *timer, void *userdata) 
     (void)timer; (void)userdata; reactor_stop(reactor);
 }
 
+typedef struct {
+    api_ctx_t *api;
+    int armed;
+} delayed_sample_t;
+
+static void delayed_stale_check_cb(reactor_t *reactor, reactor_timer_t *timer,
+                                   void *userdata) {
+    (void)timer;
+    delayed_sample_t *sample = userdata;
+    api_snapshot_t snapshot;
+    CHECK(api_get_snapshot(sample->api, &snapshot) == 0);
+    CHECK(snapshot.generation == 1);
+    CHECK(snapshot.valid);
+    CHECK(snapshot.version_valid);
+    CHECK(snapshot.clash_mode_valid);
+    reactor_stop(reactor);
+}
+
+static void arm_delayed_stale_check_cb(reactor_t *reactor,
+                                       reactor_timer_t *timer,
+                                       void *userdata) {
+    delayed_sample_t *sample = userdata;
+    api_snapshot_t snapshot;
+    CHECK(api_get_snapshot(sample->api, &snapshot) == 0);
+    if (snapshot.generation < 1) return;
+
+    sample->armed = 1;
+    CHECK(reactor_cancel_timer(reactor, timer) == 0);
+    CHECK(reactor_add_timer(reactor, 6500, 0, delayed_stale_check_cb,
+                            sample) != NULL);
+}
+
 int main(void) {
     reactor_t *reactor = reactor_create();
     CHECK(reactor != NULL);
@@ -111,7 +151,7 @@ int main(void) {
     CHECK(reactor_add_timer(reactor, 4000, 0, stop_cb, NULL) != NULL);
     CHECK(reactor_run(reactor) == 0);
 
-    api.snapshot.updated_at_ms = reactor_now_ms() - 4000;
+    api.snapshot.updated_at_ms = reactor_now_ms() - 9000;
     api_snapshot_t stale;
     CHECK(api_get_snapshot(&api, &stale) == 0);
     CHECK(!stale.valid);
@@ -125,6 +165,27 @@ int main(void) {
     CHECK(reactor_add_timer(reactor, 50, 0, stop_cb, NULL) != NULL);
     CHECK(reactor_run(reactor) == 0);
     CHECK(status_calls == calls_after_cleanup);
+    reactor_destroy(reactor);
+
+    /* A healthy refresh round may legitimately approach the serial RPC
+     * deadlines.  Three 1.9s RPCs plus the 1s refresh wait create a 6.7s
+     * publication gap; the prior snapshot must remain valid during it. */
+    status_calls = 0;
+    fail_second_status = 0;
+    rpc_delay_us = 1900000;
+    reactor = reactor_create();
+    CHECK(reactor != NULL);
+    if (!reactor) return 1;
+    api_ctx_t delayed_api;
+    CHECK(api_init(&delayed_api, &config) == 0);
+    CHECK(api_start_with_reactor(&delayed_api, reactor) == 0);
+    delayed_sample_t delayed = { .api = &delayed_api };
+    CHECK(reactor_add_timer(reactor, 100, 100,
+                            arm_delayed_stale_check_cb, &delayed) != NULL);
+    CHECK(reactor_add_timer(reactor, 15000, 0, stop_cb, NULL) != NULL);
+    CHECK(reactor_run(reactor) == 0);
+    CHECK(delayed.armed);
+    api_cleanup(&delayed_api);
 
     reactor_destroy(reactor);
     return failures ? 1 : 0;
