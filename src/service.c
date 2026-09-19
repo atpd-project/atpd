@@ -300,7 +300,32 @@ static void free_service_args(char **args) {
     free(args);
 }
 
+static int service_args_have_custom_config(const char *value, int *has_custom_c) {
+    char copy[512];
+    char *saveptr = NULL;
+
+    *has_custom_c = 0;
+    if (strpbrk(value, "'\"\\")) {
+        LOG_ERROR("Service: SERVICE_ARGS does not support shell quoting or escaping");
+        return -1;
+    }
+
+    snprintf(copy, sizeof(copy), "%s", value);
+    for (char *token = strtok_r(copy, " ", &saveptr); token;
+         token = strtok_r(NULL, " ", &saveptr)) {
+        if (strcmp(token, "-c") == 0 || strcmp(token, "-C") == 0) {
+            *has_custom_c = 1;
+        }
+    }
+    return 0;
+}
+
 static char** build_service_args(service_ctx_t *ctx) {
+    int has_custom_c;
+    if (service_args_have_custom_config(ctx->service_args, &has_custom_c) != 0) {
+        return NULL;
+    }
+
     char **args = calloc(30, sizeof(char *));
     if (!args) return NULL;
 
@@ -325,8 +350,7 @@ static char** build_service_args(service_ctx_t *ctx) {
         args[idx++] = arg;
     }
 
-    /* Check if user already provided -c / -C in service_args */
-    int has_custom_c = (ctx->service_args[0] && (strstr(ctx->service_args, "-c") || strstr(ctx->service_args, "-C")));
+    /* Add the default only when no exact -c / -C token was provided. */
     if (!has_custom_c && ctx->conf_path[0]) {
         arg = strdup("-c");
         if (!arg) { free_service_args(args); return NULL; }
@@ -356,8 +380,8 @@ static char** build_service_args(service_ctx_t *ctx) {
     return args;
 }
 
-static void set_service_environment(service_ctx_t *ctx) {
-    if (!ctx->service_env[0]) return;
+static int set_service_environment(service_ctx_t *ctx) {
+    if (!ctx->service_env[0]) return 0;
 
     char env_copy[512];
     snprintf(env_copy, sizeof(env_copy), "%s", ctx->service_env);
@@ -367,12 +391,29 @@ static void set_service_environment(service_ctx_t *ctx) {
 
     while (token) {
         char *eq = strchr(token, '=');
-        if (eq) {
-            *eq = '\0';
-            setenv(token, eq + 1, 1);
+        if (!eq || eq == token ||
+            !((*token >= 'A' && *token <= 'Z') ||
+              (*token >= 'a' && *token <= 'z') || *token == '_')) {
+            LOG_ERROR("Service: invalid SERVICE_ENV token '%s' (expected KEY=VALUE)", token);
+            return -1;
+        }
+        for (char *p = token + 1; p < eq; p++) {
+            if (!((*p >= 'A' && *p <= 'Z') ||
+                  (*p >= 'a' && *p <= 'z') ||
+                  (*p >= '0' && *p <= '9') || *p == '_')) {
+                LOG_ERROR("Service: invalid SERVICE_ENV key in token '%s'", token);
+                return -1;
+            }
+        }
+        *eq = '\0';
+        if (setenv(token, eq + 1, 1) != 0) {
+            LOG_ERROR("Service: failed to set SERVICE_ENV key '%s': %s",
+                      token, strerror(errno));
+            return -1;
         }
         token = strtok_r(NULL, " ", &saveptr);
     }
+    return 0;
 }
 
 static int service_spawn(service_ctx_t *ctx) {
@@ -490,7 +531,9 @@ static int service_spawn(service_ctx_t *ctx) {
         }
 
         unsetenv("LD_PRELOAD");
-        set_service_environment(ctx);
+        if (set_service_environment(ctx) != 0) {
+            _exit(127);
+        }
 
         if (ctx->work_dir[0]) {
             if (chdir(ctx->work_dir) != 0) {
