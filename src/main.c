@@ -698,7 +698,10 @@ static int do_stop(atp_options_t *opts) {
 
     if (read_pid_identity(pp, &identity) != 0) {
         if (errno == ENOENT) {
-            fprintf(stderr, "Daemon is not running (no PID file)\n");
+            if (opts->command != CMD_RESTART) {
+                fprintf(stderr, "Daemon is not running (no PID file)\n");
+            }
+            return 2;
         } else {
             fprintf(stderr, "Invalid or legacy PID file; refusing to signal\n");
         }
@@ -707,12 +710,20 @@ static int do_stop(atp_options_t *opts) {
 
     pid_t pid = identity.pid;
     if (!process_matches_identity(&identity)) {
+        if (opts->command == CMD_RESTART) {
+            unlink(pp);
+            return 2;
+        }
         fprintf(stderr, "Process %d identity does not match PID file (stale PID file)\n", pid);
         return 1;
     }
 
     if (kill(pid, SIGTERM) < 0) {
         if (errno == ESRCH) {
+            if (opts->command == CMD_RESTART) {
+                unlink(pp);
+                return 2;
+            }
             fprintf(stderr, "Process %d not found (stale PID file)\n", pid);
             return 1;
         } else {
@@ -761,7 +772,8 @@ static int do_stop(atp_options_t *opts) {
 
 static int do_restart(atp_options_t *opts) {
     printf("Restarting atpd...\n");
-    if (do_stop(opts) != 0) {
+    int stop_rc = do_stop(opts);
+    if (stop_rc == 1) {
         return 1;
     }
     return do_start(opts);
@@ -877,7 +889,7 @@ int main(int argc, char *argv[]) {
         case CMD_START:
             return do_start(&opts);
         case CMD_STOP:
-            return do_stop(&opts);
+            return do_stop(&opts) == 0 ? 0 : 1;
         case CMD_RESTART:
             return do_restart(&opts);
         case CMD_STATUS:

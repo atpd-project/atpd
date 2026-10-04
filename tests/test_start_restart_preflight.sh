@@ -334,6 +334,27 @@ grep -q "Daemon started successfully (PID: $pid)" "$root/restart.out"
 kill -0 "$pid"
 run_atp stop >/dev/null 2>&1 || true
 
+printf '%s\n' '=== restart starts daemon when not running ==='
+: > "$root/commands"
+run_atp restart >"$root/restart-not-running.out" 2>"$root/restart-not-running.err"
+check_line=$(grep -n -m1 "Checking sing-box configuration" "$root/restart-not-running.out" | cut -d: -f1 || true)
+start_line=$(grep -n -m1 "Starting atpd..." "$root/restart-not-running.out" | cut -d: -f1 || true)
+success_line=$(grep -n -m1 "Daemon started successfully" "$root/restart-not-running.out" | cut -d: -f1 || true)
+status_line=$(grep -n -m1 "Runtime status:" "$root/restart-not-running.out" | cut -d: -f1 || true)
+[ -n "$check_line" ] || { echo "check_line missing from restart-not-running.out" >&2; cat "$root/restart-not-running.out" >&2; exit 1; }
+[ -n "$start_line" ] || { echo "start_line missing from restart-not-running.out" >&2; cat "$root/restart-not-running.out" >&2; exit 1; }
+[ -n "$success_line" ] || { echo "success_line missing from restart-not-running.out" >&2; cat "$root/restart-not-running.out" >&2; exit 1; }
+[ -n "$status_line" ] || { echo "status_line missing from restart-not-running.out" >&2; cat "$root/restart-not-running.out" >&2; exit 1; }
+[ "$check_line" -lt "$start_line" ]
+[ "$start_line" -lt "$success_line" ]
+[ "$success_line" -lt "$status_line" ]
+! grep -q "Daemon stopped successfully" "$root/restart-not-running.out"
+! grep -q "Daemon is not running" "$root/restart-not-running.err"
+pid=$(read_atpd_pid "$root/run/atpd.pid")
+grep -q "Daemon started successfully (PID: $pid)" "$root/restart-not-running.out"
+kill -0 "$pid"
+run_atp stop >/dev/null 2>&1 || true
+
 printf '%s\n' '=== SIGHUP reload is transactional ==='
 cat > "$root/atp.conf" <<EOF
 DATA_DIR=$root
