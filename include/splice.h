@@ -22,10 +22,6 @@ typedef struct {
     bool pipe_initialized;
 } splice_state_t;
 
-/* API Functions */
-int atpd_splice_pipe_init(int pipe_fds[2]);
-void atpd_splice_pipe_cleanup(int pipe_fds[2]);
-
 /* State management */
 int atpd_splice_state_init(splice_state_t *state);
 void atpd_splice_state_cleanup(splice_state_t *state);
@@ -57,20 +53,5 @@ void atpd_splice_state_cleanup(splice_state_t *state);
 ssize_t atpd_bridge_splice_stateful(int fd_in, int fd_out,
                                      splice_state_t *state,
                                      size_t max_len);
-
-/**
- * Stateless splice API (deprecated).
- *
- * This version does NOT track pipe_pending and may not work correctly
- * with edge-triggered epoll under backpressure.
- *
- * DEPRECATED: Use atpd_bridge_splice_stateful instead.
- *
- * @deprecated Use atpd_bridge_splice_stateful with per-connection state.
- */
-#if defined(__GNUC__)
-__attribute__((deprecated("Use atpd_bridge_splice_stateful instead")))
-#endif
-ssize_t atpd_bridge_splice(int fd_in, int fd_out, int pipe_fds[2], size_t max_len);
 
 #endif
