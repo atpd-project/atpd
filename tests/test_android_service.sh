@@ -97,6 +97,11 @@ touch "${TEST_ROOT}/run/atpd.sock"
 run_service stop
 [ ! -e "${TEST_ROOT}/run/atpd.sock" ]
 
+sed -i 's/Goroutines  12/Goroutines: 12/' "${TEST_ROOT}/atpd"
+run_service start
+[ -e "${TEST_ROOT}/run/atpd.pid" ]
+run_service stop
+
 if FAKE_SINGBOX_CONFLICT=1 run_service start >/dev/null 2>&1; then
     echo "service accepted a conflicting sing-box process" >&2
     exit 1

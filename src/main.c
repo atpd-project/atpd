@@ -359,21 +359,6 @@ static int daemonize(pid_t *out_pid) {
     return 0;
 }
 
-static void on_signal(reactor_t *r, int sig, void *userdata) {
-    (void)userdata;
-    if (sig == SIGCHLD) {
-        service_sigchld_cb(r, sig, daemon_service);
-    } else if (sig == SIGHUP) {
-        reload_requested = 1;
-    } else if (sig == SIGUSR1) {
-        status_requested = 1;
-    } else {
-        shutdown_requested = 1;
-        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
-        reactor_stop(r);
-    }
-}
-
 static void reload_return_to_running_or_shutdown(void) {
     if (atpd_runtime_state_transition(ATPD_RUNTIME_STATE_RUNNING) == 0) return;
 
@@ -382,12 +367,7 @@ static void reload_return_to_running_or_shutdown(void) {
     if (daemon_reactor) reactor_stop(daemon_reactor);
 }
 
-static void on_idle(reactor_t *r, void *userdata) {
-    (void)r;
-    (void)userdata;
-
-    atpd_session_gc_process(r);
-
+static void process_config_reload(void) {
     if (reload_requested) {
         reload_requested = 0;
         if (!shutdown_requested && atpd_runtime_can_reload() &&
@@ -422,12 +402,40 @@ static void on_idle(reactor_t *r, void *userdata) {
             }
         }
     }
+}
 
+static void process_status_display(void) {
     if (status_requested && !shutdown_requested) {
         status_requested = 0;
         LOG_INFO("Processing status display...");
         status_show_to(stdout, true, &daemon_config, daemon_service, &daemon_api);
     }
+}
+
+static void on_signal(reactor_t *r, int sig, void *userdata) {
+    (void)userdata;
+    if (sig == SIGCHLD) {
+        service_sigchld_cb(r, sig, daemon_service);
+    } else if (sig == SIGHUP) {
+        reload_requested = 1;
+        process_config_reload();
+    } else if (sig == SIGUSR1) {
+        status_requested = 1;
+        process_status_display();
+    } else {
+        shutdown_requested = 1;
+        atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
+        reactor_stop(r);
+    }
+}
+
+static void on_idle(reactor_t *r, void *userdata) {
+    (void)r;
+    (void)userdata;
+
+    atpd_session_gc_process(r);
+    process_config_reload();
+    process_status_display();
 
     if (shutdown_requested) {
         LOG_INFO("Stopping reactor...");

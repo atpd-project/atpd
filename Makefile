@@ -64,6 +64,7 @@ UTILS_PROC_STAT_TEST = build/tests/test_utils_proc_stat
 SERVICE_CREDENTIALS_TEST = build/tests/test_service_credentials
 API_HOST_TEST = build/tests/test_api_host
 REACTOR_TIMERS_TEST = build/tests/test_reactor_timers
+SERVICE_PARSING_TEST = build/tests/test_service_parsing
 
 .PHONY: all test clean distclean install uninstall check-zig
 
@@ -73,7 +74,7 @@ check-zig: .zig-version
 
 all: check-zig $(TARGET)
 
-test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST) $(SERVICE_CREDENTIALS_TEST) $(API_HOST_TEST) $(REACTOR_TIMERS_TEST)
+test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST) $(SERVICE_CREDENTIALS_TEST) $(API_HOST_TEST) $(REACTOR_TIMERS_TEST) $(SERVICE_PARSING_TEST)
 	$(VPN_MODE_TEST)
 	$(API_SNAPSHOT_TEST)
 	$(LOGGER_SAFETY_TEST)
@@ -87,6 +88,7 @@ test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_
 	$(SERVICE_CREDENTIALS_TEST)
 	$(API_HOST_TEST)
 	$(REACTOR_TIMERS_TEST)
+	$(SERVICE_PARSING_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
 	sh tests/test_start_restart_preflight.sh
 	sh tests/test_android_service.sh
@@ -142,6 +144,10 @@ $(API_HOST_TEST): tests/test_api_host.c src/singbox_api.c
 $(REACTOR_TIMERS_TEST): tests/test_reactor_timers.c src/reactor.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBS)
+
+$(SERVICE_PARSING_TEST): tests/test_service_parsing.c src/logger.c src/utils.c src/version.c $(VERSION_HEADER)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/test_service_parsing.c src/logger.c src/utils.c src/version.c $(LIBS)
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR)

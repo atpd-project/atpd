@@ -112,7 +112,7 @@ start_daemon() {
            pid_matches "${SING_BOX_PID_FILE}" sing-box; then
             "${ATPD}" -c "${ATP_CONF}" -n status > "${RUN_DIR}/startup-status.log" 2>&1
             if grep -q "API Engine" "${RUN_DIR}/startup-status.log" &&
-               grep -Eq 'Goroutines[[:space:]]+[1-9][0-9]*' "${RUN_DIR}/startup-status.log"; then
+               grep -Eq 'Goroutines(:|[[:space:]])[[:space:]]*[1-9][0-9]*' "${RUN_DIR}/startup-status.log"; then
                 write_log "ready"
                 return 0
             fi

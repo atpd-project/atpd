@@ -1,6 +1,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <stddef.h>
+
+#include "reactor.h"
+#include "api.h"
+#include "netlink.h"
+#include "singbox_api.h"
+#include "service_credentials.h"
+
+void netlink_refresh_state(reactor_t *r) { (void)r; }
+int reactor_cancel_timer(reactor_t *r, reactor_timer_t *t) { (void)r; (void)t; return 0; }
+reactor_timer_t *reactor_add_timer(reactor_t *r, uint64_t d, uint64_t i, reactor_timer_cb cb, void *u) {
+    (void)r; (void)d; (void)i; (void)cb; (void)u; return NULL;
+}
+int api_get_snapshot(const api_ctx_t *c, api_snapshot_t *o) { (void)c; (void)o; return -1; }
+int singbox_api_get_status(singbox_api_ctx_t *c, singbox_status_t *o) { (void)c; (void)o; return -1; }
+int service_credentials_resolve(const char *u, const char *g, uid_t du, gid_t dg, service_credentials_t *cr) {
+    (void)u; (void)g; (void)du; (void)dg; (void)cr; return 0;
+}
 
 #include "../src/service.c"
 
