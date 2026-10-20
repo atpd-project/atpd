@@ -271,7 +271,8 @@ void service_rotate_log(service_ctx_t *ctx) {
     if (st.st_size < MAX_LOG_SIZE) return;
 
     now = time(NULL);
-    tm_info = localtime(&now);
+    struct tm tm_info_buf;
+    tm_info = localtime_r(&now, &tm_info_buf);
     if (!tm_info) {
         LOG_WARN("Service: failed to get localtime for log rotation");
         return;
@@ -467,30 +468,22 @@ static int service_spawn(service_ctx_t *ctx) {
             _exit(127);
         }
 
-        close(STDIN_FILENO);
-        close(STDOUT_FILENO);
-        close(STDERR_FILENO);
+        int null_fd = open("/dev/null", O_RDWR);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            dup2(null_fd, STDOUT_FILENO);
+            dup2(null_fd, STDERR_FILENO);
+            if (null_fd > STDERR_FILENO) close(null_fd);
+        }
 
         int log_fd = open_regular_file(ctx->log_path,
                                        O_WRONLY | O_CREAT | O_APPEND, 0640);
         if (log_fd >= 0) {
-            if (dup2(log_fd, STDOUT_FILENO) < 0) {
-                close(log_fd);
+            if (dup2(log_fd, STDOUT_FILENO) < 0 || dup2(log_fd, STDERR_FILENO) < 0) {
+                if (log_fd > STDERR_FILENO) close(log_fd);
                 _exit(127);
             }
-            if (dup2(log_fd, STDERR_FILENO) < 0) {
-                close(log_fd);
-                _exit(127);
-            }
-            close(log_fd);
-        } else {
-            int null_fd = open("/dev/null", O_RDWR);
-            if (null_fd >= 0) {
-                dup2(null_fd, STDIN_FILENO);
-                dup2(null_fd, STDOUT_FILENO);
-                dup2(null_fd, STDERR_FILENO);
-                close(null_fd);
-            }
+            if (log_fd > STDERR_FILENO) close(log_fd);
         }
 
         sigset_t empty_mask;
@@ -617,6 +610,11 @@ int service_validate_config(service_ctx_t *ctx) {
         dup2(pipe_fds[1], STDOUT_FILENO);
         dup2(pipe_fds[1], STDERR_FILENO);
         close(pipe_fds[1]);
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            if (devnull > STDERR_FILENO) close(devnull);
+        }
         unsetenv("LD_PRELOAD");
         execv(ctx->bin_path, args);
         _exit(127);

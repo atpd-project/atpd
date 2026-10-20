@@ -461,16 +461,16 @@ static int grpc_web_unary_call(const singbox_api_ctx_t *ctx, const char *path,
 
     unsigned char buf[8192];
     size_t used = 0;
-    while (used < sizeof(buf)) {
-        ssize_t n = recv(sock, buf + used, sizeof(buf) - used, 0);
+    while (used < sizeof(buf) - 1) {
+        ssize_t n = recv(sock, buf + used, sizeof(buf) - 1 - used, 0);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) break;
         used += (size_t)n;
+        buf[used] = '\0';
         const unsigned char *header_end = (const unsigned char *)memmem(buf, used, "\r\n\r\n", 4);
         if (!header_end) continue;
         size_t body = (size_t)(header_end - buf) + 4;
-        int chunked = memmem(buf, body, "transfer-encoding: chunked", 25) != NULL ||
-                      memmem(buf, body, "Transfer-Encoding: chunked", 25) != NULL;
+        int chunked = strcasestr((const char *)buf, "transfer-encoding: chunked") != NULL;
         size_t frame_offset = body;
         size_t frame_size = 0;
         if (chunked) {

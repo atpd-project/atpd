@@ -99,15 +99,20 @@ static void test_synthetic_tzdata_and_posix_fallback(void) {
     /* Test atp_timezone_init initialization */
     int rc = atp_timezone_init();
     assert(rc == 0);
+    (void)rc;
 
     char tz_name[64] = {0};
     rc = atp_timezone_get_name(tz_name, sizeof(tz_name));
     assert(rc == 0);
+    (void)rc;
     assert(strlen(tz_name) > 0);
     printf("  Current detected timezone: %s\n", tz_name);
 
     long offset = atp_timezone_get_offset_sec();
     printf("  Current timezone offset: %ld seconds (%+.1f hours)\n", offset, (double)offset / 3600.0);
+
+    unlink(mock_tzdata);
+    rmdir(TEST_RUN_DIR);
 
     printf("test_synthetic_tzdata_and_posix_fallback PASSED\n");
 }

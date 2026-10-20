@@ -569,8 +569,12 @@ static int query_daemon(const char *command) {
         if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) == 0) {
             break;
         }
+        int err = errno;
         close(fd);
         fd = -1;
+        if (err == ENOENT || err == ECONNREFUSED) {
+            return -1;
+        }
         usleep(50000);
     }
     if (fd < 0) return -1;
