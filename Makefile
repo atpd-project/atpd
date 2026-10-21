@@ -68,6 +68,7 @@ SERVICE_PARSING_TEST = build/tests/test_service_parsing
 NETLINK_TEST = build/tests/test_netlink
 TIMEZONE_TEST = build/tests/test_timezone
 VPN_BYPASS_CONFIG_TEST = build/tests/test_vpn_bypass_config
+VPN_BYPASS_RULES_TEST = build/tests/test_vpn_bypass_rules
 
 .PHONY: all test clean distclean install uninstall check-zig
 
@@ -77,7 +78,7 @@ check-zig: .zig-version
 
 all: check-zig $(TARGET)
 
-test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST) $(SERVICE_CREDENTIALS_TEST) $(API_HOST_TEST) $(REACTOR_TIMERS_TEST) $(SERVICE_PARSING_TEST) $(NETLINK_TEST) $(TIMEZONE_TEST) $(VPN_BYPASS_CONFIG_TEST)
+test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_TEST) $(RESULT_TEST) $(VERSION_TEST) $(CONFIG_VALUE_TEST) $(CONTEXT_TEST) $(CLI_TEST) $(STATUS_RENDER_TEST) $(UTILS_PROC_STAT_TEST) $(SERVICE_CREDENTIALS_TEST) $(API_HOST_TEST) $(REACTOR_TIMERS_TEST) $(SERVICE_PARSING_TEST) $(NETLINK_TEST) $(TIMEZONE_TEST) $(VPN_BYPASS_CONFIG_TEST) $(VPN_BYPASS_RULES_TEST)
 	$(VPN_MODE_TEST)
 	$(API_SNAPSHOT_TEST)
 	$(LOGGER_SAFETY_TEST)
@@ -95,6 +96,7 @@ test: check-zig $(TARGET) $(VPN_MODE_TEST) $(API_SNAPSHOT_TEST) $(LOGGER_SAFETY_
 	$(NETLINK_TEST)
 	$(TIMEZONE_TEST)
 	$(VPN_BYPASS_CONFIG_TEST)
+	$(VPN_BYPASS_RULES_TEST)
 	sh tests/test_config_validation.sh $(TARGET)
 	sh tests/test_start_restart_preflight.sh
 	sh tests/test_android_service.sh
@@ -162,6 +164,10 @@ $(NETLINK_TEST): tests/test_netlink.c src/netlink.c src/logger.c src/utils.c src
 $(TIMEZONE_TEST): tests/test_timezone.c src/utils.c src/logger.c src/version.c $(VERSION_HEADER)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/test_timezone.c src/utils.c src/logger.c src/version.c $(LIBS)
+
+$(VPN_BYPASS_RULES_TEST): tests/test_vpn_bypass_rules.c src/netlink.c src/logger.c src/utils.c src/version.c src/reactor.c src/atpd_context.c $(VERSION_HEADER)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/test_vpn_bypass_rules.c src/logger.c src/utils.c src/version.c src/reactor.c src/atpd_context.c $(LIBS)
 
 $(VPN_BYPASS_CONFIG_TEST): tests/test_vpn_bypass_config.c src/config.c src/config_validator.c src/yyjson.c src/logger.c src/utils.c src/version.c $(VERSION_HEADER)
 	@mkdir -p $(dir $@)

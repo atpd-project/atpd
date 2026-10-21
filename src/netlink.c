@@ -208,12 +208,11 @@ static int netlink_recv_all_with_timeout(int fd, uint32_t expected_seq,
             if (h->nlmsg_type == NLMSG_ERROR) {
                 struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(h);
                 if (err->error != 0) {
-                    if (err->error == -EEXIST || err->error == EEXIST) {
+                    if (err->error == -EEXIST) {
                         done = 1;
                         break;
                     }
-                    int err_no = err->error < 0 ? -err->error : err->error;
-                    LOG_WARN("Netlink: error response %d: %s", err->error, strerror(err_no));
+                    LOG_ERROR("Netlink: error response %d: %s", err->error, strerror(-err->error));
                     free(buf);
                     return -1;
                 }
@@ -787,6 +786,14 @@ static int parser_rule_dump(struct nlmsghdr *h, void *userdata) {
                 dst_addr = RTA_DATA(rta);
                 dst_addr_len = (size_t)RTA_PAYLOAD(rta);
                 break;
+            case FRA_SUPPRESS_PREFIXLEN:
+            case FRA_SUPPRESS_IFGROUP:
+                /* The kernel dumps these on every rule; 0xffffffff means "not set". */
+                if (RTA_PAYLOAD(rta) < (int)sizeof(uint32_t) ||
+                    *(uint32_t *)RTA_DATA(rta) != UINT32_MAX) {
+                    has_other_selectors = 1;
+                }
+                break;
             case FRA_PROTOCOL:
             case FRA_PAD:
             case FRA_UNSPEC:
@@ -862,9 +869,13 @@ static void vpn_bypass_sync(int ready) {
         };
 
         netlink_drain_socket(g_sync_fd);
-        if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) == 0) {
+        /* A failed dump must not look like "no physical table": that would delete working rules. */
+        if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0 ||
             netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                          parser_route_find, &r_ctx, 500);
+                                          parser_route_find, &r_ctx, 500) < 0) {
+            LOG_WARN("VPN bypass: route dump failed, leaving rules unchanged");
+            pthread_mutex_unlock(&g_nl_mutex);
+            return;
         }
 
         if (!r_ctx.found_candidate) {
@@ -901,9 +912,12 @@ static void vpn_bypass_sync(int ready) {
         };
 
         netlink_drain_socket(g_sync_fd);
-        if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) == 0) {
+        if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0 ||
             netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                          parser_rule_dump, &rule_ctx, 500);
+                                          parser_rule_dump, &rule_ctx, 500) < 0) {
+            LOG_WARN("VPN bypass: rule dump failed, leaving rules unchanged");
+            pthread_mutex_unlock(&g_nl_mutex);
+            return;
         }
     }
 
