@@ -38,6 +38,8 @@ static const config_key_spec_t CONFIG_SCHEMA[] = {
     {"VPN_CLASH_MODE", CONFIG_VALUE_STRING, true, "VPN_TARGET_MODE", false},
     {"VPN_FALLBACK_MODE", CONFIG_VALUE_STRING, false, "VPN_FALLBACK_MODE", false},
     {"VPN_DEFAULT_MODE", CONFIG_VALUE_STRING, true, "VPN_FALLBACK_MODE", false},
+    {"VPN_BYPASS_ROUTES", CONFIG_VALUE_STRING, false, "VPN_BYPASS_ROUTES", true},
+    {"VPN_BYPASS_PREF", CONFIG_VALUE_INT, false, "VPN_BYPASS_PREF", false},
     {NULL, 0, false, NULL, false}
 };
 

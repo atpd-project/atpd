@@ -20,6 +20,7 @@
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
+#include <ctype.h>
 
 #define SAFE_PATH_MAX (PATH_MAX + 256)
 #define DEFAULT_SERVICE_RESTART_DELAY_SEC 2
@@ -122,6 +123,7 @@ void config_set_defaults(atp_config_t *cfg) {
     cfg->interface.vpn_auto_mode = true;
     snprintf(cfg->interface.vpn_target_mode, sizeof(cfg->interface.vpn_target_mode), "Google VPN");
     snprintf(cfg->interface.vpn_fallback_mode, sizeof(cfg->interface.vpn_fallback_mode), "Rule");
+    cfg->interface.vpn_bypass_pref = 12400;
 
     cfg->service.restart_delay_sec = DEFAULT_SERVICE_RESTART_DELAY_SEC;
     cfg->service.start_timeout_sec = SERVICE_DEFAULT_START_TIMEOUT_SEC;
@@ -273,6 +275,112 @@ done:
     return result;
 }
 
+static int parse_vpn_bypass_routes(const char *v, atp_config_t *cfg) {
+    if (!v || !cfg) return -1;
+
+    cfg->interface.vpn_bypass_route_count = 0;
+    memset(cfg->interface.vpn_bypass_routes, 0, sizeof(cfg->interface.vpn_bypass_routes));
+
+    while (*v && (isspace((unsigned char)*v) || *v == ',')) {
+        v++;
+    }
+    if (!*v) {
+        return 0;
+    }
+
+    char buf[1024];
+    if (strlen(v) >= sizeof(buf)) {
+        return -1;
+    }
+    strcpy(buf, v);
+
+    char *saveptr = NULL;
+    char *token = strtok_r(buf, " ,\t\r\n", &saveptr);
+    int count = 0;
+
+    while (token) {
+        if (count >= ATP_MAX_VPN_BYPASS_ROUTES) {
+            return -1;
+        }
+
+        char *slash = strchr(token, '/');
+        if (!slash || slash == token) {
+            return -1;
+        }
+        *slash = '\0';
+        char *prefix_str = slash + 1;
+        if (!*prefix_str) {
+            return -1;
+        }
+
+        for (const char *p = prefix_str; *p; p++) {
+            if (!isdigit((unsigned char)*p)) {
+                return -1;
+            }
+        }
+
+        char *endptr = NULL;
+        long plen = strtol(prefix_str, &endptr, 10);
+        if (*endptr != '\0' || plen <= 0) {
+            return -1;
+        }
+
+        struct in_addr in4;
+        struct in6_addr in6;
+        int family = 0;
+        unsigned char addr[16];
+        memset(addr, 0, sizeof(addr));
+
+        if (inet_pton(AF_INET, token, &in4) == 1) {
+            if (plen > 32) {
+                return -1;
+            }
+            family = AF_INET;
+            memcpy(addr, &in4, 4);
+            for (int i = 0; i < 4; i++) {
+                if (plen >= (i + 1) * 8) {
+                    /* full byte */
+                } else if (plen <= i * 8) {
+                    addr[i] = 0;
+                } else {
+                    int bits = (int)plen - i * 8;
+                    unsigned char mask = (unsigned char)(0xFF << (8 - bits));
+                    addr[i] &= mask;
+                }
+            }
+        } else if (inet_pton(AF_INET6, token, &in6) == 1) {
+            if (plen > 128) {
+                return -1;
+            }
+            family = AF_INET6;
+            memcpy(addr, &in6, 16);
+            for (int i = 0; i < 16; i++) {
+                if (plen >= (i + 1) * 8) {
+                    /* full byte */
+                } else if (plen <= i * 8) {
+                    addr[i] = 0;
+                } else {
+                    int bits = (int)plen - i * 8;
+                    unsigned char mask = (unsigned char)(0xFF << (8 - bits));
+                    addr[i] &= mask;
+                }
+            }
+        } else {
+            return -1;
+        }
+
+        cfg->interface.vpn_bypass_routes[count].family = family;
+        memcpy(cfg->interface.vpn_bypass_routes[count].addr, addr, 16);
+        cfg->interface.vpn_bypass_routes[count].prefix_len = (unsigned char)plen;
+        count++;
+
+        token = strtok_r(NULL, " ,\t\r\n", &saveptr);
+    }
+
+    cfg->interface.vpn_bypass_route_count = count;
+    return 0;
+}
+
 static int parse_key_value(const config_key_spec_t *spec, const char *k,
                            const char *v, atp_config_t *cfg) {
     if (!spec || !k || !v || (!spec->allow_empty && !v[0])) return -1;
@@ -289,6 +397,10 @@ static int parse_key_value(const config_key_spec_t *spec, const char *k,
         else if (strcmp(k, "SERVICE_CIRCUIT_THRESHOLD") == 0) cfg->service.circuit_threshold = value;
         else if (strcmp(k, "SERVICE_CIRCUIT_COOLDOWN") == 0) cfg->service.circuit_cooldown_sec = value;
         else if (strcmp(k, "SERVICE_HEALTH_CHECK_INTERVAL") == 0) cfg->service.health_check_interval_ms = value;
+        else if (strcmp(k, "VPN_BYPASS_PREF") == 0) {
+            if (value < 1 || value > 32765) return -1;
+            cfg->interface.vpn_bypass_pref = value;
+        }
         else return -1;
         return 0;
     }
@@ -317,6 +429,15 @@ static int parse_key_value(const config_key_spec_t *spec, const char *k,
     if (strcmp(k, "VPN_FALLBACK_MODE") == 0 || strcmp(k, "VPN_DEFAULT_MODE") == 0) {
         return config_copy_string(cfg->interface.vpn_fallback_mode,
                                   sizeof(cfg->interface.vpn_fallback_mode), v);
+    }
+    if (strcmp(k, "VPN_BYPASS_ROUTES") == 0) {
+        return parse_vpn_bypass_routes(v, cfg);
+    }
+    if (strcmp(k, "VPN_BYPASS_PREF") == 0) {
+        int value;
+        if (config_parse_int(v, &value) != 0 || value < 1 || value > 32765) return -1;
+        cfg->interface.vpn_bypass_pref = value;
+        return 0;
     }
     if (strcmp(k, "DATA_DIR") == 0 || strcmp(k, "WORK_DIR") == 0) {
         return config_copy_string(cfg->core.data_dir, sizeof(cfg->core.data_dir), v);
@@ -553,6 +674,15 @@ config_reload_changes_t config_classify_reload(const atp_config_t *current,
     RESTART_IF_CHANGED(strcmp(current->interface.vpn_fallback_mode,
                               candidate->interface.vpn_fallback_mode) != 0,
                        "VPN_FALLBACK_MODE");
+    RESTART_IF_CHANGED(current->interface.vpn_bypass_route_count !=
+                           candidate->interface.vpn_bypass_route_count ||
+                       memcmp(current->interface.vpn_bypass_routes,
+                              candidate->interface.vpn_bypass_routes,
+                              sizeof(current->interface.vpn_bypass_routes)) != 0,
+                       "VPN_BYPASS_ROUTES");
+    RESTART_IF_CHANGED(current->interface.vpn_bypass_pref !=
+                           candidate->interface.vpn_bypass_pref,
+                       "VPN_BYPASS_PREF");
     RESTART_IF_CHANGED(current->service.circuit_threshold !=
                        candidate->service.circuit_threshold,
                        "SERVICE_CIRCUIT_THRESHOLD");

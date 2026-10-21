@@ -100,3 +100,9 @@ VPN_TARGET_MODE="Google VPN"
 
 # Fallback Clash mode to restore when VPN disconnects if prior mode was unavailable (default: "Rule")
 VPN_FALLBACK_MODE="Rule"
+
+# Bypass routes for IPsec/Google VPN (CIDR list separated by spaces and/or commas; empty = disabled)
+# VPN_BYPASS_ROUTES="100.64.0.0/10 fd7a:115c:a1e0::/48 192.168.88.0/24"
+
+# Priority for bypass routing policy rules (1-32765, default: 12400)
+# VPN_BYPASS_PREF=12400

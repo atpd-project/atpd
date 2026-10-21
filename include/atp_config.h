@@ -3,6 +3,15 @@
 
 #include <stdbool.h>
 #include <limits.h>
+#include <sys/socket.h>
+
+#define ATP_MAX_VPN_BYPASS_ROUTES 16
+
+typedef struct {
+    int family;                /* AF_INET or AF_INET6 */
+    unsigned char addr[16];    /* network-byte-order address, host bits masked */
+    unsigned char prefix_len;
+} vpn_bypass_route_t;
 
 /* Core */
 typedef struct {
@@ -21,6 +30,9 @@ typedef struct {
     bool vpn_auto_mode;
     char vpn_target_mode[64];
     char vpn_fallback_mode[64];
+    vpn_bypass_route_t vpn_bypass_routes[ATP_MAX_VPN_BYPASS_ROUTES];
+    int vpn_bypass_route_count;
+    int vpn_bypass_pref;
 } interface_config_t;
 
 /* Service Supervisor */
