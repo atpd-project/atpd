@@ -37,10 +37,12 @@ notify_telegram() {
 
     local repo_esc=$(escape_md "$REPO")
     local zig_esc=$(escape_md "${ZIG_SIZE:-N/A}")
+    local bionic_esc=$(escape_md "${BIONIC_SIZE:-N/A}")
 
     local msg="📋 *Latest ATPd Build*%0A"
     msg+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
     msg+="📦 Zig CC: ${zig_esc}%0A"
+    msg+="🤖 Bionic: ${bionic_esc}%0A"
     msg+="🔗 https://github\.com/${repo_esc}/issues/6"
 
     curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" \
@@ -56,6 +58,8 @@ notify_issue() {
     ZIG="${ZIG_SIZE:-N/A}"
     RUNTIME="${ATPD_VERSION_STRING:-atpd ${VER}}"
     ZIG_COMPILER="${ZIG_COMPILER_VER:-N/A}"
+    BIONIC="${BIONIC_SIZE:-N/A}"
+    BIONIC_COMPILER="${BIONIC_COMPILER_VER:-N/A}"
 
     ISSUE_BODY=$(gh issue view 6 --json body --jq '.body')
     RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
@@ -68,7 +72,7 @@ notify_issue() {
     DISPLAY_MSG="${RAW_MSG:0:42}"
     [ ${#RAW_MSG} -gt 42 ] && DISPLAY_MSG="${DISPLAY_MSG}..."
 
-    SUMMARY_SIZE="${ZIG} (Zig CC)"
+    SUMMARY_SIZE="${ZIG} (Zig CC) / ${BIONIC} (Bionic)"
 
     TS=$(TZ='Asia/Shanghai' date +"%y%m%d %H:%M")
 
@@ -81,6 +85,7 @@ notify_issue() {
 * 📝 **CI Version:** \`${VER}\`
 * 🔧 **ATPd Version (-v):** \`${RUNTIME}\`
 * ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 \`${ZIG}\`
+* 🤖 **Bionic:** \`${BIONIC_COMPILER}\` | 📦 \`${BIONIC}\`
 * 💬 **Message:** \`${DISPLAY_MSG}\`
 * 🔗 **Source:** Commit [${COMMIT_SHORT}](${COMMIT_LINK})
 * 🕒 **Build Time:** \`${TS}\`

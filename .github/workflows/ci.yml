@@ -621,6 +621,11 @@ jobs:
     name: "Release ARM64 (Android bionic)"
     needs: [sanitizer-arm64]
     runs-on: ubuntu-24.04
+
+    outputs:
+      bionic_binary_size: ${{ steps.bionic-meta.outputs.bionic_binary_size }}
+      bionic_compiler_ver: ${{ steps.bionic-meta.outputs.bionic_compiler_ver }}
+
     env:
       NDK_VERSION: r30
       NDK_SHA1: 5107f898313790e449e87eee2183d9a20602dee9
@@ -657,6 +662,7 @@ jobs:
           ln -sf ../build/generated/version_build.h include/version_build.h
 
       - name: Build Bionic Release Binary
+        id: bionic-meta
         shell: bash
         run: |
           set -euo pipefail
@@ -683,6 +689,8 @@ jobs:
             $(find src -name "*.c") \
             -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
           rm -f include/version_build.h
+          echo "bionic_binary_size=$(du -h ./build/bin/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "bionic_compiler_ver=NDK ${NDK_VERSION} $("$CC" --version | grep -o 'clang version [0-9.]*') API ${ANDROID_API}" >> "$GITHUB_OUTPUT"
 
       # Cannot execute on the Linux runner; verify it targets Android's loader instead.
       - name: Verify Binary Architecture
@@ -813,7 +821,7 @@ jobs:
 
   update-status:
     name: Update Checkpoint
-    needs: [final-ci-verdict, release-arm64]
+    needs: [final-ci-verdict, release-arm64, release-arm64-bionic]
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -844,6 +852,8 @@ jobs:
           ZIG_SIZE: ${{ needs.release-arm64.outputs.zig_binary_size }}
           ATP_VERSION: ${{ needs.release-arm64.outputs.atp_version || 'N/A' }}
           ZIG_COMPILER_VER: ${{ needs.release-arm64.outputs.zig_compiler_ver || 'N/A' }}
+          BIONIC_SIZE: ${{ needs.release-arm64-bionic.outputs.bionic_binary_size }}
+          BIONIC_COMPILER_VER: ${{ needs.release-arm64-bionic.outputs.bionic_compiler_ver || 'N/A' }}
           ATPD_VERSION_STRING: ${{ needs.release-arm64.outputs.full_version || 'N/A' }}
           COMMIT_TITLE: ${{ steps.commit.outputs.title }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
