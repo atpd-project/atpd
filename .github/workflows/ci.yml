@@ -711,6 +711,83 @@ jobs:
           path: ./build/bin/atpd
           retention-days: 7
 
+  release-arm64-clang:
+    name: "Release ARM64 (Clang dynamic)"
+    needs: [sanitizer-arm64]
+    runs-on: ubuntu-24.04-arm
+
+    outputs:
+      clang_binary_size: ${{ steps.clang-meta.outputs.clang_binary_size }}
+      clang_compiler_ver: ${{ steps.clang-meta.outputs.clang_compiler_ver }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld file
+
+      - name: Generate Version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/gen_version.sh
+          ln -sf ../build/generated/version_build.h include/version_build.h
+
+      - name: Build Clang Release Binary
+        id: clang-meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang --version | head -n 1
+          mkdir -p build/bin
+          clang -fuse-ld=lld \
+            -s -Oz -flto -ffunction-sections -fdata-sections \
+            -fno-unwind-tables -fno-asynchronous-unwind-tables \
+            -fmerge-all-constants -fno-ident \
+            -Iinclude \
+            -D_GNU_SOURCE \
+            -DNDEBUG \
+            -DYYJSON_DISABLE_WRITER=1 \
+            -DYYJSON_DISABLE_FAST_FP_CONV=1 \
+            -DYYJSON_DISABLE_NON_STANDARD=1 \
+            -DLOG_LOCATION_ENABLED=0 \
+            -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
+            -DATP_CONF_FILE=\"atp.conf\" \
+            -DATP_PID_FILE=\"run/atpd.pid\" \
+            -DATP_LOG_FILE=\"run/atp.log\" \
+            -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
+            -o build/bin/atpd \
+            $(find src -name "*.c") \
+            -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
+          rm -f include/version_build.h
+          echo "clang_binary_size=$(du -h ./build/bin/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "clang_compiler_ver=$(clang --version | grep -o 'clang version [0-9.]*') glibc" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          file ./build/bin/atpd
+          ls -lh ./build/bin/atpd
+          file ./build/bin/atpd | grep -i 'aarch64'
+          file ./build/bin/atpd | grep -i 'dynamically linked'
+          file ./build/bin/atpd | grep -i 'stripped'
+          ./build/bin/atpd -v
+
+      - name: Upload Clang Release Binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: atpd-clang-arm64
+          path: ./build/bin/atpd
+          retention-days: 7
+
   integration-arm64:
     name: "Integration ARM64"
     needs: [release-arm64]
@@ -796,7 +873,7 @@ jobs:
   # ============================================================================
   final-ci-verdict:
     name: "Final CI Verdict"
-    needs: [integration-amd64, integration-arm64, release-arm64-bionic, repository-checks]
+    needs: [integration-amd64, integration-arm64, release-arm64-bionic, release-arm64-clang, repository-checks]
     runs-on: ubuntu-latest
     steps:
       - name: Output Release Gate Summary
@@ -816,12 +893,13 @@ jobs:
           echo "         - Sanitizer ARM64: ASan, UBSan, TSan"
           echo "         - Release ARM64: Native Clean Build & Packaging"
           echo "         - Release ARM64 (Android bionic): NDK Build"
+          echo "         - Release ARM64 (Clang dynamic): glibc Build"
           echo "         - Integration ARM64: Lifecycle, Crash Recovery, Config, Benchmark"
           echo "================================================================================"
 
   update-status:
     name: Update Checkpoint
-    needs: [final-ci-verdict, release-arm64, release-arm64-bionic]
+    needs: [final-ci-verdict, release-arm64, release-arm64-bionic, release-arm64-clang]
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -854,6 +932,8 @@ jobs:
           ZIG_COMPILER_VER: ${{ needs.release-arm64.outputs.zig_compiler_ver || 'N/A' }}
           BIONIC_SIZE: ${{ needs.release-arm64-bionic.outputs.bionic_binary_size }}
           BIONIC_COMPILER_VER: ${{ needs.release-arm64-bionic.outputs.bionic_compiler_ver || 'N/A' }}
+          CLANG_SIZE: ${{ needs.release-arm64-clang.outputs.clang_binary_size }}
+          CLANG_COMPILER_VER: ${{ needs.release-arm64-clang.outputs.clang_compiler_ver || 'N/A' }}
           ATPD_VERSION_STRING: ${{ needs.release-arm64.outputs.full_version || 'N/A' }}
           COMMIT_TITLE: ${{ steps.commit.outputs.title }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
