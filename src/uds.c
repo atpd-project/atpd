@@ -11,8 +11,6 @@
 #include "logger.h"
 #include "atpd_context.h"
 #include "status.h"
-#include "session.h"
-#include "atpd_error.h"
 #include "version.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -173,22 +171,6 @@ static void handle_ping(uds_client_t *client) {
     client_queue_string(client, "pong\n");
 }
 
-static void handle_sessions(uds_client_t *client) {
-    char response[UDS_RESPONSE_SIZE];
-    size_t off = 0;
-
-    off = append_response(response, sizeof(response), off,
-                          "Active Sessions: %d\n",
-                          atpd_session_active_count());
-
-    if (off >= sizeof(response)) {
-        client_queue_string(client, "ERROR: response too large\n");
-        return;
-    }
-
-    client_queue_response(client, response, off);
-}
-
 static void handle_version(uds_client_t *client) {
     char response[UDS_RESPONSE_SIZE];
     size_t off = 0;
@@ -222,9 +204,6 @@ static void handle_stats(uds_client_t *client) {
     off = append_response(response, sizeof(response), off,
                           "Signals Received: %" PRIu64 "\n",
                           stats ? stats->signals_received : 0);
-    off = append_response(response, sizeof(response), off,
-                          "Errors: %" PRIu64 "\n",
-                          atpd_error_total());
 
     if (off >= sizeof(response)) {
         client_queue_string(client, "ERROR: response too large\n");
@@ -241,7 +220,6 @@ static void handle_help(uds_client_t *client) {
         "  status-summary  - Show concise runtime status\n"
         "  stop            - Shutdown ATPd\n"
         "  ping      - Check if ATPd is alive\n"
-        "  sessions  - Show active sessions\n"
         "  version   - Show version information\n"
         "  stats     - Show statistics\n"
         "  help      - Show this help\n";
@@ -297,8 +275,6 @@ static void process_command(uds_client_t *client, const char *cmd, size_t cmd_le
         handle_stop(client);
     } else if (strcmp(buf, "ping") == 0) {
         handle_ping(client);
-    } else if (strcmp(buf, "sessions") == 0) {
-        handle_sessions(client);
     } else if (strcmp(buf, "version") == 0) {
         handle_version(client);
     } else if (strcmp(buf, "stats") == 0) {
@@ -360,7 +336,6 @@ static int uds_client_flush(reactor_t *r, uds_client_t *client) {
     if (client->stop_after_write) {
         LOG_INFO("UDS: stop response sent, initiating shutdown");
         atpd_runtime_state_transition(ATPD_RUNTIME_STATE_STOPPING);
-        atpd_session_emergency_drain_all();
         g_uds_stop_requested = 1;
         if (g_uds_dependencies.shutdown_requested) *g_uds_dependencies.shutdown_requested = 1;
         if (g_uds_reactor) reactor_stop(g_uds_reactor);

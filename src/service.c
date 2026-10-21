@@ -26,7 +26,6 @@
 #include <grp.h>
 #include <time.h>
 #include <libgen.h>
-#include "async_validate.h"
 #include "netlink.h"
 #include "singbox_api.h"
 

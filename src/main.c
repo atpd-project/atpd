@@ -18,7 +18,6 @@
 #include "cli.h"
 #include "reactor.h"
 #include "uds.h"
-#include "session.h"
 #include "singbox_api.h"
 #include "config_validator.h"
 
@@ -433,7 +432,6 @@ static void on_idle(reactor_t *r, void *userdata) {
     (void)r;
     (void)userdata;
 
-    atpd_session_gc_process(r);
     process_config_reload();
     process_status_display();
 
@@ -523,14 +521,11 @@ cleanup:
     }
     LOG_INFO("Reactor exited, cleaning up...");
     uds_cleanup();
-    atpd_session_emergency_drain_all();
     if (daemon_service) {
         service_destroy(daemon_service);
         daemon_service = NULL;
     }
-    atpd_session_gc_process(daemon_reactor);
     atpd_set_vpn_mode_callback(NULL, NULL);
-    atpd_set_vpn_teardown_callback(NULL);
     api_cleanup(&daemon_api);
     netlink_cleanup();
 
@@ -669,7 +664,6 @@ static int do_start(atp_options_t *opts) {
         ret = 1;
         goto cleanup_return;
     }
-    atpd_set_vpn_teardown_callback(atpd_session_emergency_drain_all);
     if (atpd_runtime_state_transition(ATPD_RUNTIME_STATE_INITIALIZING) != 0) {
         notify_startup(1);
         ret = 1;
