@@ -54,7 +54,7 @@ done
 
 ## 3. 安装 ATPd 和新服务脚本
 
-在电脑上的仓库根目录准备好 Android/arm64 版 `atpd`、带 `with_ebpf` 的 sing-box、生产 `atp.conf` 和 `config.json`。不要把本机 Linux 构建产物部署到 Android；先确认二进制架构，再推送并安装：
+在电脑上的仓库根目录准备好 Android/arm64 版 `atpd`（CI 产物 `atpd-bionic-arm64`，NDK bionic 构建）、带 `with_ebpf` 的 sing-box、生产 `atp.conf` 和 `config.json`。不要把本机 Linux 构建产物部署到 Android；先确认二进制架构，再推送并安装：
 
 ```sh
 file /path/to/android-atpd /path/to/sing-box

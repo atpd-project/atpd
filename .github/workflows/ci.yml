@@ -76,296 +76,9 @@ jobs:
           git diff --check
 
   # ============================================================================
-  # LANE 1: AMD64 Native Runner (ubuntu-24.04)
-  # Sanitizer AMD64 -> Release AMD64 -> Integration AMD64
-  # ============================================================================
-  sanitizer-amd64:
-    name: "Sanitizer AMD64 / ${{ matrix.name }}"
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - sanitizer: asan
-            name: ASan
-            flag: address
-            libs: '-lpthread -l:libasan.so.8'
-            runtime_package: libasan8
-            options: abort_on_error=1:halt_on_error=1:detect_leaks=1
-          - sanitizer: ubsan
-            name: UBSan
-            flag: undefined
-            libs: '-lpthread -l:libubsan.so.1'
-            runtime_package: libubsan1
-            options: halt_on_error=1:print_stacktrace=1
-          - sanitizer: tsan
-            name: TSan
-            flag: thread
-            libs: '-lpthread'
-            runtime_package: ''
-            options: halt_on_error=1:second_deadlock_stack=1
-
-    env:
-      CCACHE_DIR: /home/runner/.cache/ccache
-      CCACHE_COMPRESS: "1"
-      CCACHE_MAXSIZE: "2G"
-      CCACHE_BASEDIR: ${{ github.workspace }}
-      CCACHE_NOHASHDIR: "1"
-      CCACHE: "1"
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Zig 0.16.0
-        uses: ./.github/actions/setup-zig-0.16
-
-      - name: Configure runner environment & dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo sysctl vm.mmap_rnd_bits=28 2>/dev/null || true
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq make curl jq procps ccache
-          if [ -n "${{ matrix.runtime_package }}" ]; then
-            sudo apt-get install -y -qq ${{ matrix.runtime_package }}
-          fi
-
-      - name: Restore isolated ccache
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-amd64-zig0.16.0-${{ matrix.sanitizer }}-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
-          restore-keys: |
-            ccache-${{ runner.os }}-amd64-zig0.16.0-${{ matrix.sanitizer }}-
-
-      - name: Show toolchain & ccache initial statistics
-        shell: bash
-        run: |
-          zig version
-          ccache --version
-          ccache -s
-
-      - name: Verify active sanitizer runtime with standalone probe
-        if: matrix.sanitizer == 'asan' || matrix.sanitizer == 'tsan'
-        shell: bash
-        run: |
-          chmod +x tests/probe_sanitizer.sh
-          ./tests/probe_sanitizer.sh ${{ matrix.sanitizer }}
-
-      - name: Build and run test suite under ${{ matrix.name }}
-        shell: bash
-        env:
-          ASAN_OPTIONS: ${{ matrix.sanitizer == 'asan' && matrix.options || '' }}
-          UBSAN_OPTIONS: ${{ matrix.sanitizer == 'ubsan' && matrix.options || '' }}
-          TSAN_OPTIONS: ${{ matrix.sanitizer == 'tsan' && matrix.options || '' }}
-        run: |
-          set -euo pipefail
-          make clean
-          make -j2 \
-            CFLAGS="-Wall -Wextra -std=c11 -D_GNU_SOURCE -fPIC -g -O1 -march=x86-64 -mtune=core2 -fno-omit-frame-pointer -fsanitize=${{ matrix.flag }} -Iinclude -Ibuild/generated" \
-            LIBS="${{ matrix.libs }}" \
-            LDFLAGS="-Wl,-z,relro,-z,now" \
-            test
-
-      - name: Run sing-box integration under ASan
-        if: matrix.sanitizer == 'asan'
-        shell: bash
-        env:
-          ASAN_OPTIONS: abort_on_error=1:halt_on_error=1:detect_leaks=0
-        run: |
-          set -euo pipefail
-          curl -fsSL -o /tmp/sing-box.deb "https://github.com/debiansid/sing-box-build/releases/download/v1.14.0-rc.1/sing-box_1.14.0-rc.1_linux_amd64.deb"
-          sudo dpkg -i /tmp/sing-box.deb
-          sing-box version
-          sing-box tools ebpf status --help
-
-          timeout 180s sudo -E bash tests/test_singbox_lifecycle.sh
-          timeout 180s sudo -E bash tests/test_service_crash_recovery.sh build/bin/atpd /usr/bin/sing-box
-
-      - name: Show ccache final statistics
-        if: always()
-        shell: bash
-        run: |
-          ccache -s
-
-  release-amd64:
-    name: "Release AMD64"
-    needs: [sanitizer-amd64]
-    runs-on: ubuntu-24.04
-
-    outputs:
-      atp_version: ${{ steps.version-meta.outputs.atp_version }}
-      full_version: ${{ steps.version-meta.outputs.full_version }}
-
-    env:
-      # Release and integration runners may have different CPU features.
-      EXTRA_CFLAGS: "-march=x86-64 -mtune=core2"
-      CCACHE_DIR: /home/runner/.cache/ccache
-      CCACHE_COMPRESS: "1"
-      CCACHE_MAXSIZE: "2G"
-      CCACHE_BASEDIR: ${{ github.workspace }}
-      CCACHE_NOHASHDIR: "1"
-      CCACHE: "1"
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Zig 0.16.0
-        uses: ./.github/actions/setup-zig-0.16
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq make ccache file
-
-      - name: Restore isolated ccache
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-amd64-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
-          restore-keys: |
-            ccache-${{ runner.os }}-amd64-zig0.16.0-release-
-
-      - name: Show toolchain & ccache initial statistics
-        shell: bash
-        run: |
-          zig version
-          ccache --version
-          ccache -s
-
-      - name: Clean Native Build & Test
-        shell: bash
-        run: |
-          set -euo pipefail
-          make clean
-          make -j2
-          make test
-
-      - name: Verify Version Metadata & Clean Tree
-        id: version-meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          PROD_VER="$(cat VERSION)"
-          FULL_VER="$(./build/bin/atpd -v | head -n 1)"
-          echo "Product Version: ${PROD_VER}"
-          echo "Full Runtime Version: ${FULL_VER}"
-
-          if echo "${FULL_VER}" | grep -q "\.dirty"; then
-            echo "ERROR: Clean CI release build produced .dirty version string!" >&2
-            git status --porcelain >&2
-            exit 1
-          fi
-
-          echo "atp_version=${PROD_VER}" >> "$GITHUB_OUTPUT"
-          echo "full_version=${FULL_VER}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify Binary Architecture
-        shell: bash
-        run: |
-          set -euo pipefail
-          file ./build/bin/atpd
-          ls -lh ./build/bin/atpd
-          file ./build/bin/atpd | grep -i 'x86-64'
-
-      - name: Upload Native Release Binary
-        uses: actions/upload-artifact@v7
-        with:
-          name: atpd-native-amd64
-          path: ./build/bin/atpd
-          retention-days: 7
-
-      - name: Show ccache final statistics
-        if: always()
-        shell: bash
-        run: |
-          ccache -s
-
-  integration-amd64:
-    name: "Integration AMD64"
-    needs: [release-amd64]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Zig 0.16.0
-        uses: ./.github/actions/setup-zig-0.16
-
-      - name: Install System Dependencies & sing-box
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq make libbpf-dev iproute2 curl jq procps
-          curl -fsSL -o /tmp/sing-box.deb "https://github.com/debiansid/sing-box-build/releases/download/v1.14.0-rc.1/sing-box_1.14.0-rc.1_linux_amd64.deb"
-          sudo dpkg -i /tmp/sing-box.deb
-          sing-box version
-          sing-box tools ebpf status --help
-
-      - name: Download Native Release Binary
-        uses: actions/download-artifact@v8
-        with:
-          name: atpd-native-amd64
-          path: build/bin
-
-      - name: Make Binary Executable & Verify Architecture
-        shell: bash
-        run: |
-          set -euo pipefail
-          chmod +x ./build/bin/atpd
-          file ./build/bin/atpd | grep -i 'x86-64'
-          ./build/bin/atpd -v
-
-      - name: Run sing-box Lifecycle Integration Tests
-        shell: bash
-        run: |
-          sudo -E bash tests/test_singbox_lifecycle.sh
-
-      - name: Run Service Crash Recovery Tests
-        shell: bash
-        run: |
-          sudo -E bash tests/test_service_crash_recovery.sh ./build/bin/atpd /usr/bin/sing-box
-
-      - name: Run Configuration Validation Tests
-        shell: bash
-        run: |
-          bash tests/test_config_validation.sh ./build/bin/atpd
-
-      - name: Run Android Service Script Unit Tests
-        shell: bash
-        run: |
-          bash tests/test_android_service.sh
-
-      - name: Run Benchmark & Performance Regression
-        shell: bash
-        run: |
-          sudo -E ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
-
-      - name: Publish Performance Summary
-        if: always()
-        shell: bash
-        run: |
-          if [ -f bench_output.txt ]; then
-            echo "## 🚀 ATPd AMD64 Performance & Benchmark Summary" >> $GITHUB_STEP_SUMMARY
-            echo '```text' >> $GITHUB_STEP_SUMMARY
-            cat bench_output.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          fi
-
-  # ============================================================================
-  # LANE 2: ARM64 Native Runner (ubuntu-24.04-arm)
-  # Sanitizer ARM64 -> Release ARM64 -> Integration ARM64
+  # ARM64 lane (production target: Google Pixel / Android bionic)
+  # Sanitizer ARM64 -> Release ARM64 (zig, integration test binary) -> Integration ARM64
+  #                 -> Release ARM64 (Android bionic, shipped binary)
   # ============================================================================
   sanitizer-arm64:
     name: "Sanitizer ARM64 / ${{ matrix.name }}"
@@ -425,7 +138,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-arm64-zig0.16.0-${{ matrix.sanitizer }}-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
+          key: ccache-${{ runner.os }}-arm64-zig0.16.0-${{ matrix.sanitizer }}-${{ hashFiles('Makefile', 'scripts/gen_version.sh', '.zig-version') }}
           restore-keys: |
             ccache-${{ runner.os }}-arm64-zig0.16.0-${{ matrix.sanitizer }}-
 
@@ -528,7 +241,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.cache/ccache
-          key: ccache-${{ runner.os }}-arm64-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/build.sh', 'scripts/gen_version.sh', '.zig-version') }}
+          key: ccache-${{ runner.os }}-arm64-zig0.16.0-release-${{ hashFiles('Makefile', 'scripts/gen_version.sh', '.zig-version') }}
           restore-keys: |
             ccache-${{ runner.os }}-arm64-zig0.16.0-release-
 
@@ -711,83 +424,6 @@ jobs:
           path: ./build/bin/atpd
           retention-days: 7
 
-  release-arm64-clang:
-    name: "Release ARM64 (Clang dynamic)"
-    needs: [sanitizer-arm64]
-    runs-on: ubuntu-24.04-arm
-
-    outputs:
-      clang_binary_size: ${{ steps.clang-meta.outputs.clang_binary_size }}
-      clang_compiler_ver: ${{ steps.clang-meta.outputs.clang_compiler_ver }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Install dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld file
-
-      - name: Generate Version
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/gen_version.sh
-          ln -sf ../build/generated/version_build.h include/version_build.h
-
-      - name: Build Clang Release Binary
-        id: clang-meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          clang --version | head -n 1
-          mkdir -p build/bin
-          clang -fuse-ld=lld \
-            -s -Oz -flto -ffunction-sections -fdata-sections \
-            -fno-unwind-tables -fno-asynchronous-unwind-tables \
-            -fmerge-all-constants -fno-ident \
-            -Iinclude \
-            -D_GNU_SOURCE \
-            -DNDEBUG \
-            -DYYJSON_DISABLE_WRITER=1 \
-            -DYYJSON_DISABLE_FAST_FP_CONV=1 \
-            -DYYJSON_DISABLE_NON_STANDARD=1 \
-            -DLOG_LOCATION_ENABLED=0 \
-            -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
-            -DATP_CONF_FILE=\"atp.conf\" \
-            -DATP_PID_FILE=\"run/atpd.pid\" \
-            -DATP_LOG_FILE=\"run/atp.log\" \
-            -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
-            -o build/bin/atpd \
-            $(find src -name "*.c") \
-            -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
-          rm -f include/version_build.h
-          echo "clang_binary_size=$(du -h ./build/bin/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
-          echo "clang_compiler_ver=$(clang --version | grep -o 'clang version [0-9.]*') glibc" >> "$GITHUB_OUTPUT"
-
-      - name: Verify Binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          file ./build/bin/atpd
-          ls -lh ./build/bin/atpd
-          file ./build/bin/atpd | grep -i 'aarch64'
-          file ./build/bin/atpd | grep -i 'dynamically linked'
-          file ./build/bin/atpd | grep -i 'stripped'
-          ./build/bin/atpd -v
-
-      - name: Upload Clang Release Binary
-        uses: actions/upload-artifact@v7
-        with:
-          name: atpd-clang-arm64
-          path: ./build/bin/atpd
-          retention-days: 7
-
   integration-arm64:
     name: "Integration ARM64"
     needs: [release-arm64]
@@ -869,11 +505,11 @@ jobs:
 
   # ============================================================================
   # Final CI Verdict
-  # Reports final pass status across AMD64 lane, ARM64 lane, and Repository Checks.
+  # Reports final pass status across the ARM64 lane and Repository Checks.
   # ============================================================================
   final-ci-verdict:
     name: "Final CI Verdict"
-    needs: [integration-amd64, integration-arm64, release-arm64-bionic, release-arm64-clang, repository-checks]
+    needs: [integration-arm64, release-arm64-bionic, repository-checks]
     runs-on: ubuntu-latest
     steps:
       - name: Output Release Gate Summary
@@ -885,21 +521,16 @@ jobs:
           echo "  [PASS] Repository Checks:"
           echo "         - Shell syntax & code hygiene"
           echo "         - Architecture invariants (no direct printf in core, untracked headers)"
-          echo "  [PASS] Lane 1 (AMD64):"
-          echo "         - Sanitizer AMD64: ASan, UBSan, TSan"
-          echo "         - Release AMD64: Native Clean Build & Packaging"
-          echo "         - Integration AMD64: Lifecycle, Crash Recovery, Config, Benchmark"
-          echo "  [PASS] Lane 2 (ARM64):"
+          echo "  [PASS] ARM64:"
           echo "         - Sanitizer ARM64: ASan, UBSan, TSan"
           echo "         - Release ARM64: Native Clean Build & Packaging"
           echo "         - Release ARM64 (Android bionic): NDK Build"
-          echo "         - Release ARM64 (Clang dynamic): glibc Build"
           echo "         - Integration ARM64: Lifecycle, Crash Recovery, Config, Benchmark"
           echo "================================================================================"
 
   update-status:
     name: Update Checkpoint
-    needs: [final-ci-verdict, release-arm64, release-arm64-bionic, release-arm64-clang]
+    needs: [final-ci-verdict, release-arm64, release-arm64-bionic]
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -932,8 +563,6 @@ jobs:
           ZIG_COMPILER_VER: ${{ needs.release-arm64.outputs.zig_compiler_ver || 'N/A' }}
           BIONIC_SIZE: ${{ needs.release-arm64-bionic.outputs.bionic_binary_size }}
           BIONIC_COMPILER_VER: ${{ needs.release-arm64-bionic.outputs.bionic_compiler_ver || 'N/A' }}
-          CLANG_SIZE: ${{ needs.release-arm64-clang.outputs.clang_binary_size }}
-          CLANG_COMPILER_VER: ${{ needs.release-arm64-clang.outputs.clang_compiler_ver || 'N/A' }}
           ATPD_VERSION_STRING: ${{ needs.release-arm64.outputs.full_version || 'N/A' }}
           COMMIT_TITLE: ${{ steps.commit.outputs.title }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
