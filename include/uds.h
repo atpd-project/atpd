@@ -17,6 +17,5 @@ typedef struct {
 
 int uds_init(reactor_t *r, const char *path, const uds_dependencies_t *deps);
 void uds_cleanup(void);
-int uds_get_fd(void);
 
 #endif

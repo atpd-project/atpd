@@ -270,28 +270,6 @@ int api_get_snapshot(const api_ctx_t *ctx, api_snapshot_t *out) {
     return 0;
 }
 
-int api_check_health_sync(api_ctx_t *ctx) {
-    if (api_native_lock(ctx) != 0) return -1;
-    int result = singbox_api_health_check(&ctx->native_ctx);
-    api_native_unlock(ctx);
-    return result;
-}
-
-int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata) {
-    int ret = api_check_health_sync(ctx);
-    if (callback) {
-        callback(ret == 0 ? 200 : 503, ret == 0 ? "OK" : "Service Unavailable", userdata);
-    }
-    return ret;
-}
-
-int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size) {
-    if (!mode || size == 0 || api_native_lock(ctx) != 0) return -1;
-    int result = singbox_api_get_clash_mode(&ctx->native_ctx, mode, size);
-    api_native_unlock(ctx);
-    return result;
-}
-
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata) {
     if (!mode || api_native_lock(ctx) != 0) return -1;
     int ret = singbox_api_set_clash_mode(&ctx->native_ctx, mode);
@@ -398,25 +376,4 @@ static bool api_apply_vpn_mode(api_ctx_t *ctx, const api_vpn_request_t *request)
              target_mode,
              ctx->default_mode[0] ? ctx->default_mode : fallback_mode);
     return true;
-}
-
-int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size) {
-    if (!version || size == 0 || api_native_lock(ctx) != 0) return -1;
-    int result = singbox_api_get_version(&ctx->native_ctx, version, size);
-    api_native_unlock(ctx);
-    return result;
-}
-
-int api_get_status_sync(api_ctx_t *ctx, singbox_status_t *status) {
-    if (!status || api_native_lock(ctx) != 0) return -1;
-    int result = singbox_api_get_status(&ctx->native_ctx, status);
-    api_native_unlock(ctx);
-    return result;
-}
-
-int api_get_goroutines_count(api_ctx_t *ctx) {
-    if (!ctx) return -1;
-    singbox_status_t status;
-    if (api_get_status_sync(ctx, &status) == 0) return status.goroutines;
-    return -1;
 }

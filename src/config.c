@@ -437,10 +437,6 @@ static atp_result_t config_load_file_internal(const char *path, atp_config_t *cf
     return ATP_OK;
 }
 
-atp_result_t config_load_file(const char *path, atp_config_t *cfg) {
-    return config_load_file_internal(path, cfg, NULL);
-}
-
 atp_result_t config_load(const char *path, atp_config_t *cfg) {
     if (!path || !cfg) return ATP_ERR_INVAL;
     atp_config_t tmp;
@@ -570,21 +566,7 @@ config_reload_changes_t config_classify_reload(const atp_config_t *current,
     return changes;
 }
 
-atp_result_t validate_interface_name(const char *n) {
-    if (!n || !*n) return ATP_ERR_INVAL;
-    if (strlen(n) >= IFNAMSIZ) return ATP_ERR_INVAL;
-    for (const char *p = n; *p; p++) {
-        if (!isalnum((unsigned char)*p) && !strchr("_+-.", *p)) return ATP_ERR_INVAL;
-    }
-    return ATP_OK;
-}
-
 atp_result_t validate_port(int p) {
     if (p > 0 && p <= 65535) return ATP_OK;
-    return ATP_ERR_INVAL;
-}
-
-atp_result_t validate_mark(int m) {
-    if (m >= 1 && m <= 2147483647) return ATP_OK;
     return ATP_ERR_INVAL;
 }

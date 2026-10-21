@@ -38,9 +38,6 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx_bytes, uint64_t *tx_
 int netlink_get_active_vpn(char *iface, size_t size);
 const char* netlink_get_vpn_type_label(const char *iface);
 
-int nl_vpn_detect(void);
-int nl_link_get_vpn_interface(char *iface, size_t size);
-
 void netlink_set_reactor(reactor_t *r);
 void netlink_refresh_state(reactor_t *r);
 

@@ -12,7 +12,3 @@ const char *atp_get_full_version(void) {
 const char *atp_get_commit(void) {
     return ATP_COMMIT;
 }
-
-bool atp_build_is_dirty(void) {
-    return ATP_BUILD_DIRTY != 0;
-}

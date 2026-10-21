@@ -93,7 +93,6 @@ reactor_timer_t* reactor_add_timer(reactor_t *r, uint64_t timeout_ms, uint64_t i
                                    reactor_timer_cb cb, void *userdata);
 /* Cancellation is immediate from the caller's perspective; do not reuse the handle. */
 int reactor_cancel_timer(reactor_t *r, reactor_timer_t *timer);
-void reactor_update_time(reactor_t *r);
 uint64_t reactor_now_ms(void);
 
 /* ========== Signals ========== */
@@ -102,7 +101,6 @@ int reactor_watch_signal(reactor_t *r, int signo);
 
 /* ========== Idle & Error ========== */
 void reactor_set_idle_cb(reactor_t *r, reactor_idle_cb cb);
-void reactor_set_error_cb(reactor_t *r, reactor_error_cb cb);
 
 /* ========== Utilities ========== */
 void reactor_wakeup(reactor_t *r);

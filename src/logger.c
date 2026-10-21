@@ -213,10 +213,6 @@ void log_set_target(int targets) {
     pthread_mutex_unlock(&g_log_config.mutex);
 }
 
-void log_set_targets(uint32_t targets) {
-    log_set_target((int)targets);
-}
-
 void log_set_file(const char *path) {
     pthread_mutex_lock(&g_log_config.mutex);
     if (path) {
@@ -233,14 +229,6 @@ void log_set_file(const char *path) {
 void log_set_color(int enable) {
     pthread_mutex_lock(&g_log_config.mutex);
     g_log_config.enable_color = enable;
-    pthread_mutex_unlock(&g_log_config.mutex);
-}
-
-void log_rotate(void) {
-    pthread_mutex_lock(&g_log_config.mutex);
-    if (g_log_config.log_file[0]) {
-        log_rotate_file_unlocked(g_log_config.log_file);
-    }
     pthread_mutex_unlock(&g_log_config.mutex);
 }
 
@@ -326,12 +314,4 @@ void log_write(log_level_t level, const char *file, int line, const char *func,
     va_start(args, fmt);
     log_write_v(level, file, line, func, fmt, args);
     va_end(args);
-}
-
-log_level_t log_get_level(void) {
-    log_level_t level;
-    pthread_mutex_lock(&g_log_config.mutex);
-    level = g_log_config.min_level;
-    pthread_mutex_unlock(&g_log_config.mutex);
-    return level;
 }

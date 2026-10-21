@@ -637,11 +637,3 @@ void uds_cleanup(void) {
     g_uds_stop_requested = 0;
     memset(&g_uds_dependencies, 0, sizeof(g_uds_dependencies));
 }
-
-int uds_get_fd(void) {
-    return g_uds_fd;
-}
-
-int uds_stop_requested(void) {
-    return g_uds_stop_requested;
-}

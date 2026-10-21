@@ -356,17 +356,6 @@ int singbox_api_get_status(singbox_api_ctx_t *ctx, singbox_status_t *status_out)
     return parsed == 1 ? 0 : -1;
 }
 
-int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out) {
-    if (!goroutines_out) return -1;
-    singbox_status_t status;
-    if (singbox_api_get_status(ctx, &status) != 0 || status.goroutines <= 0) {
-        *goroutines_out = -1;
-        return -1;
-    }
-    *goroutines_out = status.goroutines;
-    return 0;
-}
-
 /* Issue a unary StartedService RPC over the same HTTP/1.1 gRPC-Web bridge
  * used by the dashboard. The returned buffer contains one complete data
  * frame (5-byte gRPC header followed by the protobuf message). */
@@ -643,22 +632,4 @@ int singbox_api_set_clash_mode(singbox_api_ctx_t *ctx, const char *mode) {
     size_t response_len;
     return grpc_web_unary_call(ctx, "/daemon.StartedService/SetClashMode",
                                request, request_len, response, sizeof(response), &response_len);
-}
-
-int singbox_api_reload(singbox_api_ctx_t *ctx) {
-    (void)ctx;
-    /* Process lifecycle belongs to service_ctx; never discover or signal a
-     * process by name from the transport layer. */
-    errno = ENOTSUP;
-    return -1;
-}
-
-int singbox_api_exec_cli(const singbox_api_ctx_t *ctx, const char *subcmd,
-                         char *output, size_t out_size, int timeout_sec) {
-    (void)ctx;
-    (void)subcmd;
-    (void)timeout_sec;
-    if (output && out_size) output[0] = '\0';
-    errno = ENOTSUP;
-    return -1;
 }

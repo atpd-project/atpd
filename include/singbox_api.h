@@ -46,15 +46,9 @@ void singbox_api_cleanup(singbox_api_ctx_t *ctx);
 int singbox_api_health_check(singbox_api_ctx_t *ctx);
 int singbox_api_get_status(singbox_api_ctx_t *ctx, singbox_status_t *status_out);
 int singbox_api_get_version(singbox_api_ctx_t *ctx, char *version_buf, size_t buf_size);
-int singbox_api_get_goroutines(singbox_api_ctx_t *ctx, int *goroutines_out);
 int singbox_api_get_clash_mode_status(singbox_api_ctx_t *ctx,
                                       singbox_clash_mode_status_t *status_out);
 int singbox_api_get_clash_mode(singbox_api_ctx_t *ctx, char *mode_buf, size_t buf_size);
 int singbox_api_set_clash_mode(singbox_api_ctx_t *ctx, const char *mode);
-int singbox_api_reload(singbox_api_ctx_t *ctx);
-
-/* Direct CLI Bridge for sing-box api */
-int singbox_api_exec_cli(const singbox_api_ctx_t *ctx, const char *subcmd,
-                         char *output, size_t out_size, int timeout_sec);
 
 #endif

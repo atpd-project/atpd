@@ -49,10 +49,6 @@ const config_key_spec_t *config_schema_find(const char *key) {
     return NULL;
 }
 
-int config_validate_key(const char *key) {
-    return config_schema_find(key) ? 0 : -1;
-}
-
 static int validate_port(int port) {
     return port >= 1 && port <= 65535 ? 0 : -1;
 }

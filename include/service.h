@@ -90,18 +90,14 @@ int service_set_reactor(service_ctx_t *ctx, reactor_t *r);
 int service_start_async(service_ctx_t *ctx);
 int service_validate_config(service_ctx_t *ctx);
 int service_wait_ready(service_ctx_t *ctx);
-int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata);
 int service_stop_sync(service_ctx_t *ctx);
 /* Stops the service and frees internal resources and ctx itself (heap only). */
 void service_destroy(service_ctx_t *ctx);
-int service_get_pid(service_ctx_t *ctx);
 int service_is_running(service_ctx_t *ctx);
-int service_is_healthy(service_ctx_t *ctx);
 void service_get_snapshot(const service_ctx_t *ctx, service_snapshot_t *out);
 void service_monitor_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
 void service_health_check_cb(reactor_t *r, reactor_timer_t *timer, void *userdata);
 void service_sigchld_cb(reactor_t *r, int signo, void *userdata);
-const char* service_state_string(service_state_t state);
 void service_rotate_log(service_ctx_t *ctx);
 void service_pid_path(service_ctx_t *ctx, char *path, size_t size);
 

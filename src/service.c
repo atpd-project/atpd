@@ -673,60 +673,6 @@ int service_wait_ready(service_ctx_t *ctx) {
     return service_is_running(ctx) ? 0 : -1;
 }
 
-static void service_stop_wait_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
-    service_stop_state_t *state = userdata;
-    service_ctx_t *ctx = state->ctx;
-
-    (void)r;
-    (void)timer;
-
-    if (!ctx) {
-        free(state);
-        return;
-    }
-
-    if (!service_is_alive(ctx)) {
-        LOG_INFO("Service: stopped successfully");
-        ctx->child_pid = -1;
-        ctx->child_starttime_ticks = 0;
-        ctx->validated_pid = 0;
-        ctx->state = SERVICE_STOPPED;
-        ctx->running_healthy = 0;
-        service_unlink_pid(ctx);
-        if (state->done_cb) {
-            state->done_cb(ctx, state->userdata);
-        }
-        free(state);
-        return;
-    }
-
-    state->attempts++;
-    if (state->attempts >= state->max_attempts) {
-        LOG_ERROR("Service: stop timeout, forcing kill");
-        kill(ctx->child_pid, SIGKILL);
-        while (waitpid(ctx->child_pid, NULL, 0) < 0 && errno == EINTR) {
-        }
-        ctx->child_pid = -1;
-        ctx->child_starttime_ticks = 0;
-        ctx->validated_pid = 0;
-        ctx->state = SERVICE_STOPPED;
-        ctx->running_healthy = 0;
-        service_unlink_pid(ctx);
-        if (state->done_cb) {
-            state->done_cb(ctx, state->userdata);
-        }
-        free(state);
-        return;
-    }
-
-    if (!reactor_add_timer(r, 100, 0, service_stop_wait_cb, state)) {
-        LOG_ERROR("Service: failed to schedule stop retry; forcing synchronous cleanup");
-        free(state);
-        service_stop_sync(ctx);
-        return;
-    }
-}
-
 static void service_delayed_spawn_cb(reactor_t *r, reactor_timer_t *timer, void *userdata) {
     (void)r;
     (void)timer;
@@ -814,17 +760,6 @@ void service_sigchld_cb(reactor_t *r, int signo, void *userdata) {
                     service_schedule_retry(ctx);
                 }
             }
-    }
-}
-
-const char *service_state_string(service_state_t state) {
-    switch (state) {
-        case SERVICE_STOPPED:  return "STOPPED";
-        case SERVICE_STARTING: return "STARTING";
-        case SERVICE_RUNNING:  return "RUNNING";
-        case SERVICE_FAILED:   return "FAILED";
-        case SERVICE_STOPPING: return "STOPPING";
-        default:               return "UNKNOWN";
     }
 }
 
@@ -1204,108 +1139,8 @@ void service_destroy(service_ctx_t *ctx) {
     free(ctx);
 }
 
-int service_stop_async(service_ctx_t *ctx, void (*done_cb)(service_ctx_t *, void *), void *userdata) {
-    if (!ctx) return -1;
-
-    ctx->state = SERVICE_STOPPING;
-
-    if (ctx->reactor && ctx->health_timer) {
-        reactor_cancel_timer(ctx->reactor, ctx->health_timer);
-        ctx->health_timer = NULL;
-    }
-
-    if (ctx->child_pid > 0) {
-        LOG_INFO("Service: stopping sing-box (PID: %d)", ctx->child_pid);
-        if (kill(ctx->child_pid, SIGTERM) < 0 && errno != ESRCH) return -1;
-    }
-
-    if (!ctx->reactor) {
-        int ret = service_stop_sync(ctx);
-        if (done_cb) {
-            done_cb(ctx, userdata);
-        }
-        return ret;
-    }
-
-    if (ctx->monitor_timer) {
-        reactor_cancel_timer(ctx->reactor, ctx->monitor_timer);
-        ctx->monitor_timer = NULL;
-    }
-    if (ctx->retry_timer) {
-        reactor_cancel_timer(ctx->reactor, ctx->retry_timer);
-        ctx->retry_timer = NULL;
-    }
-
-    service_stop_state_t *state = calloc(1, sizeof(service_stop_state_t));
-    if (!state) {
-        LOG_WARN("Service: failed to allocate stop state, using blocking fallback");
-        usleep(500000);
-        ctx->state = SERVICE_STOPPED;
-        ctx->fail_count = 0;
-        ctx->running_healthy = 0;
-        service_unlink_pid(ctx);
-        if (done_cb) {
-            done_cb(ctx, userdata);
-        }
-        return -1;
-    }
-
-    state->ctx = ctx;
-    state->attempts = 0;
-    state->max_attempts = ctx->stop_timeout_sec * 10;
-    state->done_cb = done_cb;
-    state->userdata = userdata;
-
-    state->timer = reactor_add_timer(ctx->reactor, 100, 0, service_stop_wait_cb, state);
-    if (!state->timer) {
-        free(state);
-        return -1;
-    }
-
-    return 0;
-}
-
-int service_get_pid(service_ctx_t *ctx) {
-    if (!ctx) return -1;
-
-    if (ctx->child_pid > 0) {
-        return ctx->child_pid;
-    }
-
-    char pid_path[PATH_MAX];
-    service_pid_path(ctx, pid_path, sizeof(pid_path));
-
-    FILE *f = fopen(pid_path, "r");
-    if (f) {
-        int pid;
-        if (fscanf(f, "%d", &pid) == 1 && pid > 0) {
-            unsigned long long starttime = 0;
-            if (get_process_starttime((pid_t)pid, &starttime) != 0) {
-                LOG_WARN("Service: stale PID file has no process starttime");
-            } else {
-                ctx->child_starttime_ticks = starttime;
-                if (validate_process(ctx, pid)) {
-                    fclose(f);
-                    ctx->child_pid = pid;
-                    ctx->validated_pid = 1;
-                    return pid;
-                }
-                LOG_WARN("Service: stale PID file");
-                ctx->child_starttime_ticks = 0;
-            }
-        }
-        fclose(f);
-    }
-
-    return -1;
-}
-
 int service_is_running(service_ctx_t *ctx) {
     return ctx && ctx->state == SERVICE_RUNNING && service_is_alive(ctx);
-}
-
-int service_is_healthy(service_ctx_t *ctx) {
-    return ctx && service_is_running(ctx) && ctx->running_healthy;
 }
 
 void service_get_snapshot(const service_ctx_t *ctx, service_snapshot_t *out) {

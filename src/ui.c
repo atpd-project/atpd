@@ -210,8 +210,3 @@ const char *ui_emoji_vpn(const ui_render_ctx_t *ctx, int connected) {
     if (ctx && ctx->emoji_enabled) return connected ? "🔒" : "🔓";
     return "[VPN]";
 }
-
-const char *ui_emoji_service(const ui_render_ctx_t *ctx, int running) {
-    if (ctx && ctx->emoji_enabled) return running ? "🚀" : "⏹";
-    return running ? "[RUNNING]" : "[STOPPED]";
-}

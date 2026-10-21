@@ -135,10 +135,6 @@ void print_version(void) {
     printf("atpd %s\n", atp_get_full_version());
 }
 
-void print_help(const char *progname) {
-    print_usage(progname);
-}
-
 int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
     if (!opts || argc < 0 || (argc > 0 && !argv)) return -1;
     memset(opts, 0, sizeof(atp_options_t));
@@ -219,18 +215,4 @@ int parse_arguments(int argc, char *argv[], atp_options_t *opts) {
         return -1;
     }
     return validate_options(opts->command, seen);
-}
-
-const char* command_to_string(atp_command_t cmd) {
-    switch (cmd) {
-        case CMD_START: return "start";
-        case CMD_STOP: return "stop";
-        case CMD_RESTART: return "restart";
-        case CMD_STATUS: return "status";
-        case CMD_RELOAD: return "reload";
-        case CMD_CHECK: return "check";
-        case CMD_VERSION: return "version";
-        case CMD_HELP: return "help";
-        default: return "unknown";
-    }
 }

@@ -65,10 +65,7 @@ extern "C" {
 void log_init(void);
 void log_set_level(log_level_t level);
 void log_set_file(const char *path);
-void log_set_targets(uint32_t targets);
 void log_set_color(int enable);
-log_level_t log_get_level(void);
-void log_rotate(void);
 void logger_init(void);
 void logger_close(void);
 void log_set_target(int targets);

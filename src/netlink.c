@@ -651,12 +651,3 @@ void netlink_handle_event(reactor_t *r, int fd, uint32_t events, void *data) {
         }
     }
 }
-
-int nl_vpn_detect(void) {
-    char ifname[IFNAMSIZ] = {0};
-    return (netlink_get_active_vpn(ifname, sizeof(ifname)) == 0);
-}
-
-int nl_link_get_vpn_interface(char *iface, size_t size) {
-    return netlink_get_active_vpn(iface, size);
-}

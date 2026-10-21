@@ -58,13 +58,7 @@ void api_cleanup(api_ctx_t *ctx);
 int api_start_with_reactor(api_ctx_t *ctx, reactor_t *r);
 int api_get_snapshot(const api_ctx_t *ctx, api_snapshot_t *out);
 
-int api_get_mode_sync(api_ctx_t *ctx, char *mode, size_t size);
 int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback, void *userdata);
-int api_check_health_async(api_ctx_t *ctx, api_callback_t callback, void *userdata);
-int api_check_health_sync(api_ctx_t *ctx);
-int api_get_version_sync(api_ctx_t *ctx, char *version, size_t size);
-int api_get_status_sync(api_ctx_t *ctx, singbox_status_t *status);
-int api_get_goroutines_count(api_ctx_t *ctx);
 void api_vpn_mode_callback(vpn_state_t state, const char *iface, void *userdata);
 
 #endif

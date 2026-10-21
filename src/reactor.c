@@ -548,13 +548,6 @@ int reactor_cancel_timer(reactor_t *r, reactor_timer_t *timer) {
     return 0;
 }
 
-void reactor_update_time(reactor_t *r) {
-    if (r) {
-        reactor_private_t *priv = r->private_data;
-        priv->current_time_ms = get_monotonic_ms();
-    }
-}
-
 uint64_t reactor_now_ms(void) {
     return get_monotonic_ms();
 }
@@ -599,13 +592,6 @@ void reactor_set_idle_cb(reactor_t *r, reactor_idle_cb cb) {
     if (r) {
         reactor_private_t *priv = r->private_data;
         priv->idle_cb = cb;
-    }
-}
-
-void reactor_set_error_cb(reactor_t *r, reactor_error_cb cb) {
-    if (r) {
-        reactor_private_t *priv = r->private_data;
-        priv->error_cb = cb;
     }
 }
 

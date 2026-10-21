@@ -35,6 +35,5 @@ void ui_table_subrow_int(ui_render_ctx_t *ctx, const char *prefix,
 void ui_table_end(ui_render_ctx_t *ctx);
 
 const char *ui_emoji_vpn(const ui_render_ctx_t *ctx, int connected);
-const char *ui_emoji_service(const ui_render_ctx_t *ctx, int running);
 
 #endif

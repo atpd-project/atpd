@@ -25,7 +25,6 @@ typedef struct {
 } config_key_spec_t;
 
 const config_key_spec_t *config_schema_find(const char *key);
-int config_validate_key(const char *key);
 int config_validate_values(const atp_config_t *cfg);
 
 #endif /* ATP_CONFIG_VALIDATOR_H */

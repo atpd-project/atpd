@@ -40,8 +40,6 @@ typedef struct {
 
 void print_usage(const char *progname);
 void print_version(void);
-void print_help(const char *progname);
 int parse_arguments(int argc, char *argv[], atp_options_t *opts);
-const char* command_to_string(atp_command_t cmd);
 
 #endif
