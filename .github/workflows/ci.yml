@@ -617,6 +617,92 @@ jobs:
         run: |
           ccache -s
 
+  release-arm64-bionic:
+    name: "Release ARM64 (Android bionic)"
+    needs: [sanitizer-arm64]
+    runs-on: ubuntu-24.04
+    env:
+      NDK_VERSION: r30
+      NDK_SHA1: 5107f898313790e449e87eee2183d9a20602dee9
+      ANDROID_API: "24"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Restore Android NDK
+        id: ndk-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/android-ndk-${{ env.NDK_VERSION }}
+          key: android-ndk-${{ env.NDK_VERSION }}-${{ env.NDK_SHA1 }}
+
+      - name: Install Android NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" -o /tmp/ndk.zip
+          echo "${NDK_SHA1}  /tmp/ndk.zip" | sha1sum -c -
+          unzip -q /tmp/ndk.zip -d ~
+          rm -f /tmp/ndk.zip
+
+      - name: Generate Version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/gen_version.sh
+          ln -sf ../build/generated/version_build.h include/version_build.h
+
+      - name: Build Bionic Release Binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          CC="${HOME}/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+          "$CC" --version | head -n 1
+          mkdir -p build/bin
+          "$CC" \
+            -s -Oz -flto -ffunction-sections -fdata-sections \
+            -fno-unwind-tables -fno-asynchronous-unwind-tables \
+            -fmerge-all-constants -fno-ident \
+            -Iinclude \
+            -D_GNU_SOURCE \
+            -DNDEBUG \
+            -DYYJSON_DISABLE_WRITER=1 \
+            -DYYJSON_DISABLE_FAST_FP_CONV=1 \
+            -DYYJSON_DISABLE_NON_STANDARD=1 \
+            -DLOG_LOCATION_ENABLED=0 \
+            -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
+            -DATP_CONF_FILE=\"atp.conf\" \
+            -DATP_PID_FILE=\"run/atpd.pid\" \
+            -DATP_LOG_FILE=\"run/atp.log\" \
+            -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
+            -o build/bin/atpd \
+            $(find src -name "*.c") \
+            -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
+          rm -f include/version_build.h
+
+      # Cannot execute on the Linux runner; verify it targets Android's loader instead.
+      - name: Verify Binary Architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          file ./build/bin/atpd
+          ls -lh ./build/bin/atpd
+          file ./build/bin/atpd | grep -i 'aarch64'
+          file ./build/bin/atpd | grep -i 'stripped'
+          readelf -l ./build/bin/atpd | grep -F '/system/bin/linker64'
+          readelf -n ./build/bin/atpd | grep -F 'Android'
+
+      - name: Upload Bionic Release Binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: atpd-bionic-arm64
+          path: ./build/bin/atpd
+          retention-days: 7
+
   integration-arm64:
     name: "Integration ARM64"
     needs: [release-arm64]
@@ -702,7 +788,7 @@ jobs:
   # ============================================================================
   final-ci-verdict:
     name: "Final CI Verdict"
-    needs: [integration-amd64, integration-arm64, repository-checks]
+    needs: [integration-amd64, integration-arm64, release-arm64-bionic, repository-checks]
     runs-on: ubuntu-latest
     steps:
       - name: Output Release Gate Summary
@@ -721,6 +807,7 @@ jobs:
           echo "  [PASS] Lane 2 (ARM64):"
           echo "         - Sanitizer ARM64: ASan, UBSan, TSan"
           echo "         - Release ARM64: Native Clean Build & Packaging"
+          echo "         - Release ARM64 (Android bionic): NDK Build"
           echo "         - Integration ARM64: Lifecycle, Crash Recovery, Config, Benchmark"
           echo "================================================================================"
 
