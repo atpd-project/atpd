@@ -480,7 +480,7 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
             while (fgets(line, sizeof(line), fp)) {
                 char name[64];
                 unsigned long long rx_val = 0, tx_val = 0;
-                if (sscanf(line, "%63[^:]: %llu %*llu %*llu %*llu %*llu %*llu %*llu %*llu %llu",
+                if (sscanf(line, "%63[^:]: %llu %*u %*u %*u %*u %*u %*u %*u %llu",
                            name, &rx_val, &tx_val) >= 3) {
                     char *p = name;
                     while (*p == ' ') p++;

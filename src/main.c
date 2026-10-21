@@ -723,7 +723,6 @@ static int do_stop(atp_options_t *opts) {
     pid_t pid = identity.pid;
     if (!process_matches_identity(&identity)) {
         if (opts->command == CMD_RESTART) {
-            unlink(pp);
             return 2;
         }
         fprintf(stderr, "Process %d identity does not match PID file (stale PID file)\n", pid);
@@ -733,7 +732,6 @@ static int do_stop(atp_options_t *opts) {
     if (kill(pid, SIGTERM) < 0) {
         if (errno == ESRCH) {
             if (opts->command == CMD_RESTART) {
-                unlink(pp);
                 return 2;
             }
             fprintf(stderr, "Process %d not found (stale PID file)\n", pid);
