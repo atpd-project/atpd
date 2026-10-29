@@ -1,0 +1,262 @@
+name: ATPD Release Pipeline
+
+run-name: "Release ${{ github.ref_name }}"
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to release (leave empty to use current ref)'
+        required: false
+        default: ''
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ============================================================================
+  # Build Native ARM64 (Zig CC) Release Binary
+  # ============================================================================
+  build-release-native:
+    name: "Build Release ARM64 (Zig CC)"
+    runs-on: ubuntu-24.04-arm
+
+    outputs:
+      atp_version: ${{ steps.version-meta.outputs.atp_version }}
+      full_version: ${{ steps.version-meta.outputs.full_version }}
+      zig_binary_size: ${{ steps.version-meta.outputs.zig_binary_size }}
+      zig_compiler_ver: ${{ steps.version-meta.outputs.zig_compiler_ver }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Zig 0.16.0
+        uses: ./.github/actions/setup-zig-0.16
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq make ccache file
+
+      - name: Generate Version & Build Native Release
+        id: version-meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/gen_version.sh
+          make clean
+          make release
+          mkdir -p dist-native
+          cp build/bin/atpd dist-native/atpd
+          echo "zig_binary_size=$(du -h dist-native/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "zig_compiler_ver=$(zig version)" >> "$GITHUB_OUTPUT"
+          VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' build/generated/version_build.h || echo "unknown")
+          echo "atp_version=$VER" >> "$GITHUB_OUTPUT"
+          FULL_VER=$(grep -oP 'ATP_VERSION_FULL\s+"\K[^"]+' build/generated/version_build.h || echo "unknown")
+          echo "full_version=$FULL_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke Check Native Binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          file dist-native/atpd
+          ./dist-native/atpd -v
+          ./dist-native/atpd -h
+
+      - name: Upload Native Release Binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: atpd-native-arm64
+          path: dist-native/atpd
+          retention-days: 7
+
+  # ============================================================================
+  # Build Android Bionic ARM64 Release Binary
+  # ============================================================================
+  build-release-bionic:
+    name: "Build Release ARM64 (Android bionic)"
+    runs-on: ubuntu-24.04
+
+    outputs:
+      bionic_binary_size: ${{ steps.bionic-meta.outputs.bionic_binary_size }}
+      bionic_compiler_ver: ${{ steps.bionic-meta.outputs.bionic_compiler_ver }}
+
+    env:
+      NDK_VERSION: r30
+      NDK_SHA1: 5107f898313790e449e87eee2183d9a20602dee9
+      ANDROID_API: "24"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Restore Android NDK
+        id: ndk-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/android-ndk-${{ env.NDK_VERSION }}
+          key: android-ndk-${{ env.NDK_VERSION }}-${{ env.NDK_SHA1 }}
+
+      - name: Install Android NDK
+        if: steps.ndk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" -o /tmp/ndk.zip
+          echo "${NDK_SHA1}  /tmp/ndk.zip" | sha1sum -c -
+          unzip -q /tmp/ndk.zip -d ~
+          rm -f /tmp/ndk.zip
+
+      - name: Generate Version & Build Bionic Release
+        id: bionic-meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/gen_version.sh
+          CC="${HOME}/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
+          "$CC" --version | head -n 1
+          mkdir -p build/bin dist-bionic
+          "$CC" \
+            -s -Oz -flto -ffunction-sections -fdata-sections \
+            -fno-unwind-tables -fno-asynchronous-unwind-tables \
+            -fmerge-all-constants -fno-ident \
+            -Iinclude \
+            -Ibuild/generated \
+            -D_GNU_SOURCE \
+            -DNDEBUG \
+            -DYYJSON_DISABLE_WRITER=1 \
+            -DYYJSON_DISABLE_FAST_FP_CONV=1 \
+            -DYYJSON_DISABLE_NON_STANDARD=1 \
+            -DLOG_LOCATION_ENABLED=0 \
+            -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
+            -DATP_CONF_FILE=\"atp.conf\" \
+            -DATP_PID_FILE=\"run/atpd.pid\" \
+            -DATP_LOG_FILE=\"run/atp.log\" \
+            -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
+            -o dist-bionic/atpd \
+            $(find src -name "*.c") \
+            -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
+          echo "bionic_binary_size=$(du -h dist-bionic/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "bionic_compiler_ver=NDK ${NDK_VERSION} $("$CC" --version | grep -o 'clang version [0-9.]*') API ${ANDROID_API}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Bionic Binary Architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          file dist-bionic/atpd
+          ls -lh dist-bionic/atpd
+          file dist-bionic/atpd | grep -i 'aarch64'
+          file dist-bionic/atpd | grep -i 'stripped'
+          readelf -l dist-bionic/atpd | grep -F '/system/bin/linker64'
+          readelf -n dist-bionic/atpd | grep -F 'Android'
+
+      - name: Upload Bionic Release Binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: atpd-bionic-arm64
+          path: dist-bionic/atpd
+          retention-days: 7
+
+  # ============================================================================
+  # Publish GitHub Release & Update Dashboard / Telegram Notification
+  # ============================================================================
+  publish-release:
+    name: "Publish GitHub Release & Notify"
+    needs: [build-release-native, build-release-bionic]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download Native Binary
+        uses: actions/download-artifact@v7
+        with:
+          name: atpd-native-arm64
+          path: build-native
+
+      - name: Download Bionic Binary
+        uses: actions/download-artifact@v7
+        with:
+          name: atpd-bionic-arm64
+          path: build-bionic
+
+      - name: Package Release Assets
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          mkdir -p dist pkg-linux pkg-android
+
+          # Package Linux Native Release
+          cp build-native/atpd pkg-linux/atpd
+          chmod +x pkg-linux/atpd
+          cp README.md service.d/atpd_service.sh pkg-linux/ 2>/dev/null || true
+          tar -czvf "dist/atpd-${TAG}-linux-arm64.tar.gz" -C pkg-linux .
+
+          # Package Android Bionic Release
+          cp build-bionic/atpd pkg-android/atpd
+          chmod +x pkg-android/atpd
+          cp README.md service.d/atpd_service.sh pkg-android/ 2>/dev/null || true
+          tar -czvf "dist/atpd-${TAG}-android-arm64.tar.gz" -C pkg-android .
+
+          # Generate Checksums
+          cd dist
+          sha256sum atpd-*.tar.gz > sha256sums.txt
+          cat sha256sums.txt
+          cd ..
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.pkg.outputs.tag }}"
+          
+          # Delete existing draft/release if recreating tag
+          gh release delete "$TAG" -y 2>/dev/null || true
+          
+          gh release create "$TAG" \
+            --title "ATPD $TAG" \
+            --generate-notes \
+            dist/atpd-*.tar.gz \
+            dist/sha256sums.txt
+
+      - name: Update Issue #6 Dashboard & Telegram Broadcast
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          ZIG_SIZE: ${{ needs.build-release-native.outputs.zig_binary_size }}
+          ATP_VERSION: ${{ needs.build-release-native.outputs.atp_version || steps.pkg.outputs.tag }}
+          ZIG_COMPILER_VER: ${{ needs.build-release-native.outputs.zig_compiler_ver || 'N/A' }}
+          BIONIC_SIZE: ${{ needs.build-release-bionic.outputs.bionic_binary_size }}
+          BIONIC_COMPILER_VER: ${{ needs.build-release-bionic.outputs.bionic_compiler_ver || 'N/A' }}
+          ATPD_VERSION_STRING: ${{ needs.build-release-native.outputs.full_version || steps.pkg.outputs.tag }}
+          COMMIT_TITLE: "Release ${{ steps.pkg.outputs.tag }}"
+          COMMIT_MSG: "Production release ${{ steps.pkg.outputs.tag }}"
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          .github/scripts/notify.sh all
