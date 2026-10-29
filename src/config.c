@@ -369,10 +369,23 @@ static int parse_vpn_bypass_routes(const char *v, atp_config_t *cfg) {
             return -1;
         }
 
-        cfg->interface.vpn_bypass_routes[count].family = family;
-        memcpy(cfg->interface.vpn_bypass_routes[count].addr, addr, 16);
-        cfg->interface.vpn_bypass_routes[count].prefix_len = (unsigned char)plen;
-        count++;
+        int duplicate = 0;
+        for (int i = 0; i < count; i++) {
+            if (cfg->interface.vpn_bypass_routes[i].family == family &&
+                cfg->interface.vpn_bypass_routes[i].prefix_len == (unsigned char)plen &&
+                memcmp(cfg->interface.vpn_bypass_routes[i].addr, addr,
+                       (family == AF_INET ? 4 : 16)) == 0) {
+                duplicate = 1;
+                break;
+            }
+        }
+
+        if (!duplicate) {
+            cfg->interface.vpn_bypass_routes[count].family = family;
+            memcpy(cfg->interface.vpn_bypass_routes[count].addr, addr, 16);
+            cfg->interface.vpn_bypass_routes[count].prefix_len = (unsigned char)plen;
+            count++;
+        }
 
         token = strtok_r(NULL, " ,\t\r\n", &saveptr);
     }
@@ -432,12 +445,6 @@ static int parse_key_value(const config_key_spec_t *spec, const char *k,
     }
     if (strcmp(k, "VPN_BYPASS_ROUTES") == 0) {
         return parse_vpn_bypass_routes(v, cfg);
-    }
-    if (strcmp(k, "VPN_BYPASS_PREF") == 0) {
-        int value;
-        if (config_parse_int(v, &value) != 0 || value < 1 || value > 32765) return -1;
-        cfg->interface.vpn_bypass_pref = value;
-        return 0;
     }
     if (strcmp(k, "DATA_DIR") == 0 || strcmp(k, "WORK_DIR") == 0) {
         return config_copy_string(cfg->core.data_dir, sizeof(cfg->core.data_dir), v);

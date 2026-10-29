@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#undef NDEBUG
 #include <assert.h>
 #include <arpa/inet.h>
 
@@ -129,6 +130,11 @@ int main(void) {
     changes = config_classify_reload(&current, &candidate, changed, sizeof(changed));
     assert((changes & CONFIG_RELOAD_CHANGE_REQUIRES_RESTART) != 0);
     assert(strstr(changed, "VPN_BYPASS_PREF") != NULL);
+
+    /* 8. Deduplication of identical routes */
+    res = load_test_config("VPN_BYPASS_ROUTES=\"100.64.0.0/10 100.64.0.0/10 192.168.88.1/24 192.168.88.2/24\"\n", &cfg);
+    assert(res == ATP_OK);
+    assert(cfg.interface.vpn_bypass_route_count == 2);
 
     printf("=== Test VPN Bypass Config Parsing PASSED ===\n");
     return 0;
