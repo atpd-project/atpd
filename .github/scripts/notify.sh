@@ -46,24 +46,11 @@ resolve_assets() {
     ZIG_URL="${ZIG_DOWNLOAD_URL:-}"
     BIONIC_URL="${BIONIC_DOWNLOAD_URL:-}"
 
-    if [ -z "$ZIG_FILE" ]; then
-        if [[ "$tag" == v* ]]; then
-            ZIG_FILE="atpd-${tag}-linux-arm64.tar.gz"
-            ZIG_URL="${ZIG_URL:-https://github.com/${REPO}/releases/download/${tag}/${ZIG_FILE}}"
-        else
-            ZIG_FILE="atpd-native-arm64"
-            ZIG_URL="${ZIG_URL:-https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}}"
-        fi
-    fi
-
-    if [ -z "$BIONIC_FILE" ]; then
-        if [[ "$tag" == v* ]]; then
-            BIONIC_FILE="atpd-${tag}-android-arm64.tar.gz"
-            BIONIC_URL="${BIONIC_URL:-https://github.com/${REPO}/releases/download/${tag}/${BIONIC_FILE}}"
-        else
-            BIONIC_FILE="atpd-bionic-arm64"
-            BIONIC_URL="${BIONIC_URL:-https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}}"
-        fi
+    if [[ "$tag" == v* ]]; then
+        [ -z "$ZIG_FILE" ] && ZIG_FILE="atpd-${tag}-linux-arm64.tar.gz"
+        [ -z "$ZIG_URL" ] && ZIG_URL="https://github.com/${REPO}/releases/download/${tag}/${ZIG_FILE}"
+        [ -z "$BIONIC_FILE" ] && BIONIC_FILE="atpd-${tag}-android-arm64.tar.gz"
+        [ -z "$BIONIC_URL" ] && BIONIC_URL="https://github.com/${REPO}/releases/download/${tag}/${BIONIC_FILE}"
     fi
 }
 
@@ -79,21 +66,26 @@ notify_telegram() {
     local repo_esc=$(escape_md "$REPO")
     local zig_esc=$(escape_md "${ZIG_SIZE:-N/A}")
     local bionic_esc=$(escape_md "${BIONIC_SIZE:-N/A}")
-    local zig_file_esc=$(escape_md "$ZIG_FILE")
-    local bionic_file_esc=$(escape_md "$BIONIC_FILE")
-    local zig_url_esc=$(escape_url "$ZIG_URL")
-    local bionic_url_esc=$(escape_url "$BIONIC_URL")
 
-    local title="📋 *Latest ATPd Build*"
+    local msg=""
     if [[ "$tag" == v* ]]; then
-        title="📋 *Latest ATPd Release*"
-    fi
+        local zig_file_esc=$(escape_md "$ZIG_FILE")
+        local bionic_file_esc=$(escape_md "$BIONIC_FILE")
+        local zig_url_esc=$(escape_url "$ZIG_URL")
+        local bionic_url_esc=$(escape_url "$BIONIC_URL")
 
-    local msg="${title}%0A"
-    msg+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
-    msg+="📦 [${zig_file_esc}](${zig_url_esc}) \(${zig_esc}\)%0A"
-    msg+="🤖 [${bionic_file_esc}](${bionic_url_esc}) \(${bionic_esc}\)%0A"
-    msg+="🔗 https://github\.com/${repo_esc}/issues/6"
+        msg="📋 *Latest ATPd Release*%0A"
+        msg+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
+        msg+="📦 [${zig_file_esc}](${zig_url_esc}) \(${zig_esc}\)%0A"
+        msg+="🤖 [${bionic_file_esc}](${bionic_url_esc}) \(${bionic_esc}\)%0A"
+        msg+="🔗 https://github\.com/${repo_esc}/issues/6"
+    else
+        msg="📋 *Latest ATPd Build*%0A"
+        msg+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
+        msg+="📦 Zig CC: ${zig_esc}%0A"
+        msg+="🤖 Bionic: ${bionic_esc}%0A"
+        msg+="🔗 https://github\.com/${repo_esc}/issues/6"
+    fi
 
     curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" \
         -d "chat_id=${chat_id}" \
@@ -130,9 +122,13 @@ notify_issue() {
 
     DOWNLOAD_LINK="${RUN_URL}"
     DOWNLOAD_LABEL="Download Build Artifact"
+    ZIG_LINE="* ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 \`${ZIG}\`"
+    BIONIC_LINE="* 🤖 **Bionic:** \`${BIONIC_COMPILER}\` | 📦 \`${BIONIC}\`"
     if [[ "$BRANCH" == v* ]]; then
         DOWNLOAD_LINK="https://github.com/${REPO}/releases/tag/${BRANCH}"
         DOWNLOAD_LABEL="Download Release Assets"
+        ZIG_LINE="* ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 [${ZIG_FILE}](${ZIG_URL}) (\`${ZIG}\`)"
+        BIONIC_LINE="* 🤖 **Bionic:** \`${BIONIC_COMPILER}\` | 📦 [${BIONIC_FILE}](${BIONIC_URL}) (\`${BIONIC}\`)"
     fi
 
     NEW_ENTRY="<details>
@@ -143,8 +139,8 @@ notify_issue() {
 * 📥 **[${DOWNLOAD_LABEL}](${DOWNLOAD_LINK})**
 * 📝 **CI Version:** \`${VER}\`
 * 🔧 **ATPd Version (-v):** \`${RUNTIME}\`
-* ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 [${ZIG_FILE}](${ZIG_URL}) (\`${ZIG}\`)
-* 🤖 **Bionic:** \`${BIONIC_COMPILER}\` | 📦 [${BIONIC_FILE}](${BIONIC_URL}) (\`${BIONIC}\`)
+${ZIG_LINE}
+${BIONIC_LINE}
 * 💬 **Message:** \`${DISPLAY_MSG}\`
 * 🔗 **Source:** Commit [${COMMIT_SHORT}](${COMMIT_LINK})
 * 🕒 **Build Time:** \`${TS}\`
