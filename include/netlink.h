@@ -40,6 +40,7 @@ const char* netlink_get_vpn_type_label(const char *iface);
 
 void netlink_set_reactor(reactor_t *r);
 void netlink_refresh_state(reactor_t *r);
+int netlink_apply_vpn_bypass_config(const atp_config_t *cfg);
 
 /* ========== XFRM Listener (Google VPN Detection) ========== */
 int netlink_xfrm_init(reactor_t *r);

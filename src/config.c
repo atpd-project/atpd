@@ -681,15 +681,13 @@ config_reload_changes_t config_classify_reload(const atp_config_t *current,
     RESTART_IF_CHANGED(strcmp(current->interface.vpn_fallback_mode,
                               candidate->interface.vpn_fallback_mode) != 0,
                        "VPN_FALLBACK_MODE");
-    RESTART_IF_CHANGED(current->interface.vpn_bypass_route_count !=
-                           candidate->interface.vpn_bypass_route_count ||
-                       memcmp(current->interface.vpn_bypass_routes,
-                              candidate->interface.vpn_bypass_routes,
-                              sizeof(current->interface.vpn_bypass_routes)) != 0,
-                       "VPN_BYPASS_ROUTES");
-    RESTART_IF_CHANGED(current->interface.vpn_bypass_pref !=
-                           candidate->interface.vpn_bypass_pref,
-                       "VPN_BYPASS_PREF");
+    HOT_IF_CHANGED(current->interface.vpn_bypass_route_count !=
+                       candidate->interface.vpn_bypass_route_count ||
+                   memcmp(current->interface.vpn_bypass_routes,
+                          candidate->interface.vpn_bypass_routes,
+                          sizeof(current->interface.vpn_bypass_routes)) != 0);
+    HOT_IF_CHANGED(current->interface.vpn_bypass_pref !=
+                       candidate->interface.vpn_bypass_pref);
     RESTART_IF_CHANGED(current->service.circuit_threshold !=
                        candidate->service.circuit_threshold,
                        "SERVICE_CIRCUIT_THRESHOLD");

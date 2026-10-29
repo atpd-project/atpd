@@ -27,6 +27,7 @@
 #include <linux/fib_rules.h>
 #include <linux/xfrm.h>
 #include <pthread.h>
+#include <poll.h>
 
 #define NL_BUF_SIZE 8192
 #define NL_DUMP_SIZE 32768
@@ -123,7 +124,7 @@ static void safe_copy_ifname(char *dest, const void *src, size_t src_len) {
 }
 
 static int open_netlink_socket(int groups) {
-    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);
+    int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, NETLINK_ROUTE);
     if (fd < 0) {
         if (groups != 0) {
             LOG_ERROR("Netlink: socket() failed: %s", strerror(errno));
@@ -172,29 +173,46 @@ typedef int (*nl_msg_parser_t)(struct nlmsghdr *h, void *userdata);
 static int netlink_recv_all_with_timeout(int fd, uint32_t expected_seq,
                                           nl_msg_parser_t parser, void *userdata,
                                           int timeout_ms) {
-    struct timeval tv = {
-        .tv_sec = timeout_ms / 1000,
-        .tv_usec = (timeout_ms % 1000) * 1000
-    };
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    if (fd < 0) return -1;
 
-    char *buf = malloc(NL_DUMP_SIZE);
-    if (!buf) return -1;
+    static char s_dump_buf[NL_DUMP_SIZE];
 
     int done = 0;
     while (!done) {
-        ssize_t len = recv(fd, buf, NL_DUMP_SIZE, 0);
-        if (len < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                LOG_WARN("Netlink: recv timeout");
-            } else {
-                LOG_ERROR("Netlink: recv failed: %s", strerror(errno));
-            }
-            free(buf);
+        struct pollfd pfd = {
+            .fd = fd,
+            .events = POLLIN
+        };
+
+        int wait_ms = timeout_ms > 0 ? timeout_ms : 50;
+        int pr = poll(&pfd, 1, wait_ms);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            LOG_ERROR("Netlink: poll failed: %s", strerror(errno));
+            return -1;
+        }
+        if (pr == 0) {
+            LOG_WARN("Netlink: poll timeout (%d ms)", wait_ms);
             return -1;
         }
 
-        for (struct nlmsghdr *h = (struct nlmsghdr *)buf;
+        if (!(pfd.revents & POLLIN)) {
+            LOG_WARN("Netlink: poll unexpected revents 0x%x", pfd.revents);
+            return -1;
+        }
+
+        ssize_t len = recv(fd, s_dump_buf, sizeof(s_dump_buf), MSG_DONTWAIT);
+        if (len < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            LOG_ERROR("Netlink: recv failed: %s", strerror(errno));
+            return -1;
+        }
+        if (len == 0) {
+            return -1;
+        }
+
+        for (struct nlmsghdr *h = (struct nlmsghdr *)s_dump_buf;
              NLMSG_OK(h, (uint32_t)len);
              h = NLMSG_NEXT(h, len)) {
 
@@ -213,7 +231,6 @@ static int netlink_recv_all_with_timeout(int fd, uint32_t expected_seq,
                         break;
                     }
                     LOG_ERROR("Netlink: error response %d: %s", err->error, strerror(-err->error));
-                    free(buf);
                     return -1;
                 }
                 done = 1;
@@ -221,13 +238,11 @@ static int netlink_recv_all_with_timeout(int fd, uint32_t expected_seq,
             }
 
             if (parser && parser(h, userdata) < 0) {
-                free(buf);
                 return -1;
             }
         }
     }
 
-    free(buf);
     return 0;
 }
 
@@ -472,7 +487,7 @@ int netlink_get_active_vpn(char *output, size_t size) {
     netlink_drain_socket(sync_fd);
     if (netlink_send_request(sync_fd, &req, req.nlh.nlmsg_len) == 0) {
         if (netlink_recv_all_with_timeout(sync_fd, req.nlh.nlmsg_seq,
-                                          parser_link_sync, &ctx, 500) == 0) {
+                                          parser_link_sync, &ctx, 50) == 0) {
             int fallback = -1;
             for (int i = 0; i < ctx.count; i++) {
                 if ((links[i].flags & IFF_UP) && is_proxy_interface(links[i].name)) {
@@ -560,7 +575,7 @@ int netlink_get_iface_stats(const char *iface, uint64_t *rx, uint64_t *tx) {
     netlink_drain_socket(sync_fd);
     if (netlink_send_request(sync_fd, &req, req.nlh.nlmsg_len) == 0) {
         if (netlink_recv_all_with_timeout(sync_fd, req.nlh.nlmsg_seq,
-                                          parser_link_sync, &ctx, 500) == 0) {
+                                          parser_link_sync, &ctx, 50) == 0) {
             if (ctx.count > 0) {
                 *rx = links[0].rx_bytes;
                 *tx = links[0].tx_bytes;
@@ -674,7 +689,7 @@ static int netlink_rule_send(int cmd, int family, uint8_t dst_len, const uint8_t
         LOG_WARN("Netlink: failed to send rule request (cmd %d): %s", cmd, strerror(errno));
         return -1;
     }
-    if (netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq, NULL, NULL, 500) < 0) {
+    if (netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq, NULL, NULL, 50) < 0) {
         return -1;
     }
     return 0;
@@ -872,7 +887,7 @@ static void vpn_bypass_sync(int ready) {
         /* A failed dump must not look like "no physical table": that would delete working rules. */
         if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0 ||
             netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                          parser_route_find, &r_ctx, 500) < 0) {
+                                          parser_route_find, &r_ctx, 50) < 0) {
             LOG_WARN("VPN bypass: route dump failed, leaving rules unchanged");
             pthread_mutex_unlock(&g_nl_mutex);
             return;
@@ -884,7 +899,7 @@ static void vpn_bypass_sync(int ready) {
             req.rtm.rtm_family = AF_INET6;
             if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0 ||
                 netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                              parser_route_find, &r_ctx, 500) < 0) {
+                                              parser_route_find, &r_ctx, 50) < 0) {
                 LOG_WARN("VPN bypass: IPv6 route dump failed, leaving rules unchanged");
                 pthread_mutex_unlock(&g_nl_mutex);
                 return;
@@ -927,7 +942,7 @@ static void vpn_bypass_sync(int ready) {
         netlink_drain_socket(g_sync_fd);
         if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0 ||
             netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
-                                          parser_rule_dump, &rule_ctx, 500) < 0) {
+                                          parser_rule_dump, &rule_ctx, 50) < 0) {
             LOG_WARN("VPN bypass: rule dump failed, leaving rules unchanged");
             pthread_mutex_unlock(&g_nl_mutex);
             return;
@@ -1061,4 +1076,73 @@ void netlink_handle_event(reactor_t *r, int fd, uint32_t events, void *data) {
             trigger_network_refresh(g_debounce_reactor);
         }
     }
+}
+
+int netlink_apply_vpn_bypass_config(const atp_config_t *cfg) {
+    if (!cfg) return -1;
+
+    int new_count = cfg->interface.vpn_bypass_route_count;
+    if (new_count > ATP_MAX_VPN_BYPASS_ROUTES) {
+        new_count = ATP_MAX_VPN_BYPASS_ROUTES;
+    }
+    int new_pref = cfg->interface.vpn_bypass_pref ? cfg->interface.vpn_bypass_pref : 12400;
+
+    int routes_changed = (new_count != g_bypass_route_count ||
+                          memcmp(g_bypass_routes, cfg->interface.vpn_bypass_routes,
+                                 sizeof(vpn_bypass_route_t) * new_count) != 0);
+    int pref_changed = (new_pref != g_bypass_pref);
+
+    if (!routes_changed && !pref_changed) {
+        return 0;
+    }
+
+    char vpn[IFNAMSIZ] = {0};
+    int has_vpn = (netlink_get_active_vpn(vpn, sizeof(vpn)) == 0 && vpn[0]);
+    int ready = (has_vpn && strncmp(vpn, "ipsec", 5) == 0);
+
+    /* If priority changed, flush all rules under old priority before adopting new priority */
+    if (pref_changed) {
+        vpn_bypass_sync(0);
+        g_bypass_pref = new_pref;
+        g_bypass_route_count = new_count;
+        if (new_count > 0) {
+            memcpy(g_bypass_routes, cfg->interface.vpn_bypass_routes,
+                   sizeof(vpn_bypass_route_t) * new_count);
+        } else {
+            memset(g_bypass_routes, 0, sizeof(g_bypass_routes));
+        }
+        vpn_bypass_sync(ready);
+        return 0;
+    }
+
+    /* Preference is unchanged: delete removed routes individually without flapping surviving routes */
+    for (int i = 0; i < g_bypass_route_count; i++) {
+        int found_in_new = 0;
+        for (int k = 0; k < new_count; k++) {
+            if (cfg->interface.vpn_bypass_routes[k].family == g_bypass_routes[i].family &&
+                cfg->interface.vpn_bypass_routes[k].prefix_len == g_bypass_routes[i].prefix_len &&
+                memcmp(cfg->interface.vpn_bypass_routes[k].addr, g_bypass_routes[i].addr,
+                       (g_bypass_routes[i].family == AF_INET ? 4 : 16)) == 0) {
+                found_in_new = 1;
+                break;
+            }
+        }
+        if (!found_in_new) {
+            vpn_bypass_route_t removed_route = g_bypass_routes[i];
+            g_bypass_routes[0] = removed_route;
+            g_bypass_route_count = 1;
+            vpn_bypass_sync(0);
+        }
+    }
+
+    g_bypass_route_count = new_count;
+    if (new_count > 0) {
+        memcpy(g_bypass_routes, cfg->interface.vpn_bypass_routes,
+               sizeof(vpn_bypass_route_t) * new_count);
+    } else {
+        memset(g_bypass_routes, 0, sizeof(g_bypass_routes));
+    }
+
+    vpn_bypass_sync(ready);
+    return 0;
 }

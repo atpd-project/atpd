@@ -394,6 +394,7 @@ static void process_config_reload(void) {
                     reload_return_to_running_or_shutdown();
                 } else {
                     daemon_config = candidate;
+                    netlink_apply_vpn_bypass_config(&candidate);
                     atp_timezone_init();
                     LOG_INFO("Config reload completed successfully");
                     reload_return_to_running_or_shutdown();

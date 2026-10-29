@@ -139,6 +139,20 @@ int main(void) {
         CHECK(r_ctx6.selected_table == 1048);
     }
 
+    /* Test netlink_apply_vpn_bypass_config hot-reload */
+    atp_config_t new_cfg;
+    memset(&new_cfg, 0, sizeof(new_cfg));
+    new_cfg.interface.vpn_bypass_pref = 12500;
+    new_cfg.interface.vpn_bypass_route_count = 1;
+    new_cfg.interface.vpn_bypass_routes[0].family = AF_INET;
+    new_cfg.interface.vpn_bypass_routes[0].prefix_len = 8;
+    CHECK(inet_pton(AF_INET, "10.0.0.0", new_cfg.interface.vpn_bypass_routes[0].addr) == 1);
+
+    CHECK(netlink_apply_vpn_bypass_config(&new_cfg) == 0);
+    CHECK(g_bypass_pref == 12500);
+    CHECK(g_bypass_route_count == 1);
+    CHECK(g_bypass_routes[0].prefix_len == 8);
+
     printf("VPN bypass rule matching tests passed\n");
     return 0;
 }

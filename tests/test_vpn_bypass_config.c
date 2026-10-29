@@ -121,15 +121,15 @@ int main(void) {
     candidate.interface.vpn_bypass_routes[0].family = AF_INET;
     candidate.interface.vpn_bypass_routes[0].prefix_len = 24;
     changes = config_classify_reload(&current, &candidate, changed, sizeof(changed));
-    assert((changes & CONFIG_RELOAD_CHANGE_REQUIRES_RESTART) != 0);
-    assert(strstr(changed, "VPN_BYPASS_ROUTES") != NULL);
+    assert((changes & CONFIG_RELOAD_CHANGE_HOT) != 0);
+    assert((changes & CONFIG_RELOAD_CHANGE_REQUIRES_RESTART) == 0);
 
     candidate = current;
     candidate.interface.vpn_bypass_pref = 12000;
     changed[0] = '\0';
     changes = config_classify_reload(&current, &candidate, changed, sizeof(changed));
-    assert((changes & CONFIG_RELOAD_CHANGE_REQUIRES_RESTART) != 0);
-    assert(strstr(changed, "VPN_BYPASS_PREF") != NULL);
+    assert((changes & CONFIG_RELOAD_CHANGE_HOT) != 0);
+    assert((changes & CONFIG_RELOAD_CHANGE_REQUIRES_RESTART) == 0);
 
     /* 8. Deduplication of identical routes */
     res = load_test_config("VPN_BYPASS_ROUTES=\"100.64.0.0/10 100.64.0.0/10 192.168.88.1/24 192.168.88.2/24\"\n", &cfg);
