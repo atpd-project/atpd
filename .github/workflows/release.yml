@@ -278,6 +278,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.pkg.outputs.tag }}
           ZIG_SIZE: ${{ needs.build-release-native.outputs.zig_binary_size }}
           ATP_VERSION: ${{ needs.build-release-native.outputs.atp_version || steps.pkg.outputs.tag }}
           ZIG_COMPILER_VER: ${{ needs.build-release-native.outputs.zig_compiler_ver || 'N/A' }}
