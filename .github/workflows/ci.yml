@@ -257,7 +257,6 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/gen_version.sh
-          ln -sf ../build/generated/version_build.h include/version_build.h
 
       - name: Build Native Release Binary
         shell: bash
@@ -269,6 +268,7 @@ jobs:
             -fno-unwind-tables -fno-asynchronous-unwind-tables \
             -fmerge-all-constants -fno-ident \
             -Iinclude \
+            -Ibuild/generated \
             -D_GNU_SOURCE \
             -DNDEBUG \
             -DYYJSON_DISABLE_WRITER=1 \
@@ -283,7 +283,6 @@ jobs:
             -o build/bin/atpd \
             $(find src -name "*.c") \
             -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
-          rm -f include/version_build.h
 
       - name: Verify Version Metadata & Clean Tree
         id: version-meta
@@ -372,7 +371,6 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/gen_version.sh
-          ln -sf ../build/generated/version_build.h include/version_build.h
 
       - name: Build Bionic Release Binary
         id: bionic-meta
@@ -387,6 +385,7 @@ jobs:
             -fno-unwind-tables -fno-asynchronous-unwind-tables \
             -fmerge-all-constants -fno-ident \
             -Iinclude \
+            -Ibuild/generated \
             -D_GNU_SOURCE \
             -DNDEBUG \
             -DYYJSON_DISABLE_WRITER=1 \
@@ -401,7 +400,6 @@ jobs:
             -o build/bin/atpd \
             $(find src -name "*.c") \
             -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
-          rm -f include/version_build.h
           echo "bionic_binary_size=$(du -h ./build/bin/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "bionic_compiler_ver=NDK ${NDK_VERSION} $("$CC" --version | grep -o 'clang version [0-9.]*') API ${ANDROID_API}" >> "$GITHUB_OUTPUT"
 
