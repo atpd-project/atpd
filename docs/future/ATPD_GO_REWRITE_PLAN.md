@@ -4,7 +4,7 @@
 
 项目：`atpd-project/atpd`
 
-当前主线基础：`ebpf-native-api`
+当前主线基础：`main` / `dev`
 
 当前 ATPD 主要使用 C 实现，负责 Android/Linux root 环境下的系统级网络控制，包括但不限于：
 
