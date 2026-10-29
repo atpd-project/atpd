@@ -153,6 +153,36 @@ int main(void) {
     CHECK(g_bypass_route_count == 1);
     CHECK(g_bypass_routes[0].prefix_len == 8);
 
+    /* Test netlink_apply_vpn_bypass_config removing multiple routes with unchanged priority */
+    atp_config_t multi_cfg;
+    memset(&multi_cfg, 0, sizeof(multi_cfg));
+    multi_cfg.interface.vpn_bypass_pref = 12500;
+    multi_cfg.interface.vpn_bypass_route_count = 3;
+    multi_cfg.interface.vpn_bypass_routes[0].family = AF_INET;
+    multi_cfg.interface.vpn_bypass_routes[0].prefix_len = 8;
+    CHECK(inet_pton(AF_INET, "10.0.0.0", multi_cfg.interface.vpn_bypass_routes[0].addr) == 1);
+    multi_cfg.interface.vpn_bypass_routes[1].family = AF_INET;
+    multi_cfg.interface.vpn_bypass_routes[1].prefix_len = 12;
+    CHECK(inet_pton(AF_INET, "172.16.0.0", multi_cfg.interface.vpn_bypass_routes[1].addr) == 1);
+    multi_cfg.interface.vpn_bypass_routes[2].family = AF_INET;
+    multi_cfg.interface.vpn_bypass_routes[2].prefix_len = 16;
+    CHECK(inet_pton(AF_INET, "192.168.0.0", multi_cfg.interface.vpn_bypass_routes[2].addr) == 1);
+    CHECK(netlink_apply_vpn_bypass_config(&multi_cfg) == 0);
+    CHECK(g_bypass_route_count == 3);
+
+    /* Now update to keep ONLY 10.0.0.0/8 (removing 2 routes: 172.16.0.0/12 and 192.168.0.0/16) */
+    atp_config_t single_cfg;
+    memset(&single_cfg, 0, sizeof(single_cfg));
+    single_cfg.interface.vpn_bypass_pref = 12500; /* Unchanged priority */
+    single_cfg.interface.vpn_bypass_route_count = 1;
+    single_cfg.interface.vpn_bypass_routes[0].family = AF_INET;
+    single_cfg.interface.vpn_bypass_routes[0].prefix_len = 8;
+    CHECK(inet_pton(AF_INET, "10.0.0.0", single_cfg.interface.vpn_bypass_routes[0].addr) == 1);
+
+    CHECK(netlink_apply_vpn_bypass_config(&single_cfg) == 0);
+    CHECK(g_bypass_route_count == 1);
+    CHECK(g_bypass_routes[0].prefix_len == 8);
+
     printf("VPN bypass rule matching tests passed\n");
     return 0;
 }

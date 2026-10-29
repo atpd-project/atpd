@@ -895,6 +895,7 @@ static void vpn_bypass_sync(int ready) {
 
         if (!r_ctx.found_candidate) {
             /* Try IPv6 default route if IPv4 didn't provide one (e.g. pure IPv6 network) */
+            netlink_drain_socket(g_sync_fd);
             req.nlh.nlmsg_seq = atomic_fetch_add(&g_seq, 1);
             req.rtm.rtm_family = AF_INET6;
             if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0 ||
@@ -1116,19 +1117,23 @@ int netlink_apply_vpn_bypass_config(const atp_config_t *cfg) {
     }
 
     /* Preference is unchanged: delete removed routes individually without flapping surviving routes */
-    for (int i = 0; i < g_bypass_route_count; i++) {
+    vpn_bypass_route_t old_routes[ATP_MAX_VPN_BYPASS_ROUTES];
+    int old_count = g_bypass_route_count;
+    memcpy(old_routes, g_bypass_routes, sizeof(old_routes));
+
+    for (int i = 0; i < old_count; i++) {
         int found_in_new = 0;
         for (int k = 0; k < new_count; k++) {
-            if (cfg->interface.vpn_bypass_routes[k].family == g_bypass_routes[i].family &&
-                cfg->interface.vpn_bypass_routes[k].prefix_len == g_bypass_routes[i].prefix_len &&
-                memcmp(cfg->interface.vpn_bypass_routes[k].addr, g_bypass_routes[i].addr,
-                       (g_bypass_routes[i].family == AF_INET ? 4 : 16)) == 0) {
+            if (cfg->interface.vpn_bypass_routes[k].family == old_routes[i].family &&
+                cfg->interface.vpn_bypass_routes[k].prefix_len == old_routes[i].prefix_len &&
+                memcmp(cfg->interface.vpn_bypass_routes[k].addr, old_routes[i].addr,
+                       (old_routes[i].family == AF_INET ? 4 : 16)) == 0) {
                 found_in_new = 1;
                 break;
             }
         }
         if (!found_in_new) {
-            vpn_bypass_route_t removed_route = g_bypass_routes[i];
+            vpn_bypass_route_t removed_route = old_routes[i];
             g_bypass_routes[0] = removed_route;
             g_bypass_route_count = 1;
             vpn_bypass_sync(0);

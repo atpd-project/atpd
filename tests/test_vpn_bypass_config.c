@@ -95,6 +95,16 @@ int main(void) {
     assert(res == ATP_OK);
     assert(cfg.interface.vpn_bypass_route_count == 16);
 
+    /* 16 unique entries with duplicate succeeds */
+    const char *sixteen_with_dup =
+        "VPN_BYPASS_ROUTES=\"10.0.0.0/24 10.0.1.0/24 10.0.2.0/24 10.0.3.0/24 "
+        "10.0.4.0/24 10.0.5.0/24 10.0.6.0/24 10.0.7.0/24 "
+        "10.0.8.0/24 10.0.9.0/24 10.0.10.0/24 10.0.11.0/24 "
+        "10.0.12.0/24 10.0.13.0/24 10.0.14.0/24 10.0.15.0/24 10.0.0.0/24\"\n";
+    res = load_test_config(sixteen_with_dup, &cfg);
+    assert(res == ATP_OK);
+    assert(cfg.interface.vpn_bypass_route_count == 16);
+
     /* 17 entries rejected */
     const char *seventeen_entries =
         "VPN_BYPASS_ROUTES=\"10.0.0.0/24 10.0.1.0/24 10.0.2.0/24 10.0.3.0/24 "

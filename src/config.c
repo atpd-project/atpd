@@ -299,10 +299,6 @@ static int parse_vpn_bypass_routes(const char *v, atp_config_t *cfg) {
     int count = 0;
 
     while (token) {
-        if (count >= ATP_MAX_VPN_BYPASS_ROUTES) {
-            return -1;
-        }
-
         char *slash = strchr(token, '/');
         if (!slash || slash == token) {
             return -1;
@@ -381,6 +377,9 @@ static int parse_vpn_bypass_routes(const char *v, atp_config_t *cfg) {
         }
 
         if (!duplicate) {
+            if (count >= ATP_MAX_VPN_BYPASS_ROUTES) {
+                return -1;
+            }
             cfg->interface.vpn_bypass_routes[count].family = family;
             memcpy(cfg->interface.vpn_bypass_routes[count].addr, addr, 16);
             cfg->interface.vpn_bypass_routes[count].prefix_len = (unsigned char)plen;
