@@ -35,6 +35,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.inputs.tag_name || github.ref }}
           fetch-depth: 0
 
       - name: Set up Zig 0.16.0
@@ -120,6 +121,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.inputs.tag_name || github.ref }}
           fetch-depth: 0
 
       - name: Restore Android NDK
@@ -204,6 +206,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.inputs.tag_name || github.ref }}
           fetch-depth: 0
 
       - name: Download Native Binary
@@ -226,18 +229,24 @@ jobs:
           TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-          mkdir -p dist pkg-linux pkg-android
+          mkdir -p dist
+          mkdir -p pkg-linux/service.d pkg-linux/examples
+          mkdir -p pkg-android/service.d pkg-android/examples
 
           # Package Linux Native Release
           cp build-native/atpd pkg-linux/atpd
           chmod +x pkg-linux/atpd
-          cp README.md service.d/atpd_service.sh pkg-linux/ 2>/dev/null || true
+          cp README.md pkg-linux/ 2>/dev/null || true
+          cp service.d/atpd_service.sh pkg-linux/service.d/ 2>/dev/null || true
+          cp -r examples/* pkg-linux/examples/ 2>/dev/null || true
           tar -czvf "dist/atpd-${TAG}-linux-arm64.tar.gz" -C pkg-linux .
 
           # Package Android Bionic Release
           cp build-bionic/atpd pkg-android/atpd
           chmod +x pkg-android/atpd
-          cp README.md service.d/atpd_service.sh pkg-android/ 2>/dev/null || true
+          cp README.md pkg-android/ 2>/dev/null || true
+          cp service.d/atpd_service.sh pkg-android/service.d/ 2>/dev/null || true
+          cp -r examples/* pkg-android/examples/ 2>/dev/null || true
           tar -czvf "dist/atpd-${TAG}-android-arm64.tar.gz" -C pkg-android .
 
           # Generate Checksums

@@ -76,12 +76,19 @@ notify_issue() {
 
     TS=$(TZ='Asia/Tokyo' date +"%y%m%d %H:%M")
 
+    DOWNLOAD_LINK="${RUN_URL}"
+    DOWNLOAD_LABEL="Download Build Artifact"
+    if [[ "$BRANCH" == v* ]]; then
+        DOWNLOAD_LINK="https://github.com/${REPO}/releases/tag/${BRANCH}"
+        DOWNLOAD_LABEL="Download Release Assets"
+    fi
+
     NEW_ENTRY="<details>
 <summary>🟢 [<b><a href=\"${RUN_URL}\">#${RUN_NUM}</a></b>] &nbsp;&nbsp; ${TS} &nbsp;&nbsp; 📦 <b>Size:</b> ${SUMMARY_SIZE}</summary>
 
 ### Branch: [${BRANCH}](${BRANCH_LINK})
 
-* 📥 **[Download Build Artifact](${RUN_URL})**
+* 📥 **[${DOWNLOAD_LABEL}](${DOWNLOAD_LINK})**
 * 📝 **CI Version:** \`${VER}\`
 * 🔧 **ATPd Version (-v):** \`${RUNTIME}\`
 * ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 \`${ZIG}\`
