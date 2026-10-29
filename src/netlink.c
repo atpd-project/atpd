@@ -692,7 +692,7 @@ static int parser_route_find(struct nlmsghdr *h, void *userdata) {
     if (h->nlmsg_type != RTM_NEWROUTE) return 0;
 
     struct rtmsg *rtm = (struct rtmsg *)NLMSG_DATA(h);
-    if (rtm->rtm_family != AF_INET || rtm->rtm_dst_len != 0) {
+    if ((rtm->rtm_family != AF_INET && rtm->rtm_family != AF_INET6) || rtm->rtm_dst_len != 0) {
         return 0;
     }
 
@@ -876,6 +876,19 @@ static void vpn_bypass_sync(int ready) {
             LOG_WARN("VPN bypass: route dump failed, leaving rules unchanged");
             pthread_mutex_unlock(&g_nl_mutex);
             return;
+        }
+
+        if (!r_ctx.found_candidate) {
+            /* Try IPv6 default route if IPv4 didn't provide one (e.g. pure IPv6 network) */
+            req.nlh.nlmsg_seq = atomic_fetch_add(&g_seq, 1);
+            req.rtm.rtm_family = AF_INET6;
+            if (netlink_send_request(g_sync_fd, &req, req.nlh.nlmsg_len) < 0 ||
+                netlink_recv_all_with_timeout(g_sync_fd, req.nlh.nlmsg_seq,
+                                              parser_route_find, &r_ctx, 500) < 0) {
+                LOG_WARN("VPN bypass: IPv6 route dump failed, leaving rules unchanged");
+                pthread_mutex_unlock(&g_nl_mutex);
+                return;
+            }
         }
 
         if (!r_ctx.found_candidate) {
