@@ -53,16 +53,37 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/gen_version.sh
-          make clean
-          make release
-          mkdir -p dist-native
-          cp build/bin/atpd dist-native/atpd
+          mkdir -p build/bin dist-native
+          zig cc -target aarch64-linux \
+            -s -Oz -flto -ffunction-sections -fdata-sections -static \
+            -fno-unwind-tables -fno-asynchronous-unwind-tables \
+            -fmerge-all-constants -fno-ident \
+            -Iinclude \
+            -Ibuild/generated \
+            -D_GNU_SOURCE \
+            -DNDEBUG \
+            -DYYJSON_DISABLE_WRITER=1 \
+            -DYYJSON_DISABLE_FAST_FP_CONV=1 \
+            -DYYJSON_DISABLE_NON_STANDARD=1 \
+            -DLOG_LOCATION_ENABLED=0 \
+            -DATP_DEFAULT_DIR=\"/data/adb/atp\" \
+            -DATP_CONF_FILE=\"atp.conf\" \
+            -DATP_PID_FILE=\"run/atpd.pid\" \
+            -DATP_LOG_FILE=\"run/atp.log\" \
+            -DATP_COMMAND_SOCKET=\"run/atpd.sock\" \
+            -o dist-native/atpd \
+            $(find src -name "*.c") \
+            -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none
+
+          PROD_VER="$(cat VERSION)"
+          FULL_VER="$(./dist-native/atpd -v | head -n 1)"
+          echo "Product Version: ${PROD_VER}"
+          echo "Full Runtime Version: ${FULL_VER}"
+
+          echo "atp_version=${PROD_VER}" >> "$GITHUB_OUTPUT"
+          echo "full_version=${FULL_VER}" >> "$GITHUB_OUTPUT"
           echo "zig_binary_size=$(du -h dist-native/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
           echo "zig_compiler_ver=$(zig version)" >> "$GITHUB_OUTPUT"
-          VER=$(grep -oP 'ATP_VERSION_STRING\s+"\K[^"]+' build/generated/version_build.h || echo "unknown")
-          echo "atp_version=$VER" >> "$GITHUB_OUTPUT"
-          FULL_VER=$(grep -oP 'ATP_VERSION_FULL\s+"\K[^"]+' build/generated/version_build.h || echo "unknown")
-          echo "full_version=$FULL_VER" >> "$GITHUB_OUTPUT"
 
       - name: Smoke Check Native Binary
         shell: bash
