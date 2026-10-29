@@ -514,3 +514,50 @@ jobs:
           echo "         - Release ARM64 (Android bionic): NDK Build"
           echo "         - Integration ARM64: Lifecycle, Crash Recovery, Config, Benchmark"
           echo "================================================================================"
+
+  # ============================================================================
+  # Report CI Build Results
+  # ============================================================================
+  update-status:
+    name: "Report Build Results"
+    needs: [final-ci-verdict, release-arm64, release-arm64-bionic]
+    runs-on: ubuntu-latest
+    if: github.repository == 'atpd-project/atpd'
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Extract commit title
+        id: commit
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ -n "$PR_TITLE" ]]; then
+            TITLE=$(printf '%s\n' "$PR_TITLE" | head -n1)
+          else
+            TITLE=$(printf '%s\n' "$HEAD_MESSAGE" | head -n1)
+          fi
+          printf 'title=%s\n' "$TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Report Build Results
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          ZIG_SIZE: ${{ needs.release-arm64.outputs.zig_binary_size }}
+          ATP_VERSION: ${{ needs.release-arm64.outputs.atp_version || 'N/A' }}
+          ZIG_COMPILER_VER: ${{ needs.release-arm64.outputs.zig_compiler_ver || 'N/A' }}
+          BIONIC_SIZE: ${{ needs.release-arm64-bionic.outputs.bionic_binary_size }}
+          BIONIC_COMPILER_VER: ${{ needs.release-arm64-bionic.outputs.bionic_compiler_ver || 'N/A' }}
+          ATPD_VERSION_STRING: ${{ needs.release-arm64.outputs.full_version || 'N/A' }}
+          COMMIT_TITLE: ${{ steps.commit.outputs.title }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          .github/scripts/notify.sh all

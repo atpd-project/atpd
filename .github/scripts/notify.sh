@@ -10,8 +10,11 @@ TIMESTAMP=$(date +"%y%m%d %H:%M")
 
 escape_md() {
     local str="$1"
+    str="${str//\\/\\\\}"
     str="${str//_/\\_}"
     str="${str//\*/\\*}"
+    str="${str//\[/\\[}"
+    str="${str//\]/\\]}"
     str="${str//(/\\\(}"
     str="${str//)/\\\)}"
     str="${str//~/\\~}"
@@ -29,20 +32,67 @@ escape_md() {
     echo "$str"
 }
 
+escape_url() {
+    local str="$1"
+    str="${str//\\/\\\\}"
+    str="${str//)/\\)}"
+    echo "$str"
+}
+
+resolve_assets() {
+    local tag="${TAG_NAME:-${GITHUB_REF_NAME:-}}"
+    ZIG_FILE="${ZIG_FILENAME:-}"
+    BIONIC_FILE="${BIONIC_FILENAME:-}"
+    ZIG_URL="${ZIG_DOWNLOAD_URL:-}"
+    BIONIC_URL="${BIONIC_DOWNLOAD_URL:-}"
+
+    if [ -z "$ZIG_FILE" ]; then
+        if [[ "$tag" == v* ]]; then
+            ZIG_FILE="atpd-${tag}-linux-arm64.tar.gz"
+            ZIG_URL="${ZIG_URL:-https://github.com/${REPO}/releases/download/${tag}/${ZIG_FILE}}"
+        else
+            ZIG_FILE="atpd-native-arm64"
+            ZIG_URL="${ZIG_URL:-https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}}"
+        fi
+    fi
+
+    if [ -z "$BIONIC_FILE" ]; then
+        if [[ "$tag" == v* ]]; then
+            BIONIC_FILE="atpd-${tag}-android-arm64.tar.gz"
+            BIONIC_URL="${BIONIC_URL:-https://github.com/${REPO}/releases/download/${tag}/${BIONIC_FILE}}"
+        else
+            BIONIC_FILE="atpd-bionic-arm64"
+            BIONIC_URL="${BIONIC_URL:-https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}}"
+        fi
+    fi
+}
+
 notify_telegram() {
     local token="${TELEGRAM_BOT_TOKEN}"
     local chat_id="${TELEGRAM_CHAT_ID}"
     [ -z "$token" ] && { echo "  Telegram: TELEGRAM_BOT_TOKEN not set"; return 0; }
     [ -z "$chat_id" ] && { echo "  Telegram: TELEGRAM_CHAT_ID not set"; return 0; }
 
+    resolve_assets
+
+    local tag="${TAG_NAME:-${GITHUB_REF_NAME:-}}"
     local repo_esc=$(escape_md "$REPO")
     local zig_esc=$(escape_md "${ZIG_SIZE:-N/A}")
     local bionic_esc=$(escape_md "${BIONIC_SIZE:-N/A}")
+    local zig_file_esc=$(escape_md "$ZIG_FILE")
+    local bionic_file_esc=$(escape_md "$BIONIC_FILE")
+    local zig_url_esc=$(escape_url "$ZIG_URL")
+    local bionic_url_esc=$(escape_url "$BIONIC_URL")
 
-    local msg="📋 *Latest ATPd Build*%0A"
+    local title="📋 *Latest ATPd Build*"
+    if [[ "$tag" == v* ]]; then
+        title="📋 *Latest ATPd Release*"
+    fi
+
+    local msg="${title}%0A"
     msg+="🟢 \#${RUN_NUM} \| ${TIMESTAMP}%0A"
-    msg+="📦 Zig CC: ${zig_esc}%0A"
-    msg+="🤖 Bionic: ${bionic_esc}%0A"
+    msg+="📦 [${zig_file_esc}](${zig_url_esc}) \(${zig_esc}\)%0A"
+    msg+="🤖 [${bionic_file_esc}](${bionic_url_esc}) \(${bionic_esc}\)%0A"
     msg+="🔗 https://github\.com/${repo_esc}/issues/6"
 
     curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" \
@@ -60,6 +110,8 @@ notify_issue() {
     ZIG_COMPILER="${ZIG_COMPILER_VER:-N/A}"
     BIONIC="${BIONIC_SIZE:-N/A}"
     BIONIC_COMPILER="${BIONIC_COMPILER_VER:-N/A}"
+
+    resolve_assets
 
     ISSUE_BODY=$(gh issue view 6 --json body --jq '.body')
     RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
@@ -91,8 +143,8 @@ notify_issue() {
 * 📥 **[${DOWNLOAD_LABEL}](${DOWNLOAD_LINK})**
 * 📝 **CI Version:** \`${VER}\`
 * 🔧 **ATPd Version (-v):** \`${RUNTIME}\`
-* ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 \`${ZIG}\`
-* 🤖 **Bionic:** \`${BIONIC_COMPILER}\` | 📦 \`${BIONIC}\`
+* ⚙️ **Zig CC:** \`${ZIG_COMPILER}\` | 📦 [${ZIG_FILE}](${ZIG_URL}) (\`${ZIG}\`)
+* 🤖 **Bionic:** \`${BIONIC_COMPILER}\` | 📦 [${BIONIC_FILE}](${BIONIC_URL}) (\`${BIONIC}\`)
 * 💬 **Message:** \`${DISPLAY_MSG}\`
 * 🔗 **Source:** Commit [${COMMIT_SHORT}](${COMMIT_LINK})
 * 🕒 **Build Time:** \`${TS}\`
