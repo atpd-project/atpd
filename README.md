@@ -4,8 +4,8 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for modern Android dev
 
 ---
 
-[![CI Pipeline](https://github.com/atpd-project/atpd/actions/workflows/ci.yml/badge.svg)](https://github.com/atpd-project/atpd/actions/workflows/ci.yml)
-[![Release Pipeline](https://github.com/atpd-project/atpd/actions/workflows/release.yml/badge.svg)](https://github.com/atpd-project/atpd/actions/workflows/release.yml)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/atpd-project/atpd/ci.yml?branch=main&label=Build%20Status)](https://github.com/atpd-project/atpd/actions)
+[![Benchmark Status](https://img.shields.io/github/actions/workflow/status/atpd-project/atpd/ci.yml?branch=main&label=Benchmark%20Status)](https://github.com/atpd-project/atpd/actions)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Platform: Android & Linux](https://img.shields.io/badge/Platform-Android%20%7C%20Linux-green.svg)](https://www.android.com/)
 
