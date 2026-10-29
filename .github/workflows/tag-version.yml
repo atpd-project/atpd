@@ -35,8 +35,16 @@ jobs:
     - name: Get current version
       id: current_version
       run: |
-        # Get latest tag
-        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        # Get latest semver release tag matching v[0-9]*
+        LATEST_TAG=$(git describe --tags --abbrev=0 --match "v[0-9]*" 2>/dev/null || true)
+        if [ -z "$LATEST_TAG" ]; then
+          if [ -f VERSION ]; then
+            BASE_VER=$(sed -n '1p' VERSION | tr -d '[:space:]')
+            LATEST_TAG="v${BASE_VER}"
+          else
+            LATEST_TAG="v1.0.0"
+          fi
+        fi
         echo "latest_tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
         echo "Current version: ${LATEST_TAG}"
 
@@ -90,17 +98,29 @@ jobs:
         
         if [ -n "$SUFFIX" ]; then
           NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}-${SUFFIX}"
+          PLAIN_VERSION="${MAJOR}.${MINOR}.${PATCH}-${SUFFIX}"
         else
           NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          PLAIN_VERSION="${MAJOR}.${MINOR}.${PATCH}"
         fi
         
         echo "new_version=${NEW_VERSION}" >> $GITHUB_OUTPUT
+        echo "plain_version=${PLAIN_VERSION}" >> $GITHUB_OUTPUT
         echo "New version: ${NEW_VERSION}"
 
     - name: Create and push tag
       run: |
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        # Update VERSION file in lockstep
+        echo "${{ steps.new_version.outputs.plain_version }}" > VERSION
+        git add VERSION
+        if ! git diff --cached --quiet; then
+          git commit -m "chore(release): bump version to ${{ steps.new_version.outputs.new_version }}"
+          git push origin HEAD:${{ github.ref_name }}
+        fi
+
         git tag -a "${{ steps.new_version.outputs.new_version }}" -m "Release ${{ steps.new_version.outputs.new_version }}"
         git push origin "${{ steps.new_version.outputs.new_version }}"
         echo "Created tag: ${{ steps.new_version.outputs.new_version }}"
