@@ -253,12 +253,13 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.pkg.outputs.tag }}"
-          
+          VERSION_NUM="${TAG#v}"
+
           # Delete existing draft/release if recreating tag
           gh release delete "$TAG" -y 2>/dev/null || true
-          
+
           gh release create "$TAG" \
-            --title "ATPD $TAG" \
+            --title "$VERSION_NUM" \
             --generate-notes \
             dist/atpd-*.tar.gz \
             dist/sha256sums.txt
