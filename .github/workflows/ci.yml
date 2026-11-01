@@ -241,6 +241,14 @@ jobs:
           ccache --version
           ccache -s
 
+      - name: Clean Native Build & Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean
+          make -j2
+          make test
+
       - name: Generate Version
         shell: bash
         run: |
@@ -305,7 +313,7 @@ jobs:
           file ./build/bin/atpd | grep -i 'stripped'
           ! readelf -l ./build/bin/atpd | grep INTERP
 
-      - name: Upload Native Release Binary
+      - name: Upload Integration Test Binary
         uses: actions/upload-artifact@v7
         with:
           name: atpd-native-arm64
@@ -510,7 +518,7 @@ jobs:
           echo "         - Architecture invariants (no direct printf in core, untracked headers)"
           echo "  [PASS] ARM64:"
           echo "         - Sanitizer ARM64: ASan, UBSan, TSan"
-          echo "         - Release ARM64: Native Clean Build & Packaging"
+          echo "         - Release ARM64: Clean Build & Unit Tests, Integration Test Binary"
           echo "         - Release ARM64 (Android bionic): NDK Build"
           echo "         - Integration ARM64: Lifecycle, Crash Recovery, Config, Benchmark"
           echo "================================================================================"
