@@ -31,7 +31,7 @@ Any Rust implementation **must strictly preserve** the established ATPD architec
    - Runtime readiness, tunnel observation, metrics, and IPC state belong to dedicated subsystem owners.
 
 4. **Single-Threaded Reactor Event Loop Paradigm**:
-   - To avoid POSIX multithreading hazards on Linux/Android (such as per-thread credential / capability dropping with `setresuid` / `capset`), ATPD's core event loop should remain strictly single-threaded (or pin privileged tasks predictably).
+   - To avoid POSIX multithreading hazards on Linux/Android (such as per-thread credential / capability dropping with `setresuid` / `capset`), ATPD's core event loop should remain strictly single-threaded (or pin privileged tasks predictably). Note: the C11 daemon currently runs a separate Native API refresh worker thread (`src/api.c`); the Rust port folds that work into the event loop.
 
 5. **Copy-Out Bounded Snapshots for Observability**:
    - Status rendering and UDS IPC queries must consume generation-stamped, stack-allocated, copy-out snapshots.
@@ -46,7 +46,7 @@ Any Rust implementation **must strictly preserve** the established ATPD architec
 
 | Metric | C11 Baseline (Current) | Rust Target SLO | Hard Ceiling (Fail Gate) |
 | :--- | :--- | :--- | :--- |
-| **Stripped Binary Size** | ~130 KB | **< 2.5 MB** | **< 3.5 MB** |
+| **Stripped Binary Size** | < 160 KB | **< 2.5 MB** | **< 3.5 MB** |
 | **Runtime Resident Set Size (RSS)** | ~2.3 MB | **< 4.0 MB** | **< 6.0 MB** |
 | **CLI Status Query Latency** | ~6.1 ms | **< 8.0 ms** | **< 12.0 ms** |
 | **Netlink Flap Event Burst (30x)** | < 500 ms | **< 400 ms** | **< 600 ms** |
@@ -105,7 +105,7 @@ Recommended Crate Tier:
 │ (Backoff & CB)  │      │ (Status Stream) │      │ (CLI Queries)   │
 └────────┬────────┘      └────────┬────────┘      └────────┬────────┘
          │                        │                        │
-         ▼ fork/exec              ▼ HTTP/1.1 gRPC-Web      ▼ /run/atpd.sock
+         ▼ fork/exec              ▼ HTTP/1.1 gRPC-Web      ▼ atpd.sock
    ┌───────────┐            ┌───────────┐            ┌───────────┐
    │ sing-box  │            │ sing-box  │            │ atpd CLI  │
    │ (Worker)  │            │ API (9080)│            │ (Client)  │
@@ -122,8 +122,8 @@ Recommended Crate Tier:
 ### 5.2. Netlink & Multi-VPN Sensing (`netlink`)
 - **Socket**: Open non-blocking Netlink sockets (`NETLINK_ROUTE` and `NETLINK_XFRM`) with groups:
   - `RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR | RTMGRP_IPV4_ROUTE | RTMGRP_IPV6_ROUTE | RTMGRP_IPV4_RULE`
-- **Proxy Interface Filter**: Maintain verified prefixes: `tun`, `tap`, `warp`, `wg`, `tailscale`, `zt`, `zerotier`, `utun`, `vpn`, `ppp`, `ipsec`, `xfrm`.
-- **Debounced Transitions**: Network events trigger a debounced timer (150 ms debounce, 300 ms settle). State transitions must strictly follow:
+- **Proxy Interface Filter**: Maintain verified prefixes: `tun`, `warp`, `wg`, `tailscale`, `zt`, `zerotier`, `utun`, `vpn`, `ppp`, `ipsec`, `xfrm`.
+- **Debounced Transitions**: Network events trigger a debounced timer (500 ms debounce, 1000 ms VPN settle, matching `NETLINK_DEBOUNCE_MS` / `NETLINK_VPN_SETTLE_MS` in `src/netlink.c`). State transitions must strictly follow:
   - `IDLE` (no secondary VPN active)
   - `PREDICTING` (XFRM SA announced before interface is up)
   - `READY` (debounced stable tunnel active)
@@ -135,7 +135,7 @@ Recommended Crate Tier:
 - **Protobuf Payloads**:
   - `SubscribeStatus`: Read streaming gRPC-Web frame for live Go runtime metrics (goroutines, memory, connection counts, uplink/downlink rates and totals).
   - `GetClashModeStatus`: Query available modes (`mode_list`) and current mode.
-  - `SetClashMode`: Encode `ClashMode` protobuf message with **Field 1** (`Tag 0x0A`) for standard sing-box core, plus dual-compatibility field 3 (`Tag 0x1A`).
+  - `SetClashMode`: Encode `ClashMode` protobuf message with `mode` as **field 3** (`Tag 0x1A`), per `message ClashMode { string mode = 3; }` in sing-box `daemon/started_service.proto`.
 - **Case-Insensitive Mode Resolution**: Provide case-insensitive mapping against the core's reported `mode_list` and dynamically restore saved modes on tunnel disconnection.
 
 ### 5.4. Fast-Path UDS IPC & Dashboard Rendering (`ipc`, `ui`)
@@ -147,7 +147,7 @@ Recommended Crate Tier:
 ### 5.5. Configuration & Transactional Reload (`config`)
 - **Format**: `atp.conf` (Shell/INI style) + `config.json` (sing-box JSON).
 - **Strict Validation**: Typed schema validation rejecting duplicate keys, out-of-range ports, malformed CIDRs, or invalid user/group credentials.
-- **Transactional SIGHUP Reload**: Parse candidate configuration into a new struct; validate against system dependencies; swap atomically via an `ArcSwap` or reader-writer lock. If validation fails, retain active configuration and log errors deterministically.
+- **Transactional SIGHUP Reload**: Parse candidate configuration into a new struct; validate against system dependencies; replace the active config value only after validation succeeds (single-threaded, so no lock is needed). If validation fails, retain active configuration and log errors deterministically.
 
 ---
 
@@ -222,19 +222,16 @@ Modern Android devices require 16 KB ELF segment alignment:
 # .cargo/config.toml
 [target.aarch64-linux-android]
 rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
-
-[target.aarch64-unknown-linux-musl]
-rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
 ```
 
 ---
 
 ## 8. Staged Migration Plan (Dual-Track Parity)
 
-To eliminate deployment risk, the Rust migration will execute in **4 sequential phases**, retaining the validated C11 test suite as the oracle:
+To eliminate deployment risk, the Rust migration will execute in **4 sequential phases**, retaining the validated C11 test suite as the oracle. Shell harnesses (`tests/*.sh`) run against either binary; C unit tests (`tests/*.c`) link the C sources and serve as behavioural references that must be ported to Rust tests:
 
 ### Phase 1: Foundation & Pure Modules (Week 1)
-- [ ] Establish Cargo workspace and cross-compilation pipeline for `aarch64-linux-android` / `aarch64-unknown-linux-musl`.
+- [ ] Establish Cargo workspace and cross-compilation pipeline for `aarch64-linux-android` (production target: Pixel, NDK/bionic).
 - [ ] Implement `config` module: parse and validate `atp.conf` and `config.json`.
 - [ ] Verify test parity against existing `test_config_validation.sh` and `test_vpn_bypass_config`.
 
@@ -264,5 +261,5 @@ When reviewing PRs or milestones for this rewrite, verify that the submission co
 2. **Zero `sys_bpf`**: Does the Rust codebase contain zero eBPF program loading or map definitions? (Reject eBPF duplication).
 3. **No Hidden Multi-Thread Contention**: Is the core reactor free from unnecessary thread pools or mutex deadlocks around Netlink/Reactor dispatch?
 4. **Binary Size & Memory Gate**: Does the compiled arm64 binary stay under **2.5 MB**, and does idle RSS stay under **4.0 MB**?
-5. **Robust Error Handling**: Does the codebase use typed errors (`thiserror`) without any `unwrap()` or `expect()` in production daemon paths?
-6. **Protobuf Wire Fidelity**: Is `SetClashMode` encoding verified to include field 1 (`Tag 0x0A`) for sing-box compatibility?
+5. **Robust Error Handling**: Does the codebase use typed error enums without any `unwrap()` or `expect()` in production daemon paths?
+6. **Protobuf Wire Fidelity**: Is `SetClashMode` encoding verified by a byte-level test to use field 3 (`Tag 0x1A`), matching sing-box `started_service.proto`?
