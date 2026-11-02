@@ -616,18 +616,25 @@ int singbox_api_get_clash_mode_status(singbox_api_ctx_t *ctx,
 int singbox_api_set_clash_mode(singbox_api_ctx_t *ctx, const char *mode) {
     if (!mode || !mode[0]) return -1;
     size_t mode_len = strlen(mode);
-    if (mode_len > 255) return -1;
-    unsigned char request[260];
+    if (mode_len > 120) return -1;
+    unsigned char request[256];
     size_t request_len = 0;
-    request[request_len++] = 0x1a; /* ClashMode.mode is protobuf field 3. */
-    size_t length = mode_len;
-    while (length >= 0x80) {
-        request[request_len++] = (unsigned char)(length | 0x80);
-        length >>= 7;
-    }
-    request[request_len++] = (unsigned char)length;
+
+    /* Protobuf field 1: string mode = 1 (Tag 0x0a = (1 << 3) | 2).
+     * Standard sing-box StartedService definition:
+     *   message ClashMode { string mode = 1; } */
+    request[request_len++] = 0x0a;
+    request[request_len++] = (unsigned char)mode_len;
     memcpy(request + request_len, mode, mode_len);
     request_len += mode_len;
+
+    /* Also append field 3 (Tag 0x1a = (3 << 3) | 2) for fork/legacy compatibility.
+     * Proto3 safely ignores unknown fields. */
+    request[request_len++] = 0x1a;
+    request[request_len++] = (unsigned char)mode_len;
+    memcpy(request + request_len, mode, mode_len);
+    request_len += mode_len;
+
     unsigned char response[256];
     size_t response_len;
     return grpc_web_unary_call(ctx, "/daemon.StartedService/SetClashMode",

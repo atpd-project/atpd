@@ -280,12 +280,16 @@ int api_set_mode_async(api_ctx_t *ctx, const char *mode, api_callback_t callback
     return ret;
 }
 
-static int is_clash_mode_supported(const singbox_clash_mode_status_t *status, const char *mode) {
-    if (!status || !mode || !mode[0]) return 0;
+static const char *match_clash_mode(const singbox_clash_mode_status_t *status, const char *mode) {
+    if (!status || !mode || !mode[0]) return NULL;
     for (size_t i = 0; i < status->mode_count; ++i) {
-        if (strcmp(status->modes[i], mode) == 0) return 1;
+        if (strcasecmp(status->modes[i], mode) == 0) return status->modes[i];
     }
-    return 0;
+    return NULL;
+}
+
+static int is_clash_mode_supported(const singbox_clash_mode_status_t *status, const char *mode) {
+    return match_clash_mode(status, mode) != NULL;
 }
 
 static int api_get_clash_mode_status_sync(api_ctx_t *ctx,
@@ -347,6 +351,9 @@ static bool api_apply_vpn_mode(api_ctx_t *ctx, const api_vpn_request_t *request)
             }
             restore_mode = fallback_mode;
         }
+        const char *matched_restore = match_clash_mode(&status, restore_mode);
+        if (matched_restore) restore_mode = matched_restore;
+
         if (strcmp(status.current_mode, restore_mode) != 0 &&
             api_set_mode_async(ctx, restore_mode, NULL, NULL) != 0) {
             LOG_WARN("Native API: failed to restore Clash mode to %s", restore_mode);
@@ -367,13 +374,16 @@ static bool api_apply_vpn_mode(api_ctx_t *ctx, const api_vpn_request_t *request)
         return false;
     }
 
-    if (strcmp(status.current_mode, target_mode) == 0) return true;
-    if (api_set_mode_async(ctx, target_mode, NULL, NULL) != 0) {
-        LOG_WARN("Native API: failed to switch Clash mode to %s", target_mode);
+    const char *target_match = match_clash_mode(&status, target_mode);
+    if (!target_match) target_match = target_mode;
+
+    if (strcmp(status.current_mode, target_match) == 0) return true;
+    if (api_set_mode_async(ctx, target_match, NULL, NULL) != 0) {
+        LOG_WARN("Native API: failed to switch Clash mode to %s", target_match);
         return false;
     }
     LOG_INFO("Native API: VPN state READY selected Clash mode '%s' (restore=%s)",
-             target_mode,
+             target_match,
              ctx->default_mode[0] ? ctx->default_mode : fallback_mode);
     return true;
 }

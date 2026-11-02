@@ -241,6 +241,14 @@ int main(void) {
     apply_state(&ctx, VPN_STATE_IDLE, "");
     CHECK(strcmp(mock_status.current_mode, "Global") == 0);
 
+    /* Case-insensitive target mode matching */
+    snprintf(config.interface.vpn_target_mode,
+             sizeof(config.interface.vpn_target_mode), "google vpn");
+    apply_state(&ctx, VPN_STATE_READY, "tun0");
+    CHECK(strcmp(last_set_mode, "Google VPN") == 0);
+    apply_state(&ctx, VPN_STATE_IDLE, "");
+    CHECK(strcmp(last_set_mode, "Global") == 0);
+
     release_refresh();
     api_cleanup(&ctx);
     alarm(0);

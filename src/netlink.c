@@ -90,7 +90,7 @@ static int is_proxy_interface(const char *ifname) {
     }
 
     static const char *prefixes[] = {
-        "tun", "warp", "wg", "tailscale", "zt", "zerotier", "utun", "vpn", "ppp"
+        "tun", "tap", "warp", "wg", "tailscale", "zt", "zerotier", "utun", "vpn", "ppp"
     };
     for (size_t i = 0; i < (sizeof(prefixes) / sizeof(prefixes[0])); ++i) {
         if (strncmp(ifname, prefixes[i], strlen(prefixes[i])) == 0) return 1;
@@ -1074,7 +1074,7 @@ void netlink_handle_event(reactor_t *r, int fd, uint32_t events, void *data) {
             h->nlmsg_type == RTM_NEWADDR || h->nlmsg_type == RTM_DELADDR ||
             h->nlmsg_type == RTM_NEWROUTE || h->nlmsg_type == RTM_DELROUTE ||
             h->nlmsg_type == RTM_NEWRULE || h->nlmsg_type == RTM_DELRULE) {
-            trigger_network_refresh(g_debounce_reactor);
+            trigger_network_refresh(r ? r : g_debounce_reactor);
         }
     }
 }
