@@ -4,17 +4,22 @@
 //! credentials checking via `SO_PEERCRED`, bounded non-blocking client I/O,
 //! idle client timeout pruning, and command responses.
 
-use std::io;
+use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::RawFd;
+use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use rustix::io::Errno;
+use rustix::net::sockopt::{self, Timeout};
 
 use crate::reactor::{Reactor, TimerId, EDGE, READ, WRITE};
 use crate::status::StatusSnapshot;
 
 pub const UDS_BUFFER_SIZE: usize = 4096;
 pub const UDS_MAX_RESPONSE_SIZE: usize = 64 * 1024;
-pub const UDS_BACKLOG: i32 = 16;
 pub const UDS_PATH_MAX: usize = 108;
 pub const UDS_MAX_CLIENTS: usize = 32;
 pub const UDS_IDLE_TIMEOUT_MS: u64 = 5000;
@@ -32,7 +37,7 @@ enum ClientState {
 }
 
 struct UdsClient {
-    fd: RawFd,
+    stream: UnixStream,
     token: u64,
     state: ClientState,
     input: [u8; UDS_BUFFER_SIZE],
@@ -44,7 +49,7 @@ struct UdsClient {
 }
 
 pub struct IpcServer {
-    listen_fd: RawFd,
+    listener: Option<UnixListener>,
     path: PathBuf,
     allowed_uid: u32,
     listen_token: u64,
@@ -55,100 +60,47 @@ pub struct IpcServer {
     clients: Vec<UdsClient>,
 }
 
-fn check_client_uid(fd: RawFd, allowed_uid: u32) -> bool {
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: getsockopt with SO_PEERCRED writes valid ucred struct.
-    let ret = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            &mut cred as *mut _ as *mut libc::c_void,
-            &mut len,
-        )
-    };
-    if ret < 0 {
-        return false;
+fn check_client_uid(stream: &UnixStream, allowed_uid: u32) -> bool {
+    match sockopt::socket_peercred(stream) {
+        Ok(cred) => cred.uid.is_root() || cred.uid.as_raw() == allowed_uid,
+        Err(_) => false,
     }
-    cred.uid == 0 || cred.uid == allowed_uid
 }
 
-fn prepare_socket_path(path: &Path) -> io::Result<()> {
-    let path_bytes = path.as_os_str().as_bytes();
-    if path_bytes.len() >= UDS_PATH_MAX {
+fn check_path_len(path: &Path) -> io::Result<()> {
+    if path.as_os_str().as_bytes().len() >= UDS_PATH_MAX {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "socket path too long",
         ));
     }
+    Ok(())
+}
+
+fn prepare_socket_path(path: &Path) -> io::Result<()> {
+    check_path_len(path)?;
 
     match std::fs::symlink_metadata(path) {
         Ok(meta) => {
-            let file_type = meta.file_type();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::FileTypeExt;
-                if !file_type.is_socket() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        "refusing to replace non-socket path",
-                    ));
-                }
+            if !meta.file_type().is_socket() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "refusing to replace non-socket path",
+                ));
             }
-
-            // Probe existing socket
-            let probe =
-                // SAFETY: socket creation for probing unix stream socket.
-                unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
-            if probe >= 0 {
-                let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::uninit();
-                // SAFETY: zero out sockaddr_un.
-                unsafe {
-                    libc::memset(
-                        addr.as_mut_ptr() as *mut libc::c_void,
-                        0,
-                        std::mem::size_of::<libc::sockaddr_un>(),
-                    )
-                };
-                // SAFETY: addr was zero-initialized.
-                let mut addr = unsafe { addr.assume_init() };
-                addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-                for (dst, &src) in addr.sun_path.iter_mut().zip(path_bytes.iter()) {
-                    *dst = src as libc::c_char;
-                }
-
-                // SAFETY: connect to probe address.
-                let ret = unsafe {
-                    libc::connect(
-                        probe,
-                        &addr as *const _ as *const libc::sockaddr,
-                        std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
-                    )
-                };
-                if ret == 0 {
-                    // SAFETY: close probe descriptor.
-                    unsafe { libc::close(probe) };
+            // Probe existing socket; only a dead one may be replaced.
+            match UnixStream::connect(path) {
+                Ok(_) => {
                     return Err(io::Error::new(
                         io::ErrorKind::AddrInUse,
                         "active socket already exists",
-                    ));
+                    ))
                 }
-                let err = io::Error::last_os_error();
-                // SAFETY: close probe descriptor.
-                unsafe { libc::close(probe) };
-                if err.raw_os_error() != Some(libc::ECONNREFUSED)
-                    && err.raw_os_error() != Some(libc::ENOENT)
-                {
-                    return Err(err);
-                }
+                Err(e)
+                    if e.raw_os_error() == Some(libc::ECONNREFUSED)
+                        || e.raw_os_error() == Some(libc::ENOENT) => {}
+                Err(e) => return Err(e),
             }
-
-            // Stale socket, remove it
             let _ = std::fs::remove_file(path);
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -169,76 +121,11 @@ impl IpcServer {
         let path = path.as_ref().to_path_buf();
         prepare_socket_path(&path)?;
 
-        let path_bytes = path.as_os_str().as_bytes();
-
-        // SAFETY: socket create non-blocking close-on-exec unix stream socket.
-        let fd = unsafe {
-            libc::socket(
-                libc::AF_UNIX,
-                libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
-                0,
-            )
-        };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::uninit();
-        // SAFETY: zero out sockaddr_un.
-        unsafe {
-            libc::memset(
-                addr.as_mut_ptr() as *mut libc::c_void,
-                0,
-                std::mem::size_of::<libc::sockaddr_un>(),
-            )
-        };
-        // SAFETY: addr was zero-initialized.
-        let mut addr = unsafe { addr.assume_init() };
-        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-        for (dst, &src) in addr.sun_path.iter_mut().zip(path_bytes.iter()) {
-            *dst = src as libc::c_char;
-        }
-
-        // SAFETY: bind socket descriptor to sun_path.
-        let ret = unsafe {
-            libc::bind(
-                fd,
-                &addr as *const _ as *const libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
-            )
-        };
-        if ret < 0 {
-            let err = io::Error::last_os_error();
-            // SAFETY: close descriptor on failure.
-            unsafe { libc::close(fd) };
-            return Err(err);
-        }
-
-        let c_path = std::ffi::CString::new(path_bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        // SAFETY: chmod 0600 on created socket path.
-        let chmod_ret = unsafe { libc::chmod(c_path.as_ptr(), 0o600) };
-        if chmod_ret < 0 {
-            let err = io::Error::last_os_error();
-            // SAFETY: close descriptor on chmod failure.
-            unsafe { libc::close(fd) };
-            let _ = std::fs::remove_file(&path);
-            return Err(err);
-        }
-
-        // SAFETY: listen on socket descriptor with backlog 16.
-        let listen_ret = unsafe { libc::listen(fd, UDS_BACKLOG) };
-        if listen_ret < 0 {
-            let err = io::Error::last_os_error();
-            // SAFETY: close descriptor on listen failure.
-            unsafe { libc::close(fd) };
-            let _ = std::fs::remove_file(&path);
-            return Err(err);
-        }
-
-        if let Err(e) = reactor.add_fd(fd, READ | EDGE, listen_token) {
-            // SAFETY: close descriptor on reactor add failure.
-            unsafe { libc::close(fd) };
+        let listener = UnixListener::bind(&path)?;
+        let setup = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .and_then(|_| listener.set_nonblocking(true))
+            .and_then(|_| reactor.add_fd(listener.as_raw_fd(), READ | EDGE, listen_token));
+        if let Err(e) = setup {
             let _ = std::fs::remove_file(&path);
             return Err(e);
         }
@@ -246,7 +133,7 @@ impl IpcServer {
         let timer_id = reactor.add_timer(UDS_IDLE_SCAN_MS, UDS_IDLE_SCAN_MS);
 
         Ok(Self {
-            listen_fd: fd,
+            listener: Some(listener),
             path,
             allowed_uid,
             listen_token,
@@ -257,7 +144,6 @@ impl IpcServer {
             clients: Vec::new(),
         })
     }
-
     pub fn listen_token(&self) -> u64 {
         self.listen_token
     }
@@ -273,18 +159,14 @@ impl IpcServer {
 
     pub fn check_timeouts(&mut self, r: &mut Reactor) {
         let now = Reactor::now_ms();
-        let mut to_drop = Vec::new();
-        for (i, c) in self.clients.iter().enumerate() {
-            if now.saturating_sub(c.last_activity_ms) >= self.idle_timeout_ms {
-                to_drop.push(i);
+        let timeout = self.idle_timeout_ms;
+        self.clients.retain(|c| {
+            let keep = now.saturating_sub(c.last_activity_ms) < timeout;
+            if !keep {
+                let _ = r.remove_fd(c.stream.as_raw_fd());
             }
-        }
-        for &idx in to_drop.iter().rev() {
-            let client = self.clients.swap_remove(idx);
-            let _ = r.remove_fd(client.fd);
-            // SAFETY: close timed out client fd.
-            unsafe { libc::close(client.fd) };
-        }
+            keep
+        });
     }
 
     pub fn handle_timer(&mut self, r: &mut Reactor, timer_id: TimerId) -> bool {
@@ -386,33 +268,18 @@ impl IpcServer {
     fn flush_client(client: &mut UdsClient, r: &mut Reactor, now: u64) -> Result<bool, ()> {
         while client.output_off < client.output.len() {
             let to_send = &client.output[client.output_off..];
-            // SAFETY: send output bytes to connected non-blocking socket with MSG_NOSIGNAL.
-            let n = unsafe {
-                libc::send(
-                    client.fd,
-                    to_send.as_ptr() as *const libc::c_void,
-                    to_send.len(),
-                    libc::MSG_NOSIGNAL,
-                )
-            };
-            if n > 0 {
-                client.output_off += n as usize;
-                client.last_activity_ms = now;
-                continue;
-            }
-            if n < 0 {
-                let err = io::Error::last_os_error();
-                if err.raw_os_error() == Some(libc::EINTR) {
-                    continue;
+            match rustix::net::send(&client.stream, to_send, rustix::net::SendFlags::NOSIGNAL) {
+                Ok(n) if n > 0 => {
+                    client.output_off += n;
+                    client.last_activity_ms = now;
                 }
-                if err.raw_os_error() == Some(libc::EAGAIN)
-                    || err.raw_os_error() == Some(libc::EWOULDBLOCK)
-                {
-                    let _ = r.modify_fd(client.fd, WRITE | EDGE);
+                Err(Errno::INTR) => {}
+                Err(Errno::AGAIN) => {
+                    let _ = r.modify_fd(client.stream.as_raw_fd(), WRITE | EDGE);
                     return Ok(false);
                 }
+                _ => return Err(()),
             }
-            return Err(());
         }
         Ok(true)
     }
@@ -428,41 +295,30 @@ impl IpcServer {
         let now = Reactor::now_ms();
 
         if token == self.listen_token {
-            loop {
-                // SAFETY: accept4 with non-blocking close-on-exec.
-                let client_fd = unsafe {
-                    libc::accept4(
-                        self.listen_fd,
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
-                    )
+            while let Some(accepted) = self.listener.as_ref().map(|l| l.accept()) {
+                let stream = match accepted {
+                    Ok((stream, _)) => stream,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
                 };
-                if client_fd < 0 {
-                    let err = io::Error::last_os_error();
-                    if err.raw_os_error() == Some(libc::EINTR) {
-                        continue;
-                    }
-                    break;
-                }
 
-                if !check_client_uid(client_fd, self.allowed_uid)
+                // Dropping a rejected stream closes it.
+                if !check_client_uid(&stream, self.allowed_uid)
                     || self.clients.len() >= UDS_MAX_CLIENTS
+                    || stream.set_nonblocking(true).is_err()
                 {
-                    // SAFETY: close rejected client descriptor.
-                    unsafe { libc::close(client_fd) };
                     continue;
                 }
 
                 let client_token = self.allocate_client_token();
-                if r.add_fd(client_fd, READ | EDGE, client_token).is_err() {
-                    // SAFETY: close descriptor if registration fails.
-                    unsafe { libc::close(client_fd) };
+                if r.add_fd(stream.as_raw_fd(), READ | EDGE, client_token)
+                    .is_err()
+                {
                     continue;
                 }
 
                 self.clients.push(UdsClient {
-                    fd: client_fd,
+                    stream,
                     token: client_token,
                     state: ClientState::Reading,
                     input: [0; UDS_BUFFER_SIZE],
@@ -483,10 +339,7 @@ impl IpcServer {
 
         let mut should_close = false;
         {
-            let client = match self.clients.get_mut(client_idx) {
-                Some(c) => c,
-                None => return requests,
-            };
+            let client = &mut self.clients[client_idx];
 
             if client.state == ClientState::Writing {
                 match Self::flush_client(client, r, now) {
@@ -507,43 +360,32 @@ impl IpcServer {
                     if space == 0 {
                         Self::queue_response(client, b"ERROR: command too long\n");
                         client.state = ClientState::Writing;
-                        let _ = r.modify_fd(client.fd, WRITE | EDGE);
+                        let _ = r.modify_fd(client.stream.as_raw_fd(), WRITE | EDGE);
                         break;
                     }
 
-                    // SAFETY: read input bytes from client socket.
-                    let n = unsafe {
-                        libc::read(
-                            client.fd,
-                            client.input.as_mut_ptr().add(client.input_len) as *mut libc::c_void,
-                            space,
-                        )
-                    };
-                    if n > 0 {
-                        client.input_len += n as usize;
-                        client.last_activity_ms = now;
-                        if client.input[..client.input_len].contains(&b'\n') {
+                    let end = client.input_len + space;
+                    match client.stream.read(&mut client.input[client.input_len..end]) {
+                        Ok(0) => {
+                            if !client.input[..client.input_len].contains(&b'\n') {
+                                should_close = true;
+                            }
                             break;
                         }
-                        continue;
-                    }
-                    if n == 0 {
-                        if !client.input[..client.input_len].contains(&b'\n') {
-                            should_close = true;
+                        Ok(n) => {
+                            client.input_len += n;
+                            client.last_activity_ms = now;
+                            if client.input[..client.input_len].contains(&b'\n') {
+                                break;
+                            }
                         }
-                        break;
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(_) => {
+                            should_close = true;
+                            break;
+                        }
                     }
-                    let err = io::Error::last_os_error();
-                    if err.raw_os_error() == Some(libc::EINTR) {
-                        continue;
-                    }
-                    if err.raw_os_error() == Some(libc::EAGAIN)
-                        || err.raw_os_error() == Some(libc::EWOULDBLOCK)
-                    {
-                        break;
-                    }
-                    should_close = true;
-                    break;
                 }
 
                 if !should_close {
@@ -554,7 +396,7 @@ impl IpcServer {
                         let cmd = client.input[..pos].to_vec();
                         Self::process_command(client, &cmd, status, r.stats());
                         client.state = ClientState::Writing;
-                        let _ = r.modify_fd(client.fd, WRITE | EDGE);
+                        let _ = r.modify_fd(client.stream.as_raw_fd(), WRITE | EDGE);
                     }
 
                     if client.state == ClientState::Writing {
@@ -575,26 +417,12 @@ impl IpcServer {
             }
         }
 
-        if should_close && client_idx < self.clients.len() {
-            let client = self.clients.swap_remove(client_idx);
-            let _ = r.remove_fd(client.fd);
+        if should_close {
+            let mut client = self.clients.swap_remove(client_idx);
+            let _ = r.remove_fd(client.stream.as_raw_fd());
             // Drain unread bytes so kernel sends FIN rather than RST on close
             let mut drain_buf = [0u8; 4096];
-            loop {
-                // SAFETY: drain unread bytes from socket.
-                let n = unsafe {
-                    libc::read(
-                        client.fd,
-                        drain_buf.as_mut_ptr() as *mut libc::c_void,
-                        drain_buf.len(),
-                    )
-                };
-                if n <= 0 {
-                    break;
-                }
-            }
-            // SAFETY: close client descriptor after session end.
-            unsafe { libc::close(client.fd) };
+            while matches!(client.stream.read(&mut drain_buf), Ok(n) if n > 0) {}
         }
 
         requests
@@ -605,15 +433,10 @@ impl IpcServer {
             r.cancel_timer(id);
         }
         for client in self.clients.drain(..) {
-            let _ = r.remove_fd(client.fd);
-            // SAFETY: close client descriptor during cleanup.
-            unsafe { libc::close(client.fd) };
+            let _ = r.remove_fd(client.stream.as_raw_fd());
         }
-        if self.listen_fd >= 0 {
-            let _ = r.remove_fd(self.listen_fd);
-            // SAFETY: close listen descriptor during cleanup.
-            unsafe { libc::close(self.listen_fd) };
-            self.listen_fd = -1;
+        if let Some(listener) = self.listener.take() {
+            let _ = r.remove_fd(listener.as_raw_fd());
         }
         let _ = std::fs::remove_file(&self.path);
     }
@@ -621,162 +444,45 @@ impl IpcServer {
 
 impl Drop for IpcServer {
     fn drop(&mut self) {
-        for client in self.clients.drain(..) {
-            // SAFETY: close client descriptor in drop.
-            unsafe { libc::close(client.fd) };
-        }
-        if self.listen_fd >= 0 {
-            // SAFETY: close listen descriptor in drop.
-            unsafe { libc::close(self.listen_fd) };
-            self.listen_fd = -1;
-        }
         let _ = std::fs::remove_file(&self.path);
     }
 }
 
 pub fn query_daemon(path: impl AsRef<Path>, command: &str) -> io::Result<String> {
     let path = path.as_ref();
-    let path_bytes = path.as_os_str().as_bytes();
-    if path_bytes.len() >= UDS_PATH_MAX {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "socket path too long",
-        ));
-    }
+    check_path_len(path)?;
+    let addr = rustix::net::SocketAddrUnix::new(path)?;
+    let timeout = Some(Duration::from_secs(3));
 
-    let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::uninit();
-    // SAFETY: zero out sockaddr_un.
-    unsafe {
-        libc::memset(
-            addr.as_mut_ptr() as *mut libc::c_void,
-            0,
-            std::mem::size_of::<libc::sockaddr_un>(),
-        )
-    };
-    // SAFETY: addr was zero-initialized.
-    let mut addr = unsafe { addr.assume_init() };
-    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    for (dst, &src) in addr.sun_path.iter_mut().zip(path_bytes.iter()) {
-        *dst = src as libc::c_char;
-    }
-
-    let tv = libc::timeval {
-        tv_sec: 3,
-        tv_usec: 0,
-    };
-
-    let mut fd = -1;
+    let mut stream = None;
     for retry in 0..10 {
-        // SAFETY: socket create close-on-exec unix stream socket.
-        fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let fd = rustix::net::socket_with(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::STREAM,
+            rustix::net::SocketFlags::CLOEXEC,
+            None,
+        )?;
+        // Set before connect so a full backlog times out instead of blocking forever.
+        let _ = sockopt::set_socket_timeout(&fd, Timeout::Recv, timeout);
+        let _ = sockopt::set_socket_timeout(&fd, Timeout::Send, timeout);
 
-        // SAFETY: setsockopt SO_RCVTIMEO with valid timeval.
-        let _ = unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_RCVTIMEO,
-                &tv as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-            )
-        };
-        // SAFETY: setsockopt SO_SNDTIMEO with valid timeval.
-        let _ = unsafe {
-            libc::setsockopt(
-                fd,
-                libc::SOL_SOCKET,
-                libc::SO_SNDTIMEO,
-                &tv as *const _ as *const libc::c_void,
-                std::mem::size_of::<libc::timeval>() as libc::socklen_t,
-            )
-        };
-
-        // SAFETY: connect to target unix socket.
-        let ret = unsafe {
-            libc::connect(
-                fd,
-                &addr as *const _ as *const libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
-            )
-        };
-        if ret == 0 {
-            break;
-        }
-        let err = io::Error::last_os_error();
-        // SAFETY: close fd on connect failure.
-        unsafe { libc::close(fd) };
-        fd = -1;
-        if err.raw_os_error() == Some(libc::ENOENT)
-            || err.raw_os_error() == Some(libc::ECONNREFUSED)
-        {
-            return Err(err);
-        }
-        if retry < 9 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-
-    if fd < 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::NotConnected,
-            "failed to connect to daemon",
-        ));
-    }
-
-    let cmd_bytes = command.as_bytes();
-    let mut sent = 0;
-    while sent < cmd_bytes.len() {
-        // SAFETY: sending command to connected socket.
-        let n = unsafe {
-            libc::send(
-                fd,
-                cmd_bytes[sent..].as_ptr() as *const libc::c_void,
-                cmd_bytes.len() - sent,
-                libc::MSG_NOSIGNAL,
-            )
-        };
-        if n > 0 {
-            sent += n as usize;
-            continue;
-        }
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EINTR) {
-                continue;
+        match rustix::net::connect(&fd, &addr) {
+            Ok(()) => {
+                stream = Some(UnixStream::from(fd));
+                break;
             }
-            // SAFETY: close fd on send failure.
-            unsafe { libc::close(fd) };
-            return Err(err);
+            Err(e @ (Errno::NOENT | Errno::CONNREFUSED)) => return Err(e.into()),
+            Err(_) if retry < 9 => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => {}
         }
-        break;
     }
+    let mut stream = stream.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotConnected, "failed to connect to daemon")
+    })?;
 
+    stream.write_all(command.as_bytes())?;
     let mut response = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        // SAFETY: recv response from daemon socket.
-        let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
-        if n > 0 {
-            response.extend_from_slice(&buf[..n as usize]);
-            continue;
-        }
-        if n < 0 {
-            let err = io::Error::last_os_error();
-            if err.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            // SAFETY: close fd on error.
-            unsafe { libc::close(fd) };
-            return Err(err);
-        }
-        break;
-    }
-
-    // SAFETY: close socket after communication.
-    unsafe { libc::close(fd) };
+    stream.read_to_end(&mut response)?;
     String::from_utf8(response).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
@@ -842,8 +548,7 @@ mod tests {
     fn test_ipc_socket_file_mode_0600() {
         let mut reactor = Reactor::new().unwrap();
         let sock_path = test_sock_path();
-        // SAFETY: geteuid syscall in test.
-        let allowed_uid = unsafe { libc::geteuid() };
+        let allowed_uid = rustix::process::geteuid().as_raw();
         let mut server = IpcServer::new(&sock_path, allowed_uid, 10, 100, &mut reactor).unwrap();
 
         let meta = std::fs::metadata(&sock_path).unwrap();
@@ -857,8 +562,7 @@ mod tests {
     fn test_ipc_status_request_round_trip() {
         let mut reactor = Reactor::new().unwrap();
         let sock_path = test_sock_path();
-        // SAFETY: geteuid syscall in test.
-        let allowed_uid = unsafe { libc::geteuid() };
+        let allowed_uid = rustix::process::geteuid().as_raw();
         let mut server = IpcServer::new(&sock_path, allowed_uid, 10, 100, &mut reactor).unwrap();
 
         let dummy_status = || StatusSnapshot {
@@ -884,8 +588,7 @@ mod tests {
     fn test_ipc_overlong_request_rejected() {
         let mut reactor = Reactor::new().unwrap();
         let sock_path = test_sock_path();
-        // SAFETY: geteuid syscall in test.
-        let allowed_uid = unsafe { libc::geteuid() };
+        let allowed_uid = rustix::process::geteuid().as_raw();
         let mut server = IpcServer::new(&sock_path, allowed_uid, 10, 100, &mut reactor).unwrap();
 
         let dummy_status = StatusSnapshot::default;
@@ -909,8 +612,7 @@ mod tests {
         let mut reactor = Reactor::new().unwrap();
         let sock_path = test_sock_path();
         // Disallow current user
-        // SAFETY: geteuid syscall in test.
-        let disallowed_uid = unsafe { libc::geteuid() } + 1;
+        let disallowed_uid = rustix::process::geteuid().as_raw() + 1;
         let mut server = IpcServer::new(&sock_path, disallowed_uid, 10, 100, &mut reactor).unwrap();
 
         let dummy_status = StatusSnapshot::default;
@@ -931,8 +633,7 @@ mod tests {
     fn test_ipc_silent_client_timeout_and_non_blocking() {
         let mut reactor = Reactor::new().unwrap();
         let sock_path = test_sock_path();
-        // SAFETY: geteuid syscall in test.
-        let allowed_uid = unsafe { libc::geteuid() };
+        let allowed_uid = rustix::process::geteuid().as_raw();
         let mut server = IpcServer::new(&sock_path, allowed_uid, 10, 100, &mut reactor).unwrap();
 
         // Set short timeout for test
@@ -941,38 +642,7 @@ mod tests {
         let dummy_status = StatusSnapshot::default;
 
         // 1. Silent client connects and sends nothing
-        // SAFETY: socket creation for silent test client.
-        let silent_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-        assert!(silent_fd >= 0);
-        let mut addr = std::mem::MaybeUninit::<libc::sockaddr_un>::uninit();
-        // SAFETY: zero out sockaddr_un.
-        unsafe {
-            libc::memset(
-                addr.as_mut_ptr() as *mut libc::c_void,
-                0,
-                std::mem::size_of::<libc::sockaddr_un>(),
-            )
-        };
-        // SAFETY: assume_init after memset.
-        let mut addr = unsafe { addr.assume_init() };
-        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-        for (dst, &src) in addr
-            .sun_path
-            .iter_mut()
-            .zip(sock_path.as_os_str().as_bytes().iter())
-        {
-            *dst = src as libc::c_char;
-        }
-
-        // SAFETY: connect silent client.
-        let conn_ret = unsafe {
-            libc::connect(
-                silent_fd,
-                &addr as *const _ as *const libc::sockaddr,
-                std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
-            )
-        };
-        assert_eq!(conn_ret, 0);
+        let silent = UnixStream::connect(&sock_path).unwrap();
 
         // Reactor accepts silent client
         let mut events = Vec::new();
@@ -1020,8 +690,7 @@ mod tests {
             "silent client must be dropped after idle timeout"
         );
 
-        // SAFETY: close silent client socket.
-        unsafe { libc::close(silent_fd) };
+        drop(silent);
         server.cleanup(&mut reactor);
     }
 }
