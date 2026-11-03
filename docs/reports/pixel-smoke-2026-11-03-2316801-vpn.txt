@@ -1,0 +1,141 @@
+INFO  device: Pixel 7 Pro / Android 16 / 6.1.145-android14-11-gfa1d6308d1fe-ab14691759
+INFO  C atpd: atpd 1.0.0-dev+g4a64d7b34481
+INFO  Rust atpd: atpd 0.1.0-dev+g23168017ffd0
+atpd 0.1.0-dev+g23168017ffd0
+PASS  1 version runs
+Validating ATPD configuration...
+Configuration is valid
+PASS  1 config check passes
+Checking sing-box configuration (binary: /data/adb/atp/bin/sing-box, config: /data/adb/atp/config.json)...
+sing-box configuration check: PASS
+Starting atpd...
+Daemon started successfully (PID: 11201)
+Runtime status:
+  ATPD:      RUNNING (PID: 11201), uptime 0s, RSS 2.56 MB
+  sing-box:  RUNNING / healthy (PID: 11203), uptime 0s, memory 76.30 MB
+  Kernel:    6.1.145-android14-11-gfa1d6308d1fe-ab14691759
+  Data path: sing-box ebpf inbound
+PASS  2 start -> sing-box RUNNING / healthy
+----- status -----
+
+=== 📊 ATPD Status ===
+
+=============================== 🚀 ATPD DAEMON ===============================
+
+  State           RUNNING
+    PID             11201
+    Uptime          0s
+    RSS             2.56 MB
+    Peak RSS        2.56 MB
+    FDs             16
+    Threads         2
+
+
+
+=============================== 📦 PROXY CORE ================================
+
+  STATUS          RUNNING / healthy
+    PID             11203
+    State           RUNNING / healthy
+    Uptime          0s
+    Memory          76.30 MB
+    Peak Memory     76.30 MB
+    CPU             0.0%
+    Threads         14
+    Goroutines      N/A
+    FDs             83
+    Version         N/A
+
+
+
+============================ 🔌 NATIVE API & MODE ============================
+
+    API Engine      Native API (Port 9080)
+    Clash Mode      N/A
+
+
+
+============================ 🌐 VPN TUNNEL STATUS ============================
+
+  State           STANDALONE / DIRECT
+
+
+
+================================= 💻 SYSTEM ==================================
+
+    ATPD Version    0.1.0-dev+g23168017ffd0
+    Kernel          6.1.145-android14-11-gfa1d6308d1fe-ab14691759
+    CPU Temp        31°C
+
+------------------
+PASS  3 socket mode 0600
+INFO  sing-box Uid: 0 0 0 0 Gid: 3005 3005 3005 3005 Groups:   
+PASS  3 sing-box uid 0
+INFO  CORE_USER_GROUP is customised; compare Gid above with CORE_USER_GROUP=0:3005
+PASS  3 sing-box umask 0027
+PASS  4 logcat has atpd lines
+--------- beginning of main
+11-03 13:53:11.095 11201 11201 I atpd    : [INFO] Netlink initialized (sync_fd=12, async_fd=10)
+11-03 13:53:11.098 11201 11202 W atpd    : [WARN] Native API: refresh failed: SubscribeStatus: I/O error: Connection refused (os error 111)
+11-03 13:53:11.727 11201 11201 I atpd    : [INFO] ATPD control plane active; sing-box owns the ebpf-in datapath
+11-03 13:53:11.727 11201 11201 I atpd    : [INFO] ATPD control-plane Reactor running, entering event loop
+PASS  4 log timestamps use local time
+ACTION  turn your secondary VPN (WARP / Google VPN) ON now - waiting up to 120 s
+PASS  5 VPN on -> state leaves STANDALONE
+12400:	from all to 100.64.0.0/10 lookup wlan0 
+12400:	from all to 192.168.88.0/24 lookup wlan0 
+PASS  5 bypass rules at pref 12400
+ACTION  turn the VPN OFF now - waiting up to 120 s
+PASS  5 VPN off -> STANDALONE / DIRECT
+[2026-11-03 12:29:51] INFO: VPN_STATE: IDLE -> READY (IF_ID=0)
+[2026-11-03 12:30:03] INFO: VPN_STATE: READY -> IDLE (IF_ID=0)
+[2026-11-03 12:30:33] INFO: VPN_STATE: IDLE -> READY (IF_ID=0)
+[2026-11-03 12:30:45] INFO: VPN_STATE: READY -> IDLE (IF_ID=0)
+[2026-11-03 12:31:45] INFO: VPN_STATE: IDLE -> READY (IF_ID=0)
+[2026-11-03 12:31:57] INFO: VPN_STATE: READY -> IDLE (IF_ID=0)
+PASS  6 sing-box restarted after kill -9
+PASS  7 SIGHUP reload succeeds, daemon stays up
+INFO  idling 60 s for RSS
+INFO  atpd VmRSS 2608 kB (plan target < 4096, hard ceiling < 6144)
+PASS  9 RSS under 6 MB ceiling
+    Goroutines      128
+    Version         1.15.0-alpha.13-6106acb
+    Clash Mode      Rule
+    ATPD Version    0.1.0-dev+g23168017ffd0
+PASS  9 Native API fields populated after idle
+Daemon stopped successfully
+PASS  8 stop exits both processes
+PASS  8 pid files and socket removed
+----- last 30 lines of atp.log -----
+[2026-11-03 13:43:28] INFO: sing-box Native API client initialized on 127.0.0.1:9080
+[2026-11-03 13:43:28] INFO: sing-box Native API dispatcher ready on 127.0.0.1:9080
+[2026-11-03 13:43:28] INFO: sing-box Native API dispatcher bound to reactor
+[2026-11-03 13:43:28] INFO: ATPD control plane ready - all components initialized
+[2026-11-03 13:43:28] INFO: RUNTIME_STATE: INITIALIZING -> RUNNING
+[2026-11-03 13:43:28] INFO: ATPD control plane active; sing-box owns the ebpf-in datapath
+[2026-11-03 13:43:28] INFO: Initializing ATPD control-plane Reactor event loop...
+[2026-11-03 13:43:28] INFO: UDS: control socket created at /data/adb/atp/run/atpd.sock (0600)
+[2026-11-03 13:43:28] INFO: Service: spawned sing-box (PID: 8658)
+[2026-11-03 13:43:29] INFO: Service: Native API ready on port 9080
+[2026-11-03 13:43:29] INFO: ATPD control-plane Reactor running, entering event loop
+[2026-11-03 13:43:29] INFO: Reactor starting main loop
+[2026-11-03 13:53:10] INFO: Received termination signal
+[2026-11-03 13:53:10] INFO: RUNTIME_STATE: RUNNING -> STOPPING
+[2026-11-03 13:53:10] INFO: Reactor main loop exited
+[2026-11-03 13:53:10] INFO: Reactor exited, cleaning up...
+[2026-11-03 13:53:10] INFO: Reactor destroyed
+[2026-11-03 13:53:10] INFO: RUNTIME_STATE: STOPPING -> STOPPED
+[2026-11-03 13:53:11] INFO: Netlink initialized (sync_fd=12, async_fd=10)
+[2026-11-03 13:53:11] WARN: Native API: refresh failed: SubscribeStatus: I/O error: Connection refused (os error 111)
+[2026-11-03 13:53:11] INFO: ATPD control plane active; sing-box owns the ebpf-in datapath
+[2026-11-03 13:53:11] INFO: ATPD control-plane Reactor running, entering event loop
+[2026-11-03 13:53:35] INFO: VPN bypass: added 3 rule(s) to table 1047 (wlan0)
+[2026-11-03 13:53:35] INFO: Native API: VPN state READY selected Clash mode 'Google VPN' (restore=Rule)
+[2026-11-03 13:54:12] INFO: VPN bypass: removed 3 rule(s)
+[2026-11-03 13:54:12] INFO: Native API: VPN state IDLE restored Clash mode Rule
+[2026-11-03 13:54:13] WARN: Native API: refresh failed: SubscribeStatus: I/O error: Connection refused (os error 111)
+[2026-11-03 13:54:16] INFO: Processing config reload...
+[2026-11-03 13:54:16] INFO: Config reload completed successfully
+[2026-11-03 13:55:20] INFO: Reactor exited, cleaning up...
+INFO  restored C atpd and it is healthy
+RESULT pass=17 fail=0 report=/data/local/tmp/atpd-smoke-report.txt
