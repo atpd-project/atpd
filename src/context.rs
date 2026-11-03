@@ -226,6 +226,11 @@ impl AtpdContext {
             });
         }
         self.runtime_state = new_state;
+        crate::log_info!(
+            "RUNTIME_STATE: {} -> {}",
+            atpd_runtime_state_string(old_state),
+            atpd_runtime_state_string(new_state)
+        );
         Ok(())
     }
 
@@ -281,6 +286,15 @@ impl AtpdContext {
         self.vpn.transitions = self.vpn.transitions.saturating_add(1);
 
         let teardown_edge = old_state != VpnState::Teardown && new_state == VpnState::Teardown;
+        crate::log_info!(
+            "VPN_STATE: {} -> {} (IF_ID={})",
+            vpn_state_string(old_state),
+            vpn_state_string(new_state),
+            if_id
+        );
+        if teardown_edge {
+            crate::log_warn!("VPN_STATE: teardown observer requested session cleanup");
+        }
 
         let iface_opt = if iface_clean.is_empty() {
             None
