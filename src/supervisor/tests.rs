@@ -733,3 +733,46 @@ fn test_supervisor_child_runs_with_umask_027() {
     supervisor.stop(&mut reactor).expect("stop supervisor");
     assert_eq!(umask, "0027");
 }
+
+#[test]
+fn test_service_rotate_log_keeps_three_copies_and_live_writer() {
+    use std::io::Write;
+    let env = TestEnv::new("");
+    let log = env.dir.join("sing-box.log");
+    let base = log.to_string_lossy().to_string();
+    std::fs::write(format!("{}.1", base), "one").unwrap();
+    std::fs::write(format!("{}.2", base), "two").unwrap();
+    std::fs::write(format!("{}.3", base), "three").unwrap();
+
+    // sing-box's stdout: an O_APPEND fd that stays open across the rotation.
+    let mut writer = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .unwrap();
+    writer.write_all(&vec![b'x'; 10 * 1024 * 1024]).unwrap();
+
+    process::service_rotate_log(&log);
+
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+    assert_eq!(
+        std::fs::metadata(format!("{}.1", base)).unwrap().len(),
+        10 * 1024 * 1024
+    );
+    assert_eq!(
+        std::fs::read_to_string(format!("{}.2", base)).unwrap(),
+        "one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(format!("{}.3", base)).unwrap(),
+        "two"
+    );
+    assert!(!std::path::Path::new(&format!("{}.4", base)).exists());
+
+    writer.write_all(b"after").unwrap();
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "after");
+
+    // Below the limit nothing moves.
+    process::service_rotate_log(&log);
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "after");
+}

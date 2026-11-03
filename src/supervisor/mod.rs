@@ -688,6 +688,8 @@ impl Supervisor {
             return;
         }
 
+        process::service_rotate_log(Path::new(&self.log_path));
+
         let healthy = probes.api_healthy();
         if healthy != self.running_healthy {
             if healthy {
