@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 serde_json = "1"
 libc = "0.2"
-rustix = { version = "1.1.6", default-features = false, features = ["event", "fs", "pipe", "process", "stdio", "std", "termios", "time"] }
+rustix = { version = "1.1.6", default-features = false, features = ["event", "fs", "net", "pipe", "process", "stdio", "std", "termios", "time"] }
 
 [profile.release]
 opt-level = "z"
