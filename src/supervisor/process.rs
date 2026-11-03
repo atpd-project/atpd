@@ -113,57 +113,28 @@ pub fn open_regular_file(path: &Path, flags: libc::c_int, mode: libc::mode_t) ->
     Ok(File::from(fd))
 }
 
+const SERVICE_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+const SERVICE_LOG_KEEP: usize = 3;
+
+/// Copy an oversized log to `.1` (keeping 3 copies) and empty it in place.
+/// Truncating instead of renaming lets a running sing-box keep its O_APPEND fd.
 pub fn service_rotate_log(log_path: &Path) {
-    let metadata = match std::fs::metadata(log_path) {
-        Ok(m) => m,
+    let size = match std::fs::metadata(log_path) {
+        Ok(m) => m.len(),
         Err(_) => return,
     };
-    if metadata.len() < 10 * 1024 * 1024 {
+    if size < SERVICE_LOG_MAX_BYTES {
         return;
     }
-
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: clock_gettime with CLOCK_REALTIME retrieves current system time.
-    unsafe {
-        libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
+    let base = log_path.to_string_lossy();
+    crate::logger::shift_backups(&base, SERVICE_LOG_KEEP);
+    let res = std::fs::copy(log_path, format!("{}.1", base))
+        .and_then(|_| std::fs::OpenOptions::new().write(true).open(log_path))
+        .and_then(|f| f.set_len(0));
+    match res {
+        Ok(()) => crate::log_info!("Service: rotated log to {}.1 (size: {} bytes)", base, size),
+        Err(e) => crate::log_warn!("Service: failed to rotate log: {}", e),
     }
-
-    let mut tm_buf = std::mem::MaybeUninit::<libc::tm>::uninit();
-    // SAFETY: localtime_r converts time_t into a broken-down struct in thread-safe memory.
-    let tm_ptr = unsafe { libc::localtime_r(&ts.tv_sec, tm_buf.as_mut_ptr()) };
-    if tm_ptr.is_null() {
-        return;
-    }
-    // SAFETY: tm_ptr is non-null, meaning tm_buf is initialized.
-    let tm = unsafe { tm_buf.assume_init() };
-
-    let mut buf = [0u8; 64];
-    let format_cstr = match CString::new("%Y-%m-%d_%H-%M-%S") {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    // SAFETY: strftime formats tm into buffer.
-    let len = unsafe {
-        libc::strftime(
-            buf.as_mut_ptr() as *mut libc::c_char,
-            buf.len(),
-            format_cstr.as_ptr(),
-            &tm,
-        )
-    };
-    if len == 0 {
-        return;
-    }
-    let timestamp_str = match std::str::from_utf8(&buf[..len]) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-
-    let backup_path = format!("{}.{}", log_path.display(), timestamp_str);
-    let _ = std::fs::rename(log_path, backup_path);
 }
 
 pub fn write_pid_file(pid_path: &Path, pid: i32) -> Result<(), SupervisorError> {

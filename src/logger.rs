@@ -59,6 +59,13 @@ impl LogLevel {
     }
 }
 
+/// Shift `base.1 .. base.{keep-1}` up by one, dropping the oldest, so `base.1` is free.
+pub fn shift_backups(base: &str, keep: usize) {
+    for i in (2..=keep).rev() {
+        let _ = std::fs::rename(format!("{}.{}", base, i - 1), format!("{}.{}", base, i));
+    }
+}
+
 pub const LOG_TARGET_STDERR: u32 = 1 << 0;
 pub const LOG_TARGET_FILE: u32 = 1 << 1;
 pub const COLOR_RESET: &str = "\x1b[0m";
@@ -140,19 +147,8 @@ impl LoggerState {
 
         self.close_file();
 
-        let base_path = self.log_file.clone();
-        for i in (1..self.rotate_count).rev() {
-            if i == 1 {
-                let new_path = format!("{}.1", base_path);
-                let _ = std::fs::rename(&base_path, &new_path);
-            } else {
-                let old_path = format!("{}.{}", base_path, i - 1);
-                let new_path = format!("{}.{}", base_path, i);
-                if std::path::Path::new(&old_path).exists() {
-                    let _ = std::fs::rename(&old_path, &new_path);
-                }
-            }
-        }
+        shift_backups(&self.log_file, self.rotate_count - 1);
+        let _ = std::fs::rename(&self.log_file, format!("{}.1", self.log_file));
 
         self.open_file();
     }
