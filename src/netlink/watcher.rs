@@ -43,34 +43,6 @@ pub fn is_proxy_interface(ifname: &str) -> bool {
     false
 }
 
-/// Returns a human-readable display label for a VPN interface name.
-pub fn get_vpn_type_label(iface: &str) -> &'static str {
-    if iface.is_empty() {
-        return "None";
-    }
-    if iface.starts_with("warp") {
-        "Cloudflare WARP"
-    } else if iface.starts_with("tun") {
-        "Cloudflare WARP / TUN"
-    } else if iface.starts_with("wg") {
-        "WireGuard"
-    } else if iface.starts_with("tailscale") {
-        "Tailscale"
-    } else if iface.starts_with("zt") || iface.starts_with("zerotier") {
-        "ZeroTier"
-    } else if iface.starts_with("ipsec") {
-        "Google VPN / IPsec"
-    } else if iface.starts_with("xfrm") {
-        "IPsec XFRM"
-    } else if iface.starts_with("utun") {
-        "User TUN"
-    } else if iface.starts_with("ppp") {
-        "PPP Tunnel"
-    } else {
-        "VPN Tunnel"
-    }
-}
-
 /// Helper that inspects getifaddrs to find an active UP proxy interface.
 pub fn getifaddrs_find_vpn() -> Option<String> {
     let mut ifaddrs_ptr: *mut libc::ifaddrs = std::ptr::null_mut();
@@ -178,14 +150,6 @@ pub fn detect_active_vpn_netlink(sync_fd: Option<RawFd>) -> Option<String> {
     });
 
     ipsec_found.or(fallback)
-}
-
-/// Standalone active VPN detection using getifaddrs and Netlink dump fallback.
-pub fn detect_active_vpn() -> Option<String> {
-    if let Some(vpn) = getifaddrs_find_vpn() {
-        return Some(vpn);
-    }
-    detect_active_vpn_netlink(None)
 }
 
 /// Owned NetlinkWatcher responsible for interface and tunnel event monitoring.
@@ -509,7 +473,7 @@ impl NetlinkWatcher {
 
         let ready = vpn.as_deref().is_some_and(|name| name.starts_with("ipsec"));
         let sync_fd = self.sync_fd.as_ref().map(|f| f.as_raw_fd());
-        let _ = self.bypass.apply_config(cfg, sync_fd, vpn.as_deref());
+        self.bypass.apply_config(cfg, sync_fd, vpn.as_deref());
         let _ = self.bypass.sync(ready, sync_fd);
 
         Some(changes)
@@ -524,19 +488,13 @@ impl NetlinkWatcher {
     }
 
     /// Hot-reloads VPN bypass rules from configuration.
-    pub fn apply_vpn_bypass_config(&mut self, cfg: &Config) -> io::Result<()> {
+    pub fn apply_vpn_bypass_config(&mut self, cfg: &Config) {
         let active_vpn = self.get_active_vpn();
         self.bypass.apply_config(
             cfg,
             self.sync_fd.as_ref().map(|f| f.as_raw_fd()),
             active_vpn.as_deref(),
-        )
-    }
-
-    /// Manually triggers bypass rules sync.
-    pub fn vpn_bypass_sync(&mut self, ready: bool) -> io::Result<()> {
-        self.bypass
-            .sync(ready, self.sync_fd.as_ref().map(|f| f.as_raw_fd()))
+        );
     }
 
     /// Closes and unregisters sockets and timers from the reactor.

@@ -484,8 +484,6 @@ fn test_mirrors_test_api_host() {
 
     let client = Client::new("127.0.0.1", fake.port, "", Duration::from_secs(1))
         .expect("valid host must succeed");
-    assert_eq!(client.host(), "127.0.0.1");
-    assert_eq!(client.port(), fake.port);
 
     let status = client.get_status().expect("get status on valid host");
     assert_eq!(status.goroutines, 10);
@@ -710,7 +708,6 @@ fn test_mirrors_test_api_vpn_mode() {
         thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(last_set_mode.lock().expect("lock").as_str(), "Google VPN");
-    assert_eq!(api.default_mode(), Some("Global"));
 
     // 2. VPN disconnects -> Idle. Prior mode "Global" restored, default_mode cleared
     api.on_vpn_change(VpnChange {
@@ -733,7 +730,6 @@ fn test_mirrors_test_api_vpn_mode() {
         thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(last_set_mode.lock().expect("lock").as_str(), "Global");
-    assert_eq!(api.default_mode(), None);
 
     // 3. Case-insensitive mode matching: "google vpn" matches "Google VPN"
     let status = SingboxClashModeStatus {
@@ -794,7 +790,6 @@ fn test_mirrors_test_api_vpn_mode() {
         thread::sleep(Duration::from_millis(50));
     }
     assert_eq!(last_set_mode.lock().expect("lock").as_str(), "Global");
-    assert_eq!(api.default_mode(), None);
 
     api.shutdown();
 }
@@ -890,11 +885,6 @@ fn test_supervisor_probes_integration() {
 
     // api_healthy: checks snapshot validity
     assert!(probes.api_healthy());
-
-    // With start_time_ms in future: healthy should return false
-    let future_time = crate::reactor::now_ms() + 100_000;
-    let mut timed_probes = probes.with_start_time(future_time);
-    assert!(!timed_probes.api_healthy());
 
     api.shutdown();
 }

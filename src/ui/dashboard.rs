@@ -279,14 +279,6 @@ pub fn status_render_snapshot_width<W: std::fmt::Write>(
     Ok(())
 }
 
-pub fn status_render_snapshot<W: std::fmt::Write>(
-    out: W,
-    no_color: bool,
-    snapshot: &StatusSnapshot,
-) -> std::fmt::Result {
-    status_render_snapshot_width(out, no_color, snapshot, 0)
-}
-
 pub fn status_render_to_string(snapshot: &StatusSnapshot, width: usize, no_color: bool) -> String {
     let mut buf = String::with_capacity(2048);
     let _ = status_render_snapshot_width(&mut buf, no_color, snapshot, width);

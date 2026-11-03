@@ -32,7 +32,6 @@ pub const RTM_DELLINK: u16 = 17;
 pub const RTM_GETLINK: u16 = 18;
 pub const RTM_NEWADDR: u16 = 20;
 pub const RTM_DELADDR: u16 = 21;
-pub const RTM_GETADDR: u16 = 22;
 pub const RTM_NEWROUTE: u16 = 24;
 pub const RTM_DELROUTE: u16 = 25;
 pub const RTM_GETROUTE: u16 = 26;
@@ -59,24 +58,12 @@ pub const FR_ACT_TO_TBL: u8 = 1;
 pub const RT_TABLE_UNSPEC: u8 = 0;
 
 pub const FRA_DST: u16 = 1;
-pub const FRA_SRC: u16 = 2;
-pub const FRA_IIFNAME: u16 = 3;
 pub const FRA_PRIORITY: u16 = 6;
-pub const FRA_FWMARK: u16 = 10;
-pub const FRA_FLOW: u16 = 11;
-pub const FRA_TUN_ID: u16 = 12;
 pub const FRA_SUPPRESS_IFGROUP: u16 = 13;
 pub const FRA_SUPPRESS_PREFIXLEN: u16 = 14;
 pub const FRA_TABLE: u16 = 15;
-pub const FRA_FWMASK: u16 = 16;
-pub const FRA_OIFNAME: u16 = 17;
 pub const FRA_PAD: u16 = 18;
-pub const FRA_L3MDEV: u16 = 19;
-pub const FRA_UID_RANGE: u16 = 20;
 pub const FRA_PROTOCOL: u16 = 21;
-pub const FRA_IP_PROTO: u16 = 22;
-pub const FRA_SPORT_RANGE: u16 = 23;
-pub const FRA_DPORT_RANGE: u16 = 24;
 
 // Route attribute constants
 pub const RTA_TABLE: u16 = 15;
@@ -84,11 +71,9 @@ pub const RTA_OIF: u16 = 4;
 
 // Link attribute constants
 pub const IFLA_IFNAME: u16 = 3;
-pub const IFLA_STATS64: u16 = 23;
 
 pub const AF_INET: i32 = libc::AF_INET;
 pub const AF_INET6: i32 = libc::AF_INET6;
-pub const AF_PACKET: i32 = libc::AF_PACKET;
 
 pub const NL_BUF_SIZE: usize = 8192;
 pub const NL_DUMP_SIZE: usize = 32768;
@@ -235,29 +220,10 @@ pub fn encode_link_dump_request(seq: u32) -> Vec<u8> {
     buf
 }
 
-/// Pure function to encode an RTM_GETLINK stats request for a single interface index.
-pub fn encode_getlink_stats_request(if_index: u32, seq: u32) -> Vec<u8> {
-    let mut buf = vec![0u8; nlmsg_length(16)];
-    let len = buf.len() as u32;
-
-    buf[0..4].copy_from_slice(&len.to_ne_bytes());
-    buf[4..6].copy_from_slice(&RTM_GETLINK.to_ne_bytes());
-    buf[6..8].copy_from_slice(&NLM_F_REQUEST.to_ne_bytes());
-    buf[8..12].copy_from_slice(&seq.to_ne_bytes());
-
-    // struct ifinfomsg at offset 16 (ifi_index at offset 16 + 4 = 20)
-    buf[20..24].copy_from_slice(&(if_index as i32).to_ne_bytes());
-
-    buf
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct NetlinkMsg<'a> {
-    pub nlmsg_len: u32,
     pub nlmsg_type: u16,
-    pub nlmsg_flags: u16,
     pub nlmsg_seq: u32,
-    pub nlmsg_pid: u32,
     pub payload: &'a [u8],
 }
 
@@ -282,9 +248,7 @@ impl<'a> Iterator for NetlinkMsgIter<'a> {
         let chunk = &self.buf[self.offset..];
         let nlmsg_len = u32::from_ne_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         let nlmsg_type = u16::from_ne_bytes([chunk[4], chunk[5]]);
-        let nlmsg_flags = u16::from_ne_bytes([chunk[6], chunk[7]]);
         let nlmsg_seq = u32::from_ne_bytes([chunk[8], chunk[9], chunk[10], chunk[11]]);
-        let nlmsg_pid = u32::from_ne_bytes([chunk[12], chunk[13], chunk[14], chunk[15]]);
 
         let len_usize = nlmsg_len as usize;
         if len_usize < 16 || self.offset + len_usize > self.buf.len() {
@@ -296,11 +260,8 @@ impl<'a> Iterator for NetlinkMsgIter<'a> {
         self.offset = next_offset;
 
         Some(NetlinkMsg {
-            nlmsg_len,
             nlmsg_type,
-            nlmsg_flags,
             nlmsg_seq,
-            nlmsg_pid,
             payload,
         })
     }
@@ -367,10 +328,6 @@ impl RuleDumpCtx {
         Self {
             rules: Vec::with_capacity(MAX_DUMPED_OURS_RULES),
         }
-    }
-
-    pub fn count(&self) -> usize {
-        self.rules.len()
     }
 }
 
@@ -606,8 +563,6 @@ where
 pub struct LinkInfo {
     pub name: String,
     pub flags: u32,
-    pub rx_bytes: u64,
-    pub tx_bytes: u64,
 }
 
 /// Pure parser function mirroring C `parser_link_sync`.
@@ -624,8 +579,6 @@ pub fn parse_link_message(msg: &NetlinkMsg<'_>) -> Option<LinkInfo> {
     ]);
 
     let mut name = String::new();
-    let mut rx_bytes = 0u64;
-    let mut tx_bytes = 0u64;
 
     let attrs_buf = if msg.payload.len() > 16 {
         let align_hdr = nlmsg_align(16);
@@ -646,41 +599,13 @@ pub fn parse_link_message(msg: &NetlinkMsg<'_>) -> Option<LinkInfo> {
                 .position(|&b| b == 0)
                 .unwrap_or(attr.payload.len());
             name = String::from_utf8_lossy(&attr.payload[..len]).into_owned();
-        } else if attr.rta_type == IFLA_STATS64 && attr.payload.len() >= 32 {
-            // struct rtnl_link_stats64 layout:
-            // rx_packets at offset 0, tx_packets at offset 8, rx_bytes at offset 16, tx_bytes at offset 24
-            rx_bytes = u64::from_ne_bytes([
-                attr.payload[16],
-                attr.payload[17],
-                attr.payload[18],
-                attr.payload[19],
-                attr.payload[20],
-                attr.payload[21],
-                attr.payload[22],
-                attr.payload[23],
-            ]);
-            tx_bytes = u64::from_ne_bytes([
-                attr.payload[24],
-                attr.payload[25],
-                attr.payload[26],
-                attr.payload[27],
-                attr.payload[28],
-                attr.payload[29],
-                attr.payload[30],
-                attr.payload[31],
-            ]);
         }
     }
 
     if name.is_empty() {
         None
     } else {
-        Some(LinkInfo {
-            name,
-            flags,
-            rx_bytes,
-            tx_bytes,
-        })
+        Some(LinkInfo { name, flags })
     }
 }
 

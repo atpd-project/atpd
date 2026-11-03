@@ -1,8 +1,6 @@
 //! sing-box Native API status and telemetry data structures.
 
 pub const SINGBOX_MAX_CLASH_MODES: usize = 32;
-pub const SINGBOX_CLASH_MODE_SIZE: usize = 64;
-pub const API_VERSION_SIZE: usize = 128;
 
 /// Snapshot returned by StartedService.SubscribeStatus.
 /// Mirrors `daemon.Status` in sing-box and C `singbox_status_t`.

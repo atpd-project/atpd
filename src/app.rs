@@ -285,9 +285,6 @@ impl App {
                                             .context
                                             .runtime_state_transition(RuntimeState::Stopping);
                                     }
-                                    IpcRequest::Reload => {
-                                        self.process_config_reload();
-                                    }
                                 }
                             }
                         }
@@ -402,7 +399,7 @@ impl App {
         }
 
         self.supervisor.apply_config(&mut self.reactor, &candidate);
-        let _ = self.netlink.apply_vpn_bypass_config(&candidate);
+        self.netlink.apply_vpn_bypass_config(&candidate);
         crate::utils::time::atp_timezone_init();
         self.config = candidate;
         crate::log_info!("Config reload completed successfully");

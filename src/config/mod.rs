@@ -49,6 +49,7 @@ pub struct ServiceConfig {
     pub restart_delay_sec: i32,
     pub start_timeout_sec: i32,
     pub stop_timeout_sec: i32,
+    // Accepted for old atp.conf files; nothing uses it.
     pub grace_period_sec: i32,
     pub max_failures: i32,
     pub circuit_threshold: i32,
@@ -301,14 +302,6 @@ impl Default for Config {
     }
 }
 
-pub fn set_defaults(cfg: &mut Config) {
-    *cfg = Config::default();
-}
-
-pub fn validate_port(port: i32) -> bool {
-    validator::validate_port(port)
-}
-
 fn apply_run_dir_defaults(cfg: &mut Config) -> Result<(), ConfigError> {
     if cfg.core.run_dir.is_empty() || cfg.core.run_dir == ATP_RUN_DIR {
         return Ok(());
@@ -505,10 +498,6 @@ impl Config {
         sync_from_singbox_json(&mut new_config, &presence)?;
         validator::config_validate_values(&new_config)?;
         Ok(new_config)
-    }
-
-    pub fn classify_reload(&self, candidate: &Config) -> ReloadClassification {
-        classify_reload(self, candidate)
     }
 }
 

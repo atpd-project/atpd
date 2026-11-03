@@ -12,8 +12,6 @@ pub enum LogLevel {
     Info = 1,
     Warn = 2,
     Error = 3,
-    Fatal = 4,
-    None = 5,
 }
 
 impl LogLevel {
@@ -23,8 +21,6 @@ impl LogLevel {
             LogLevel::Info => "INFO",
             LogLevel::Warn => "WARN",
             LogLevel::Error => "ERROR",
-            LogLevel::Fatal => "FATAL",
-            LogLevel::None => "NONE",
         }
     }
 
@@ -34,15 +30,13 @@ impl LogLevel {
             LogLevel::Info => "\x1b[32m",
             LogLevel::Warn => "\x1b[33m",
             LogLevel::Error => "\x1b[31m",
-            LogLevel::Fatal => "\x1b[31m\x1b[1m",
-            LogLevel::None => "",
         }
     }
 
     pub fn is_emittable(&self) -> bool {
         matches!(
             self,
-            LogLevel::Debug | LogLevel::Info | LogLevel::Warn | LogLevel::Error | LogLevel::Fatal
+            LogLevel::Debug | LogLevel::Info | LogLevel::Warn | LogLevel::Error
         )
     }
 
@@ -53,8 +47,6 @@ impl LogLevel {
             LogLevel::Info => 4,  // ANDROID_LOG_INFO
             LogLevel::Warn => 5,  // ANDROID_LOG_WARN
             LogLevel::Error => 6, // ANDROID_LOG_ERROR
-            LogLevel::Fatal => 7, // ANDROID_LOG_FATAL
-            LogLevel::None => 4,
         }
     }
 }
@@ -257,21 +249,6 @@ pub fn log_set_level(level: LogLevel) {
     state.min_level = level;
 }
 
-pub fn log_set_target(targets: u32) {
-    let mut state = match GLOBAL_LOGGER.lock() {
-        Ok(s) => s,
-        Err(p) => p.into_inner(),
-    };
-    let clean_targets = targets & (LOG_TARGET_STDERR | LOG_TARGET_FILE);
-    state.targets = clean_targets;
-    if (clean_targets & LOG_TARGET_FILE) != 0 && state.file.is_none() && !state.log_file.is_empty()
-    {
-        state.open_file();
-    } else if (clean_targets & LOG_TARGET_FILE) == 0 && state.file.is_some() {
-        state.close_file();
-    }
-}
-
 pub fn log_set_file<P: AsRef<std::path::Path>>(path: P) {
     let mut state = match GLOBAL_LOGGER.lock() {
         Ok(s) => s,
@@ -290,14 +267,6 @@ pub fn log_set_color(enable: bool) {
         Err(p) => p.into_inner(),
     };
     state.enable_color = enable;
-}
-
-pub fn logger_close() {
-    let mut state = match GLOBAL_LOGGER.lock() {
-        Ok(s) => s,
-        Err(p) => p.into_inner(),
-    };
-    state.close_file();
 }
 
 pub fn log_init() {
@@ -413,19 +382,6 @@ macro_rules! log_error {
     };
 }
 
-#[macro_export]
-macro_rules! log_fatal {
-    ($($arg:tt)*) => {
-        $crate::logger::log(
-            $crate::logger::LogLevel::Fatal,
-            file!(),
-            line!(),
-            "",
-            format_args!($($arg)*),
-        )
-    };
-}
-
 #[cfg(test)]
 pub(crate) static TEST_LOGGER_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -458,20 +414,29 @@ mod tests {
             std::fs::hard_link(&target, &hardlink_path).unwrap();
         }
 
-        log_set_target(LOG_TARGET_FILE);
+        {
+            let mut state = GLOBAL_LOGGER.lock().unwrap();
+            state.targets = LOG_TARGET_FILE;
+        }
         log_set_file(&symlink_path);
         log_info!("must not follow symlink");
         assert!(target_is_unchanged(&target));
 
         log_set_file(&hardlink_path);
         log_info!("must not follow hardlink");
-        logger_close();
+        {
+            let mut state = GLOBAL_LOGGER.lock().unwrap();
+            state.close_file();
+        }
         assert!(target_is_unchanged(&target));
 
         // Restore default logger configuration
-        log_set_target(LOG_TARGET_STDERR);
-        log_set_file("");
-        logger_close();
+        {
+            let mut state = GLOBAL_LOGGER.lock().unwrap();
+            state.targets = LOG_TARGET_STDERR;
+            state.log_file = String::new();
+            state.close_file();
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -500,7 +465,10 @@ mod tests {
             log_info!("message number {}", i);
         }
 
-        logger_close();
+        {
+            let mut state = GLOBAL_LOGGER.lock().unwrap();
+            state.close_file();
+        }
 
         assert!(log_file.exists());
         assert!(dir.join("test.log.1").exists());
@@ -522,18 +490,12 @@ mod tests {
     fn test_log_levels_and_macros() {
         let _lock = TEST_LOGGER_MUTEX.lock().unwrap();
 
-        log_set_target(LOG_TARGET_STDERR);
         log_set_level(LogLevel::Debug);
 
         log_debug!("test debug message {}", 1);
         log_info!("test info message {}", 2);
         log_warn!("test warn message {}", 3);
         log_error!("test error message {}", 4);
-        log_fatal!("test fatal message {}", 5);
-
-        log_set_level(LogLevel::None);
-        log_debug!("should not emit");
-        log_info!("should not emit");
 
         // Restore defaults
         log_set_level(LogLevel::Info);

@@ -4,9 +4,7 @@
 
 use std::fmt;
 
-pub const EXIT_SUCCESS: i32 = 0;
 pub const EXIT_FAILURE: i32 = 1;
-pub const EXIT_NOT_RUNNING: i32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {

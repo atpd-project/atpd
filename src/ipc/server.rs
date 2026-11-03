@@ -13,7 +13,6 @@ use crate::reactor::{Reactor, TimerId, EDGE, READ, WRITE};
 use crate::status::StatusSnapshot;
 
 pub const UDS_BUFFER_SIZE: usize = 4096;
-pub const UDS_RESPONSE_SIZE: usize = 8192;
 pub const UDS_MAX_RESPONSE_SIZE: usize = 64 * 1024;
 pub const UDS_BACKLOG: i32 = 16;
 pub const UDS_PATH_MAX: usize = 108;
@@ -24,7 +23,6 @@ pub const UDS_IDLE_SCAN_MS: u64 = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpcRequest {
     Shutdown,
-    Reload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,16 +258,8 @@ impl IpcServer {
         })
     }
 
-    pub fn set_idle_timeout_ms(&mut self, timeout_ms: u64) {
-        self.idle_timeout_ms = timeout_ms;
-    }
-
     pub fn listen_token(&self) -> u64 {
         self.listen_token
-    }
-
-    pub fn active_clients(&self) -> usize {
-        self.clients.len()
     }
 
     fn allocate_client_token(&mut self) -> u64 {
@@ -840,7 +830,7 @@ mod tests {
             if timed_out {
                 break;
             }
-            if server.active_clients() == 0 && !all_reqs.is_empty() {
+            if server.clients.is_empty() && !all_reqs.is_empty() {
                 break;
             }
         }
@@ -946,7 +936,7 @@ mod tests {
         let mut server = IpcServer::new(&sock_path, allowed_uid, 10, 100, &mut reactor).unwrap();
 
         // Set short timeout for test
-        server.set_idle_timeout_ms(150);
+        server.idle_timeout_ms = 150;
 
         let dummy_status = StatusSnapshot::default;
 
@@ -994,7 +984,7 @@ mod tests {
                 server.handle_io(&mut reactor, token, &dummy_status);
             }
         }
-        assert_eq!(server.active_clients(), 1);
+        assert_eq!(server.clients.len(), 1);
 
         // 2. Active client connects and sends ping; must not be blocked by silent client
         let path_clone = sock_path.clone();
@@ -1025,7 +1015,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(160));
         server.check_timeouts(&mut reactor);
         assert_eq!(
-            server.active_clients(),
+            server.clients.len(),
             0,
             "silent client must be dropped after idle timeout"
         );

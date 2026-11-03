@@ -103,22 +103,6 @@ impl Client {
         )
     }
 
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-
-    pub fn secret(&self) -> &str {
-        &self.secret
-    }
-
-    pub fn timeout(&self) -> Duration {
-        self.timeout
-    }
-
     fn socket_addr(&self) -> Result<SocketAddr, ClientError> {
         let ip = self
             .host
@@ -133,13 +117,6 @@ impl Client {
         stream.set_read_timeout(Some(self.timeout))?;
         stream.set_write_timeout(Some(self.timeout))?;
         Ok(stream)
-    }
-
-    /// Health probe connecting to sing-box API port with bounded 1s timeout.
-    /// Mirrors `singbox_api_health_check` in singbox_api.c.
-    pub fn health_check(&self) -> Result<(), ClientError> {
-        let _stream = self.connect()?;
-        Ok(())
     }
 
     /// Retrieve telemetry sample via SubscribeStatus RPC.
@@ -257,13 +234,6 @@ impl Client {
         let frame = self.unary_call("/daemon.StartedService/GetClashModeStatus", &[])?;
         let status = proto::parse_clash_mode_status(&frame)?;
         Ok(status)
-    }
-
-    /// Query current Clash mode.
-    /// Mirrors `singbox_api_get_clash_mode` in singbox_api.c.
-    pub fn get_clash_mode(&self) -> Result<String, ClientError> {
-        let status = self.get_clash_mode_status()?;
-        Ok(status.current_mode)
     }
 
     /// Set current Clash mode via SetClashMode RPC.

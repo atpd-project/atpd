@@ -479,12 +479,7 @@ impl BypassManager {
         )
     }
 
-    pub fn apply_config(
-        &mut self,
-        cfg: &Config,
-        sock_fd: Option<RawFd>,
-        active_vpn: Option<&str>,
-    ) -> io::Result<()> {
+    pub fn apply_config(&mut self, cfg: &Config, sock_fd: Option<RawFd>, active_vpn: Option<&str>) {
         let new_count = cfg
             .interface
             .vpn_bypass_route_count
@@ -500,7 +495,7 @@ impl BypassManager {
         let pref_changed = self.pref != new_pref;
 
         if !routes_changed && !pref_changed {
-            return Ok(());
+            return;
         }
 
         let ready = active_vpn.is_some_and(|vpn| vpn.starts_with("ipsec"));
@@ -524,7 +519,7 @@ impl BypassManager {
                 &mut self.seq,
                 &mut self.no_candidate_warned,
             );
-            return Ok(());
+            return;
         }
 
         // Preference unchanged: delete removed routes individually without flapping surviving routes
@@ -558,7 +553,5 @@ impl BypassManager {
             &mut self.seq,
             &mut self.no_candidate_warned,
         );
-
-        Ok(())
     }
 }

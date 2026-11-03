@@ -9,16 +9,16 @@ use crate::context::{AtpdContext, VpnState};
 use crate::netlink::bypass::{if_indextoname_safe, BypassManager};
 use crate::netlink::msg::{
     encode_rule_request, netlink_add_attr, nlmsg_length, parse_route_message, parse_rule_message,
-    NetlinkMsgIter, RouteFindCtx, RuleDumpCtx, AF_INET, AF_INET6, FRA_DST, FRA_FWMARK,
-    FRA_PRIORITY, FRA_PROTOCOL, FRA_SUPPRESS_PREFIXLEN, FRA_TABLE, FR_ACT_TO_TBL, RTA_OIF,
-    RTA_TABLE, RTM_DELRULE, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE, RT_TABLE_UNSPEC, XFRMA_IF_ID,
+    NetlinkMsgIter, RouteFindCtx, RuleDumpCtx, AF_INET, AF_INET6, FRA_DST, FRA_PRIORITY,
+    FRA_PROTOCOL, FRA_SUPPRESS_PREFIXLEN, FRA_TABLE, FR_ACT_TO_TBL, RTA_OIF, RTA_TABLE,
+    RTM_DELRULE, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE, RT_TABLE_UNSPEC, XFRMA_IF_ID,
     XFRM_MSG_DELSA, XFRM_MSG_NEWSA,
 };
-use crate::netlink::stats::{iface_stats, parse_proc_net_dev_line};
-use crate::netlink::watcher::{
-    detect_active_vpn, get_vpn_type_label, is_proxy_interface, NetlinkWatcher,
-};
+use crate::netlink::stats::parse_proc_net_dev_line;
+use crate::netlink::watcher::{is_proxy_interface, NetlinkWatcher};
 use crate::reactor::{Event, Reactor};
+
+const FRA_FWMARK: u16 = 10;
 
 // Exact byte fixture for RTM_NEWRULE IPv4 (100.64.0.0/10, table 1047, pref 12400, seq 1) (52 bytes)
 const RTM_NEWRULE_IPV4_BYTES: [u8; 52] = [
@@ -256,7 +256,7 @@ fn matches(buf: &[u8], routes: &[VpnBypassRoute], pref: u32) -> usize {
     for msg in NetlinkMsgIter::new(buf) {
         let _ = parse_rule_message(&msg, routes, pref, &mut ctx);
     }
-    ctx.count()
+    ctx.rules.len()
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +433,7 @@ fn test_vpn_bypass_config_hot_reload_mirrored() {
     new_cfg.interface.vpn_bypass_routes[0].addr[..4]
         .copy_from_slice(&Ipv4Addr::from_str("10.0.0.0").unwrap().octets());
 
-    assert!(bypass.apply_config(&new_cfg, None, None).is_ok());
+    bypass.apply_config(&new_cfg, None, None);
     assert_eq!(bypass.pref, 12500);
     assert_eq!(bypass.routes.len(), 1);
     assert_eq!(bypass.routes[0].prefix_len, 8);
@@ -455,7 +455,7 @@ fn test_vpn_bypass_config_hot_reload_mirrored() {
     multi_cfg.interface.vpn_bypass_routes[2].addr[..4]
         .copy_from_slice(&Ipv4Addr::from_str("192.168.0.0").unwrap().octets());
 
-    assert!(bypass.apply_config(&multi_cfg, None, None).is_ok());
+    bypass.apply_config(&multi_cfg, None, None);
     assert_eq!(bypass.routes.len(), 3);
 
     // Now update to keep ONLY 10.0.0.0/8 (removing 2 routes: 172.16.0.0/12 and 192.168.0.0/16)
@@ -467,27 +467,13 @@ fn test_vpn_bypass_config_hot_reload_mirrored() {
     single_cfg.interface.vpn_bypass_routes[0].addr[..4]
         .copy_from_slice(&Ipv4Addr::from_str("10.0.0.0").unwrap().octets());
 
-    assert!(bypass.apply_config(&single_cfg, None, None).is_ok());
+    bypass.apply_config(&single_cfg, None, None);
     assert_eq!(bypass.routes.len(), 1);
     assert_eq!(bypass.routes[0].prefix_len, 8);
 }
 
 #[test]
-fn test_netlink_multi_vpn_labels_mirrored() {
-    // Mirrored from tests/test_netlink.c: netlink_get_vpn_type_label tests
-    assert_eq!(get_vpn_type_label(""), "None");
-    assert_eq!(get_vpn_type_label("tun0"), "Cloudflare WARP / TUN");
-    assert_eq!(get_vpn_type_label("warp0"), "Cloudflare WARP");
-    assert_eq!(get_vpn_type_label("wg0"), "WireGuard");
-    assert_eq!(get_vpn_type_label("tailscale0"), "Tailscale");
-    assert_eq!(get_vpn_type_label("zt0"), "ZeroTier");
-    assert_eq!(get_vpn_type_label("zerotier1"), "ZeroTier");
-    assert_eq!(get_vpn_type_label("ipsec0"), "Google VPN / IPsec");
-    assert_eq!(get_vpn_type_label("xfrm0"), "IPsec XFRM");
-    assert_eq!(get_vpn_type_label("utun0"), "User TUN");
-    assert_eq!(get_vpn_type_label("ppp0"), "PPP Tunnel");
-    assert_eq!(get_vpn_type_label("other"), "VPN Tunnel");
-
+fn test_netlink_proxy_interface_mirrored() {
     // Proxy interface check
     assert!(is_proxy_interface("ipsec0"));
     assert!(is_proxy_interface("xfrm0"));
@@ -506,21 +492,6 @@ fn test_netlink_multi_vpn_labels_mirrored() {
     assert!(!is_proxy_interface("wlan0"));
     assert!(!is_proxy_interface("lo"));
     assert!(!is_proxy_interface("enp0s3"));
-
-    // Active VPN detection call
-    let active_vpn = detect_active_vpn();
-    if let Some(iface) = active_vpn {
-        let stats = iface_stats(&iface);
-        if let Some((rx, tx)) = stats {
-            println!(
-                "Active VPN: {} (label={}), rx={}, tx={}",
-                iface,
-                get_vpn_type_label(&iface),
-                rx,
-                tx
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -548,7 +519,7 @@ fn test_byte_fixture_rtm_newrule_ipv4_pref12400() {
         let matched = parse_rule_message(&msg, &routes, 12400, &mut ctx);
         assert!(matched);
     }
-    assert_eq!(ctx.count(), 1);
+    assert_eq!(ctx.rules.len(), 1);
     assert_eq!(ctx.rules[0].table, 1047);
     assert_eq!(ctx.rules[0].family, AF_INET);
     assert_eq!(ctx.rules[0].dst_len, 10);
@@ -581,7 +552,7 @@ fn test_byte_fixture_rtm_newrule_ipv6_pref12400() {
         let matched = parse_rule_message(&msg, &routes, 12400, &mut ctx);
         assert!(matched);
     }
-    assert_eq!(ctx.count(), 1);
+    assert_eq!(ctx.rules.len(), 1);
     assert_eq!(ctx.rules[0].table, 1048);
     assert_eq!(ctx.rules[0].family, AF_INET6);
     assert_eq!(ctx.rules[0].dst_len, 48);
@@ -628,10 +599,6 @@ fn test_proc_net_dev_pure_line_parser() {
     assert_eq!(parse_proc_net_dev_line("invalid_no_colon"), None);
     assert_eq!(parse_proc_net_dev_line("  : 1 2 3 4 5 6 7 8 9"), None);
     assert_eq!(parse_proc_net_dev_line("eth0: 1 2 3"), None);
-
-    // Test real read of loopback
-    let lo_stats = iface_stats("lo");
-    assert!(lo_stats.is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -801,10 +768,9 @@ fn test_cap_net_admin_operations_skip_when_non_root() {
         .as_ref()
         .map(std::os::unix::io::AsRawFd::as_raw_fd);
 
-    let res = bypass.apply_config(&cfg, sync_fd, Some("ipsec0"));
-    assert!(res.is_ok());
+    bypass.apply_config(&cfg, sync_fd, Some("ipsec0"));
 
     // Cleanup rule
     cfg.interface.vpn_bypass_route_count = 0;
-    let _ = bypass.apply_config(&cfg, sync_fd, None);
+    bypass.apply_config(&cfg, sync_fd, None);
 }

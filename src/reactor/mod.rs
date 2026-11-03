@@ -15,8 +15,6 @@ use std::sync::Arc;
 
 pub const READ: u32 = libc::EPOLLIN as u32;
 pub const WRITE: u32 = libc::EPOLLOUT as u32;
-pub const ERROR: u32 = libc::EPOLLERR as u32;
-pub const HANGUP: u32 = libc::EPOLLHUP as u32;
 pub const EDGE: u32 = libc::EPOLLET as u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
