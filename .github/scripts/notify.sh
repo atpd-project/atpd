@@ -46,7 +46,7 @@ resolve_assets() {
     BIONIC_URL="${BIONIC_DOWNLOAD_URL:-}"
 
     if [[ "$tag" == v* ]]; then
-        [ -z "$BIONIC_FILE" ] && BIONIC_FILE="atpd-${tag}-android-arm64.tar.gz"
+        [ -z "$BIONIC_FILE" ] && BIONIC_FILE="atpd-${tag#v}-android-arm64.tar.gz"
         [ -z "$BIONIC_URL" ] && BIONIC_URL="https://github.com/${REPO}/releases/download/${tag}/${BIONIC_FILE}"
     fi
 }

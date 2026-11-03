@@ -125,7 +125,7 @@ jobs:
           mkdir -p dist pkg-android
           install -m 755 build-bionic/atpd pkg-android/atpd
           cp README.md pkg-android/
-          tar -czvf "dist/atpd-${TAG}-android-arm64.tar.gz" -C pkg-android .
+          tar -czvf "dist/atpd-${TAG#v}-android-arm64.tar.gz" -C pkg-android .
           (cd dist && sha256sum atpd-*.tar.gz > sha256sums.txt && cat sha256sums.txt)
 
       - name: Create GitHub Release
