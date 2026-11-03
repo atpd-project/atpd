@@ -134,10 +134,9 @@ pub fn service_rotate_log(log_path: &Path) {
         return;
     }
     crate::logger::shift_backups(&base, SERVICE_LOG_KEEP);
-    let _ = std::fs::rename(&tmp_path, format!("{}.1", base));
-    let res = std::fs::OpenOptions::new()
-        .write(true)
-        .open(log_path)
+    // Truncate only once the copy is safely in .1, or its contents are lost.
+    let res = std::fs::rename(&tmp_path, format!("{}.1", base))
+        .and_then(|_| std::fs::OpenOptions::new().write(true).open(log_path))
         .and_then(|f| f.set_len(0));
     match res {
         Ok(()) => crate::log_info!("Service: rotated log to {}.1 (size: {} bytes)", base, size),

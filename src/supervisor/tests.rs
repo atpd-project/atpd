@@ -817,6 +817,22 @@ fn test_service_rotate_log_preserves_backups_on_copy_failure() {
 }
 
 #[test]
+fn test_service_rotate_log_keeps_live_log_on_rename_failure() {
+    let env = TestEnv::new("");
+    let log = env.dir.join("sing-box.log");
+    let base = log.to_string_lossy().to_string();
+    // Non-empty directories at every backup slot make all renames fail
+    for i in 1..=3 {
+        std::fs::create_dir_all(format!("{}.{}/x", base, i)).unwrap();
+    }
+    std::fs::write(&log, vec![b'x'; 10 * 1024 * 1024]).unwrap();
+
+    process::service_rotate_log(&log);
+
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 10 * 1024 * 1024);
+}
+
+#[test]
 fn test_stop_signal_pending_sees_blocked_sigterm() {
     assert!(!stop_signal_pending());
     // SAFETY: SIGTERM is blocked and sent to this thread only, then consumed with sigwait
