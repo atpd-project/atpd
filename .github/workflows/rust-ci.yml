@@ -10,9 +10,21 @@ on:
       - 'feat/**'
       - 'fix/**'
       - 'test/**'
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE*'
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+      - '.gitignore'
+      - '.gitattributes'
+      - 'LICENSE*'
   workflow_dispatch:
 
 concurrency:
