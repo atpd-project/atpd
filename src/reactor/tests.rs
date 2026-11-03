@@ -193,3 +193,36 @@ fn test_reactor_fd_readable_pipe() {
         libc::close(write_fd);
     }
 }
+
+// Mirrors reactor.c stats: timers fired and registered-fd events are counted.
+#[test]
+fn test_reactor_stats_count_timers_and_io() {
+    let mut reactor = Reactor::new().expect("create reactor");
+    let mut fds = [0; 2];
+    // SAFETY: fds is a valid 2-element array for pipe2.
+    assert_eq!(
+        unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_NONBLOCK) },
+        0
+    );
+    reactor.add_fd(fds[0], READ, 7).expect("add pipe");
+    // SAFETY: writing one byte from a valid local buffer to our own pipe.
+    assert_eq!(
+        unsafe { libc::write(fds[1], b"x".as_ptr() as *const libc::c_void, 1) },
+        1
+    );
+    reactor.add_timer(0, 0);
+
+    let mut events = Vec::new();
+    while reactor.stats().timers_fired == 0 || reactor.stats().events_processed == 0 {
+        reactor.wait(&mut events).expect("wait");
+    }
+    let stats = reactor.stats();
+    reactor.remove_fd(fds[0]).expect("remove pipe");
+    // SAFETY: closing the pipe fds created above.
+    unsafe {
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+    }
+    assert_eq!(stats.timers_fired, 1);
+    assert!(stats.events_processed >= 1);
+}

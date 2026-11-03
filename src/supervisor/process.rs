@@ -392,6 +392,8 @@ pub fn service_spawn(
     // SAFETY: pre_exec is an unsafe method on CommandExt that configures process execution before exec.
     unsafe {
         cmd.pre_exec(move || {
+            // Same as service.c: files sing-box creates are not world-readable.
+            libc::umask(0o027);
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
             }

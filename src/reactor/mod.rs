@@ -72,7 +72,16 @@ pub fn now_ms() -> u64 {
     (ts.tv_sec as u64) * 1000 + (ts.tv_nsec as u64) / 1_000_000
 }
 
+/// Counters reported by the IPC `stats` command, counted as reactor.c does.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReactorStats {
+    pub events_processed: u64,
+    pub timers_fired: u64,
+    pub signals_received: u64,
+}
+
 pub struct Reactor {
+    stats: ReactorStats,
     epoll_fd: RawFd,
     event_fd: RawFd,
     event_fd_owner: Arc<OwnedFd>,
@@ -188,6 +197,7 @@ impl Reactor {
             next_timer_id: 0,
             timers: Vec::new(),
             fd_tokens: HashMap::new(),
+            stats: ReactorStats::default(),
         })
     }
 
@@ -310,6 +320,10 @@ impl Reactor {
         Ok(())
     }
 
+    pub fn stats(&self) -> ReactorStats {
+        self.stats
+    }
+
     pub fn waker(&self) -> Waker {
         Waker {
             fd: Arc::clone(&self.event_fd_owner),
@@ -407,12 +421,14 @@ impl Reactor {
                         if res as usize == std::mem::size_of::<libc::signalfd_siginfo>() {
                             // SAFETY: full struct successfully read from signalfd.
                             let siginfo = unsafe { siginfo.assume_init() };
+                            self.stats.signals_received += 1;
                             out.push(Event::Signal(siginfo.ssi_signo as i32));
                         } else {
                             break;
                         }
                     }
                 } else if let Some(&token) = self.fd_tokens.get(&fd) {
+                    self.stats.events_processed += 1;
                     out.push(Event::Io { token, events });
                 }
             }
@@ -447,6 +463,7 @@ impl Reactor {
         for &idx in &due_indices {
             out.push(Event::Timer(self.timers[idx].id));
         }
+        self.stats.timers_fired += due_indices.len() as u64;
 
         let mut retained = Vec::with_capacity(self.timers.len());
         for mut t in self.timers.drain(..) {

@@ -688,3 +688,30 @@ fn test_credentials_drop_privileges_non_root() {
         assert_eq!(creds.gid, 1000);
     }
 }
+
+// Mirrors service.c's child-side umask(027): files sing-box creates must not be world-readable.
+#[test]
+fn test_supervisor_child_runs_with_umask_027() {
+    let env = TestEnv::new("#!/bin/sh\numask > umask.out\nwhile true; do sleep 1; done\n");
+    let mut reactor = Reactor::new().expect("create reactor");
+    let _guard = child_test_lock();
+    reactor.watch_signal(libc::SIGCHLD).expect("watch sigchld");
+
+    let mut supervisor = Supervisor::new(&env.config).expect("create supervisor");
+    supervisor.start(&mut reactor).expect("start supervisor");
+
+    let out = env.dir.join("umask.out");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut umask = String::new();
+    while std::time::Instant::now() < deadline {
+        if let Ok(s) = std::fs::read_to_string(&out) {
+            if !s.trim().is_empty() {
+                umask = s.trim().to_string();
+                break;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    supervisor.stop(&mut reactor).expect("stop supervisor");
+    assert_eq!(umask, "0027");
+}
