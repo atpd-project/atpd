@@ -130,6 +130,9 @@ sleep 60
 rss=$(grep '^VmRSS:' /proc/"$(pid_of atpd)"/status 2>/dev/null | tr -dc '0-9')
 log "INFO  atpd VmRSS ${rss:-?} kB (plan target < 4096, hard ceiling < 6144)"
 [ -n "$rss" ] && [ "$rss" -lt 6144 ] && ok "9 RSS under 6 MB ceiling" || bad "9 RSS under 6 MB ceiling"
+api=$(status_text | grep -E 'Clash Mode|Version  |Goroutines')
+log "$api"
+[ -n "$api" ] && ! echo "$api" | grep -q "N/A" && ok "9 Native API fields populated after idle" || bad "9 Native API fields populated after idle"
 
 atpd stop >> "$REPORT" 2>&1
 if wait_for 20 stopped; then ok "8 stop exits both processes"; else bad "8 stop exits both processes"; fi
