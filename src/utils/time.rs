@@ -364,7 +364,9 @@ pub fn atp_timezone_init() -> i32 {
     }
 
     if let Some(extracted_posix_tz) = extract_android_tzdata(&detected_tz, &state.localtime_file) {
-        if std::path::Path::new(&state.localtime_file).exists() {
+        // bionic resolves TZ only as an Olson ID or POSIX string; a file path falls back to GMT.
+        if cfg!(not(target_os = "android")) && std::path::Path::new(&state.localtime_file).exists()
+        {
             apply_tz(&state.localtime_file);
             state.initialized = true;
             return 0;

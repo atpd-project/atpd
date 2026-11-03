@@ -350,8 +350,8 @@ impl NetlinkWatcher {
         };
 
         log_info!(
-            "Netlink initialized (sync_fd={:?}, async_fd={})",
-            sync_fd.as_ref().map(|f| f.as_raw_fd()),
+            "Netlink initialized (sync_fd={}, async_fd={})",
+            sync_fd.as_ref().map_or(-1, |f| f.as_raw_fd()),
             route_fd.as_raw_fd()
         );
 
