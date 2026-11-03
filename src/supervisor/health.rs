@@ -73,6 +73,7 @@ impl CircuitBreaker {
             return true;
         }
         if now_sec.saturating_sub(self.last_failure_time) > self.cooldown_seconds {
+            crate::log_info!("Circuit breaker: closed (cooldown expired)");
             self.circuit_open = false;
             self.consecutive_failures = 0;
             return true;
@@ -88,6 +89,10 @@ impl CircuitBreaker {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         self.last_failure_time = now_sec;
         if self.consecutive_failures >= self.threshold && !self.circuit_open {
+            crate::log_warn!(
+                "Circuit breaker: opened after {} failures",
+                self.consecutive_failures
+            );
             self.circuit_open = true;
         }
     }

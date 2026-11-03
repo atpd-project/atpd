@@ -342,6 +342,7 @@ impl Supervisor {
         let mut result = Ok(());
 
         if let Some(pid) = self.child_pid.take() {
+            crate::log_info!("Service: stopping sing-box (PID: {})", pid);
             let mut reaped = false;
             let attempts = if self.stop_timeout_sec > 0 {
                 self.stop_timeout_sec * 10
@@ -387,6 +388,10 @@ impl Supervisor {
             }
 
             if !reaped {
+                crate::log_warn!(
+                    "Service: sing-box did not exit within {}s, sending SIGKILL",
+                    attempts / 10
+                );
                 if let Some(target_pid) = target {
                     if let Err(err) =
                         rustix::process::kill_process(target_pid, rustix::process::Signal::KILL)
@@ -438,9 +443,14 @@ impl Supervisor {
             let target = rustix::process::Pid::from_raw(pid);
             loop {
                 match rustix::process::waitpid(target, rustix::process::WaitOptions::NOHANG) {
-                    Ok(Some((reaped_pid, _status))) => {
+                    Ok(Some((reaped_pid, status))) => {
                         if target == Some(reaped_pid) {
                             reaped_our_child = true;
+                            if let Some(code) = status.exit_status() {
+                                crate::log_warn!("Service: sing-box exited with code {}", code);
+                            } else if let Some(sig) = status.terminating_signal() {
+                                crate::log_warn!("Service: sing-box killed by signal {}", sig);
+                            }
                         }
                         break;
                     }
@@ -467,12 +477,7 @@ impl Supervisor {
             }
 
             if self.state == ServiceState::Running || self.state == ServiceState::Starting {
-                self.state = ServiceState::Failed;
-                self.breaker.record_failure();
-                if self.fail_count < self.max_failures && !self.breaker.is_open() {
-                    self.fail_count += 1;
-                    self.schedule_retry(r);
-                }
+                self.record_failure(r);
             }
         }
     }
@@ -505,6 +510,7 @@ impl Supervisor {
                 let now = crate::reactor::now_ms();
 
                 if self.start_time_ms > 0 && now.saturating_sub(self.start_time_ms) >= timeout_ms {
+                    crate::log_warn!("Service: startup timed out after {}s", timeout_ms / 1000);
                     if let Some(pid) = self.child_pid {
                         if let Some(target) = rustix::process::Pid::from_raw(pid) {
                             let _ = rustix::process::kill_process(
@@ -513,12 +519,7 @@ impl Supervisor {
                             );
                         }
                     }
-                    self.state = ServiceState::Failed;
-                    self.fail_count += 1;
-                    self.breaker.record_failure();
-                    if self.fail_count < self.max_failures && !self.breaker.is_open() {
-                        self.schedule_retry(r);
-                    }
+                    self.record_failure(r);
                     return;
                 }
 
@@ -532,6 +533,7 @@ impl Supervisor {
                             ) {
                                 self.validated_pid = true;
                             } else {
+                                crate::log_warn!("Service: PID {} validation failed, killing", pid);
                                 if let Some(target) = rustix::process::Pid::from_raw(pid) {
                                     let _ = rustix::process::kill_process(
                                         target,
@@ -548,17 +550,13 @@ impl Supervisor {
                                 self.child_starttime_ticks = 0;
                                 self.validated_pid = false;
                                 process::unlink_pid_file(Path::new(&self.pid_path));
-                                self.state = ServiceState::Failed;
-                                self.fail_count += 1;
-                                self.breaker.record_failure();
-                                if self.fail_count < self.max_failures && !self.breaker.is_open() {
-                                    self.schedule_retry(r);
-                                }
+                                self.record_failure(r);
                                 return;
                             }
                         }
 
                         if self.validated_pid && probes.api_ready() {
+                            crate::log_info!("Service: Native API ready on port {}", self.api_port);
                             self.state = ServiceState::Running;
                             self.fail_count = 0;
                             self.running_healthy = true;
@@ -576,22 +574,14 @@ impl Supervisor {
                         }
                     }
                 } else {
-                    self.state = ServiceState::Failed;
-                    self.fail_count += 1;
-                    self.breaker.record_failure();
-                    if self.fail_count < self.max_failures && !self.breaker.is_open() {
-                        self.schedule_retry(r);
-                    }
+                    crate::log_warn!("Service: process died during startup");
+                    self.record_failure(r);
                 }
             }
             ServiceState::Running => {
                 if !self.is_alive() {
-                    self.state = ServiceState::Failed;
-                    self.fail_count += 1;
-                    self.breaker.record_failure();
-                    if self.fail_count < self.max_failures && !self.breaker.is_open() {
-                        self.schedule_retry(r);
-                    }
+                    crate::log_warn!("Service: process died unexpectedly");
+                    self.record_failure(r);
                 }
             }
             ServiceState::Failed => {
@@ -659,6 +649,7 @@ impl Supervisor {
         }
 
         if !self.breaker.should_allow() {
+            crate::log_warn!("Circuit breaker: open, delaying retry");
             self.schedule_retry(r);
             return;
         }
@@ -672,15 +663,7 @@ impl Supervisor {
                 self.start_time = health::system_now_sec();
                 self.start_time_ms = crate::reactor::now_ms();
             }
-            Err(_) => {
-                self.fail_count += 1;
-                self.breaker.record_failure();
-                if self.fail_count >= self.max_failures || self.breaker.is_open() {
-                    self.state = ServiceState::Failed;
-                } else {
-                    self.schedule_retry(r);
-                }
-            }
+            Err(_) => self.record_failure(r),
         }
     }
 
@@ -703,6 +686,13 @@ impl Supervisor {
         }
 
         let healthy = probes.api_healthy();
+        if healthy != self.running_healthy {
+            if healthy {
+                crate::log_info!("Service: health check recovered");
+            } else {
+                crate::log_warn!("Service: health check failed");
+            }
+        }
         self.running_healthy = healthy;
         self.last_health_check = health::system_now_sec();
         if healthy {
@@ -712,8 +702,26 @@ impl Supervisor {
         }
     }
 
+    /// Count a failed start or crash, then retry or give up.
+    fn record_failure(&mut self, r: &mut Reactor) {
+        self.state = ServiceState::Failed;
+        self.fail_count += 1;
+        self.breaker.record_failure();
+        if self.fail_count < self.max_failures && !self.breaker.is_open() {
+            self.schedule_retry(r);
+        } else {
+            crate::log_error!("Service: max failures reached, giving up");
+        }
+    }
+
     fn schedule_retry(&mut self, r: &mut Reactor) {
         let delay = self.backoff.next_delay();
+        crate::log_info!(
+            "Service: retry in {}ms ({}/{})",
+            delay,
+            self.fail_count,
+            self.max_failures
+        );
         if let Some(old) = self.retry_timer.take() {
             r.cancel_timer(old);
         }
@@ -721,7 +729,7 @@ impl Supervisor {
     }
 
     fn spawn_process(&mut self) -> Result<(i32, u64), SupervisorError> {
-        process::service_spawn(
+        let res = process::service_spawn(
             &self.bin_path,
             &self.work_dir,
             &self.conf_path,
@@ -731,7 +739,12 @@ impl Supervisor {
             &self.group,
             &self.service_args,
             &self.service_env,
-        )
+        );
+        match &res {
+            Ok((pid, _)) => crate::log_info!("Service: spawned sing-box (PID: {})", pid),
+            Err(e) => crate::log_error!("Service: {}", e),
+        }
+        res
     }
 
     pub fn is_alive(&self) -> bool {
