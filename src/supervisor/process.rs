@@ -127,9 +127,17 @@ pub fn service_rotate_log(log_path: &Path) {
         return;
     }
     let base = log_path.to_string_lossy();
+    let tmp_path = format!("{}.tmp", base);
+    if let Err(e) = std::fs::copy(log_path, &tmp_path) {
+        crate::log_warn!("Service: failed to rotate log: {}", e);
+        let _ = std::fs::remove_file(&tmp_path);
+        return;
+    }
     crate::logger::shift_backups(&base, SERVICE_LOG_KEEP);
-    let res = std::fs::copy(log_path, format!("{}.1", base))
-        .and_then(|_| std::fs::OpenOptions::new().write(true).open(log_path))
+    let _ = std::fs::rename(&tmp_path, format!("{}.1", base));
+    let res = std::fs::OpenOptions::new()
+        .write(true)
+        .open(log_path)
         .and_then(|f| f.set_len(0));
     match res {
         Ok(()) => crate::log_info!("Service: rotated log to {}.1 (size: {} bytes)", base, size),

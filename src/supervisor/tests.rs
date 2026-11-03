@@ -621,6 +621,7 @@ fn test_supervisor_repeated_crashes_circuit_breaker_open() {
     supervisor.on_timer(&mut reactor, monitor, &mut FakeProbe);
     assert!(supervisor.retry_timer.is_some());
     assert_eq!(supervisor.fail_count, 0);
+    assert_eq!(supervisor.backoff.attempts, 1);
 
     supervisor.stop(&mut reactor).expect("stop supervisor");
 }
@@ -776,6 +777,40 @@ fn test_service_rotate_log_keeps_three_copies_and_live_writer() {
     // Below the limit nothing moves.
     process::service_rotate_log(&log);
     assert_eq!(std::fs::read_to_string(&log).unwrap(), "after");
+}
+
+#[test]
+fn test_service_rotate_log_preserves_backups_on_copy_failure() {
+    use std::io::Write;
+    let env = TestEnv::new("");
+    let log = env.dir.join("sing-box.log");
+    let base = log.to_string_lossy().to_string();
+    std::fs::write(format!("{}.1", base), "keep_one").unwrap();
+    std::fs::write(format!("{}.2", base), "keep_two").unwrap();
+
+    let mut writer = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log)
+        .unwrap();
+    writer.write_all(&vec![b'x'; 10 * 1024 * 1024]).unwrap();
+
+    // Directory at .tmp forces std::fs::copy to fail with EISDIR
+    let tmp_path = format!("{}.tmp", base);
+    std::fs::create_dir(&tmp_path).unwrap();
+
+    process::service_rotate_log(&log);
+
+    // Existing backups must be untouched
+    assert_eq!(
+        std::fs::read_to_string(format!("{}.1", base)).unwrap(),
+        "keep_one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(format!("{}.2", base)).unwrap(),
+        "keep_two"
+    );
+    let _ = std::fs::remove_dir(&tmp_path);
 }
 
 #[test]

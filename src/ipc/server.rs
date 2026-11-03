@@ -481,6 +481,9 @@ pub fn query_daemon(path: impl AsRef<Path>, command: &str) -> io::Result<String>
     })?;
 
     stream.write_all(command.as_bytes())?;
+    if !command.ends_with('\n') {
+        stream.write_all(b"\n")?;
+    }
     let mut response = Vec::new();
     stream.read_to_end(&mut response)?;
     String::from_utf8(response).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
