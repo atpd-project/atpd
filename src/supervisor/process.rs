@@ -2,8 +2,6 @@ use super::SupervisorError;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::FromRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -103,41 +101,16 @@ pub fn parse_service_env(env_str: &str) -> Result<Vec<(String, String)>, Supervi
 }
 
 pub fn open_regular_file(path: &Path, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File> {
-    let c_path = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-
-    // SAFETY: open with O_NOFOLLOW and O_CLOEXEC prevents symlink attacks and fd leaks.
-    let fd = unsafe {
-        libc::open(
-            c_path.as_ptr(),
-            flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            mode,
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: fstat queries file descriptor metadata.
-    let ret = unsafe { libc::fstat(fd, st.as_mut_ptr()) };
-    if ret != 0 {
-        let err = io::Error::last_os_error();
-        // SAFETY: closing fd after fstat failure.
-        unsafe { libc::close(fd) };
-        return Err(err);
-    }
-    // SAFETY: fstat returned 0, so st is initialized.
-    let st = unsafe { st.assume_init() };
-
-    if (st.st_mode & libc::S_IFMT) != libc::S_IFREG || st.st_nlink != 1 {
-        // SAFETY: closing fd when file is not regular or has hard links.
-        unsafe { libc::close(fd) };
+    let oflags = rustix::fs::OFlags::from_bits_retain(flags as u32)
+        | rustix::fs::OFlags::NOFOLLOW
+        | rustix::fs::OFlags::CLOEXEC;
+    let file_mode = rustix::fs::Mode::from_raw_mode(mode as _);
+    let fd = rustix::fs::openat(rustix::fs::CWD, path, oflags, file_mode)?;
+    let st = rustix::fs::fstat(&fd)?;
+    if (st.st_mode as libc::mode_t & libc::S_IFMT) != libc::S_IFREG || st.st_nlink != 1 {
         return Err(io::Error::from_raw_os_error(libc::EINVAL));
     }
-
-    // SAFETY: fd is an open, valid descriptor transferred to File ownership.
-    Ok(unsafe { File::from_raw_fd(fd) })
+    Ok(File::from(fd))
 }
 
 pub fn service_rotate_log(log_path: &Path) {
@@ -217,9 +190,12 @@ pub fn service_is_alive(pid: i32, expected_starttime: u64) -> bool {
         return false;
     }
 
-    // SAFETY: kill with signal 0 checks whether the process exists without delivering a signal.
-    let exists = unsafe {
-        libc::kill(pid, 0) == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    let exists = match rustix::process::Pid::from_raw(pid) {
+        Some(p) => matches!(
+            rustix::process::test_kill_process(p),
+            Ok(()) | Err(rustix::io::Errno::PERM)
+        ),
+        None => false,
     };
     if !exists {
         return false;
@@ -236,9 +212,12 @@ pub fn validate_process(pid: i32, expected_starttime: u64, bin_path: &str) -> bo
         return false;
     }
 
-    // SAFETY: kill with signal 0 checks whether the process exists.
-    let exists = unsafe {
-        libc::kill(pid, 0) == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    let exists = match rustix::process::Pid::from_raw(pid) {
+        Some(p) => matches!(
+            rustix::process::test_kill_process(p),
+            Ok(()) | Err(rustix::io::Errno::PERM)
+        ),
+        None => false,
     };
     if !exists {
         return false;
@@ -319,12 +298,9 @@ pub fn service_spawn(
         let _ = std::fs::create_dir_all(parent);
     }
 
-    // SAFETY: getuid is safe to read current process UID.
-    let default_uid = unsafe { libc::getuid() };
-    // SAFETY: getgid is safe to read current process GID.
-    let default_gid = unsafe { libc::getgid() };
-    // SAFETY: geteuid is safe to check whether parent is running as root.
-    let is_root = unsafe { libc::geteuid() == 0 };
+    let default_uid = rustix::process::getuid().as_raw();
+    let default_gid = rustix::process::getgid().as_raw();
+    let is_root = rustix::process::geteuid().as_raw() == 0;
 
     let creds = crate::supervisor::credentials::service_credentials_resolve(
         Some(user),
@@ -430,12 +406,10 @@ pub fn service_spawn(
     let starttime = match crate::utils::proc::process_starttime(pid) {
         Ok(st) => st,
         Err(_) => {
-            // SAFETY: kill and waitpid to reap child process if starttime capture fails.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-                let mut status = 0;
-                while libc::waitpid(pid, &mut status, 0) < 0
-                    && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+            if let Some(target) = rustix::process::Pid::from_raw(pid) {
+                let _ = rustix::process::kill_process(target, rustix::process::Signal::KILL);
+                while let Err(rustix::io::Errno::INTR) =
+                    rustix::process::waitpid(Some(target), rustix::process::WaitOptions::empty())
                 {
                 }
             }
@@ -446,13 +420,12 @@ pub fn service_spawn(
     };
 
     if let Err(e) = write_pid_file(Path::new(pid_path), pid) {
-        // SAFETY: kill and waitpid to reap child process if pid file write fails.
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-            let mut status = 0;
-            while libc::waitpid(pid, &mut status, 0) < 0
-                && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
-            {}
+        if let Some(target) = rustix::process::Pid::from_raw(pid) {
+            let _ = rustix::process::kill_process(target, rustix::process::Signal::KILL);
+            while let Err(rustix::io::Errno::INTR) =
+                rustix::process::waitpid(Some(target), rustix::process::WaitOptions::empty())
+            {
+            }
         }
         unlink_pid_file(Path::new(pid_path));
         return Err(e);

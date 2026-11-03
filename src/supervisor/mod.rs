@@ -349,43 +349,60 @@ impl Supervisor {
                 10
             };
 
-            // SAFETY: sending SIGTERM to child process.
-            let kill_ret = unsafe { libc::kill(pid, libc::SIGTERM) };
-            if kill_ret < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                result = Err(SupervisorError::Io(io::Error::last_os_error()));
+            let target = rustix::process::Pid::from_raw(pid);
+            if let Some(target_pid) = target {
+                if let Err(err) =
+                    rustix::process::kill_process(target_pid, rustix::process::Signal::TERM)
+                {
+                    if err != rustix::io::Errno::SRCH {
+                        result = Err(SupervisorError::Io(io::Error::from(err)));
+                    }
+                }
+            } else {
+                result = Err(SupervisorError::Io(io::Error::from(
+                    rustix::io::Errno::SRCH,
+                )));
             }
 
             for _ in 0..attempts {
-                let mut status = 0;
-                // SAFETY: waitpid with WNOHANG checks if child process has terminated.
-                let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-                if waited == pid
-                    || (waited < 0
-                        && io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD))
-                {
-                    reaped = true;
-                    break;
-                }
-                if waited < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                    result = Err(SupervisorError::Io(io::Error::last_os_error()));
-                    break;
+                match rustix::process::waitpid(target, rustix::process::WaitOptions::NOHANG) {
+                    Ok(Some((reaped_pid, _status))) => {
+                        if target == Some(reaped_pid) {
+                            reaped = true;
+                            break;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(rustix::io::Errno::CHILD) => {
+                        reaped = true;
+                        break;
+                    }
+                    Err(rustix::io::Errno::INTR) => {}
+                    Err(err) => {
+                        result = Err(SupervisorError::Io(io::Error::from(err)));
+                        break;
+                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
 
             if !reaped {
-                // SAFETY: sending SIGKILL to force termination after timeout expiration.
-                let kill_res = unsafe { libc::kill(pid, libc::SIGKILL) };
-                if kill_res < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                    result = Err(SupervisorError::Io(io::Error::last_os_error()));
-                }
-                // SAFETY: blocking waitpid loop until SIGKILL reaps the child.
-                unsafe {
-                    let mut status = 0;
-                    while libc::waitpid(pid, &mut status, 0) < 0
-                        && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+                if let Some(target_pid) = target {
+                    if let Err(err) =
+                        rustix::process::kill_process(target_pid, rustix::process::Signal::KILL)
                     {
+                        if err != rustix::io::Errno::SRCH {
+                            result = Err(SupervisorError::Io(io::Error::from(err)));
+                        }
                     }
+                } else {
+                    result = Err(SupervisorError::Io(io::Error::from(
+                        rustix::io::Errno::SRCH,
+                    )));
+                }
+                while let Err(rustix::io::Errno::INTR) =
+                    rustix::process::waitpid(target, rustix::process::WaitOptions::empty())
+                {
                 }
             }
         }
@@ -418,20 +435,22 @@ impl Supervisor {
         let mut reaped_our_child = false;
 
         if let Some(pid) = self.child_pid {
-            let mut status = 0;
+            let target = rustix::process::Pid::from_raw(pid);
             loop {
-                // SAFETY: waitpid on specific child PID with WNOHANG.
-                let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-                if waited == pid
-                    || (waited < 0
-                        && io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD))
-                {
-                    reaped_our_child = true;
-                    break;
-                }
-                // waited == 0 means still running; errno is only meaningful when waited < 0.
-                if waited == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                    break;
+                match rustix::process::waitpid(target, rustix::process::WaitOptions::NOHANG) {
+                    Ok(Some((reaped_pid, _status))) => {
+                        if target == Some(reaped_pid) {
+                            reaped_our_child = true;
+                        }
+                        break;
+                    }
+                    Ok(None) => break,
+                    Err(rustix::io::Errno::CHILD) => {
+                        reaped_our_child = true;
+                        break;
+                    }
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(_) => break,
                 }
             }
         }
@@ -487,8 +506,12 @@ impl Supervisor {
 
                 if self.start_time_ms > 0 && now.saturating_sub(self.start_time_ms) >= timeout_ms {
                     if let Some(pid) = self.child_pid {
-                        // SAFETY: kill child process after startup timeout expiration.
-                        unsafe { libc::kill(pid, libc::SIGKILL) };
+                        if let Some(target) = rustix::process::Pid::from_raw(pid) {
+                            let _ = rustix::process::kill_process(
+                                target,
+                                rustix::process::Signal::KILL,
+                            );
+                        }
                     }
                     self.state = ServiceState::Failed;
                     self.fail_count += 1;
@@ -509,15 +532,17 @@ impl Supervisor {
                             ) {
                                 self.validated_pid = true;
                             } else {
-                                // SAFETY: kill unvalidated process.
-                                unsafe {
-                                    libc::kill(pid, libc::SIGKILL);
-                                    let mut status = 0;
-                                    while libc::waitpid(pid, &mut status, 0) < 0
-                                        && io::Error::last_os_error().raw_os_error()
-                                            == Some(libc::EINTR)
-                                    {
-                                    }
+                                if let Some(target) = rustix::process::Pid::from_raw(pid) {
+                                    let _ = rustix::process::kill_process(
+                                        target,
+                                        rustix::process::Signal::KILL,
+                                    );
+                                    while let Err(rustix::io::Errno::INTR) =
+                                        rustix::process::waitpid(
+                                            Some(target),
+                                            rustix::process::WaitOptions::empty(),
+                                        )
+                                    {}
                                 }
                                 self.child_pid = None;
                                 self.child_starttime_ticks = 0;
@@ -590,23 +615,35 @@ impl Supervisor {
             return false;
         }
 
-        let mut status = 0;
-        let mut waited;
+        let target = rustix::process::Pid::from_raw(pid);
+        let mut waited_reaped = false;
+        let mut child_still_running = false;
         loop {
-            // SAFETY: non-blocking waitpid check for starting child status.
-            waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-            if waited >= 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                break;
+            match rustix::process::waitpid(target, rustix::process::WaitOptions::NOHANG) {
+                Ok(Some((reaped_pid, _status))) => {
+                    if target == Some(reaped_pid) {
+                        waited_reaped = true;
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    child_still_running = true;
+                    break;
+                }
+                Err(rustix::io::Errno::CHILD) => {
+                    waited_reaped = true;
+                    break;
+                }
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(_) => break,
             }
         }
 
-        if waited == 0 {
+        if child_still_running {
             return true;
         }
 
-        if waited == pid
-            || (waited < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD))
-        {
+        if waited_reaped {
             self.child_pid = None;
             self.child_starttime_ticks = 0;
             self.validated_pid = false;
@@ -714,14 +751,12 @@ impl Drop for Supervisor {
     fn drop(&mut self) {
         if let Some(pid) = self.child_pid.take() {
             if pid > 0 && pid != std::process::id() as i32 {
-                // SAFETY: sending SIGKILL to prevent orphan child processes when Supervisor is dropped.
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                    let mut status = 0;
-                    while libc::waitpid(pid, &mut status, 0) < 0
-                        && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
-                    {
-                    }
+                if let Some(target) = rustix::process::Pid::from_raw(pid) {
+                    let _ = rustix::process::kill_process(target, rustix::process::Signal::KILL);
+                    while let Err(rustix::io::Errno::INTR) = rustix::process::waitpid(
+                        Some(target),
+                        rustix::process::WaitOptions::empty(),
+                    ) {}
                 }
             }
             process::unlink_pid_file(Path::new(&self.pid_path));
