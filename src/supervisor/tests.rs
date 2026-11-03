@@ -621,7 +621,10 @@ fn test_supervisor_repeated_crashes_circuit_breaker_open() {
     supervisor.on_timer(&mut reactor, monitor, &mut FakeProbe);
     assert!(supervisor.retry_timer.is_some());
     assert_eq!(supervisor.fail_count, 0);
-    assert_eq!(supervisor.backoff.current_delay_ms, 2000);
+    assert_eq!(
+        supervisor.backoff.current_delay_ms,
+        supervisor.backoff.base_delay_ms * supervisor.backoff.multiplier
+    );
 
     supervisor.stop(&mut reactor).expect("stop supervisor");
 }
