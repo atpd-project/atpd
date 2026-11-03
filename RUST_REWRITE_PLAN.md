@@ -70,6 +70,9 @@ Recommended Crate Tier:
 └── netlink-packet-route       ── Strongly-typed Netlink route/link message codecs
 ```
 
+### Decision (2026-11-03): `libc` instead of `mio` / `rustix`
+The C reactor relies on `signalfd`, `eventfd`, and the supervisor on `setresuid`/`initgroups`/`setsid`; neither `mio` nor `rustix` covers all of these. ATPD-Rust therefore depends only on `libc` (plus `serde_json`), with a hand-written single-threaded epoll reactor exposing a poll-style `Event` API.
+
 ### Alternative Considered:
 - **`tokio` (single-threaded `current_thread` flavor)**:
   - *Feasible* if scoped with `default-features = false, features = ["rt", "net", "time", "signal", "macros", "sync"]`.
