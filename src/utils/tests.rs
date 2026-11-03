@@ -1,4 +1,4 @@
-use super::*;
+use super::proc::*;
 
 // Mirrors tests/test_utils_proc_stat.c: 2. Negative PID check
 #[test]

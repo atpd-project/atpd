@@ -81,13 +81,9 @@ fn main() {
         fv
     };
 
-    // Build time calculation
-    let build_time = get_build_time();
-
     println!("cargo:rustc-env=ATPD_VERSION={}", product_version);
     println!("cargo:rustc-env=ATPD_FULL_VERSION={}", full_version);
     println!("cargo:rustc-env=ATPD_COMMIT={}", commit);
-    println!("cargo:rustc-env=ATPD_BUILD_TIME={}", build_time);
 
     println!("cargo:rerun-if-env-changed=VERSION");
     println!("cargo:rerun-if-changed=build.rs");
@@ -97,24 +93,4 @@ fn main() {
     if Path::new(".git/index").exists() {
         println!("cargo:rerun-if-changed=.git/index");
     }
-}
-
-fn get_build_time() -> String {
-    if let Ok(output) = Command::new("date")
-        .args(["-u", "+%Y-%m-%d %H:%M:%S UTC"])
-        .output()
-    {
-        if output.status.success() {
-            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !s.is_empty() {
-                return s;
-            }
-        }
-    }
-
-    let secs = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        Ok(d) => d.as_secs(),
-        Err(_) => 0,
-    };
-    format!("unix:{}", secs)
 }

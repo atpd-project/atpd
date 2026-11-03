@@ -1,3 +1,4 @@
+use super::credentials::*;
 use super::*;
 use crate::config::Config;
 use crate::reactor::{Event, Reactor, TimerId};

@@ -62,12 +62,6 @@ impl CircuitBreaker {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.consecutive_failures = 0;
-        self.circuit_open = false;
-        self.last_failure_time = 0;
-    }
-
     pub fn should_allow_at(&mut self, now_sec: u64) -> bool {
         if !self.circuit_open {
             return true;

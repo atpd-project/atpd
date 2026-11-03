@@ -46,13 +46,11 @@ const TZ_FALLBACKS: &[(&str, &str)] = &[
 
 struct TimezoneState {
     initialized: bool,
-    tz_name: String,
     localtime_file: String,
 }
 
 static TZ_STATE: Mutex<TimezoneState> = Mutex::new(TimezoneState {
     initialized: false,
-    tz_name: String::new(),
     localtime_file: String::new(),
 });
 
@@ -325,7 +323,6 @@ pub fn atp_timezone_init() -> i32 {
         {
             // SAFETY: tzset initializes time conversion information from current TZ env.
             unsafe { tzset() };
-            state.tz_name = env_tz;
             state.initialized = true;
             return 0;
         }
@@ -335,9 +332,6 @@ pub fn atp_timezone_init() -> i32 {
     if std::path::Path::new("/etc/localtime").exists() {
         // SAFETY: tzset initializes time conversion information from /etc/localtime.
         unsafe { tzset() };
-        if state.tz_name.is_empty() {
-            state.tz_name = "Localtime".to_string();
-        }
         state.initialized = true;
         return 0;
     }
@@ -348,15 +342,12 @@ pub fn atp_timezone_init() -> i32 {
         None => {
             if let Some(date_posix_tz) = derive_posix_tz_from_date() {
                 apply_tz(&date_posix_tz);
-                state.tz_name = date_posix_tz;
                 state.initialized = true;
                 return 0;
             }
             "Asia/Shanghai".to_string()
         }
     };
-
-    state.tz_name = detected_tz.clone();
 
     // 4. Prepare target localtime file and try extracting Android tzdata
     if state.localtime_file.is_empty() {
@@ -395,80 +386,6 @@ pub fn atp_timezone_init() -> i32 {
     apply_tz("CST-8");
     state.initialized = true;
     0
-}
-
-pub fn atp_timezone_get_name(buf: &mut [u8]) -> i32 {
-    if buf.is_empty() {
-        return -1;
-    }
-    let name = timezone_name();
-    let bytes = name.as_bytes();
-    let copy_len = bytes.len().min(buf.len().saturating_sub(1));
-    buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-    buf[copy_len] = 0;
-    0
-}
-
-pub fn timezone_name() -> String {
-    let mut state = match TZ_STATE.lock() {
-        Ok(s) => s,
-        Err(p) => p.into_inner(),
-    };
-    if !state.initialized {
-        drop(state);
-        atp_timezone_init();
-        state = match TZ_STATE.lock() {
-            Ok(s) => s,
-            Err(p) => p.into_inner(),
-        };
-    }
-    if state.tz_name.is_empty() {
-        "UTC".to_string()
-    } else {
-        state.tz_name.clone()
-    }
-}
-
-pub fn atp_timezone_get_offset_sec() -> i64 {
-    {
-        let state = match TZ_STATE.lock() {
-            Ok(s) => s,
-            Err(p) => p.into_inner(),
-        };
-        if !state.initialized {
-            drop(state);
-            atp_timezone_init();
-        }
-    }
-
-    // SAFETY: time() returns current time_t when passed null pointer.
-    let now = unsafe { libc::time(std::ptr::null_mut()) };
-    // SAFETY: zeroed tm struct for localtime_r.
-    let mut tm_local: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: localtime_r with valid now and tm pointers.
-    let ret = unsafe { libc::localtime_r(&now, &mut tm_local) };
-    if ret.is_null() {
-        return 0;
-    }
-
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    {
-        tm_local.tm_gmtoff as i64
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "linux")))]
-    {
-        // SAFETY: zeroed tm struct for gmtime_r.
-        let mut tm_utc: libc::tm = unsafe { std::mem::zeroed() };
-        // SAFETY: gmtime_r with valid now and tm pointers.
-        let ret_utc = unsafe { libc::gmtime_r(&now, &mut tm_utc) };
-        if ret_utc.is_null() {
-            return 0;
-        }
-        tm_utc.tm_isdst = tm_local.tm_isdst;
-        // SAFETY: mktime with valid pointers to tm structs.
-        unsafe { (libc::mktime(&mut tm_local) - libc::mktime(&mut tm_utc)) as i64 }
-    }
 }
 
 pub fn get_timestamp() -> String {
@@ -590,15 +507,6 @@ mod tests {
 
         let rc = atp_timezone_init();
         assert_eq!(rc, 0);
-
-        let mut tz_name_buf = [0u8; 64];
-        let rc_name = atp_timezone_get_name(&mut tz_name_buf);
-        assert_eq!(rc_name, 0);
-        let name_str = timezone_name();
-        assert!(!name_str.is_empty());
-
-        let offset = atp_timezone_get_offset_sec();
-        assert_eq!(offset, 28800); // 8 hours in seconds
 
         let _ = std::fs::remove_dir_all(&run_dir);
     }

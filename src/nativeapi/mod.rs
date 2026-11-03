@@ -57,8 +57,6 @@ struct VpnRequest {
 pub struct ApiHandle {
     rx: std::sync::mpsc::Receiver<ApiSnapshotCandidate>,
     tx: std::sync::mpsc::Sender<WorkerRequest>,
-    #[allow(dead_code)]
-    waker: Waker,
     config: Config,
     snapshot: ApiSnapshot,
     default_mode: Option<String>,
@@ -84,7 +82,6 @@ impl ApiHandle {
         Ok(Self {
             rx: rx_candidate,
             tx: tx_request,
-            waker,
             config: config.clone(),
             snapshot: ApiSnapshot::default(),
             default_mode: None,
@@ -94,10 +91,6 @@ impl ApiHandle {
 
     pub fn config(&self) -> &Config {
         &self.config
-    }
-
-    pub fn default_mode(&self) -> Option<&str> {
-        self.default_mode.as_deref()
     }
 
     /// Drain incoming telemetry candidates delivered by the refresh worker.
@@ -209,7 +202,6 @@ impl Drop for ApiHandle {
 pub struct ApiProbes<'a> {
     client: Client,
     api: &'a ApiHandle,
-    start_time_ms: u64,
 }
 
 impl<'a> ApiProbes<'a> {
@@ -220,24 +212,7 @@ impl<'a> ApiProbes<'a> {
             &api.config().api.secret,
             Duration::from_secs(1),
         )?;
-        Ok(Self {
-            client,
-            api,
-            start_time_ms: 0,
-        })
-    }
-
-    pub fn from_client(client: Client, api: &'a ApiHandle) -> Self {
-        Self {
-            client,
-            api,
-            start_time_ms: 0,
-        }
-    }
-
-    pub fn with_start_time(mut self, start_time_ms: u64) -> Self {
-        self.start_time_ms = start_time_ms;
-        self
+        Ok(Self { client, api })
     }
 }
 
@@ -251,8 +226,7 @@ impl<'a> crate::supervisor::Probes for ApiProbes<'a> {
     /// Check service health against latest published snapshot.
     /// Mirrors `api_get_snapshot` check in `src/service.c`.
     fn api_healthy(&mut self) -> bool {
-        let snap = self.api.snapshot();
-        snap.valid && (self.start_time_ms == 0 || snap.updated_at_ms >= self.start_time_ms)
+        self.api.snapshot().valid
     }
 }
 

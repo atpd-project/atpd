@@ -388,20 +388,17 @@ pub fn collect(
     api: &crate::nativeapi::ApiSnapshot,
     vpn: &crate::context::VpnSnapshot,
 ) -> StatusSnapshot {
-    let mut out = StatusSnapshot::default();
-
-    let mut tv = libc::timeval {
-        tv_sec: 0,
-        tv_usec: 0,
-    };
-    // SAFETY: tv is a valid stack-allocated timeval struct and timezone pointer is NULL.
-    let _ = unsafe { libc::gettimeofday(&mut tv, std::ptr::null_mut()) };
-    out.collected_at_ms = (tv.tv_sec as u64) * 1000 + (tv.tv_usec as u64) / 1000;
-    out.emoji_enabled = cfg.core.ui_emoji_enabled;
-    out.api_port = if cfg.api.port > 0 {
-        cfg.api.port
-    } else {
-        crate::config::DEFAULT_API_PORT
+    let mut out = StatusSnapshot {
+        collected_at_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64),
+        emoji_enabled: cfg.core.ui_emoji_enabled,
+        api_port: if cfg.api.port > 0 {
+            cfg.api.port
+        } else {
+            crate::config::DEFAULT_API_PORT
+        },
+        ..Default::default()
     };
 
     let mut system_info = std::mem::MaybeUninit::<libc::utsname>::uninit();

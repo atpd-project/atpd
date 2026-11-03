@@ -10,13 +10,6 @@ use crate::reactor::{Reactor, TimerId};
 use std::io;
 use std::path::Path;
 
-#[allow(unused_imports)]
-pub use credentials::{
-    service_credentials_resolve, service_credentials_resolve_with_lookups, ServiceCredentials,
-};
-#[allow(unused_imports)]
-pub use health::{Backoff, CircuitBreaker};
-
 /// SIGTERM/SIGINT are blocked for the reactor's signalfd, so while the reactor
 /// isn't running (startup wait) they sit in the pending set.
 fn stop_signal_pending() -> bool {
@@ -114,7 +107,6 @@ pub struct Supervisor {
     pub max_failures: i32,
     pub start_timeout_sec: i32,
     pub stop_timeout_sec: i32,
-    pub grace_period_sec: i32,
     pub health_check_interval_ms: i32,
     pub monitor_timer: Option<TimerId>,
     pub retry_timer: Option<TimerId>,
@@ -170,12 +162,6 @@ impl Supervisor {
             10
         };
 
-        let grace_period_sec = if cfg.service.grace_period_sec > 0 {
-            cfg.service.grace_period_sec
-        } else {
-            3
-        };
-
         let health_check_interval_ms = if cfg.service.health_check_interval_ms > 0 {
             cfg.service.health_check_interval_ms
         } else {
@@ -213,7 +199,6 @@ impl Supervisor {
             max_failures,
             start_timeout_sec,
             stop_timeout_sec,
-            grace_period_sec,
             health_check_interval_ms,
             monitor_timer: None,
             retry_timer: None,

@@ -97,7 +97,6 @@ pub struct VpnChange {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ContextError {
     AlreadyInitialized,
-    NotInitialized,
     InvalidTransition {
         from: RuntimeState,
         to: RuntimeState,
@@ -111,7 +110,6 @@ impl std::fmt::Display for ContextError {
             ContextError::AlreadyInitialized => {
                 write!(f, "ATPD context initialization requested more than once")
             }
-            ContextError::NotInitialized => write!(f, "ATPD context not initialized"),
             ContextError::InvalidTransition { from, to } => {
                 write!(
                     f,
@@ -146,7 +144,6 @@ pub struct AtpdContext {
     initialized: bool,
     vpn: VpnSnapshot,
     runtime_state: RuntimeState,
-    started_at_mono: libc::timespec,
 }
 
 impl AtpdContext {
@@ -164,10 +161,6 @@ impl AtpdContext {
                 transitions: 0,
             },
             runtime_state: RuntimeState::Uninitialized,
-            started_at_mono: libc::timespec {
-                tv_sec: 0,
-                tv_nsec: 0,
-            },
         }
     }
 
@@ -183,7 +176,6 @@ impl AtpdContext {
         self.vpn.changed_at = now;
         self.vpn.transitions = 0;
         self.runtime_state = RuntimeState::Uninitialized;
-        self.started_at_mono = now;
         Ok(())
     }
 
@@ -234,23 +226,8 @@ impl AtpdContext {
         Ok(())
     }
 
-    pub fn is_running(&self) -> bool {
-        self.runtime_state == RuntimeState::Running
-    }
-
     pub fn can_reload(&self) -> bool {
         self.runtime_state == RuntimeState::Running
-    }
-
-    pub fn uptime(&self) -> u64 {
-        let now = get_monotonic_timespec();
-        let started = self.started_at_mono;
-        if now.tv_sec < started.tv_sec
-            || (now.tv_sec == started.tv_sec && now.tv_nsec < started.tv_nsec)
-        {
-            return 0;
-        }
-        (now.tv_sec - started.tv_sec) as u64
     }
 
     pub fn vpn_snapshot(&self) -> VpnSnapshot {
@@ -308,30 +285,6 @@ impl AtpdContext {
             teardown: teardown_edge,
         }))
     }
-
-    // C-compatible aliases
-    pub fn atpd_runtime_state_transition(
-        &mut self,
-        new_state: RuntimeState,
-    ) -> Result<(), ContextError> {
-        self.runtime_state_transition(new_state)
-    }
-
-    pub fn atpd_runtime_is_running(&self) -> bool {
-        self.is_running()
-    }
-
-    pub fn atpd_runtime_can_reload(&self) -> bool {
-        self.can_reload()
-    }
-
-    pub fn atpd_runtime_get_uptime(&self) -> u64 {
-        self.uptime()
-    }
-
-    pub fn atpd_vpn_get_snapshot(&self) -> VpnSnapshot {
-        self.vpn_snapshot()
-    }
 }
 
 impl Default for AtpdContext {
@@ -358,16 +311,12 @@ mod tests {
         assert!(!ctx.can_reload());
         assert_eq!(ctx.runtime_state_transition(RuntimeState::Running), Ok(()));
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
-
-        let before_reload = ctx.uptime();
         assert_eq!(
             ctx.runtime_state_transition(RuntimeState::Reloading),
             Ok(())
         );
         assert!(!ctx.can_reload());
         assert_eq!(ctx.runtime_state_transition(RuntimeState::Running), Ok(()));
-        assert!(ctx.uptime() >= before_reload);
 
         assert_eq!(ctx.runtime_state_transition(RuntimeState::Stopping), Ok(()));
         assert_eq!(ctx.runtime_state_transition(RuntimeState::Stopped), Ok(()));
