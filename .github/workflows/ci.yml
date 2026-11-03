@@ -75,8 +75,14 @@ jobs:
             (( align >= 16384 )) || { echo "LOAD segment alignment $align < 16 KB"; exit 1; }
           done
 
+      # Ship the device smoke test with the binary; a zip keeps its LF line endings intact.
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp target/aarch64-linux-android/release/atpd scripts/pixel-smoke.sh dist/
+
       - uses: actions/upload-artifact@v7
         with:
           name: atpd-bionic-arm64
-          path: target/aarch64-linux-android/release/atpd
+          path: dist/
           retention-days: 7
