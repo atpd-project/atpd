@@ -5,6 +5,8 @@ mod context;
 #[allow(dead_code)]
 mod logger;
 #[allow(dead_code)]
+mod netlink;
+#[allow(dead_code)]
 mod reactor;
 #[allow(dead_code)]
 mod supervisor;
