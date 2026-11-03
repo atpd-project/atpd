@@ -31,7 +31,7 @@ Any Rust implementation **must strictly preserve** the established ATPD architec
    - Runtime readiness, tunnel observation, metrics, and IPC state belong to dedicated subsystem owners.
 
 4. **Single-Threaded Reactor Event Loop Paradigm**:
-   - To avoid POSIX multithreading hazards on Linux/Android (such as per-thread credential / capability dropping with `setresuid` / `capset`), ATPD's core event loop should remain strictly single-threaded (or pin privileged tasks predictably). Note: the C11 daemon currently runs a separate Native API refresh worker thread (`src/api.c`); the Rust port folds that work into the event loop.
+   - To avoid POSIX multithreading hazards on Linux/Android (such as per-thread credential / capability dropping with `setresuid` / `capset`), ATPD's core event loop should remain strictly single-threaded (or pin privileged tasks predictably). Exception: the Native API refresh worker (`src/api.c`) stays a separate thread in Rust, as in C11, so blocking HTTP calls (1 s timeouts) never stall the reactor or status queries. It performs network I/O only (no credential or capability changes), starts with all signals blocked, and hands results to the reactor via a channel plus the reactor `Waker`.
 
 5. **Copy-Out Bounded Snapshots for Observability**:
    - Status rendering and UDS IPC queries must consume generation-stamped, stack-allocated, copy-out snapshots.
