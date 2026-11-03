@@ -1,0 +1,123 @@
+INFO  device: Pixel 7 Pro / Android 16 / 6.1.145-android14-11-gfa1d6308d1fe-ab14691759
+INFO  C atpd: atpd 1.0.0-dev+g4a64d7b34481
+INFO  Rust atpd: atpd 0.1.0-dev+g167db0901872
+atpd 0.1.0-dev+g167db0901872
+PASS  1 version runs
+Validating ATPD configuration...
+Configuration is valid
+PASS  1 config check passes
+Checking sing-box configuration (binary: /data/adb/atp/bin/sing-box, config: /data/adb/atp/config.json)...
+sing-box configuration check: PASS
+Starting atpd...
+Daemon started successfully (PID: 19372)
+Runtime status:
+  ATPD:      RUNNING (PID: 19372), uptime 0s, RSS 2.56 MB
+  sing-box:  RUNNING / healthy (PID: 19374), uptime 0s, memory 86.18 MB
+  Kernel:    6.1.145-android14-11-gfa1d6308d1fe-ab14691759
+  Data path: sing-box ebpf inbound
+PASS  2 start -> sing-box RUNNING / healthy
+----- status -----
+
+=== 📊 ATPD Status ===
+
+=============================== 🚀 ATPD DAEMON ===============================
+
+  State           RUNNING
+    PID             19372
+    Uptime          0s
+    RSS             2.56 MB
+    Peak RSS        2.56 MB
+    FDs             16
+    Threads         2
+
+
+
+=============================== 📦 PROXY CORE ================================
+
+  STATUS          RUNNING / healthy
+    PID             19374
+    State           RUNNING / healthy
+    Uptime          0s
+    Memory          86.18 MB
+    Peak Memory     86.18 MB
+    CPU             0.0%
+    Threads         16
+    Goroutines      N/A
+    FDs             79
+    Version         N/A
+
+
+
+============================ 🔌 NATIVE API & MODE ============================
+
+    API Engine      Native API (Port 9080)
+    Clash Mode      N/A
+
+
+
+============================ 🌐 VPN TUNNEL STATUS ============================
+
+  State           STANDALONE / DIRECT
+
+
+
+================================= 💻 SYSTEM ==================================
+
+    ATPD Version    0.1.0-dev+g167db0901872
+    Kernel          6.1.145-android14-11-gfa1d6308d1fe-ab14691759
+    CPU Temp        31°C
+
+------------------
+PASS  3 socket mode 0600
+INFO  sing-box Uid: 0 0 0 0 Gid: 3005 3005 3005 3005 Groups:   
+PASS  3 sing-box uid 0
+INFO  CORE_USER_GROUP is customised; compare Gid above with CORE_USER_GROUP=0:3005
+PASS  3 sing-box umask 0027
+PASS  4 logcat has atpd lines
+--------- beginning of main
+11-03 12:41:06.521 19372 19372 I atpd    : [INFO] Netlink initialized (sync_fd=Some(12), async_fd=10)
+11-03 12:41:07.164 19372 19372 I atpd    : [INFO] ATPD control plane active; sing-box owns the ebpf-in datapath
+11-03 12:41:07.164 19372 19372 I atpd    : [INFO] ATPD control-plane Reactor running, entering event loop
+FAIL  4 log timestamps use local time (log '2026-11-03 03' vs date '2026-11-03 12')
+SKIP  5 VPN transitions (rerun with --vpn when someone can toggle the VPN)
+PASS  6 sing-box restarted after kill -9
+PASS  7 SIGHUP reload succeeds, daemon stays up
+INFO  idling 60 s for RSS
+INFO  atpd VmRSS 2700 kB (plan target < 4096, hard ceiling < 6144)
+PASS  9 RSS under 6 MB ceiling
+Daemon stopped successfully
+PASS  8 stop exits both processes
+PASS  8 pid files and socket removed
+----- last 30 lines of atp.log -----
+[2026-11-03 12:29:51] INFO: VPN_STATE: IDLE -> READY (IF_ID=0)
+[2026-11-03 12:29:51] INFO: VPN bypass: added 3 rule(s) to table 1047 (wlan0)
+[2026-11-03 12:29:51] INFO: Native API: VPN state READY selected Clash mode 'Google VPN' (restore=Rule)
+[2026-11-03 12:30:03] INFO: VPN_STATE: READY -> IDLE (IF_ID=0)
+[2026-11-03 12:30:03] INFO: VPN bypass: removed 3 rule(s)
+[2026-11-03 12:30:03] INFO: Native API: VPN state IDLE restored Clash mode Rule
+[2026-11-03 12:30:33] INFO: VPN_STATE: IDLE -> READY (IF_ID=0)
+[2026-11-03 12:30:33] INFO: VPN bypass: added 3 rule(s) to table 1047 (wlan0)
+[2026-11-03 12:30:33] INFO: Native API: VPN state READY selected Clash mode 'Google VPN' (restore=Rule)
+[2026-11-03 12:30:45] INFO: VPN_STATE: READY -> IDLE (IF_ID=0)
+[2026-11-03 12:30:45] INFO: VPN bypass: removed 3 rule(s)
+[2026-11-03 12:30:45] INFO: Native API: VPN state IDLE restored Clash mode Rule
+[2026-11-03 12:31:45] INFO: VPN_STATE: IDLE -> READY (IF_ID=0)
+[2026-11-03 12:31:45] INFO: VPN bypass: added 3 rule(s) to table 1047 (wlan0)
+[2026-11-03 12:31:45] INFO: Native API: VPN state READY selected Clash mode 'Google VPN' (restore=Rule)
+[2026-11-03 12:31:57] INFO: VPN_STATE: READY -> IDLE (IF_ID=0)
+[2026-11-03 12:31:57] INFO: VPN bypass: removed 3 rule(s)
+[2026-11-03 12:31:57] INFO: Native API: VPN state IDLE restored Clash mode Rule
+[2026-11-03 12:41:05] INFO: Received termination signal
+[2026-11-03 12:41:05] INFO: RUNTIME_STATE: RUNNING -> STOPPING
+[2026-11-03 12:41:05] INFO: Reactor main loop exited
+[2026-11-03 12:41:05] INFO: Reactor exited, cleaning up...
+[2026-11-03 12:41:05] INFO: Reactor destroyed
+[2026-11-03 12:41:05] INFO: RUNTIME_STATE: STOPPING -> STOPPED
+[2026-11-03 03:41:06] INFO: Netlink initialized (sync_fd=Some(12), async_fd=10)
+[2026-11-03 03:41:07] INFO: ATPD control plane active; sing-box owns the ebpf-in datapath
+[2026-11-03 03:41:07] INFO: ATPD control-plane Reactor running, entering event loop
+[2026-11-03 03:41:09] INFO: Processing config reload...
+[2026-11-03 03:41:09] INFO: Config reload completed successfully
+[2026-11-03 03:42:13] INFO: Reactor exited, cleaning up...
+INFO  restored C atpd and it is healthy
+RESULT pass=12 fail=1 report=/data/local/tmp/atpd-smoke-report.txt
