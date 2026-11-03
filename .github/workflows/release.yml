@@ -15,7 +15,8 @@ on:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  # A duplicate run for the same tag rebuilds the same release; keep only the newest.
+  cancel-in-progress: true
 
 defaults:
   run:

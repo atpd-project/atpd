@@ -5,11 +5,9 @@ run-name: "#${{ github.run_number }}: ${{ github.workflow }} (${{ github.ref_nam
 
 on:
   push:
+    # Branches get CI through their PR; pushing them too ran CI twice.
     branches:
       - main
-      - 'feat/**'
-      - 'fix/**'
-      - 'test/**'
     paths-ignore:
       - 'docs/**'
       - '**.md'
