@@ -3,8 +3,7 @@
 //! Mirrors CLI command routing and process lifecycle from `src/main.c`.
 
 use std::io::{self, Write};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::RawFd;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 mod app;
@@ -77,13 +76,14 @@ fn do_start(opts: &CliOptions, config: &Config, config_path: &Path) -> i32 {
     println!("Starting atpd...");
     let _ = io::stdout().flush();
 
-    let mut startup_notify_fd: Option<RawFd> = None;
+    let mut startup_notify_fd: Option<OwnedFd> = None;
     if opts.run_mode != RunMode::Foreground {
         match daemonize(config) {
             Ok(0) => return 0,
             Ok(1) => return 1,
             Ok(fd) => {
-                startup_notify_fd = Some(fd);
+                // SAFETY: fd is the valid open write end of the startup notification pipe returned by daemonize.
+                startup_notify_fd = Some(unsafe { OwnedFd::from_raw_fd(fd) });
             }
             Err(_) => {
                 eprintln!("Error: Failed to daemonize");
@@ -95,10 +95,6 @@ fn do_start(opts: &CliOptions, config: &Config, config_path: &Path) -> i32 {
     let pid_fd = match write_pid_file(&pid_path) {
         Ok(fd) => fd,
         Err(_) => {
-            if let Some(fd) = startup_notify_fd {
-                // SAFETY: close notification pipe on failure.
-                unsafe { libc::close(fd) };
-            }
             return 1;
         }
     };
@@ -155,18 +151,26 @@ fn do_stop(opts: &CliOptions, config: &Config) -> i32 {
         return 1;
     }
 
-    // SAFETY: sending SIGTERM to daemon process.
-    let kill_ret = unsafe { libc::kill(pid, libc::SIGTERM) };
-    if kill_ret < 0 {
-        let err = io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
+    let target = match rustix::process::Pid::from_raw(pid) {
+        Some(p) => p,
+        None => {
+            if opts.command == Command::Restart {
+                return 2;
+            }
+            eprintln!("Process {} not found (stale PID file)", pid);
+            return 1;
+        }
+    };
+
+    if let Err(err) = rustix::process::kill_process(target, rustix::process::Signal::TERM) {
+        if err == rustix::io::Errno::SRCH {
             if opts.command == Command::Restart {
                 return 2;
             }
             eprintln!("Process {} not found (stale PID file)", pid);
             return 1;
         } else {
-            eprintln!("kill: {}", err);
+            eprintln!("kill: {}", io::Error::from(err));
             return 1;
         }
     }
@@ -188,11 +192,11 @@ fn do_stop(opts: &CliOptions, config: &Config) -> i32 {
                 "Process {} did not terminate gracefully, sending SIGKILL",
                 pid
             );
-            // SAFETY: sending SIGKILL to force termination.
-            let kill_res = unsafe { libc::kill(pid, libc::SIGKILL) };
-            if kill_res < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
-                eprintln!("kill(SIGKILL): {}", io::Error::last_os_error());
-                return 1;
+            if let Err(err) = rustix::process::kill_process(target, rustix::process::Signal::KILL) {
+                if err != rustix::io::Errno::SRCH {
+                    eprintln!("kill(SIGKILL): {}", io::Error::from(err));
+                    return 1;
+                }
             }
         }
         for _ in 0..50 {
@@ -212,10 +216,7 @@ fn do_stop(opts: &CliOptions, config: &Config) -> i32 {
         return 1;
     }
 
-    if let Ok(c_path) = std::ffi::CString::new(pid_path.as_os_str().as_bytes()) {
-        // SAFETY: unlinking verified stopped pid file.
-        unsafe { libc::unlink(c_path.as_ptr()) };
-    }
+    let _ = std::fs::remove_file(&pid_path);
     println!("Daemon stopped successfully");
     0
 }
@@ -230,11 +231,10 @@ fn do_restart(opts: &CliOptions, config: &Config, config_path: &Path) -> i32 {
 }
 
 fn terminal_width() -> usize {
-    // SAFETY: checking if stdout is a terminal and querying window size via ioctl.
-    unsafe {
-        if libc::isatty(libc::STDOUT_FILENO) == 1 {
-            let mut ws: libc::winsize = std::mem::zeroed();
-            if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
+    let stdout = std::io::stdout();
+    if rustix::termios::isatty(&stdout) {
+        if let Ok(ws) = rustix::termios::tcgetwinsize(&stdout) {
+            if ws.ws_col > 0 {
                 let col = ws.ws_col as usize;
                 return if col < 30 { 30 } else { col };
             }
@@ -307,10 +307,16 @@ fn do_reload(opts: &CliOptions, config: &Config) -> i32 {
         return 1;
     }
 
-    // SAFETY: sending SIGHUP to verified daemon process.
-    let ret = unsafe { libc::kill(pid, libc::SIGHUP) };
-    if ret < 0 {
-        eprintln!("kill(SIGHUP): {}", io::Error::last_os_error());
+    let target = match rustix::process::Pid::from_raw(pid) {
+        Some(p) => p,
+        None => {
+            eprintln!("kill(SIGHUP): {}", io::Error::from(rustix::io::Errno::SRCH));
+            return 1;
+        }
+    };
+
+    if let Err(err) = rustix::process::kill_process(target, rustix::process::Signal::HUP) {
+        eprintln!("kill(SIGHUP): {}", io::Error::from(err));
         return 1;
     }
 
