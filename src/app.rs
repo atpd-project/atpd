@@ -241,6 +241,7 @@ impl App {
     /// Main Reactor event loop matching `run_event_loop` in `src/main.c`.
     pub fn run(&mut self) -> i32 {
         let mut events = Vec::new();
+        let mut exit_code = 0;
 
         while !self.shutdown_requested {
             events.clear();
@@ -249,6 +250,7 @@ impl App {
                     continue;
                 }
                 crate::log_error!("Reactor wait failed: {}", e);
+                exit_code = 1;
                 break;
             }
 
@@ -350,7 +352,7 @@ impl App {
         }
 
         self.teardown();
-        0
+        exit_code
     }
 
     /// Transactional config reload matching `process_config_reload` in `src/main.c`.
