@@ -22,6 +22,82 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  # Parity gate: run the C repo's root-level harnesses against the Rust binary
+  # (mirrors atpd's "Integration ARM64" job).
+  integration:
+    name: "Integration ARM64 (atpd harnesses)"
+    needs: [test]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Checkout atpd harnesses
+        uses: actions/checkout@v7
+        with:
+          repository: atpd-project/atpd
+          ref: dev
+          path: atpd
+
+      - name: Install System Dependencies & sing-box
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq make libbpf-dev iproute2 curl jq procps
+          mkdir -p /tmp/sb-arm
+          if ! curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-linux-arm64-glibc.tar.gz"; then
+            curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-android-arm64.tar.gz"
+          fi
+          tar -xzf /tmp/sb-arm/sing-box.tar.gz -C /tmp/sb-arm/
+          sudo cp "$(find /tmp/sb-arm -type f -name sing-box)" /usr/bin/sing-box
+          sudo chmod +x /usr/bin/sing-box
+          sing-box version
+          sing-box tools ebpf status --help
+
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      # test_singbox_lifecycle.sh only looks at build/bin/atpd.
+      - name: Build Rust Release Binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release
+          mkdir -p atpd/build/bin
+          cp target/release/atpd atpd/build/bin/atpd
+          file atpd/build/bin/atpd | grep -i 'aarch64'
+          atpd/build/bin/atpd -v
+
+      - name: Run sing-box Lifecycle Integration Tests
+        working-directory: atpd
+        run: sudo -E bash tests/test_singbox_lifecycle.sh
+
+      - name: Run Service Crash Recovery Tests
+        working-directory: atpd
+        run: sudo -E bash tests/test_service_crash_recovery.sh ./build/bin/atpd /usr/bin/sing-box
+
+      - name: Run Configuration Validation Tests
+        working-directory: atpd
+        run: bash tests/test_config_validation.sh ./build/bin/atpd
+
+      - name: Run Benchmark & Performance Regression
+        working-directory: atpd
+        shell: bash
+        run: |
+          sudo -E ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
+
+      - name: Publish Performance Summary
+        if: always()
+        working-directory: atpd
+        shell: bash
+        run: |
+          if [ -f bench_output.txt ]; then
+            echo "## ATPD Rust ARM64 Benchmark Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            cat bench_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
   android:
     name: "Release ARM64 (Android bionic)"
     needs: [test]
