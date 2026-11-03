@@ -776,3 +776,24 @@ fn test_service_rotate_log_keeps_three_copies_and_live_writer() {
     process::service_rotate_log(&log);
     assert_eq!(std::fs::read_to_string(&log).unwrap(), "after");
 }
+
+#[test]
+fn test_stop_signal_pending_sees_blocked_sigterm() {
+    assert!(!stop_signal_pending());
+    // SAFETY: SIGTERM is blocked and sent to this thread only, then consumed with sigwait
+    // before it is unblocked, so it is never delivered.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        let mut old: libc::sigset_t = std::mem::zeroed();
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut old);
+        libc::pthread_kill(libc::pthread_self(), libc::SIGTERM);
+        assert!(stop_signal_pending());
+        let mut sig = 0;
+        libc::sigwait(&set, &mut sig);
+        assert_eq!(sig, libc::SIGTERM);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &old, std::ptr::null_mut());
+    }
+    assert!(!stop_signal_pending());
+}

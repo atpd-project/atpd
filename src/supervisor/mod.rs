@@ -17,6 +17,22 @@ pub use credentials::{
 #[allow(unused_imports)]
 pub use health::{Backoff, CircuitBreaker};
 
+/// SIGTERM/SIGINT are blocked for the reactor's signalfd, so while the reactor
+/// isn't running (startup wait) they sit in the pending set.
+fn stop_signal_pending() -> bool {
+    let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+    // SAFETY: sigpending fills the set; it is only read after a successful call.
+    if unsafe { libc::sigpending(set.as_mut_ptr()) } != 0 {
+        return false;
+    }
+    // SAFETY: set was initialized by sigpending above.
+    let set = unsafe { set.assume_init() };
+    // SAFETY: sigismember only reads the initialized set.
+    unsafe {
+        libc::sigismember(&set, libc::SIGTERM) == 1 || libc::sigismember(&set, libc::SIGINT) == 1
+    }
+}
+
 pub trait Probes {
     fn api_ready(&mut self) -> bool;
     fn api_healthy(&mut self) -> bool;
@@ -312,6 +328,12 @@ impl Supervisor {
             if self.state == ServiceState::Failed || self.child_pid.is_none() {
                 return Err(SupervisorError::SpawnFailed(
                     "service failed during startup readiness wait".to_string(),
+                ));
+            }
+            if stop_signal_pending() {
+                crate::log_info!("Service: stop requested during startup");
+                return Err(SupervisorError::SpawnFailed(
+                    "stop requested during startup".to_string(),
                 ));
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
