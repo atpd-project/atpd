@@ -1,114 +1,206 @@
+# Kept as "CI": docs/agy-pixel-test.md downloads artifacts with `gh run list -w CI`.
 name: CI
+
+run-name: "#${{ github.run_number }}: ${{ github.workflow }} (${{ github.ref_name }})"
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'feat/**'
+      - 'fix/**'
+      - 'test/**'
   pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
+# Explicit bash gives every step -eo pipefail (the implicit default has no pipefail).
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # Same reF1nd build atpd's integration lane uses.
+  SINGBOX_URL: https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-linux-arm64-glibc.tar.gz
+  SINGBOX_FALLBACK_URL: https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-android-arm64.tar.gz
+
 jobs:
-  test:
-    name: "Test (arm64 host)"
-    runs-on: ubuntu-24.04-arm
+  # ============================================================================
+  # Repository Hygiene & Architecture Invariant Checks
+  # ============================================================================
+  repository-checks:
+    name: "Repository Checks"
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust
-        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt && rustup default stable
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
-
-  # Parity gate: run the C repo's root-level harnesses against the Rust binary
-  # (mirrors atpd's "Integration ARM64" job).
-  integration:
-    name: "Integration ARM64 (atpd harnesses)"
-    needs: [test]
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Checkout atpd harnesses
+      - name: Checkout repository
         uses: actions/checkout@v7
-        with:
-          repository: atpd-project/atpd
-          ref: dev
-          path: atpd
 
-      - name: Install System Dependencies & sing-box
-        shell: bash
+      - name: Validate Shell Script Syntax
         run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq make libbpf-dev iproute2 curl jq procps
+          sh -n scripts/*.sh
+          bash -n .github/scripts/*.sh
+
+      - name: Verify Architecture Invariants
+        run: |
+          # Invariant 1: core daemon modules log through the logger, never print directly.
+          ! grep -rnE '\be?print(ln)?!' src/reactor src/netlink src/supervisor --include='*.rs' --exclude='tests.rs' || {
+            echo "ERROR: Direct print!/eprintln! forbidden in reactor/netlink/supervisor" >&2
+            exit 1
+          }
+          # Invariant 2: sing-box ebpf-in owns the eBPF dataplane; ATPD makes no bpf syscalls.
+          ! grep -rnE 'SYS_bpf|libc::bpf\b' src || {
+            echo "ERROR: ATPD must not call bpf(2); the dataplane belongs to sing-box ebpf-in" >&2
+            exit 1
+          }
+          # Invariant 3: build output is never tracked.
+          ! git ls-files --error-unmatch target 2>/dev/null || {
+            echo "ERROR: target/ must not be tracked in git" >&2
+            exit 1
+          }
+          echo "All architecture invariants verified."
+
+      - name: Check Formatting
+        run: cargo fmt --check
+
+  # ============================================================================
+  # ARM64 lane (production target: Google Pixel / Android bionic)
+  # Sanitizer ARM64 -> Release ARM64 (glibc, integration binary) -> Integration ARM64
+  #                 -> Release ARM64 (Android bionic, shipped binary)
+  # ============================================================================
+  sanitizer-arm64:
+    name: "Sanitizer ARM64 / ${{ matrix.name }}"
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: address
+            name: ASan
+            options: abort_on_error=1:halt_on_error=1:detect_leaks=1
+          - sanitizer: thread
+            name: TSan
+            options: halt_on_error=1:second_deadlock_stack=1
+    env:
+      TARGET: aarch64-unknown-linux-gnu
+      RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+      RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust nightly
+        run: rustup toolchain install nightly --profile minimal --component rust-src && rustup default nightly
+
+      - name: Configure runner for sanitizers
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      # Sanitizers need std rebuilt with the same instrumentation (-Zbuild-std).
+      - name: Run test suite under ${{ matrix.name }}
+        env:
+          ASAN_OPTIONS: ${{ matrix.sanitizer == 'address' && matrix.options || '' }}
+          TSAN_OPTIONS: ${{ matrix.sanitizer == 'thread' && matrix.options || '' }}
+        run: cargo test -Zbuild-std --target "$TARGET"
+
+      - name: Run sing-box integration under ASan
+        if: matrix.sanitizer == 'address'
+        env:
+          ASAN_OPTIONS: abort_on_error=1:halt_on_error=1:detect_leaks=0
+        run: |
           mkdir -p /tmp/sb-arm
-          if ! curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-linux-arm64-glibc.tar.gz"; then
-            curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "https://github.com/reF1nd/sing-box-releases/releases/download/v1.14.0-reF1nd.1/sing-box-1.14.0-reF1nd.1-android-arm64.tar.gz"
-          fi
+          curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "$SINGBOX_URL" || curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "$SINGBOX_FALLBACK_URL"
           tar -xzf /tmp/sb-arm/sing-box.tar.gz -C /tmp/sb-arm/
-          sudo cp "$(find /tmp/sb-arm -type f -name sing-box)" /usr/bin/sing-box
-          sudo chmod +x /usr/bin/sing-box
+          sudo install -m 755 "$(find /tmp/sb-arm -type f -name sing-box)" /usr/bin/sing-box
           sing-box version
           sing-box tools ebpf status --help
 
-      - name: Install Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable
-
-      # test_singbox_lifecycle.sh only looks at build/bin/atpd.
-      - name: Build Rust Release Binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --release
+          cargo build --release -Zbuild-std --target "$TARGET"
+          git clone -q --depth 1 -b dev https://github.com/atpd-project/atpd.git atpd
           mkdir -p atpd/build/bin
-          cp target/release/atpd atpd/build/bin/atpd
-          file atpd/build/bin/atpd | grep -i 'aarch64'
-          atpd/build/bin/atpd -v
+          cp "target/$TARGET/release/atpd" atpd/build/bin/atpd
+          cd atpd
+          timeout 180s sudo -E bash tests/test_singbox_lifecycle.sh
+          timeout 180s sudo -E bash tests/test_service_crash_recovery.sh build/bin/atpd /usr/bin/sing-box
 
-      - name: Run sing-box Lifecycle Integration Tests
-        working-directory: atpd
-        run: sudo -E bash tests/test_singbox_lifecycle.sh
+  release-arm64:
+    name: "Release ARM64"
+    needs: [sanitizer-arm64]
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      atp_version: ${{ steps.version-meta.outputs.atp_version }}
+      full_version: ${{ steps.version-meta.outputs.full_version }}
+      native_binary_size: ${{ steps.version-meta.outputs.native_binary_size }}
+      native_compiler_ver: ${{ steps.version-meta.outputs.native_compiler_ver }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - name: Run Service Crash Recovery Tests
-        working-directory: atpd
-        run: sudo -E bash tests/test_service_crash_recovery.sh ./build/bin/atpd /usr/bin/sing-box
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
 
-      - name: Run Configuration Validation Tests
-        working-directory: atpd
-        run: bash tests/test_config_validation.sh ./build/bin/atpd
-
-      - name: Run Benchmark & Performance Regression
-        working-directory: atpd
-        shell: bash
+      - name: Clippy & Test
         run: |
-          sudo -E ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
+          cargo clippy --all-targets -- -D warnings
+          cargo test
 
-      - name: Publish Performance Summary
-        if: always()
-        working-directory: atpd
-        shell: bash
+      - name: Build Native Release Binary
+        run: cargo build --release --locked
+
+      - name: Verify Version Metadata & Clean Tree
+        id: version-meta
         run: |
-          if [ -f bench_output.txt ]; then
-            echo "## ATPD Rust ARM64 Benchmark Summary" >> $GITHUB_STEP_SUMMARY
-            echo '```text' >> $GITHUB_STEP_SUMMARY
-            cat bench_output.txt >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
+          PROD_VER="$(cat VERSION 2>/dev/null || sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          FULL_VER="$(./target/release/atpd -v | head -n 1)"
+          echo "Product Version: ${PROD_VER}"
+          echo "Full Runtime Version: ${FULL_VER}"
+          if echo "${FULL_VER}" | grep -q "\.dirty"; then
+            echo "ERROR: Clean CI release build produced .dirty version string!" >&2
+            git status --porcelain >&2
+            exit 1
           fi
+          echo "atp_version=${PROD_VER}" >> "$GITHUB_OUTPUT"
+          echo "full_version=${FULL_VER}" >> "$GITHUB_OUTPUT"
+          echo "native_binary_size=$(du -h ./target/release/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "native_compiler_ver=$(rustc --version | cut -d' ' -f1-2)" >> "$GITHUB_OUTPUT"
 
-  android:
+      - name: Verify Binary Architecture
+        run: |
+          file ./target/release/atpd
+          ls -lh ./target/release/atpd
+          file ./target/release/atpd | grep -i 'aarch64'
+          file ./target/release/atpd | grep -i 'stripped'
+
+      - name: Upload Integration Test Binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: atpd-native-arm64
+          path: ./target/release/atpd
+          retention-days: 7
+
+  release-arm64-bionic:
     name: "Release ARM64 (Android bionic)"
-    needs: [test]
+    needs: [sanitizer-arm64]
     # The NDK only ships linux-x86_64 host binaries.
     runs-on: ubuntu-24.04
+    outputs:
+      bionic_binary_size: ${{ steps.bionic-meta.outputs.bionic_binary_size }}
+      bionic_compiler_ver: ${{ steps.bionic-meta.outputs.bionic_compiler_ver }}
     env:
       NDK_VERSION: r30
       NDK_SHA1: 5107f898313790e449e87eee2183d9a20602dee9
       ANDROID_API: "24"
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Restore Android NDK
         id: ndk-cache
@@ -120,7 +212,6 @@ jobs:
       - name: Install Android NDK
         if: steps.ndk-cache.outputs.cache-hit != 'true'
         run: |
-          set -euo pipefail
           curl -fsSL "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" -o /tmp/ndk.zip
           echo "${NDK_SHA1}  /tmp/ndk.zip" | sha1sum -c -
           unzip -q /tmp/ndk.zip -d ~
@@ -129,16 +220,17 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --target aarch64-linux-android && rustup default stable
 
-      - name: Build
+      - name: Build Bionic Release Binary
+        id: bionic-meta
         run: |
-          set -euo pipefail
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${HOME}/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${ANDROID_API}-clang"
-          cargo build --release --target aarch64-linux-android
+          cargo build --release --locked --target aarch64-linux-android
+          echo "bionic_binary_size=$(du -h target/aarch64-linux-android/release/atpd | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "bionic_compiler_ver=$(rustc --version | cut -d' ' -f1-2) + NDK ${NDK_VERSION} API ${ANDROID_API}" >> "$GITHUB_OUTPUT"
 
       # Cannot execute on the Linux runner; verify it targets Android's loader instead.
-      - name: Verify Binary
+      - name: Verify Binary Architecture
         run: |
-          set -euo pipefail
           bin=target/aarch64-linux-android/release/atpd
           file "$bin"
           ls -lh "$bin"
@@ -157,8 +249,132 @@ jobs:
           mkdir -p dist
           cp target/aarch64-linux-android/release/atpd scripts/pixel-smoke.sh dist/
 
-      - uses: actions/upload-artifact@v7
+      - name: Upload Bionic Release Binary
+        uses: actions/upload-artifact@v7
         with:
           name: atpd-bionic-arm64
           path: dist/
           retention-days: 7
+
+  # Parity gate: atpd's root-level harnesses against the Rust binary.
+  integration-arm64:
+    name: "Integration ARM64"
+    needs: [release-arm64]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout atpd harnesses
+        uses: actions/checkout@v7
+        with:
+          repository: atpd-project/atpd
+          ref: dev
+
+      - name: Install System Dependencies & sing-box
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq iproute2 curl jq procps
+          mkdir -p /tmp/sb-arm
+          curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "$SINGBOX_URL" || curl -fsSL -o /tmp/sb-arm/sing-box.tar.gz "$SINGBOX_FALLBACK_URL"
+          tar -xzf /tmp/sb-arm/sing-box.tar.gz -C /tmp/sb-arm/
+          sudo install -m 755 "$(find /tmp/sb-arm -type f -name sing-box)" /usr/bin/sing-box
+          sing-box version
+          sing-box tools ebpf status --help
+
+      # test_singbox_lifecycle.sh only looks at build/bin/atpd.
+      - name: Download Native Release Binary
+        uses: actions/download-artifact@v8
+        with:
+          name: atpd-native-arm64
+          path: build/bin
+
+      - name: Make Binary Executable & Verify Architecture
+        run: |
+          chmod +x ./build/bin/atpd
+          file ./build/bin/atpd | grep -i 'aarch64'
+          ./build/bin/atpd -v
+
+      - name: Run sing-box Lifecycle Integration Tests
+        run: sudo -E bash tests/test_singbox_lifecycle.sh
+
+      - name: Run Service Crash Recovery Tests
+        run: sudo -E bash tests/test_service_crash_recovery.sh ./build/bin/atpd /usr/bin/sing-box
+
+      - name: Run Configuration Validation Tests
+        run: bash tests/test_config_validation.sh ./build/bin/atpd
+
+      - name: Run Benchmark & Performance Regression
+        run: sudo -E ./tests/benchmark_atpd.sh ./build/bin/atpd /usr/bin/sing-box | tee bench_output.txt
+
+      - name: Publish Performance Summary
+        if: always()
+        run: |
+          if [ -f bench_output.txt ]; then
+            echo "## ATPD Rust ARM64 Performance & Benchmark Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            cat bench_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ============================================================================
+  # Final CI Verdict
+  # ============================================================================
+  final-ci-verdict:
+    name: "Final CI Verdict"
+    needs: [integration-arm64, release-arm64-bionic, repository-checks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Output Release Gate Summary
+        run: |
+          echo "================================================================================"
+          echo "                 ATPD RUST CI PIPELINE: ALL GATES PASSED"
+          echo "================================================================================"
+          echo "  [PASS] Repository Checks: shell syntax, architecture invariants, rustfmt"
+          echo "  [PASS] ARM64:"
+          echo "         - Sanitizer ARM64: ASan, TSan (+ sing-box integration under ASan)"
+          echo "         - Release ARM64: clippy, tests, integration test binary"
+          echo "         - Release ARM64 (Android bionic): NDK build, 16 KB alignment"
+          echo "         - Integration ARM64: Lifecycle, Crash Recovery, Config, Benchmark"
+          echo "================================================================================"
+
+  # ============================================================================
+  # Report CI Build Results (Telegram + dashboard issue)
+  # ============================================================================
+  update-status:
+    name: "Report Build Results"
+    needs: [final-ci-verdict, release-arm64, release-arm64-bionic]
+    runs-on: ubuntu-latest
+    if: github.repository == 'atpd-project/atpd-rust'
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Extract commit title
+        id: commit
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ -n "$PR_TITLE" ]]; then
+            TITLE=$(printf '%s\n' "$PR_TITLE" | head -n1)
+          else
+            TITLE=$(printf '%s\n' "$HEAD_MESSAGE" | head -n1)
+          fi
+          printf 'title=%s\n' "$TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Report Build Results
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_SIZE: ${{ needs.release-arm64.outputs.native_binary_size }}
+          ATP_VERSION: ${{ needs.release-arm64.outputs.atp_version || 'N/A' }}
+          NATIVE_COMPILER_VER: ${{ needs.release-arm64.outputs.native_compiler_ver || 'N/A' }}
+          BIONIC_SIZE: ${{ needs.release-arm64-bionic.outputs.bionic_binary_size }}
+          BIONIC_COMPILER_VER: ${{ needs.release-arm64-bionic.outputs.bionic_compiler_ver || 'N/A' }}
+          ATPD_VERSION_STRING: ${{ needs.release-arm64.outputs.full_version || 'N/A' }}
+          COMMIT_TITLE: ${{ steps.commit.outputs.title }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: .github/scripts/notify.sh all
