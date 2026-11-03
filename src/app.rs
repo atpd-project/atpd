@@ -4,8 +4,7 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::RawFd;
+use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use crate::cli::{CliOptions, Verbosity};
@@ -46,8 +45,8 @@ pub struct App {
     pub api: ApiHandle,
     pub ipc: IpcServer,
     pub pid_file: PathBuf,
-    pub pid_fd: RawFd,
-    pub startup_notify_fd: Option<RawFd>,
+    pub pid_fd: Option<OwnedFd>,
+    pub startup_notify_fd: Option<OwnedFd>,
     pub shutdown_requested: bool,
 }
 
@@ -60,8 +59,8 @@ impl App {
         config: Config,
         config_path: PathBuf,
         pid_file: PathBuf,
-        pid_fd: RawFd,
-        startup_notify_fd: Option<RawFd>,
+        pid_fd: OwnedFd,
+        startup_notify_fd: Option<OwnedFd>,
     ) -> Result<Self, io::Error> {
         // 1. Context initialization & state transition
         let mut context = AtpdContext::new();
@@ -137,8 +136,7 @@ impl App {
                 let _ = fs::create_dir_all(parent);
             }
         }
-        // SAFETY: geteuid is a safe query for the current process effective user ID.
-        let allowed_uid = unsafe { libc::geteuid() };
+        let allowed_uid = rustix::process::geteuid().as_raw();
         let ipc = IpcServer::new(
             &socket_path,
             allowed_uid,
@@ -157,7 +155,7 @@ impl App {
             api,
             ipc,
             pid_file,
-            pid_fd,
+            pid_fd: Some(pid_fd),
             startup_notify_fd,
             shutdown_requested: false,
         })
@@ -166,35 +164,27 @@ impl App {
     /// Notify daemonizing parent of startup outcome over the notification pipe.
     pub fn notify_startup(&mut self, result: i32) {
         if let Some(fd) = self.startup_notify_fd.take() {
-            // SAFETY: getpid is a reentrant syscall.
-            let my_pid = unsafe { libc::getpid() };
+            let my_pid = rustix::process::getpid().as_raw_nonzero().get();
             let msg = StartupNotifyMsg {
                 status: if result == 0 { 0 } else { 1 },
                 pid: my_pid,
             };
-            // SAFETY: write exactly sizeof(StartupNotifyMsg) bytes to pipe fd.
-            unsafe {
-                let bytes = std::slice::from_raw_parts(
+            // SAFETY: StartupNotifyMsg is POD and has valid byte representation for pipe transfer.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
                     &msg as *const _ as *const u8,
                     std::mem::size_of::<StartupNotifyMsg>(),
-                );
-                let mut written = 0;
-                while written < bytes.len() {
-                    let n = libc::write(
-                        fd,
-                        bytes.as_ptr().add(written) as *const libc::c_void,
-                        bytes.len() - written,
-                    );
-                    if n > 0 {
-                        written += n as usize;
-                        continue;
+                )
+            };
+            let mut written = 0;
+            while written < bytes.len() {
+                match rustix::io::write(&fd, &bytes[written..]) {
+                    Ok(n) if n > 0 => {
+                        written += n;
                     }
-                    if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                        continue;
-                    }
-                    break;
+                    Err(rustix::io::Errno::INTR) => continue,
+                    _ => break,
                 }
-                libc::close(fd);
             }
         }
     }
@@ -439,14 +429,9 @@ impl App {
 
         let _ = self.context.runtime_state_transition(RuntimeState::Stopped);
 
-        if self.pid_fd >= 0 {
-            // SAFETY: closing pid file descriptor.
-            unsafe { libc::close(self.pid_fd) };
-            self.pid_fd = -1;
-            if let Ok(c_path) = std::ffi::CString::new(self.pid_file.as_os_str().as_bytes()) {
-                // SAFETY: unlinking pid file from filesystem.
-                unsafe { libc::unlink(c_path.as_ptr()) };
-            }
+        if let Some(fd) = self.pid_fd.take() {
+            drop(fd);
+            let _ = fs::remove_file(&self.pid_file);
         }
         self.notify_startup(1);
     }
@@ -454,30 +439,24 @@ impl App {
 
 /// Double-fork daemonization protocol matching `daemonize` in `src/main.c`.
 pub fn daemonize(config: &Config) -> io::Result<i32> {
-    let mut startup_pipe = [0; 2];
-    // SAFETY: pipe2 creates pipes with close-on-exec.
-    let ret = unsafe { libc::pipe2(startup_pipe.as_mut_ptr(), libc::O_CLOEXEC) };
-    if ret < 0 {
-        eprintln!("Error: Failed to daemonize");
-        return Ok(1);
-    }
+    let (read_pipe, write_pipe) = match rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC) {
+        Ok(pair) => pair,
+        Err(_) => {
+            eprintln!("Error: Failed to daemonize");
+            return Ok(1);
+        }
+    };
 
     // SAFETY: fork creates a child process.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
-        // SAFETY: closing pipe fds on error.
-        unsafe {
-            libc::close(startup_pipe[0]);
-            libc::close(startup_pipe[1]);
-        }
         eprintln!("Error: Failed to daemonize");
         return Ok(1);
     }
 
     if pid > 0 {
         // Parent process: wait for notification from daemon child
-        // SAFETY: closing unused write end of pipe.
-        unsafe { libc::close(startup_pipe[1]) };
+        drop(write_pipe);
 
         let mut msg = StartupNotifyMsg { status: 1, pid: 0 };
         let mut read_bytes = 0;
@@ -490,29 +469,21 @@ pub fn daemonize(config: &Config) -> io::Result<i32> {
         };
 
         while read_bytes < bytes.len() {
-            // SAFETY: reading notification message from pipe.
-            let n = unsafe {
-                libc::read(
-                    startup_pipe[0],
-                    bytes.as_mut_ptr().add(read_bytes) as *mut libc::c_void,
-                    bytes.len() - read_bytes,
-                )
-            };
-            if n > 0 {
-                read_bytes += n as usize;
-                continue;
+            match rustix::io::read(&read_pipe, &mut bytes[read_bytes..]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    read_bytes += n;
+                }
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(_) => break,
             }
-            if n < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            break;
         }
-        // SAFETY: closing read end of pipe.
-        unsafe { libc::close(startup_pipe[0]) };
+        drop(read_pipe);
 
         if read_bytes == std::mem::size_of::<StartupNotifyMsg>() && msg.status == 0 && msg.pid > 0 {
-            // SAFETY: kill 0 verifies whether target pid exists.
-            let is_alive = unsafe { libc::kill(msg.pid, 0) == 0 };
+            let is_alive = rustix::process::Pid::from_raw(msg.pid)
+                .and_then(|p| rustix::process::test_kill_process(p).ok())
+                .is_some();
             if is_alive && process_is_atpd(msg.pid) {
                 println!("Daemon started successfully (PID: {})", msg.pid);
                 let socket_path = resolve_socket_path(config);
@@ -533,13 +504,10 @@ pub fn daemonize(config: &Config) -> io::Result<i32> {
     }
 
     // Intermediate child process
-    // SAFETY: closing unused read end of pipe.
-    unsafe { libc::close(startup_pipe[0]) };
-    let notify_fd = startup_pipe[1];
+    drop(read_pipe);
 
-    // SAFETY: setsid establishes child as session leader.
-    if unsafe { libc::setsid() } < 0 {
-        notify_startup_fd(notify_fd, 1);
+    if rustix::process::setsid().is_err() {
+        notify_startup_fd(&write_pipe, 1);
         // SAFETY: _exit terminates immediate process without running atexit handlers.
         unsafe { libc::_exit(1) };
     }
@@ -547,7 +515,7 @@ pub fn daemonize(config: &Config) -> io::Result<i32> {
     // SAFETY: second fork detaches from controlling terminal.
     let pid2 = unsafe { libc::fork() };
     if pid2 < 0 {
-        notify_startup_fd(notify_fd, 1);
+        notify_startup_fd(&write_pipe, 1);
         // SAFETY: _exit terminates on fork failure.
         unsafe { libc::_exit(1) };
     }
@@ -558,91 +526,65 @@ pub fn daemonize(config: &Config) -> io::Result<i32> {
     }
 
     // Grandchild daemon process
-    // SAFETY: set umask 027 matching C daemonize.
-    unsafe { libc::umask(0o027) };
+    rustix::process::umask(rustix::fs::Mode::from_raw_mode(0o027));
 
-    let dev_null = b"/dev/null\0";
-    // SAFETY: open /dev/null for standard descriptor redirection.
-    let null_fd = unsafe { libc::open(dev_null.as_ptr() as *const libc::c_char, libc::O_RDWR) };
-    if null_fd >= 0 {
-        // SAFETY: redirect stdin, stdout, stderr to /dev/null.
-        unsafe {
-            libc::dup2(null_fd, libc::STDIN_FILENO);
-            libc::dup2(null_fd, libc::STDOUT_FILENO);
-            libc::dup2(null_fd, libc::STDERR_FILENO);
-            if null_fd > 2 {
-                libc::close(null_fd);
-            }
+    if let Ok(dev_null) = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/null")
+    {
+        let _ = rustix::stdio::dup2_stdin(&dev_null);
+        let _ = rustix::stdio::dup2_stdout(&dev_null);
+        let _ = rustix::stdio::dup2_stderr(&dev_null);
+        // If a std fd was closed at launch, /dev/null landed on 0..=2: keep it open there.
+        if dev_null.as_raw_fd() <= 2 {
+            let _ = dev_null.into_raw_fd();
         }
     }
 
     // Return the notification descriptor so the daemon child can notify the parent upon readiness
-    Ok(notify_fd)
+    Ok(write_pipe.into_raw_fd())
 }
 
-fn notify_startup_fd(fd: RawFd, result: i32) {
-    // SAFETY: getpid retrieves current pid.
-    let my_pid = unsafe { libc::getpid() };
+fn notify_startup_fd(fd: &OwnedFd, result: i32) {
+    let my_pid = rustix::process::getpid().as_raw_nonzero().get();
     let msg = StartupNotifyMsg {
         status: if result == 0 { 0 } else { 1 },
         pid: my_pid,
     };
-    // SAFETY: write notification directly to raw file descriptor.
-    unsafe {
-        let bytes = std::slice::from_raw_parts(
+    // SAFETY: StartupNotifyMsg is POD and has no padding issues for byte representation.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
             &msg as *const _ as *const u8,
             std::mem::size_of::<StartupNotifyMsg>(),
-        );
-        let _ = libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len());
-        libc::close(fd);
-    }
+        )
+    };
+    let _ = rustix::io::write(fd, bytes);
 }
 
 /// Read PID and starttime identity from PID file.
 /// Rejects legacy PID-only files or malformed content.
 pub fn read_pid_identity(pid_file: &Path) -> io::Result<PidIdentity> {
-    let path_cstr = std::ffi::CString::new(pid_file.as_os_str().as_bytes())
-        .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))?;
-
-    // SAFETY: open with safe flags O_RDONLY | O_NOFOLLOW | O_CLOEXEC.
-    let fd = unsafe {
-        libc::open(
-            path_cstr.as_ptr(),
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let fd = rustix::fs::openat(
+        rustix::fs::CWD,
+        pid_file,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
 
     let mut buf = [0u8; 128];
+    let max_len = buf.len() - 1;
     let mut used = 0;
-    while used < buf.len() - 1 {
-        // SAFETY: reading up to remaining buffer space.
-        let n = unsafe {
-            libc::read(
-                fd,
-                buf.as_mut_ptr().add(used) as *mut libc::c_void,
-                buf.len() - 1 - used,
-            )
-        };
-        if n > 0 {
-            used += n as usize;
-            continue;
+    while used < max_len {
+        match rustix::io::read(&fd, &mut buf[used..max_len]) {
+            Ok(0) => break,
+            Ok(n) => {
+                used += n;
+            }
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(err) => return Err(io::Error::from(err)),
         }
-        if n == 0 {
-            break;
-        }
-        let err = io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::EINTR) {
-            continue;
-        }
-        // SAFETY: close descriptor on read error.
-        unsafe { libc::close(fd) };
-        return Err(err);
     }
-    // SAFETY: close descriptor after read.
-    unsafe { libc::close(fd) };
 
     if used == 0 {
         return Err(io::Error::from_raw_os_error(libc::EINVAL));
@@ -673,39 +615,11 @@ pub fn read_pid_identity(pid_file: &Path) -> io::Result<PidIdentity> {
 /// Strictly rejects prefix matches like `atpd-helper`.
 pub fn process_is_atpd(pid: i32) -> bool {
     let path = format!("/proc/{}/exe", pid);
-    let path_cstr = match std::ffi::CString::new(path) {
-        Ok(c) => c,
+    let target = match fs::read_link(&path) {
+        Ok(t) => t,
         Err(_) => return false,
     };
-    let mut buf = [0u8; libc::PATH_MAX as usize];
-    let mut len: isize = -1;
-
-    for _ in 0..3 {
-        // SAFETY: readlink into stack buffer.
-        len = unsafe {
-            libc::readlink(
-                path_cstr.as_ptr(),
-                buf.as_mut_ptr() as *mut libc::c_char,
-                buf.len() - 1,
-            )
-        };
-        if len >= 0 {
-            break;
-        }
-        if io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-            return false;
-        }
-    }
-
-    if len <= 0 {
-        return false;
-    }
-
-    let exe_str = match std::str::from_utf8(&buf[..len as usize]) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let base = match Path::new(exe_str).file_name().and_then(|n| n.to_str()) {
+    let base = match target.file_name().and_then(|n| n.to_str()) {
         Some(b) => b,
         None => return false,
     };
@@ -740,9 +654,8 @@ pub fn process_matches_identity(identity: &PidIdentity) -> bool {
 }
 
 /// Atomically write process identity and take advisory write lock on PID file.
-pub fn write_pid_file(pid_file: &Path) -> io::Result<RawFd> {
-    // SAFETY: getpid retrieves current pid.
-    let pid = unsafe { libc::getpid() };
+pub fn write_pid_file(pid_file: &Path) -> io::Result<OwnedFd> {
+    let pid = rustix::process::getpid().as_raw_nonzero().get();
     let starttime = crate::utils::proc::process_starttime(pid)?;
     if starttime == 0 {
         eprintln!("Error: Failed to read daemon process identity");
@@ -755,22 +668,20 @@ pub fn write_pid_file(pid_file: &Path) -> io::Result<RawFd> {
         }
     }
 
-    let path_cstr = std::ffi::CString::new(pid_file.as_os_str().as_bytes())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-
-    // SAFETY: open with flags O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, mode 0644.
-    let fd = unsafe {
-        libc::open(
-            path_cstr.as_ptr(),
-            libc::O_RDWR | libc::O_CREAT | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o644,
-        )
-    };
-    if fd < 0 {
-        let err = io::Error::last_os_error();
-        eprintln!("Error: Failed to open PID file: {}", err);
-        return Err(err);
-    }
+    let fd = rustix::fs::openat(
+        rustix::fs::CWD,
+        pid_file,
+        rustix::fs::OFlags::RDWR
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::from_raw_mode(0o644),
+    )
+    .map_err(|err| {
+        let io_err = io::Error::from(err);
+        eprintln!("Error: Failed to open PID file: {}", io_err);
+        io_err
+    })?;
 
     // SAFETY: zeroed flock struct for fcntl write lock.
     let mut fl: libc::flock = unsafe { std::mem::zeroed() };
@@ -780,11 +691,9 @@ pub fn write_pid_file(pid_file: &Path) -> io::Result<RawFd> {
     fl.l_len = 0;
 
     // SAFETY: fcntl F_SETLK requests non-blocking write lock.
-    let lock_ret = unsafe { libc::fcntl(fd, libc::F_SETLK, &fl) };
+    let lock_ret = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETLK, &fl) };
     if lock_ret < 0 {
         let err = io::Error::last_os_error();
-        // SAFETY: closing fd after lock failure.
-        unsafe { libc::close(fd) };
         if err.raw_os_error() == Some(libc::EACCES) || err.raw_os_error() == Some(libc::EAGAIN) {
             eprintln!("Daemon is already running (PID file locked by another instance)");
         } else {
@@ -796,44 +705,29 @@ pub fn write_pid_file(pid_file: &Path) -> io::Result<RawFd> {
     let content = format!("{}\n{}\n", pid, starttime);
     let bytes = content.as_bytes();
 
-    let written =
-        // SAFETY: pwrite content at offset 0.
-        unsafe { libc::pwrite(fd, bytes.as_ptr() as *const libc::c_void, bytes.len(), 0) };
-    if written != bytes.len() as isize {
-        let err = io::Error::last_os_error();
-        // SAFETY: closing fd and unlinking file on write failure.
-        unsafe {
-            libc::close(fd);
-            libc::unlink(path_cstr.as_ptr());
+    // A short write is a failure too, as in the C.
+    match rustix::io::pwrite(&fd, bytes, 0) {
+        Ok(n) if n == bytes.len() => {}
+        res => {
+            let _ = fs::remove_file(pid_file);
+            eprintln!("Error: Failed to write process identity to PID file");
+            return Err(match res {
+                Err(err) => io::Error::from(err),
+                Ok(_) => io::Error::from(io::ErrorKind::WriteZero),
+            });
         }
-        eprintln!("Error: Failed to write process identity to PID file");
-        return Err(err);
     }
 
-    // SAFETY: ftruncate truncates file to exact content length.
-    let trunc_ret = unsafe { libc::ftruncate(fd, bytes.len() as libc::off_t) };
-    if trunc_ret < 0 {
-        let err = io::Error::last_os_error();
-        // SAFETY: closing fd and unlinking file on ftruncate failure.
-        unsafe {
-            libc::close(fd);
-            libc::unlink(path_cstr.as_ptr());
-        }
+    if let Err(err) = rustix::fs::ftruncate(&fd, bytes.len() as u64) {
+        let _ = fs::remove_file(pid_file);
         eprintln!("Error: Failed to write process identity to PID file");
-        return Err(err);
+        return Err(io::Error::from(err));
     }
 
-    // SAFETY: fsync flushes PID content to disk.
-    let sync_ret = unsafe { libc::fsync(fd) };
-    if sync_ret < 0 {
-        let err = io::Error::last_os_error();
-        // SAFETY: closing fd and unlinking file on fsync failure.
-        unsafe {
-            libc::close(fd);
-            libc::unlink(path_cstr.as_ptr());
-        }
+    if let Err(err) = rustix::fs::fsync(&fd) {
+        let _ = fs::remove_file(pid_file);
         eprintln!("Error: Failed to write process identity to PID file");
-        return Err(err);
+        return Err(io::Error::from(err));
     }
 
     Ok(fd)
@@ -939,8 +833,7 @@ mod tests {
 
     #[test]
     fn test_process_matches_identity_logic() {
-        // SAFETY: getpid is safe.
-        let self_pid = unsafe { libc::getpid() };
+        let self_pid = rustix::process::getpid().as_raw_nonzero().get();
         let self_starttime = crate::utils::proc::process_starttime(self_pid).expect("starttime");
 
         let id = PidIdentity {
