@@ -613,6 +613,15 @@ fn test_supervisor_repeated_crashes_circuit_breaker_open() {
         supervisor.start(&mut reactor),
         Err(SupervisorError::CircuitOpen)
     ));
+
+    // Once the cooldown has passed, the monitor starts a fresh round of retries.
+    supervisor.breaker.last_failure_time = 0;
+    let monitor = supervisor.monitor_timer.expect("monitor timer");
+    supervisor.on_timer(&mut reactor, monitor, &mut FakeProbe);
+    assert!(supervisor.retry_timer.is_some());
+    assert_eq!(supervisor.fail_count, 0);
+
+    supervisor.stop(&mut reactor).expect("stop supervisor");
 }
 
 // Mirrors tests/test_singbox_lifecycle.sh: (d) stop on a script that traps and ignores SIGTERM escalates to SIGKILL within the configured stop timeout

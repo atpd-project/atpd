@@ -586,10 +586,13 @@ impl Supervisor {
             }
             ServiceState::Failed => {
                 if self.child_pid.is_none()
-                    && self.fail_count < self.max_failures
-                    && !self.breaker.is_open()
                     && self.retry_timer.is_none()
+                    && self.breaker.should_allow()
                 {
+                    if self.fail_count >= self.max_failures {
+                        crate::log_info!("Service: cooldown expired, retrying");
+                        self.fail_count = 0;
+                    }
                     self.schedule_retry(r);
                 }
             }
@@ -711,6 +714,8 @@ impl Supervisor {
             self.schedule_retry(r);
         } else {
             crate::log_error!("Service: max failures reached, giving up");
+            // Hold the breaker open so the monitor retries once its cooldown expires.
+            self.breaker.circuit_open = true;
         }
     }
 
