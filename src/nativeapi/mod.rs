@@ -342,6 +342,7 @@ fn worker_loop(
 ) {
     let mut default_mode: Option<String> = None;
     let mut pending_vpn: Option<VpnRequest> = None;
+    let mut last_err = String::new();
 
     loop {
         // Drain incoming requests, keeping the latest VPN request
@@ -361,7 +362,15 @@ fn worker_loop(
         }
 
         // Refresh telemetry candidate
-        let mut candidate = refresh_candidate(&client);
+        let mut err = String::new();
+        let mut candidate = refresh_candidate(&client, &mut err);
+        // Log each distinct failure once so a broken API shows up in atp.log without spam.
+        if err != last_err {
+            if !err.is_empty() {
+                crate::log_warn!("Native API: refresh failed: {}", err);
+            }
+            last_err = err;
+        }
         candidate.default_mode = default_mode.clone();
 
         // Send candidate to reactor and wake epoll loop
@@ -380,25 +389,35 @@ fn worker_loop(
     }
 }
 
-fn refresh_candidate(client: &Client) -> ApiSnapshotCandidate {
+fn refresh_candidate(client: &Client, err: &mut String) -> ApiSnapshotCandidate {
     let mut next = ApiSnapshotCandidate::default();
-    if let Ok(status) = client.get_status() {
-        next.valid = true;
-        next.status = status;
-
-        if let Ok(ver) = client.get_version() {
-            if !ver.is_empty() {
-                next.version_valid = true;
-                next.version = ver;
-            }
+    match client.get_status() {
+        Ok(status) => {
+            next.valid = true;
+            next.status = status;
         }
-
-        if let Ok(mode_status) = client.get_clash_mode_status() {
-            if !mode_status.current_mode.is_empty() {
-                next.clash_mode_valid = true;
-                next.clash_mode = mode_status.current_mode;
-            }
+        Err(e) => {
+            *err = format!("SubscribeStatus: {}", e);
+            return next;
         }
+    }
+
+    match client.get_version() {
+        Ok(ver) if !ver.is_empty() => {
+            next.version_valid = true;
+            next.version = ver;
+        }
+        Ok(_) => *err = "GetVersion: empty version".to_string(),
+        Err(e) => *err = format!("GetVersion: {}", e),
+    }
+
+    match client.get_clash_mode_status() {
+        Ok(mode_status) if !mode_status.current_mode.is_empty() => {
+            next.clash_mode_valid = true;
+            next.clash_mode = mode_status.current_mode;
+        }
+        Ok(_) => *err = "GetClashModeStatus: empty current mode".to_string(),
+        Err(e) => *err = format!("GetClashModeStatus: {}", e),
     }
     next
 }
