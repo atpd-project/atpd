@@ -28,6 +28,7 @@ wait_for() { # seconds, command...
     while [ "$n" -gt 0 ]; do "$@" >/dev/null 2>&1 && return 0; sleep 1; n=$((n - 1)); done
     return 1
 }
+clash_mode() { status_text | sed -n 's/.*Clash Mode *//p'; }
 healthy() { status_text | grep -q 'RUNNING / healthy'; }
 stopped() { [ -z "$(pid_of atpd)" ] && [ -z "$(pid_of sing-box)" ]; }
 
@@ -92,16 +93,20 @@ now=$(date '+%Y-%m-%d %H')
 if [ "$last" = "$now" ]; then ok "4 log timestamps use local time"; else bad "4 log timestamps use local time (log '$last' vs date '$now')"; fi
 
 if [ "$VPN" = --vpn ]; then
+    mode0=$(clash_mode)
+    log "INFO  Clash mode before VPN: ${mode0:-?}"
     log "ACTION  turn your secondary VPN (WARP / Google VPN) ON now - waiting up to 120 s"
     if wait_for 120 sh -c "! $ROOT/atpd $(conf_args) -n status 2>&1 | grep -q 'STANDALONE / DIRECT'"; then
         ok "5 VPN on -> state leaves STANDALONE"
         ip rule 2>/dev/null | grep 12400 >> "$REPORT" && ok "5 bypass rules at pref 12400" || log "INFO  no pref-12400 rules (expected only for ipsec*/Google VPN)"
+        if wait_for 10 sh -c "[ \"\$($ROOT/atpd $(conf_args) -n status 2>&1 | sed -n 's/.*Clash Mode *//p')\" != '$mode0' ]"; then ok "5 VPN on -> Clash mode switched to '$(clash_mode)'"; else bad "5 VPN on -> Clash mode switched (still '$(clash_mode)'; needs VPN_AUTO_MODE)"; fi
     else
         bad "5 VPN on -> state leaves STANDALONE"
     fi
     log "ACTION  turn the VPN OFF now - waiting up to 120 s"
     if wait_for 120 sh -c "$ROOT/atpd $(conf_args) -n status 2>&1 | grep -q 'STANDALONE / DIRECT'"; then ok "5 VPN off -> STANDALONE / DIRECT"; else bad "5 VPN off -> STANDALONE / DIRECT"; fi
-    grep 'VPN_STATE:' "$RUN/atp.log" | tail -n 6 >> "$REPORT"
+    if wait_for 10 sh -c "[ \"\$($ROOT/atpd $(conf_args) -n status 2>&1 | sed -n 's/.*Clash Mode *//p')\" = '$mode0' ]"; then ok "5 VPN off -> Clash mode restored to '$mode0'"; else bad "5 VPN off -> Clash mode restored (now '$(clash_mode)', want '$mode0')"; fi
+    grep -E 'VPN_STATE:|Native API: VPN state' "$RUN/atp.log" | tail -n 8 >> "$REPORT"
 else
     log "SKIP  5 VPN transitions (rerun with --vpn when someone can toggle the VPN)"
 fi
