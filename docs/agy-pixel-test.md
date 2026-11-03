@@ -5,6 +5,8 @@ The on-phone script does all the testing and **always puts the original C `atpd`
 Your job: download the build, copy two files to the phone, run one command, collect the report.
 Use PowerShell. Do not improvise steps that change the phone beyond what is written here.
 
+**Start only when the user has told you the Rust build is ready for device testing.** Earlier builds are placeholders that cannot run the daemon.
+
 ## Rules
 - Only run the commands below. Do not edit files on the phone by hand, except the manual restore in step 7.
 - Never edit `pixel-smoke.sh`, `/data/adb/atp/atp.conf` or `/data/adb/atp/config.json`.
