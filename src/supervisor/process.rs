@@ -328,7 +328,14 @@ pub fn service_spawn(
             let err_file = file.try_clone().ok();
             (Some(Stdio::from(file)), err_file.map(Stdio::from))
         }
-        Err(_) => (None, None),
+        Err(e) => {
+            crate::log_warn!(
+                "Service: cannot open {}: {}; sing-box output is discarded",
+                log_path,
+                e
+            );
+            (None, None)
+        }
     };
 
     let mut empty_sigmask = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
