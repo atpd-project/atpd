@@ -211,7 +211,19 @@ impl Supervisor {
         })
     }
 
-    pub fn apply_config(&mut self, cfg: &Config) {
+    pub fn apply_config(&mut self, r: &mut Reactor, cfg: &Config) {
+        let interval_ms = if cfg.service.health_check_interval_ms > 0 {
+            cfg.service.health_check_interval_ms
+        } else {
+            5000
+        };
+        // Like service_apply_config: a new interval takes effect now, not at the next restart.
+        if interval_ms != self.health_check_interval_ms && self.state == ServiceState::Running {
+            if let Some(old) = self.health_timer.take() {
+                r.cancel_timer(old);
+            }
+            self.health_timer = Some(r.add_timer(interval_ms as u64, interval_ms as u64));
+        }
         self.max_failures = if cfg.service.max_failures > 0 {
             cfg.service.max_failures
         } else {
@@ -278,6 +290,39 @@ impl Supervisor {
                 self.breaker.record_failure();
                 Err(e)
             }
+        }
+    }
+
+    pub fn wait_ready(
+        &mut self,
+        r: &mut Reactor,
+        probes: &mut dyn Probes,
+    ) -> Result<(), SupervisorError> {
+        let timeout_ms = (if self.start_timeout_sec > 0 {
+            self.start_timeout_sec as u64
+        } else {
+            30
+        }) * 1000;
+        let deadline = crate::reactor::now_ms() + timeout_ms;
+        while crate::reactor::now_ms() < deadline {
+            self.handle_monitor_timer(r, probes);
+            if self.is_running() {
+                return Ok(());
+            }
+            if self.state == ServiceState::Failed || self.child_pid.is_none() {
+                return Err(SupervisorError::SpawnFailed(
+                    "service failed during startup readiness wait".to_string(),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        self.handle_monitor_timer(r, probes);
+        if self.is_running() {
+            Ok(())
+        } else {
+            Err(SupervisorError::SpawnFailed(
+                "service timed out waiting for readiness".to_string(),
+            ))
         }
     }
 

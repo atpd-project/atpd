@@ -297,9 +297,12 @@ impl IpcServer {
         }
     }
 
-    pub fn handle_timer(&mut self, r: &mut Reactor, timer_id: TimerId) {
+    pub fn handle_timer(&mut self, r: &mut Reactor, timer_id: TimerId) -> bool {
         if self.idle_timer_id == Some(timer_id) {
             self.check_timeouts(r);
+            true
+        } else {
+            false
         }
     }
 

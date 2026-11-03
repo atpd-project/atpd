@@ -306,7 +306,8 @@ fn apply_tz(tz_val: &str) {
     unsafe { tzset() };
 }
 
-/// Must run before any thread is spawned: setting TZ races with libc getenv in other threads.
+/// The first call must run before any thread is spawned: setting TZ races with libc getenv in
+/// other threads. Later calls (config reload) find TZ already set and only re-run tzset.
 pub fn atp_timezone_init() -> i32 {
     let mut state = match TZ_STATE.lock() {
         Ok(s) => s,

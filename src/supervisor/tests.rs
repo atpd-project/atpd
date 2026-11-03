@@ -445,6 +445,15 @@ fn test_supervisor_start_and_running_snapshot() {
     assert_eq!(snap.child_pid, Some(child_pid));
     assert!(snap.healthy);
 
+    // Mirrors service_apply_config: a hot interval change while Running replaces the health timer.
+    let old_timer = supervisor.health_timer;
+    assert!(old_timer.is_some());
+    let mut cfg = env.config.clone();
+    cfg.service.health_check_interval_ms = supervisor.health_check_interval_ms + 1000;
+    supervisor.apply_config(&mut reactor, &cfg);
+    assert!(supervisor.health_timer.is_some());
+    assert_ne!(supervisor.health_timer, old_timer);
+
     supervisor.stop(&mut reactor).expect("stop supervisor");
     assert_eq!(supervisor.snapshot().state, ServiceState::Stopped);
 }
