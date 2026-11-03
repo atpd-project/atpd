@@ -6,13 +6,13 @@ run-name: "#${{ github.run_number }}: ${{ github.workflow }} (${{ github.ref_nam
 on:
   push:
     branches:
-      - rust
+      - main
       - 'feat/**'
       - 'fix/**'
       - 'test/**'
   pull_request:
     branches:
-      - rust
+      - main
   workflow_dispatch:
 
 concurrency:
@@ -122,7 +122,7 @@ jobs:
           sing-box tools ebpf status --help
 
           cargo build --release -Zbuild-std --target "$TARGET"
-          git clone -q --depth 1 -b dev https://github.com/atpd-project/atpd.git atpd
+          git clone -q --depth 1 -b archive/c-dev https://github.com/atpd-project/atpd.git atpd
           mkdir -p atpd/build/bin
           cp "target/$TARGET/release/atpd" atpd/build/bin/atpd
           cd atpd
@@ -268,7 +268,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: atpd-project/atpd
-          ref: dev
+          ref: archive/c-dev
 
       - name: Install System Dependencies & sing-box
         run: |

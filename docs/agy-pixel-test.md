@@ -31,7 +31,7 @@ Check: the output contains `uid=0`. If the phone shows a root (Magisk/KernelSU) 
 ```powershell
 $dir = Join-Path $env:TEMP "atpd-rs"
 Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
-$run = gh run list -R atpd-project/atpd -b rust -w "ATPD Rust CI" -s success -L 1 --json databaseId,headSha | ConvertFrom-Json
+$run = gh run list -R atpd-project/atpd -b main -w "ATPD Rust CI" -s success -L 1 --json databaseId,headSha | ConvertFrom-Json
 $run
 gh run download $run[0].databaseId -R atpd-project/atpd -n atpd-bionic-arm64 -D $dir
 Get-ChildItem $dir
