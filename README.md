@@ -1,4 +1,4 @@
-# atpd-rust
+# atpd (Rust rewrite)
 
 Rust rewrite of the [ATPD](https://github.com/atpd-project/atpd) control daemon.
 

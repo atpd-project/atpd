@@ -3,8 +3,8 @@
 set -e
 
 CHANNEL="${1:-all}"
-REPO="${GITHUB_REPOSITORY:-atpd-project/atpd-rust}"
-ISSUE="${DASHBOARD_ISSUE:-2}"
+REPO="${GITHUB_REPOSITORY:-atpd-project/atpd}"
+ISSUE="${DASHBOARD_ISSUE:-131}"
 RUN_NUM="${GITHUB_RUN_NUMBER:-0}"
 export TZ='Asia/Tokyo'
 TIMESTAMP=$(date +"%y%m%d %H:%M")

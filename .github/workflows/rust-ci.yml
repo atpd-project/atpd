@@ -1,22 +1,22 @@
-# Kept as "CI": docs/agy-pixel-test.md downloads artifacts with `gh run list -w CI`.
-name: CI
+# docs/agy-pixel-test.md downloads artifacts with `gh run list -w "ATPD Rust CI"`.
+name: ATPD Rust CI
 
 run-name: "#${{ github.run_number }}: ${{ github.workflow }} (${{ github.ref_name }})"
 
 on:
   push:
     branches:
-      - main
+      - rust
       - 'feat/**'
       - 'fix/**'
       - 'test/**'
   pull_request:
     branches:
-      - main
+      - rust
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
+  group: rust-ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 # Explicit bash gives every step -eo pipefail (the implicit default has no pipefail).
@@ -344,7 +344,7 @@ jobs:
     name: "Report Build Results"
     needs: [final-ci-verdict, release-arm64, release-arm64-bionic]
     runs-on: ubuntu-latest
-    if: github.repository == 'atpd-project/atpd-rust'
+    if: github.repository == 'atpd-project/atpd'
     permissions:
       issues: write
       contents: read
