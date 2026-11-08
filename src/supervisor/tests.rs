@@ -830,6 +830,7 @@ fn test_service_rotate_log_keeps_live_log_on_rename_failure() {
     process::service_rotate_log(&log);
 
     assert_eq!(std::fs::metadata(&log).unwrap().len(), 10 * 1024 * 1024);
+    assert!(!std::path::Path::new(&format!("{}.tmp", base)).exists());
 }
 
 #[test]

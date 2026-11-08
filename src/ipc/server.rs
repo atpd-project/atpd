@@ -481,11 +481,14 @@ pub fn query_daemon(path: impl AsRef<Path>, command: &str) -> io::Result<String>
     })?;
 
     // One write: the server may reject and close after the first chunk, making a second write EPIPE.
-    let mut req = command.to_owned();
-    if !req.ends_with('\n') {
+    if command.ends_with('\n') {
+        stream.write_all(command.as_bytes())?;
+    } else {
+        let mut req = String::with_capacity(command.len() + 1);
+        req.push_str(command);
         req.push('\n');
+        stream.write_all(req.as_bytes())?;
     }
-    stream.write_all(req.as_bytes())?;
     let mut response = Vec::new();
     stream.read_to_end(&mut response)?;
     String::from_utf8(response).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
