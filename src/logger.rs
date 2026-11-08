@@ -285,10 +285,6 @@ pub fn log_init() {
     state.open_file();
 }
 
-pub fn logger_init() {
-    log_init();
-}
-
 pub fn log_write(
     level: LogLevel,
     _file: &str,

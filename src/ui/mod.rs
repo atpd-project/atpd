@@ -102,10 +102,6 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
         writeln!(self.out)
     }
 
-    pub fn table_begin(&mut self) -> std::fmt::Result {
-        Ok(())
-    }
-
     pub fn table_header(&mut self, emoji: &str, title: &str) -> std::fmt::Result {
         let icon = if self.emoji_enabled && !emoji.is_empty() {
             emoji

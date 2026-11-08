@@ -77,7 +77,7 @@ impl App {
         }
 
         // 2. Logger setup
-        logger::logger_init();
+        logger::log_init();
         if !config.core.log_file.is_empty() {
             let log_path = if config.core.log_file.starts_with('/') {
                 PathBuf::from(&config.core.log_file)

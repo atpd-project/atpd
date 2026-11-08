@@ -100,7 +100,6 @@ fn render_atpd<W: std::fmt::Write>(
     let fds = format_int(snapshot.atpd_fd_count);
     let threads = format_int(snapshot.atpd_thread_count);
 
-    ui.table_begin()?;
     ui.table_header("🚀", "ATPD DAEMON")?;
     ui.table_row_color(
         "State",
@@ -131,7 +130,6 @@ fn render_proxy<W: std::fmt::Write>(
     ui: &mut UiRenderCtx<W>,
     snapshot: &StatusSnapshot,
 ) -> std::fmt::Result {
-    ui.table_begin()?;
     ui.table_header("📦", "PROXY CORE")?;
     ui.table_row_color(
         "STATUS",
@@ -194,7 +192,6 @@ fn render_api<W: std::fmt::Write>(
         COLOR_YELLOW
     };
 
-    ui.table_begin()?;
     ui.table_header("🔌", "NATIVE API & MODE")?;
     ui.table_subrow("├─", "API Engine", &api)?;
     ui.table_subrow_color("└─", "Clash Mode", clash_mode, clash_color)?;
@@ -206,7 +203,6 @@ fn render_vpn<W: std::fmt::Write>(
     ui: &mut UiRenderCtx<W>,
     snapshot: &StatusSnapshot,
 ) -> std::fmt::Result {
-    ui.table_begin()?;
     ui.table_header("🌐", "VPN TUNNEL STATUS")?;
     let iface = snapshot.vpn.iface_str();
     if snapshot.vpn.state != crate::context::VpnState::Ready || iface.is_empty() {
@@ -246,7 +242,6 @@ fn render_system<W: std::fmt::Write>(
         "N/A"
     };
 
-    ui.table_begin()?;
     ui.table_header("💻", "SYSTEM")?;
     ui.table_subrow("├─", "ATPD Version", crate::version::get_full_version())?;
     ui.table_subrow("├─", "Kernel", kernel)?;

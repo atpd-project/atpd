@@ -20,10 +20,6 @@ impl VpnState {
     }
 }
 
-pub fn vpn_state_string(state: VpnState) -> &'static str {
-    state.as_str()
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum RuntimeState {
@@ -48,10 +44,6 @@ impl RuntimeState {
             RuntimeState::Failed => "FAILED",
         }
     }
-}
-
-pub fn atpd_runtime_state_string(state: RuntimeState) -> &'static str {
-    state.as_str()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -220,8 +212,8 @@ impl AtpdContext {
         self.runtime_state = new_state;
         crate::log_info!(
             "RUNTIME_STATE: {} -> {}",
-            atpd_runtime_state_string(old_state),
-            atpd_runtime_state_string(new_state)
+            old_state.as_str(),
+            new_state.as_str()
         );
         Ok(())
     }
@@ -265,8 +257,8 @@ impl AtpdContext {
         let teardown_edge = old_state != VpnState::Teardown && new_state == VpnState::Teardown;
         crate::log_info!(
             "VPN_STATE: {} -> {} (IF_ID={})",
-            vpn_state_string(old_state),
-            vpn_state_string(new_state),
+            old_state.as_str(),
+            new_state.as_str(),
             if_id
         );
         if teardown_edge {
