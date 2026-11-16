@@ -1,6 +1,7 @@
 //! Netlink and XFRM monitoring and VPN bypass rule management.
 
 pub mod bypass;
+pub mod leak_guard;
 pub mod msg;
 pub mod stats;
 pub mod watcher;

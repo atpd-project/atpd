@@ -221,6 +221,10 @@ impl App {
         // Reconcile an already-present VPN after sing-box has reached READY.
         self.netlink.refresh_state(&mut self.reactor);
 
+        let _ = crate::netlink::leak_guard::apply_ipv6_leak_guard_from_config_file(
+            &self.supervisor.conf_path,
+        );
+
         if self
             .context
             .runtime_state_transition(RuntimeState::Running)
@@ -401,6 +405,9 @@ impl App {
         self.supervisor.apply_config(&mut self.reactor, &candidate);
         self.netlink.apply_vpn_bypass_config(&candidate);
         crate::utils::time::atp_timezone_init();
+        let _ = crate::netlink::leak_guard::apply_ipv6_leak_guard_from_config_file(
+            &self.supervisor.conf_path,
+        );
         self.config = candidate;
         crate::log_info!("Config reload completed successfully");
         self.reload_return_to_running_or_shutdown();
@@ -423,6 +430,7 @@ impl App {
         crate::log_info!("Reactor exited, cleaning up...");
         self.ipc.cleanup(&mut self.reactor);
         let _ = self.supervisor.stop(&mut self.reactor);
+        let _ = crate::netlink::leak_guard::cleanup_ipv6_leak_guard();
         self.api.shutdown();
         self.netlink.close(&mut self.reactor);
 
