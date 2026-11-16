@@ -80,11 +80,13 @@ jobs:
 
   # ============================================================================
   # ARM64 lane (production target: Google Pixel / Android bionic)
-  # Sanitizer ARM64 -> Release ARM64 (glibc, integration binary) -> Integration ARM64
-  #                 -> Release ARM64 (Android bionic, shipped binary)
+  # Repository Checks -> Sanitizer ARM64 -> Release ARM64 (glibc, integration binary) -> Integration ARM64
+  #                                      -> Release ARM64 (Android bionic, shipped binary)
   # ============================================================================
   sanitizer-arm64:
     name: "Sanitizer ARM64 / ${{ matrix.name }}"
+    # Gate: no ARM64 builds until the cheap fmt/invariant checks pass.
+    needs: [repository-checks]
     runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
