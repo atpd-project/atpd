@@ -9,8 +9,8 @@ use crate::netlink::bypass::BypassManager;
 use crate::netlink::msg::{
     encode_link_dump_request, parse_link_message, parse_xfrm_message, NetlinkMsgIter, XfrmEvent,
     NETLINK_DEBOUNCE_MS, NETLINK_ROUTE, NETLINK_VPN_SETTLE_MS, NETLINK_XFRM, NL_BUF_SIZE,
-    NL_DUMP_SIZE, ROUTE_SOCKET_GROUPS, RTM_DELADDR, RTM_DELLINK, RTM_DELROUTE, RTM_DELRULE,
-    RTM_NEWADDR, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE, XFRMNLGRP_SA,
+    NL_DUMP_SIZE, ROUTE_SOCKET_GROUPS, RTM_DELADDR, RTM_DELLINK, RTM_DELROUTE,
+    RTM_NEWADDR, RTM_NEWLINK, RTM_NEWROUTE, XFRMNLGRP_SA,
 };
 use crate::reactor::{Reactor, TimerId};
 use crate::{log_info, log_warn};
@@ -343,22 +343,69 @@ impl NetlinkWatcher {
         self.schedule_refresh(r, NETLINK_DEBOUNCE_MS);
     }
 
-    /// Triggers VPN settle refresh with NETLINK_VPN_SETTLE_MS (1000 ms), matching C `netlink_refresh_state`.
+    /// Triggers VPN settle refresh with NETLINK_VPN_SETTLE_MS (200 ms), matching C `netlink_refresh_state`.
     pub fn refresh_state(&mut self, r: &mut Reactor) {
         self.schedule_refresh(r, NETLINK_VPN_SETTLE_MS);
     }
 
     /// Feeds raw bytes received on the route socket through the parse path.
-    pub fn handle_route_bytes(&mut self, r: &mut Reactor, buf: &[u8]) {
+    pub fn handle_route_bytes(
+        &mut self,
+        r: &mut Reactor,
+        ctx: &mut AtpdContext,
+        buf: &[u8],
+    ) -> Vec<VpnChange> {
+        let mut changes = Vec::new();
         for msg in NetlinkMsgIter::new(buf) {
             match msg.nlmsg_type {
-                RTM_NEWLINK | RTM_DELLINK | RTM_NEWADDR | RTM_DELADDR | RTM_NEWROUTE
-                | RTM_DELROUTE | RTM_NEWRULE | RTM_DELRULE => {
+                RTM_NEWLINK => {
+                    if let Some(info) = parse_link_message(&msg) {
+                        if is_proxy_interface(&info.name) {
+                            let is_up = (info.flags & (libc::IFF_UP as u32)) != 0;
+                            if is_up {
+                                if let Ok(Some(change)) =
+                                    ctx.vpn_transition(VpnState::Ready, 0, Some(&info.name))
+                                {
+                                    changes.push(change);
+                                }
+                            } else {
+                                let snap = ctx.vpn_snapshot();
+                                let current = snap.iface_str();
+                                if !current.is_empty() && current == info.name {
+                                    if let Ok(Some(change)) =
+                                        ctx.vpn_transition(VpnState::Idle, 0, None)
+                                    {
+                                        changes.push(change);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    self.trigger_debounce(r);
+                }
+                RTM_DELLINK => {
+                    if let Some(info) = parse_link_message(&msg) {
+                        if is_proxy_interface(&info.name) {
+                            let snap = ctx.vpn_snapshot();
+                            let current = snap.iface_str();
+                            if !current.is_empty() && current == info.name {
+                                if let Ok(Some(change)) =
+                                    ctx.vpn_transition(VpnState::Idle, 0, None)
+                                {
+                                    changes.push(change);
+                                }
+                            }
+                        }
+                    }
+                    self.trigger_debounce(r);
+                }
+                RTM_NEWADDR | RTM_DELADDR | RTM_NEWROUTE | RTM_DELROUTE => {
                     self.trigger_debounce(r);
                 }
                 _ => {}
             }
         }
+        changes
     }
 
     /// Feeds raw bytes received on the XFRM socket through the parse path.
@@ -401,6 +448,7 @@ impl NetlinkWatcher {
         token: u64,
     ) -> Vec<VpnChange> {
         if token == self.route_token {
+            let mut changes = Vec::new();
             let mut buf = [0u8; NL_BUF_SIZE];
             loop {
                 // SAFETY: reading available bytes from non-blocking route socket.
@@ -415,9 +463,10 @@ impl NetlinkWatcher {
                 if n <= 0 {
                     break;
                 }
-                self.handle_route_bytes(r, &buf[..n as usize]);
+                let mut batch = self.handle_route_bytes(r, ctx, &buf[..n as usize]);
+                changes.append(&mut batch);
             }
-            Vec::new()
+            changes
         } else {
             let xfrm_raw_fd = self.xfrm_fd.as_ref().map(|f| f.as_raw_fd());
             if let Some(fd) = xfrm_raw_fd {

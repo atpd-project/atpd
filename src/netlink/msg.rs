@@ -12,17 +12,13 @@ pub const RTMGRP_IPV4_IFADDR: u32 = 0x10;
 pub const RTMGRP_IPV6_IFADDR: u32 = 0x100;
 pub const RTMGRP_IPV4_ROUTE: u32 = 0x40;
 pub const RTMGRP_IPV6_ROUTE: u32 = 0x400;
-pub const RTMGRP_IPV4_RULE: u32 = 0x80;
-pub const RTNLGRP_IPV6_RULE: u32 = 19;
 
 /// Multicast groups listened to by ATPD's NETLINK_ROUTE watcher.
 pub const ROUTE_SOCKET_GROUPS: u32 = RTMGRP_LINK
     | RTMGRP_IPV4_IFADDR
     | RTMGRP_IPV6_IFADDR
     | RTMGRP_IPV4_ROUTE
-    | RTMGRP_IPV6_ROUTE
-    | RTMGRP_IPV4_RULE
-    | (1u32 << (RTNLGRP_IPV6_RULE - 1));
+    | RTMGRP_IPV6_ROUTE;
 
 pub const XFRMNLGRP_SA: u32 = 3;
 
@@ -78,7 +74,7 @@ pub const AF_INET6: i32 = libc::AF_INET6;
 pub const NL_BUF_SIZE: usize = 8192;
 pub const NL_DUMP_SIZE: usize = 32768;
 pub const NETLINK_DEBOUNCE_MS: u64 = 500;
-pub const NETLINK_VPN_SETTLE_MS: u64 = 1000;
+pub const NETLINK_VPN_SETTLE_MS: u64 = 200;
 
 #[inline]
 pub fn nlmsg_align(len: usize) -> usize {
@@ -567,7 +563,7 @@ pub struct LinkInfo {
 
 /// Pure parser function mirroring C `parser_link_sync`.
 pub fn parse_link_message(msg: &NetlinkMsg<'_>) -> Option<LinkInfo> {
-    if msg.nlmsg_type != RTM_NEWLINK || msg.payload.len() < 16 {
+    if (msg.nlmsg_type != RTM_NEWLINK && msg.nlmsg_type != RTM_DELLINK) || msg.payload.len() < 16 {
         return None;
     }
 

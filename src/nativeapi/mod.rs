@@ -452,10 +452,6 @@ fn apply_vpn_mode(
     }
 
     // State is Ready
-    if default_mode.is_none() {
-        *default_mode = Some(status.current_mode.clone());
-    }
-
     if !is_clash_mode_supported(&status, &request.target_mode) {
         crate::log_warn!(
             "Native API: Target Clash mode '{}' is not present in sing-box mode list",
@@ -466,6 +462,14 @@ fn apply_vpn_mode(
 
     let target_match =
         match_clash_mode(&status, &request.target_mode).unwrap_or(&request.target_mode);
+
+    if default_mode.is_none() {
+        if status.current_mode != target_match {
+            *default_mode = Some(status.current_mode.clone());
+        } else {
+            *default_mode = Some(request.fallback_mode.clone());
+        }
+    }
 
     if status.current_mode == target_match {
         return true;

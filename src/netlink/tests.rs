@@ -10,9 +10,9 @@ use crate::netlink::bypass::{if_indextoname_safe, BypassManager};
 use crate::netlink::msg::{
     encode_rule_request, netlink_add_attr, nlmsg_length, parse_route_message, parse_rule_message,
     NetlinkMsgIter, RouteFindCtx, RuleDumpCtx, AF_INET, AF_INET6, FRA_DST, FRA_PRIORITY,
-    FRA_PROTOCOL, FRA_SUPPRESS_PREFIXLEN, FRA_TABLE, FR_ACT_TO_TBL, RTA_OIF, RTA_TABLE,
-    RTM_DELRULE, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE, RT_TABLE_UNSPEC, XFRMA_IF_ID,
-    XFRM_MSG_DELSA, XFRM_MSG_NEWSA,
+    FRA_PROTOCOL, FRA_SUPPRESS_PREFIXLEN, FRA_TABLE, FR_ACT_TO_TBL, IFLA_IFNAME, RTA_OIF,
+    RTA_TABLE, RTM_DELLINK, RTM_DELRULE, RTM_NEWLINK, RTM_NEWROUTE, RTM_NEWRULE, RT_TABLE_UNSPEC,
+    XFRMA_IF_ID, XFRM_MSG_DELSA, XFRM_MSG_NEWSA,
 };
 use crate::netlink::stats::parse_proc_net_dev_line;
 use crate::netlink::watcher::{is_proxy_interface, NetlinkWatcher};
@@ -651,7 +651,7 @@ fn test_debounce_burst_produces_single_refresh() {
 
     // Send a burst of 30 synthetic events through the parse path
     for _ in 0..30 {
-        watcher.handle_route_bytes(&mut reactor, &synthetic_link_event);
+        watcher.handle_route_bytes(&mut reactor, &mut ctx, &synthetic_link_event);
     }
 
     assert!(watcher.debounce_timer.is_some());
@@ -773,4 +773,71 @@ fn test_cap_net_admin_operations_skip_when_non_root() {
     // Cleanup rule
     cfg.interface.vpn_bypass_route_count = 0;
     bypass.apply_config(&cfg, sync_fd, None);
+}
+
+#[test]
+fn test_fast_path_link_detection_immediate_vpn_transition() {
+    let mut reactor = Reactor::new().unwrap();
+    let mut watcher = NetlinkWatcher::new(&mut reactor, 300, 301).unwrap();
+    let mut ctx = AtpdContext::new();
+    ctx.init().unwrap();
+
+    fn make_link_msg(nlmsg_type: u16, ifname: &str, is_up: bool) -> Vec<u8> {
+        let mut ifinfo = vec![0u8; 16];
+        let flags: u32 = if is_up { libc::IFF_UP as u32 } else { 0 };
+        ifinfo[8..12].copy_from_slice(&flags.to_ne_bytes());
+
+        let mut name_bytes = ifname.as_bytes().to_vec();
+        name_bytes.push(0);
+        let pad = (4 - (name_bytes.len() % 4)) % 4;
+        name_bytes.extend(std::iter::repeat(0).take(pad));
+        let rta_len = (4 + name_bytes.len()) as u16;
+        let mut attr = Vec::new();
+        attr.extend_from_slice(&rta_len.to_ne_bytes());
+        attr.extend_from_slice(&IFLA_IFNAME.to_ne_bytes());
+        attr.extend_from_slice(&name_bytes);
+
+        let total_len = (16 + ifinfo.len() + attr.len()) as u32;
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&total_len.to_ne_bytes());
+        buf.extend_from_slice(&nlmsg_type.to_ne_bytes());
+        buf.extend_from_slice(&0u16.to_ne_bytes());
+        buf.extend_from_slice(&1u32.to_ne_bytes());
+        buf.extend_from_slice(&0u32.to_ne_bytes());
+        buf.extend_from_slice(&ifinfo);
+        buf.extend_from_slice(&attr);
+        buf
+    }
+
+    // 1. Non-proxy link (wlan0) -> should NOT produce VpnChange
+    let wlan_up = make_link_msg(RTM_NEWLINK, "wlan0", true);
+    let changes = watcher.handle_route_bytes(&mut reactor, &mut ctx, &wlan_up);
+    assert!(changes.is_empty());
+    assert_eq!(ctx.vpn_snapshot().state, VpnState::Idle);
+
+    // 2. Proxy link up (tun0) -> immediate VpnChange to Ready
+    let tun_up = make_link_msg(RTM_NEWLINK, "tun0", true);
+    let changes = watcher.handle_route_bytes(&mut reactor, &mut ctx, &tun_up);
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].state, VpnState::Ready);
+    assert_eq!(changes[0].iface.as_deref(), Some("tun0"));
+    assert_eq!(ctx.vpn_snapshot().state, VpnState::Ready);
+
+    // 3. Repeated link message for same interface -> idempotent (no duplicate change)
+    let changes_repeat = watcher.handle_route_bytes(&mut reactor, &mut ctx, &tun_up);
+    assert!(changes_repeat.is_empty());
+
+    // 4. When tun0 is active, deleting an unrelated proxy link (wg0) must NOT transition tun0 to Idle
+    let wg_del = make_link_msg(RTM_DELLINK, "wg0", false);
+    let changes_wg = watcher.handle_route_bytes(&mut reactor, &mut ctx, &wg_del);
+    assert!(changes_wg.is_empty());
+    assert_eq!(ctx.vpn_snapshot().state, VpnState::Ready);
+    assert_eq!(ctx.vpn_snapshot().iface_str(), "tun0");
+
+    // 5. Proxy link deleted (tun0) -> immediate VpnChange to Idle
+    let tun_del = make_link_msg(RTM_DELLINK, "tun0", false);
+    let changes_del = watcher.handle_route_bytes(&mut reactor, &mut ctx, &tun_del);
+    assert_eq!(changes_del.len(), 1);
+    assert_eq!(changes_del[0].state, VpnState::Idle);
+    assert_eq!(ctx.vpn_snapshot().state, VpnState::Idle);
 }
