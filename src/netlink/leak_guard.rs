@@ -155,9 +155,8 @@ pub fn ipv6_leak_guard_from_config(config_json_content: &str) -> Option<Ipv6Leak
                 .and_then(|v| v.as_str())
                 == Some("cgroup");
 
-            let include_uids = local.and_then(|l| {
-                parse_uid_ranges(l.get("include_uid"), l.get("include_uid_range"))
-            });
+            let include_uids = local
+                .and_then(|l| parse_uid_ranges(l.get("include_uid"), l.get("include_uid_range")));
             let exclude_uids = local
                 .and_then(|l| parse_uid_ranges(l.get("exclude_uid"), l.get("exclude_uid_range")))
                 .unwrap_or_default();
@@ -186,9 +185,9 @@ pub fn ipv6_leak_guard_from_config(config_json_content: &str) -> Option<Ipv6Leak
             let mut has_ipv6 = false;
             let check_addrs = |val: Option<&serde_json::Value>| -> bool {
                 match val {
-                    Some(serde_json::Value::Array(arr)) => {
-                        arr.iter().any(|v| v.as_str().map_or(false, |s| s.contains(':')))
-                    }
+                    Some(serde_json::Value::Array(arr)) => arr
+                        .iter()
+                        .any(|v| v.as_str().is_some_and(|s| s.contains(':'))),
                     Some(serde_json::Value::String(s)) => s.contains(':'),
                     _ => false,
                 }
@@ -262,9 +261,15 @@ pub fn ipv6_leak_guard_from_config(config_json_content: &str) -> Option<Ipv6Leak
 pub fn ipv6_leak_guard_commands(guard: Option<&Ipv6LeakGuard>) -> Vec<String> {
     let mut cmds = Vec::new();
     for pref in [SKIP_PREF, ROUTE_PREF, NOP_PREF] {
-        cmds.push(format!("while ip -6 rule del pref {} 2>/dev/null; do :; done", pref));
+        cmds.push(format!(
+            "while ip -6 rule del pref {} 2>/dev/null; do :; done",
+            pref
+        ));
     }
-    cmds.push(format!("ip -6 addr del {} dev lo 2>/dev/null || true", LOOPBACK_SOURCE_ADDRESS));
+    cmds.push(format!(
+        "ip -6 addr del {} dev lo 2>/dev/null || true",
+        LOOPBACK_SOURCE_ADDRESS
+    ));
 
     let guard = match guard {
         Some(g) => g,
@@ -326,7 +331,10 @@ pub fn ipv6_leak_guard_commands(guard: Option<&Ipv6LeakGuard>) -> Vec<String> {
     }
 
     for &(start, end) in &guard.exclude_uids {
-        cmds.push(format!("{} uidrange {}-{} goto {}", skip, start, end, NOP_PREF));
+        cmds.push(format!(
+            "{} uidrange {}-{} goto {}",
+            skip, start, end, NOP_PREF
+        ));
     }
 
     let selectors: Vec<String> = match includes {
@@ -400,7 +408,10 @@ pub fn apply_ipv6_leak_guard_from_config_file(conf_path: &str) -> io::Result<()>
     if path.exists() {
         if let Ok(content) = fs::read_to_string(path) {
             let guard = ipv6_leak_guard_from_config(&content);
-            crate::log_info!("IPv6 leak guard: applying rules (active={})", guard.is_some());
+            crate::log_info!(
+                "IPv6 leak guard: applying rules (active={})",
+                guard.is_some()
+            );
             return apply_ipv6_leak_guard(guard.as_ref());
         }
     }
@@ -479,19 +490,35 @@ mod tests {
         }"#;
         let guard = ipv6_leak_guard_from_config(json).unwrap();
         assert_eq!(guard.first_uid, FIRST_APPLICATION_UID);
-        assert_eq!(guard.block, true);
-        assert_eq!(guard.loopback_source, false);
+        assert!(guard.block);
+        assert!(!guard.loopback_source);
         assert_eq!(guard.exclude_uids, vec![(10050, 10050)]);
 
         let cmds = ipv6_leak_guard_commands(Some(&guard));
-        assert!(cmds.iter().any(|c| c.contains("while ip -6 rule del pref 21900")));
-        assert!(cmds.iter().any(|c| c.contains("ip -6 rule add pref 21902 nop")));
-        assert!(cmds.iter().any(|c| c.contains("pref 21900 not iif lo goto 21902")));
-        assert!(cmds.iter().any(|c| c.contains("pref 21900 to fc00::/7 goto 21902")));
-        assert!(cmds.iter().any(|c| c.contains("pref 21900 to fe80::/10 goto 21902")));
-        assert!(cmds.iter().any(|c| c.contains("pref 21900 to ff00::/8 goto 21902")));
-        assert!(cmds.iter().any(|c| c.contains("pref 21900 uidrange 0-9999 goto 21902")));
-        assert!(cmds.iter().any(|c| c.contains("pref 21900 uidrange 10050-10050 goto 21902")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("while ip -6 rule del pref 21900")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("ip -6 rule add pref 21902 nop")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21900 not iif lo goto 21902")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21900 to fc00::/7 goto 21902")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21900 to fe80::/10 goto 21902")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21900 to ff00::/8 goto 21902")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21900 uidrange 0-9999 goto 21902")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21900 uidrange 10050-10050 goto 21902")));
         assert!(cmds.iter().any(|c| c.contains("pref 21901 unreachable")));
         assert!(!cmds.iter().any(|c| c.contains("ip -6 addr add")));
     }
@@ -509,12 +536,14 @@ mod tests {
             }]
         }"#;
         let guard = ipv6_leak_guard_from_config(json).unwrap();
-        assert_eq!(guard.block, false);
-        assert_eq!(guard.loopback_source, true);
+        assert!(!guard.block);
+        assert!(guard.loopback_source);
         assert_eq!(guard.table, None);
 
         let cmds = ipv6_leak_guard_commands(Some(&guard));
-        assert!(cmds.iter().any(|c| c.contains("ip -6 addr add fdfe:dcba:9877::1/128 dev lo")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("ip -6 addr add fdfe:dcba:9877::1/128 dev lo")));
         // In cgroup mode without table/block, no routing rules are needed beyond cleanup & lo address
         assert!(!cmds.iter().any(|c| c.contains("pref 21901 unreachable")));
     }
@@ -536,9 +565,15 @@ mod tests {
         assert_eq!(guard.first_uid, 0);
 
         let cmds = ipv6_leak_guard_commands(Some(&guard));
-        assert!(cmds.iter().any(|c| c.contains("pref 21900 fwmark 0x200000/0x200000 goto 21902")));
-        assert!(cmds.iter().any(|c| c.contains("pref 21900 uidrange 10200-10200 goto 21902")));
-        assert!(cmds.iter().any(|c| c.contains("pref 21901 uidrange 10100-10100 lookup 2022")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21900 fwmark 0x200000/0x200000 goto 21902")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21900 uidrange 10200-10200 goto 21902")));
+        assert!(cmds
+            .iter()
+            .any(|c| c.contains("pref 21901 uidrange 10100-10100 lookup 2022")));
     }
 
     #[test]
