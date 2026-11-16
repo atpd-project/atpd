@@ -9,8 +9,8 @@ use crate::netlink::bypass::BypassManager;
 use crate::netlink::msg::{
     encode_link_dump_request, parse_link_message, parse_xfrm_message, NetlinkMsgIter, XfrmEvent,
     NETLINK_DEBOUNCE_MS, NETLINK_ROUTE, NETLINK_VPN_SETTLE_MS, NETLINK_XFRM, NL_BUF_SIZE,
-    NL_DUMP_SIZE, ROUTE_SOCKET_GROUPS, RTM_DELADDR, RTM_DELLINK, RTM_DELROUTE,
-    RTM_NEWADDR, RTM_NEWLINK, RTM_NEWROUTE, XFRMNLGRP_SA,
+    NL_DUMP_SIZE, ROUTE_SOCKET_GROUPS, RTM_DELADDR, RTM_DELLINK, RTM_DELROUTE, RTM_NEWADDR,
+    RTM_NEWLINK, RTM_NEWROUTE, XFRMNLGRP_SA,
 };
 use crate::reactor::{Reactor, TimerId};
 use crate::{log_info, log_warn};

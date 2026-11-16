@@ -790,7 +790,7 @@ fn test_fast_path_link_detection_immediate_vpn_transition() {
         let mut name_bytes = ifname.as_bytes().to_vec();
         name_bytes.push(0);
         let pad = (4 - (name_bytes.len() % 4)) % 4;
-        name_bytes.extend(std::iter::repeat(0).take(pad));
+        name_bytes.extend(std::iter::repeat_n(0, pad));
         let rta_len = (4 + name_bytes.len()) as u16;
         let mut attr = Vec::new();
         attr.extend_from_slice(&rta_len.to_ne_bytes());
