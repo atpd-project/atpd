@@ -228,7 +228,10 @@ impl App {
         if let Ok(Some(applied)) =
             crate::utils::tcp::apply_tcp_congestion(&self.config.core.tcp_congestion)
         {
-            crate::log_info!("TCP congestion control initialized: {} (qdisc: fq)", applied);
+            crate::log_info!(
+                "TCP congestion control initialized: {} (qdisc: fq)",
+                applied
+            );
         }
 
         if self

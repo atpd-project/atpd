@@ -75,7 +75,11 @@ pub fn apply_tcp_congestion(requested: &str) -> io::Result<Option<String>> {
             );
             return Ok(None);
         }
-        crate::log_info!("TCP congestion control set to '{}' (was '{}')", target, current);
+        crate::log_info!(
+            "TCP congestion control set to '{}' (was '{}')",
+            target,
+            current
+        );
     }
 
     if target == "bbr3" || target == "bbr" {
@@ -107,11 +111,7 @@ mod tests {
         assert_eq!(select_congestion_target("auto", &avail_bbr3), Some("bbr3"));
         assert_eq!(select_congestion_target("", &avail_bbr3), Some("bbr3"));
 
-        let avail_bbr1 = vec![
-            "cubic".to_string(),
-            "reno".to_string(),
-            "bbr".to_string(),
-        ];
+        let avail_bbr1 = vec!["cubic".to_string(), "reno".to_string(), "bbr".to_string()];
         assert_eq!(select_congestion_target("auto", &avail_bbr1), Some("bbr"));
         assert_eq!(select_congestion_target("", &avail_bbr1), Some("bbr"));
 
@@ -121,11 +121,7 @@ mod tests {
 
     #[test]
     fn test_select_congestion_target_explicit() {
-        let avail = vec![
-            "cubic".to_string(),
-            "reno".to_string(),
-            "bbr3".to_string(),
-        ];
+        let avail = vec!["cubic".to_string(), "reno".to_string(), "bbr3".to_string()];
         assert_eq!(select_congestion_target("bbr3", &avail), Some("bbr3"));
         assert_eq!(select_congestion_target("BBR3", &avail), Some("bbr3"));
         assert_eq!(select_congestion_target("cubic", &avail), Some("cubic"));
