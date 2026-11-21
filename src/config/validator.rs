@@ -48,6 +48,12 @@ pub const CONFIG_SCHEMA: &[ConfigKeySpec] = &[
         allow_empty: false,
     },
     ConfigKeySpec {
+        name: "TCP_CONGESTION",
+        value_type: ConfigValueType::String,
+        canonical_name: "TCP_CONGESTION",
+        allow_empty: true,
+    },
+    ConfigKeySpec {
         name: "LOG_TIMESTAMP",
         value_type: ConfigValueType::Bool,
         canonical_name: "LOG_TIMESTAMP",

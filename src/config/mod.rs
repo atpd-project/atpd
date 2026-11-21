@@ -32,6 +32,7 @@ pub struct CoreConfig {
     pub core_group: String,
     pub pid_file: String,
     pub log_file: String,
+    pub tcp_congestion: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,6 +273,7 @@ impl Default for Config {
                 core_group: get_default_group(),
                 pid_file: ATP_PID_FILE.to_string(),
                 log_file: ATP_LOG_FILE.to_string(),
+                tcp_congestion: "auto".to_string(),
             },
             interface: InterfaceConfig {
                 vpn_auto_mode: true,
@@ -514,6 +516,9 @@ pub fn classify_reload(current: &Config, candidate: &Config) -> ReloadClassifica
     let mut restart_fields = Vec::new();
 
     if current.core.ui_emoji_enabled != candidate.core.ui_emoji_enabled {
+        changes |= ReloadChanges::HOT;
+    }
+    if current.core.tcp_congestion != candidate.core.tcp_congestion {
         changes |= ReloadChanges::HOT;
     }
     if current.service.start_timeout_sec != candidate.service.start_timeout_sec {

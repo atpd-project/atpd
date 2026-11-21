@@ -31,6 +31,7 @@ fn default_test_config(port: u16) -> Config {
             core_group: String::new(),
             pid_file: String::new(),
             log_file: String::new(),
+            tcp_congestion: String::new(),
         },
         interface: InterfaceConfig {
             vpn_auto_mode: true,

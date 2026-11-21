@@ -84,6 +84,8 @@ pub struct StatusSnapshot {
     pub daemon_running: bool,
     pub api_port: i32,
     pub kernel_release: [u8; 256],
+    pub tcp_congestion: [u8; 32],
+    pub default_qdisc: [u8; 32],
 
     pub atpd_pid: i32,
     pub atpd_uptime_sec: i32,
@@ -118,6 +120,8 @@ impl Default for StatusSnapshot {
             daemon_running: false,
             api_port: crate::config::DEFAULT_API_PORT,
             kernel_release: [0; 256],
+            tcp_congestion: [0; 32],
+            default_qdisc: [0; 32],
             atpd_pid: -1,
             atpd_uptime_sec: -1,
             atpd_fd_count: -1,
@@ -160,6 +164,24 @@ impl StatusSnapshot {
             .position(|&b| b == 0)
             .unwrap_or(self.kernel_release.len());
         std::str::from_utf8(&self.kernel_release[..len]).unwrap_or("")
+    }
+
+    pub fn tcp_congestion_str(&self) -> &str {
+        let len = self
+            .tcp_congestion
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.tcp_congestion.len());
+        std::str::from_utf8(&self.tcp_congestion[..len]).unwrap_or("")
+    }
+
+    pub fn default_qdisc_str(&self) -> &str {
+        let len = self
+            .default_qdisc
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(self.default_qdisc.len());
+        std::str::from_utf8(&self.default_qdisc[..len]).unwrap_or("")
     }
 }
 
@@ -411,6 +433,17 @@ pub fn collect(
         let rel_bytes = unsafe { std::ffi::CStr::from_ptr(info.release.as_ptr()).to_bytes() };
         let len = rel_bytes.len().min(out.kernel_release.len() - 1);
         out.kernel_release[..len].copy_from_slice(&rel_bytes[..len]);
+    }
+
+    if let Ok(cong) = crate::utils::tcp::read_current_congestion() {
+        let bytes = cong.as_bytes();
+        let len = bytes.len().min(out.tcp_congestion.len() - 1);
+        out.tcp_congestion[..len].copy_from_slice(&bytes[..len]);
+    }
+    if let Ok(qdisc) = crate::utils::tcp::read_default_qdisc() {
+        let bytes = qdisc.as_bytes();
+        let len = bytes.len().min(out.default_qdisc.len() - 1);
+        out.default_qdisc[..len].copy_from_slice(&bytes[..len]);
     }
 
     out.daemon_running = supervisor.state != crate::supervisor::ServiceState::Stopped

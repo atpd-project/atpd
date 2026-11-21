@@ -225,6 +225,12 @@ impl App {
             &self.supervisor.conf_path,
         );
 
+        if let Ok(Some(applied)) =
+            crate::utils::tcp::apply_tcp_congestion(&self.config.core.tcp_congestion)
+        {
+            crate::log_info!("TCP congestion control initialized: {} (qdisc: fq)", applied);
+        }
+
         if self
             .context
             .runtime_state_transition(RuntimeState::Running)
@@ -408,6 +414,12 @@ impl App {
         let _ = crate::netlink::leak_guard::apply_ipv6_leak_guard_from_config_file(
             &self.supervisor.conf_path,
         );
+
+        if let Ok(Some(applied)) =
+            crate::utils::tcp::apply_tcp_congestion(&candidate.core.tcp_congestion)
+        {
+            crate::log_info!("TCP congestion control updated: {} (qdisc: fq)", applied);
+        }
         self.config = candidate;
         crate::log_info!("Config reload completed successfully");
         self.reload_return_to_running_or_shutdown();

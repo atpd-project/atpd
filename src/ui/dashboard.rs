@@ -245,6 +245,16 @@ fn render_system<W: std::fmt::Write>(
     ui.table_header("💻", "SYSTEM")?;
     ui.table_subrow("├─", "ATPD Version", crate::version::get_full_version())?;
     ui.table_subrow("├─", "Kernel", kernel)?;
+    if !snapshot.tcp_congestion_str().is_empty() {
+        let cong = snapshot.tcp_congestion_str();
+        let qdisc = snapshot.default_qdisc_str();
+        let val = if !qdisc.is_empty() {
+            format!("{} ({})", cong, qdisc)
+        } else {
+            cong.to_string()
+        };
+        ui.table_subrow("├─", "TCP Congestion", &val)?;
+    }
     ui.table_subrow("└─", "CPU Temp", &temperature)?;
     ui.table_end()?;
     Ok(())
@@ -316,6 +326,15 @@ pub fn status_render_summary<W: std::fmt::Write>(
         "N/A"
     };
     writeln!(out, "  Kernel:    {}", kernel)?;
+    if !snapshot.tcp_congestion_str().is_empty() {
+        let cong = snapshot.tcp_congestion_str();
+        let qdisc = snapshot.default_qdisc_str();
+        if !qdisc.is_empty() {
+            writeln!(out, "  TCP Cong:  {} ({})", cong, qdisc)?;
+        } else {
+            writeln!(out, "  TCP Cong:  {}", cong)?;
+        }
+    }
     writeln!(out, "  Data path: sing-box ebpf inbound")?;
     Ok(())
 }
@@ -527,5 +546,37 @@ mod tests {
         assert!(failed.contains("FAILED"));
         assert!(failed.contains("40403"));
         assert!(starting.contains("STARTING"));
+    }
+
+    #[test]
+    fn test_status_render_with_tcp_congestion() {
+        let mut kernel_release = [0u8; 256];
+        let krel = b"6.1.162-sultan";
+        kernel_release[..krel.len()].copy_from_slice(krel);
+
+        let mut tcp_congestion = [0u8; 32];
+        let cong = b"bbr3";
+        tcp_congestion[..cong.len()].copy_from_slice(cong);
+
+        let mut default_qdisc = [0u8; 32];
+        let qdisc = b"fq";
+        default_qdisc[..qdisc.len()].copy_from_slice(qdisc);
+
+        let snapshot = StatusSnapshot {
+            emoji_enabled: false,
+            daemon_running: true,
+            atpd_pid: 1234,
+            kernel_release,
+            tcp_congestion,
+            default_qdisc,
+            ..Default::default()
+        };
+
+        let rendered = status_render_to_string(&snapshot, 0, true);
+        assert!(rendered.contains("TCP Congestion"));
+        assert!(rendered.contains("bbr3 (fq)"));
+
+        let summary = status_summary_to_string(&snapshot);
+        assert!(summary.contains("TCP Cong:  bbr3 (fq)"));
     }
 }

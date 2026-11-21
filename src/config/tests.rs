@@ -490,3 +490,18 @@ fn test_deprecated_aliases_and_config_json_sync() {
     };
     assert_eq!(cfg2.api.port, 9292);
 }
+
+#[test]
+fn test_tcp_congestion_config_and_reload() {
+    let (conf_path, _conf_guard) = create_temp_conf("TCP_CONGESTION=bbr3\n");
+    let cfg = load(&conf_path).expect("failed to load conf with TCP_CONGESTION");
+    assert_eq!(cfg.core.tcp_congestion, "bbr3");
+
+    let current = Config::default();
+    let mut candidate = current.clone();
+    candidate.core.tcp_congestion = "bbr3".to_string();
+
+    let res = classify_reload(&current, &candidate);
+    assert!(res.contains(ReloadChanges::HOT));
+    assert!(!res.contains(ReloadChanges::REQUIRES_RESTART));
+}
