@@ -22,6 +22,7 @@ Ultra-lightweight, zero-firewall transparent proxy daemon for rooted Android dev
 | **Fast-Path UDS IPC** | UNIX domain socket (`run/atpd.sock`, mode 0600, peer UID checked) for near-instant `atpd status`. |
 | **Multi-VPN Tunnel Sensing** | Netlink route/XFRM events detect **Cloudflare WARP (`tun0` / `warp0`)**, **WireGuard (`wg0`)**, **Tailscale (`tailscale0`)** and **Google VPN (`ipsec0` / `xfrm0`)**, and switch the Clash mode while a VPN is up. |
 | **Ultra-Lean Footprint** | ~0.6 MB stripped binary, ~2.4 MB RSS, 2 threads, 3 dependencies (`rustix`, `libc`, `serde_json`), no async runtime, no busy polling. |
+| **TCP Congestion Control (BBRv3 / BBR)** | Automatic kernel capability sensing (prioritizing BBRv3 over BBRv1), auto-configuration of `fq` queue discipline, hot-reloadable via `atpd reload`, and live status reporting in `atpd status`. |
 | **Resilient Core Lifecycle** | sing-box supervisor with exponential backoff, circuit breaker with cooldown retry, health checks, PID-reuse protection and log rotation. |
 
 ---
@@ -158,6 +159,11 @@ VPN_TARGET_MODE="Google VPN"
 VPN_FALLBACK_MODE="Rule"
 # VPN_BYPASS_ROUTES="100.64.0.0/10 fd7a:115c:a1e0::/48 192.168.88.0/24"
 # VPN_BYPASS_PREF=12400
+
+# TCP Congestion Control
+# auto (default): detects bbr3, falls back to bbr, and automatically configures default_qdisc to fq
+# Options: "auto", "bbr3", "bbr", "cubic", "reno", or "off" (keep system default)
+TCP_CONGESTION="auto"
 ```
 
 Older key names (`WORK_DIR`, `CLASH_SECRET`, `VPN_AUTO_CLASH_MODE`, `VPN_CLASH_MODE`, `VPN_DEFAULT_MODE`) are still accepted.
