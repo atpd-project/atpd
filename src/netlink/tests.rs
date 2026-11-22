@@ -784,7 +784,11 @@ fn test_fast_path_link_detection_immediate_vpn_transition() {
 
     fn make_link_msg(nlmsg_type: u16, ifname: &str, is_up: bool) -> Vec<u8> {
         let mut ifinfo = vec![0u8; 16];
-        let flags: u32 = if is_up { libc::IFF_UP as u32 } else { 0 };
+        let flags: u32 = if is_up {
+            (libc::IFF_UP | libc::IFF_RUNNING) as u32
+        } else {
+            0
+        };
         ifinfo[8..12].copy_from_slice(&flags.to_ne_bytes());
 
         let mut name_bytes = ifname.as_bytes().to_vec();

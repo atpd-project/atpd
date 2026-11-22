@@ -67,6 +67,8 @@ pub fn parse_uid_ranges(
                 for v in arr {
                     if let Some(u) = v.as_u64().and_then(|n| u32::try_from(n).ok()) {
                         raw_ranges.push((u, u));
+                    } else {
+                        crate::log_warn!("IPv6 leak guard: ignoring invalid uid entry {}", v);
                     }
                 }
             }
@@ -86,7 +88,11 @@ pub fn parse_uid_ranges(
                     if let Some(s) = v.as_str() {
                         if let Some(pair) = parse_single_range(s) {
                             raw_ranges.push(pair);
+                        } else {
+                            crate::log_warn!("IPv6 leak guard: ignoring invalid uid range {:?}", s);
                         }
+                    } else {
+                        crate::log_warn!("IPv6 leak guard: ignoring invalid uid range {}", v);
                     }
                 }
             }
@@ -174,6 +180,7 @@ pub fn ipv6_leak_guard_from_config(config_json_content: &str) -> Option<Ipv6Leak
     }
 
     // 2. Try TUN inbound
+    let mut tun_without_ipv6 = false;
     for inbound in inbounds {
         let obj = match inbound.as_object() {
             Some(o) => o,
@@ -197,7 +204,9 @@ pub fn ipv6_leak_guard_from_config(config_json_content: &str) -> Option<Ipv6Leak
             }
 
             if !has_ipv6 {
-                return None;
+                // IPv4-only tun: no guard unless a tproxy inbound below needs one.
+                tun_without_ipv6 = true;
+                continue;
             }
 
             let include_uids =
@@ -243,6 +252,10 @@ pub fn ipv6_leak_guard_from_config(config_json_content: &str) -> Option<Ipv6Leak
                 block: false,
             });
         }
+    }
+
+    if tun_without_ipv6 {
+        return None;
     }
 
     // Default fallback: eBPF socket_assign mode (block public IPv6 default-route lookup)
@@ -369,31 +382,36 @@ pub fn ipv6_leak_guard_commands(guard: Option<&Ipv6LeakGuard>) -> Vec<String> {
 }
 
 /// Executes shell commands to apply IPv6 leak guard rules.
+///
+/// Runs under `set -e`: the cleanup prefix cannot fail, so the first failing
+/// `ip ... add` aborts the script and is reported as an error.
 pub fn exec_leak_guard_commands(commands: &[String]) -> io::Result<()> {
     if commands.is_empty() {
         return Ok(());
     }
-    let script = commands.join("; ");
-    let output = std::process::Command::new("/system/bin/sh")
+    let script = format!("set -e\n{}", commands.join("\n"));
+    let output = run_sh(&script)?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "IPv6 leak guard command failed ({:?}): {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+fn run_sh(script: &str) -> io::Result<std::process::Output> {
+    std::process::Command::new("/system/bin/sh")
         .arg("-c")
-        .arg(&script)
+        .arg(script)
         .output()
         .or_else(|_| {
             std::process::Command::new("sh")
                 .arg("-c")
-                .arg(&script)
+                .arg(script)
                 .output()
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        crate::log_warn!(
-            "IPv6 leak guard: command completed with non-zero status ({:?}): {}",
-            output.status.code(),
-            stderr.trim()
-        );
-    }
-    Ok(())
+        })
 }
 
 /// Applies IPv6 leak guard rules for the given configuration.
@@ -402,22 +420,46 @@ pub fn apply_ipv6_leak_guard(guard: Option<&Ipv6LeakGuard>) -> io::Result<()> {
     exec_leak_guard_commands(&cmds)
 }
 
-/// Reads sing-box config file and applies IPv6 leak guard.
-pub fn apply_ipv6_leak_guard_from_config_file(conf_path: &str) -> io::Result<()> {
-    let path = Path::new(conf_path);
-    if path.exists() {
-        if let Ok(content) = fs::read_to_string(path) {
-            let guard = ipv6_leak_guard_from_config(&content);
-            crate::log_info!(
-                "IPv6 leak guard: applying rules (active={})",
-                guard.is_some()
-            );
-            return apply_ipv6_leak_guard(guard.as_ref());
-        }
-    }
+/// Reads the config and derives the desired guard. Any read/parse failure is an
+/// error so callers keep the existing rules (fail closed) instead of removing them.
+fn guard_from_config_file(conf_path: &str) -> io::Result<Option<Ipv6LeakGuard>> {
+    let content = fs::read_to_string(Path::new(conf_path))?;
+    serde_json::from_str::<serde_json::Value>(&content)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    Ok(ipv6_leak_guard_from_config(&content))
+}
 
-    // When config file is absent or unreadable, ensure no stale/stuck leak rules remain.
-    cleanup_ipv6_leak_guard()
+/// Reads sing-box config file and applies IPv6 leak guard.
+/// On read/parse errors the existing rules are left untouched.
+pub fn apply_ipv6_leak_guard_from_config_file(conf_path: &str) -> io::Result<()> {
+    let guard = guard_from_config_file(conf_path)?;
+    crate::log_info!(
+        "IPv6 leak guard: applying rules (active={})",
+        guard.is_some()
+    );
+    apply_ipv6_leak_guard(guard.as_ref())
+}
+
+/// Re-applies the guard only if its rules were flushed (e.g. by netd); the rule
+/// multicast groups are not subscribed to, so this runs from the netlink debounce.
+pub fn reconcile_ipv6_leak_guard(conf_path: &str) -> io::Result<()> {
+    let guard = guard_from_config_file(conf_path)?;
+    let cmds = ipv6_leak_guard_commands(guard.as_ref());
+    let route_add = format!("rule add pref {}", ROUTE_PREF);
+    if !cmds.iter().any(|c| c.contains(&route_add)) {
+        return Ok(());
+    }
+    let out = run_sh("ip -6 rule show")?;
+    let shown = String::from_utf8_lossy(&out.stdout);
+    let has = |pref: u32| {
+        let prefix = format!("{}:", pref);
+        shown.lines().any(|l| l.starts_with(&prefix))
+    };
+    if out.status.success() && has(SKIP_PREF) && has(ROUTE_PREF) && has(NOP_PREF) {
+        return Ok(());
+    }
+    crate::log_warn!("IPv6 leak guard: rules missing, re-applying");
+    exec_leak_guard_commands(&cmds)
 }
 
 /// Cleans up any existing IPv6 leak guard rules and lo address.
@@ -584,5 +626,25 @@ mod tests {
         assert!(cmds[1].contains("pref 21901"));
         assert!(cmds[2].contains("pref 21902"));
         assert!(cmds[3].contains("ip -6 addr del fdfe:dcba:9877::1/128 dev lo"));
+    }
+
+    #[test]
+    fn test_ipv4_tun_then_tproxy_uses_tproxy() {
+        let json = r#"{"inbounds":[
+            {"type":"tun","address":["172.19.0.1/30"]},
+            {"type":"tproxy"}]}"#;
+        assert_eq!(
+            ipv6_leak_guard_from_config(json).unwrap().table,
+            Some(TPROXY_ROUTING_TABLE)
+        );
+        let json = r#"{"inbounds":[{"type":"tun","address":["172.19.0.1/30"]}]}"#;
+        assert_eq!(ipv6_leak_guard_from_config(json), None);
+    }
+
+    #[test]
+    fn test_exec_reports_failure_and_bad_config_keeps_rules() {
+        assert!(exec_leak_guard_commands(&["false".to_string()]).is_err());
+        assert!(exec_leak_guard_commands(&["true".to_string()]).is_ok());
+        assert!(apply_ipv6_leak_guard_from_config_file("/nonexistent/config.json").is_err());
     }
 }

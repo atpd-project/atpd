@@ -221,9 +221,11 @@ impl App {
         // Reconcile an already-present VPN after sing-box has reached READY.
         self.netlink.refresh_state(&mut self.reactor);
 
-        let _ = crate::netlink::leak_guard::apply_ipv6_leak_guard_from_config_file(
+        if let Err(e) = crate::netlink::leak_guard::apply_ipv6_leak_guard_from_config_file(
             &self.supervisor.conf_path,
-        );
+        ) {
+            crate::log_error!("IPv6 leak guard apply failed: {}", e);
+        }
 
         if let Ok(Some(applied)) =
             crate::utils::tcp::apply_tcp_congestion(&self.config.core.tcp_congestion)
@@ -318,6 +320,11 @@ impl App {
                         ) {
                             for change in changes {
                                 self.api.on_vpn_change(change);
+                            }
+                            if let Err(e) = crate::netlink::leak_guard::reconcile_ipv6_leak_guard(
+                                &self.supervisor.conf_path,
+                            ) {
+                                crate::log_warn!("IPv6 leak guard reconcile failed: {}", e);
                             }
                             handled = true;
                         }
@@ -420,9 +427,11 @@ impl App {
         self.supervisor.apply_config(&mut self.reactor, &candidate);
         self.netlink.apply_vpn_bypass_config(&candidate);
         crate::utils::time::atp_timezone_init();
-        let _ = crate::netlink::leak_guard::apply_ipv6_leak_guard_from_config_file(
+        if let Err(e) = crate::netlink::leak_guard::apply_ipv6_leak_guard_from_config_file(
             &self.supervisor.conf_path,
-        );
+        ) {
+            crate::log_error!("IPv6 leak guard apply failed: {}", e);
+        }
 
         if self.config.core.tcp_congestion != candidate.core.tcp_congestion {
             if let Ok(Some(applied)) =
