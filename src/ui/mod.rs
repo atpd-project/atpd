@@ -6,6 +6,8 @@
 pub mod dashboard;
 
 pub const COLOR_RESET: &str = "\x1b[0m";
+pub const COLOR_BOLD: &str = "\x1b[1m";
+pub const COLOR_DIM: &str = "\x1b[2m";
 pub const COLOR_RED: &str = "\x1b[1;31m";
 pub const COLOR_GREEN: &str = "\x1b[1;32m";
 pub const COLOR_YELLOW: &str = "\x1b[1;33m";
@@ -16,12 +18,10 @@ pub fn clamp_width(width: usize) -> usize {
 }
 
 pub fn label_width(width: usize) -> usize {
-    if width >= 110 {
-        18
-    } else if width >= 80 {
+    if width >= 80 {
         16
     } else if width >= 60 {
-        14
+        15
     } else if width >= 40 {
         12
     } else {
@@ -30,11 +30,15 @@ pub fn label_width(width: usize) -> usize {
 }
 
 pub fn str_display_width(s: &str) -> usize {
-    // shortcut: non-ASCII is assumed 2 columns wide (zero-width joiners excepted), use unicode-width if exact widths matter.
+    // Lightweight display-width helper: ASCII and common single-width box/symbol
+    // characters count as 1 column, VS16/ZWJ as 0, and remaining non-ASCII (e.g.
+    // emoji/CJK) as 2 columns. Switch to `unicode-width` if full Unicode tables
+    // are ever required.
     s.chars()
         .map(|ch| match ch {
             '\u{FE0F}' | '\u{200D}' => 0,
             c if c.is_ascii() => 1,
+            '\u{2500}'..='\u{257F}' | '\u{25A0}'..='\u{25FF}' | '°' => 1,
             _ => 2,
         })
         .sum()
@@ -100,32 +104,23 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
     }
 
     pub fn title(&mut self, title: &str) -> std::fmt::Result {
-        if self.width < 60 {
-            writeln!(
-                self.out,
-                "\n{}=== {} ==={}",
-                self.style(COLOR_CYAN),
-                title,
-                self.reset()
-            )
+        let rule_width = if self.width < 60 {
+            self.width
         } else {
-            let text_width = str_display_width(title);
-            let divider_width = self.width.min(90);
-            let total_pad = divider_width.saturating_sub(text_width + 2);
-            let left = total_pad / 2;
-            let right = total_pad - left;
-
-            writeln!(self.out)?;
-            write!(self.out, "{}", self.style(COLOR_CYAN))?;
-            for _ in 0..left {
-                write!(self.out, "=")?;
-            }
-            write!(self.out, " {} ", title)?;
-            for _ in 0..right {
-                write!(self.out, "=")?;
-            }
-            writeln!(self.out, "{}", self.reset())
+            self.width.min(90)
+        };
+        writeln!(
+            self.out,
+            "\n{}{}{}",
+            self.style(COLOR_CYAN),
+            title,
+            self.reset()
+        )?;
+        write!(self.out, "{}", self.style(COLOR_DIM))?;
+        for _ in 0..rule_width {
+            write!(self.out, "━")?;
         }
+        writeln!(self.out, "{}", self.reset())
     }
 
     pub fn table_header(&mut self, emoji: &str, title: &str) -> std::fmt::Result {
@@ -134,77 +129,117 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
         } else {
             ""
         };
-        let space = if !icon.is_empty() { " " } else { "" };
-        if self.width < 60 {
-            writeln!(self.out, "\n=== {}{}{} ===", icon, space, title)?;
-            return Ok(());
-        }
-
         let header_text = if !icon.is_empty() {
             format!("{} {}", icon, title)
         } else {
             title.to_string()
         };
+
+        if self.width < 60 {
+            return writeln!(
+                self.out,
+                "\n{}{}{}",
+                self.style(COLOR_BOLD),
+                header_text,
+                self.reset()
+            );
+        }
+
         let text_width = str_display_width(&header_text);
         let divider_width = self.width.min(90);
-        let total_pad = divider_width.saturating_sub(text_width + 2);
-        let left = total_pad / 2;
-        let right = total_pad - left;
+        let trail_len = divider_width.saturating_sub(text_width + 1);
 
         writeln!(self.out)?;
-        for _ in 0..left {
-            write!(self.out, "=")?;
+        write!(
+            self.out,
+            "{}{}{}",
+            self.style(COLOR_BOLD),
+            header_text,
+            self.reset()
+        )?;
+        if trail_len > 0 {
+            write!(self.out, " {}", self.style(COLOR_DIM))?;
+            for _ in 0..trail_len {
+                write!(self.out, "─")?;
+            }
+            write!(self.out, "{}", self.reset())?;
         }
-        write!(self.out, " {} ", header_text)?;
-        for _ in 0..right {
-            write!(self.out, "=")?;
-        }
-        writeln!(self.out)?;
-        Ok(())
+        writeln!(self.out)
     }
 
     pub fn table_row_color(&mut self, label: &str, value: &str, color: &str) -> std::fmt::Result {
+        let dot = if self.emoji_enabled { "●" } else { "*" };
         if self.width < 60 {
-            let max_value = (self.width as isize - 4 - label.len() as isize).max(1) as usize;
+            let label_w = str_display_width(label);
+            let max_value = self.width.saturating_sub(6 + label_w).max(1);
             let value_buf = truncate_utf8(value, max_value);
             writeln!(
                 self.out,
-                "  {}{}{}: {}",
+                "  {}{}{} {}{}:{} {}{}{}",
                 self.style(color),
+                dot,
+                self.reset(),
+                self.style(COLOR_DIM),
+                label,
+                self.reset(),
+                self.style(color),
+                value_buf,
+                self.reset()
+            )
+        } else {
+            let label_len = label_width(self.width);
+            let actual_label_w = label_len.max(str_display_width(label));
+            let max_value = self.width.saturating_sub(5 + actual_label_w).max(10);
+            let value_buf = truncate_utf8(value, max_value);
+            writeln!(
+                self.out,
+                "  {}{}{} {}{:<width$}{} {}{}{}",
+                self.style(color),
+                dot,
+                self.reset(),
+                self.style(COLOR_DIM),
+                label,
+                self.reset(),
+                self.style(color),
+                value_buf,
+                self.reset(),
+                width = label_len
+            )
+        }
+    }
+
+    pub fn table_subrow(&mut self, prefix: &str, label: &str, value: &str) -> std::fmt::Result {
+        let branch = if prefix.is_empty() { "├─" } else { prefix };
+        let branch_w = str_display_width(branch);
+        if self.width < 60 {
+            let label_w = str_display_width(label);
+            let max_value = self.width.saturating_sub(5 + branch_w + label_w).max(1);
+            let value_buf = truncate_utf8(value, max_value);
+            writeln!(
+                self.out,
+                "  {}{} {}:{} {}",
+                self.style(COLOR_DIM),
+                branch,
                 label,
                 self.reset(),
                 value_buf
             )
         } else {
             let label_len = label_width(self.width);
-            let max_value = (self.width as isize - label_len as isize - 4).max(10) as usize;
+            let subrow_label_len = label_len.saturating_sub(branch_w.saturating_sub(1));
+            let actual_label_w = subrow_label_len.max(str_display_width(label));
+            let max_value = self
+                .width
+                .saturating_sub(4 + branch_w + actual_label_w)
+                .max(10);
             let value_buf = truncate_utf8(value, max_value);
             writeln!(
                 self.out,
-                "  {}{:<width$}{}  {}",
-                self.style(color),
+                "  {}{} {:<width$}{} {}",
+                self.style(COLOR_DIM),
+                branch,
                 label,
                 self.reset(),
-                value_buf,
-                width = label_len
-            )
-        }
-    }
-
-    pub fn table_subrow(&mut self, _prefix: &str, label: &str, value: &str) -> std::fmt::Result {
-        if self.width < 60 {
-            let max_value = (self.width as isize - 6 - label.len() as isize).max(1) as usize;
-            let value_buf = truncate_utf8(value, max_value);
-            writeln!(self.out, "    {}: {}", label, value_buf)
-        } else {
-            let label_len = label_width(self.width);
-            let subrow_label_len = label_len.saturating_sub(2);
-            let max_value = (self.width as isize - label_len as isize - 4).max(10) as usize;
-            let value_buf = truncate_utf8(value, max_value);
-            writeln!(
-                self.out,
-                "    {:<width$}  {}",
-                label,
                 value_buf,
                 width = subrow_label_len
             )
@@ -213,34 +248,47 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
 
     pub fn table_subrow_color(
         &mut self,
-        _prefix: &str,
+        prefix: &str,
         label: &str,
         value: &str,
         color: &str,
     ) -> std::fmt::Result {
+        let branch = if prefix.is_empty() { "├─" } else { prefix };
+        let branch_w = str_display_width(branch);
         if self.width < 60 {
-            let max_value = (self.width as isize - 6 - label.len() as isize).max(1) as usize;
+            let label_w = str_display_width(label);
+            let max_value = self.width.saturating_sub(5 + branch_w + label_w).max(1);
             let value_buf = truncate_utf8(value, max_value);
             writeln!(
                 self.out,
-                "    {}{}{}: {}",
-                self.style(color),
+                "  {}{} {}:{} {}{}{}",
+                self.style(COLOR_DIM),
+                branch,
                 label,
                 self.reset(),
-                value_buf
+                self.style(color),
+                value_buf,
+                self.reset()
             )
         } else {
             let label_len = label_width(self.width);
-            let subrow_label_len = label_len.saturating_sub(2);
-            let max_value = (self.width as isize - label_len as isize - 4).max(10) as usize;
+            let subrow_label_len = label_len.saturating_sub(branch_w.saturating_sub(1));
+            let actual_label_w = subrow_label_len.max(str_display_width(label));
+            let max_value = self
+                .width
+                .saturating_sub(4 + branch_w + actual_label_w)
+                .max(10);
             let value_buf = truncate_utf8(value, max_value);
             writeln!(
                 self.out,
-                "    {}{:<width$}{}  {}",
-                self.style(color),
+                "  {}{} {:<width$}{} {}{}{}",
+                self.style(COLOR_DIM),
+                branch,
                 label,
                 self.reset(),
+                self.style(color),
                 value_buf,
+                self.reset(),
                 width = subrow_label_len
             )
         }

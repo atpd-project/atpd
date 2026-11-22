@@ -132,7 +132,7 @@ fn render_proxy<W: std::fmt::Write>(
 ) -> std::fmt::Result {
     ui.table_header("📦", "PROXY CORE")?;
     ui.table_row_color(
-        "STATUS",
+        "State",
         service_display_state(snapshot),
         service_display_color(snapshot),
     )?;
@@ -163,7 +163,6 @@ fn render_proxy<W: std::fmt::Write>(
     };
 
     ui.table_subrow_int("├─", "PID", snapshot.singbox_pid)?;
-    ui.table_subrow("├─", "State", service_display_state(snapshot))?;
     ui.table_subrow("├─", "Uptime", &uptime)?;
     ui.table_subrow("├─", "Memory", &rss)?;
     ui.table_subrow("├─", "Peak Memory", &hwm)?;
@@ -211,8 +210,12 @@ fn render_vpn<W: std::fmt::Write>(
         return Ok(());
     }
 
-    let emoji = ui.emoji_vpn(true);
-    ui.table_row_color(emoji, "CONNECTED", COLOR_GREEN)?;
+    let connected = if ui.emoji_enabled {
+        format!("CONNECTED {}", ui.emoji_vpn(true))
+    } else {
+        "CONNECTED".to_string()
+    };
+    ui.table_row_color("State", &connected, COLOR_GREEN)?;
     ui.table_subrow("├─", "Interface", iface)?;
     if snapshot.traffic_available {
         let rx = format_bytes(snapshot.vpn_rx_bytes);
@@ -487,12 +490,12 @@ mod tests {
             );
             assert!(!narrow.contains(h), "narrow should not contain {}", h);
         }
-        assert!(narrow.contains("=== ATPD DAEMON ==="));
+        assert!(narrow.contains("ATPD DAEMON"));
         assert!(narrow.contains("State: STANDALONE / DIRECT"));
         assert!(narrow_emoji.contains("State: STANDALONE / DIRECT"));
         assert!(!narrow_emoji.contains('ℹ'));
         assert!(!narrow_emoji.contains("\x1b["));
-        assert!(narrow.contains("\n    Kernel: "));
+        assert!(narrow.contains("\n  ├─ Kernel: "));
         assert!(!narrow.contains("6.1.0-test-kernel-release"));
 
         let mut kernel_release = [0u8; 256];
@@ -629,55 +632,62 @@ mod tests {
             ..Default::default()
         };
 
-        for width in [30, 45, 60, 80, 120, 200] {
-            let rendered = status_render_to_string(&snapshot, width, false);
-            assert!(!rendered.is_empty());
-            for line in rendered.lines() {
-                // Strip ANSI escape codes to measure visible length
-                let visible: String = {
-                    let mut in_esc = false;
-                    line.chars()
-                        .filter(|c| {
-                            if *c == '\x1b' {
-                                in_esc = true;
-                                false
-                            } else if in_esc {
-                                if *c == 'm' {
-                                    in_esc = false;
+        for no_color in [false, true] {
+            for width in [30, 45, 60, 80, 120, 200] {
+                let rendered = status_render_to_string(&snapshot, width, no_color);
+                assert!(!rendered.is_empty());
+                if no_color {
+                    assert!(!rendered.contains("\x1b["));
+                }
+                for line in rendered.lines() {
+                    // Strip ANSI escape codes to measure visible length
+                    let visible: String = {
+                        let mut in_esc = false;
+                        line.chars()
+                            .filter(|c| {
+                                if *c == '\x1b' {
+                                    in_esc = true;
+                                    false
+                                } else if in_esc {
+                                    if *c == 'm' {
+                                        in_esc = false;
+                                    }
+                                    false
+                                } else {
+                                    true
                                 }
-                                false
-                            } else {
-                                true
-                            }
-                        })
-                        .collect()
-                };
-                let display_w = crate::ui::str_display_width(&visible);
-                let max_allowed = width;
-                assert!(
-                    display_w <= max_allowed,
-                    "Line '{}' display width {} exceeds max_allowed {} at width {}",
-                    visible,
-                    display_w,
-                    max_allowed,
-                    width
-                );
-                // Dividers are centred in min(width, 90) columns at the wide layout.
-                if width >= 60 && visible.starts_with('=') {
-                    assert_eq!(
-                        display_w,
-                        width.min(90),
-                        "divider '{}' at {}",
+                            })
+                            .collect()
+                    };
+                    let display_w = crate::ui::str_display_width(&visible);
+                    assert!(
+                        display_w <= width,
+                        "Line '{}' display width {} exceeds max_allowed {} at width {}",
                         visible,
+                        display_w,
+                        width,
                         width
                     );
+                    if visible.starts_with('━') {
+                        let expected = if width < 60 { width } else { width.min(90) };
+                        assert_eq!(display_w, expected, "title rule '{}' at {}", visible, width);
+                    }
+                    if width >= 60 && visible.contains('─') && !visible.starts_with("  ") {
+                        assert_eq!(
+                            display_w,
+                            width.min(90),
+                            "section header '{}' at {}",
+                            visible,
+                            width
+                        );
+                    }
                 }
+                assert!(
+                    !rendered.contains("\n\n\n"),
+                    "double blank line at width {}",
+                    width
+                );
             }
-            assert!(
-                !rendered.contains("\n\n\n"),
-                "double blank line at width {}",
-                width
-            );
         }
     }
 }
