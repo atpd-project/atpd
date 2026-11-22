@@ -269,7 +269,8 @@ impl Reactor {
 
             for ev in ready.iter() {
                 let fd = ev.data.u64() as RawFd;
-                let events = ev.flags.bits();
+                let flags = ev.flags;
+                let events = flags.bits();
 
                 if fd == self.event_fd.as_raw_fd() {
                     let mut val = [0u8; 8];
