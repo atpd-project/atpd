@@ -343,7 +343,7 @@ impl NetlinkWatcher {
         self.schedule_refresh(r, NETLINK_DEBOUNCE_MS);
     }
 
-    /// Triggers VPN settle refresh with NETLINK_VPN_SETTLE_MS (200 ms), matching C `netlink_refresh_state`.
+    /// Triggers VPN settle refresh with NETLINK_VPN_SETTLE_MS (200 ms; was 1000 ms in the C version).
     pub fn refresh_state(&mut self, r: &mut Reactor) {
         self.schedule_refresh(r, NETLINK_VPN_SETTLE_MS);
     }
@@ -358,42 +358,29 @@ impl NetlinkWatcher {
         let mut changes = Vec::new();
         for msg in NetlinkMsgIter::new(buf) {
             match msg.nlmsg_type {
-                RTM_NEWLINK => {
+                RTM_NEWLINK | RTM_DELLINK => {
                     if let Some(info) = parse_link_message(&msg) {
-                        if is_proxy_interface(&info.name) {
-                            let is_up = (info.flags & (libc::IFF_UP as u32)) != 0;
-                            if is_up {
-                                if let Ok(Some(change)) =
-                                    ctx.vpn_transition(VpnState::Ready, 0, Some(&info.name))
-                                {
-                                    changes.push(change);
-                                }
-                            } else {
-                                let snap = ctx.vpn_snapshot();
-                                let current = snap.iface_str();
-                                if !current.is_empty() && current == info.name {
-                                    if let Ok(Some(change)) =
-                                        ctx.vpn_transition(VpnState::Idle, 0, None)
-                                    {
-                                        changes.push(change);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    self.trigger_debounce(r);
-                }
-                RTM_DELLINK => {
-                    if let Some(info) = parse_link_message(&msg) {
-                        if is_proxy_interface(&info.name) {
+                        // ipsec*/xfrm* identity (if_id) is owned by the XFRM path; the
+                        // debounced refresh below reconciles them.
+                        if is_proxy_interface(&info.name)
+                            && !info.name.starts_with("ipsec")
+                            && !info.name.starts_with("xfrm")
+                        {
+                            let want = (libc::IFF_UP | libc::IFF_RUNNING) as u32;
+                            let up = msg.nlmsg_type == RTM_NEWLINK && (info.flags & want) == want;
                             let snap = ctx.vpn_snapshot();
-                            let current = snap.iface_str();
-                            if !current.is_empty() && current == info.name {
-                                if let Ok(Some(change)) =
-                                    ctx.vpn_transition(VpnState::Idle, 0, None)
-                                {
-                                    changes.push(change);
-                                }
+                            let change = if up {
+                                ctx.vpn_transition(VpnState::Ready, 0, Some(&info.name))
+                            } else if snap.state != VpnState::Teardown
+                                && snap.iface_str() == info.name
+                            {
+                                // Never overwrite Teardown: its edge drives session cleanup.
+                                ctx.vpn_transition(VpnState::Idle, 0, None)
+                            } else {
+                                Ok(None)
+                            };
+                            if let Ok(Some(change)) = change {
+                                changes.push(change);
                             }
                         }
                     }
