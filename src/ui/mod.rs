@@ -17,16 +17,27 @@ pub fn clamp_width(width: usize) -> usize {
 
 pub fn label_width(width: usize) -> usize {
     if width >= 110 {
-        16
+        18
     } else if width >= 80 {
-        14
+        16
     } else if width >= 60 {
-        12
+        14
     } else if width >= 40 {
-        10
+        12
     } else {
-        8
+        10
     }
+}
+
+pub fn str_display_width(s: &str) -> usize {
+    // shortcut: non-ASCII is assumed 2 columns wide (zero-width joiners excepted), use unicode-width if exact widths matter.
+    s.chars()
+        .map(|ch| match ch {
+            '\u{FE0F}' | '\u{200D}' => 0,
+            c if c.is_ascii() => 1,
+            _ => 2,
+        })
+        .sum()
 }
 
 pub fn truncate_utf8(src: &str, max_bytes: usize) -> String {
@@ -89,17 +100,32 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
     }
 
     pub fn title(&mut self, title: &str) -> std::fmt::Result {
-        writeln!(
-            self.out,
-            "\n{}=== {} ==={}",
-            self.style(COLOR_CYAN),
-            title,
-            self.reset()
-        )
-    }
+        if self.width < 60 {
+            writeln!(
+                self.out,
+                "\n{}=== {} ==={}",
+                self.style(COLOR_CYAN),
+                title,
+                self.reset()
+            )
+        } else {
+            let text_width = str_display_width(title);
+            let divider_width = self.width.min(90);
+            let total_pad = divider_width.saturating_sub(text_width + 2);
+            let left = total_pad / 2;
+            let right = total_pad - left;
 
-    pub fn blank(&mut self) -> std::fmt::Result {
-        writeln!(self.out)
+            writeln!(self.out)?;
+            write!(self.out, "{}", self.style(COLOR_CYAN))?;
+            for _ in 0..left {
+                write!(self.out, "=")?;
+            }
+            write!(self.out, " {} ", title)?;
+            for _ in 0..right {
+                write!(self.out, "=")?;
+            }
+            writeln!(self.out, "{}", self.reset())
+        }
     }
 
     pub fn table_header(&mut self, emoji: &str, title: &str) -> std::fmt::Result {
@@ -114,13 +140,14 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
             return Ok(());
         }
 
-        // Titles are ASCII; each supplied icon occupies two terminal columns.
-        let title_len = title.len() + if !icon.is_empty() { 3 } else { 0 };
-        let total_pad = if self.width as isize - 4 - title_len as isize > 0 {
-            (self.width as isize - 4 - title_len as isize) as usize
+        let header_text = if !icon.is_empty() {
+            format!("{} {}", icon, title)
         } else {
-            0
+            title.to_string()
         };
+        let text_width = str_display_width(&header_text);
+        let divider_width = self.width.min(90);
+        let total_pad = divider_width.saturating_sub(text_width + 2);
         let left = total_pad / 2;
         let right = total_pad - left;
 
@@ -128,11 +155,10 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
         for _ in 0..left {
             write!(self.out, "=")?;
         }
-        write!(self.out, " {}{}{} ", icon, space, title)?;
+        write!(self.out, " {} ", header_text)?;
         for _ in 0..right {
             write!(self.out, "=")?;
         }
-        writeln!(self.out)?;
         writeln!(self.out)?;
         Ok(())
     }
@@ -151,7 +177,7 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
             )
         } else {
             let label_len = label_width(self.width);
-            let max_value = (self.width as isize - label_len as isize - 6).max(10) as usize;
+            let max_value = (self.width as isize - label_len as isize - 4).max(10) as usize;
             let value_buf = truncate_utf8(value, max_value);
             writeln!(
                 self.out,
@@ -172,14 +198,15 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
             writeln!(self.out, "    {}: {}", label, value_buf)
         } else {
             let label_len = label_width(self.width);
-            let max_value = (self.width as isize - label_len as isize - 8).max(10) as usize;
+            let subrow_label_len = label_len.saturating_sub(2);
+            let max_value = (self.width as isize - label_len as isize - 4).max(10) as usize;
             let value_buf = truncate_utf8(value, max_value);
             writeln!(
                 self.out,
                 "    {:<width$}  {}",
                 label,
                 value_buf,
-                width = label_len
+                width = subrow_label_len
             )
         }
     }
@@ -204,7 +231,8 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
             )
         } else {
             let label_len = label_width(self.width);
-            let max_value = (self.width as isize - label_len as isize - 8).max(10) as usize;
+            let subrow_label_len = label_len.saturating_sub(2);
+            let max_value = (self.width as isize - label_len as isize - 4).max(10) as usize;
             let value_buf = truncate_utf8(value, max_value);
             writeln!(
                 self.out,
@@ -213,7 +241,7 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
                 label,
                 self.reset(),
                 value_buf,
-                width = label_len
+                width = subrow_label_len
             )
         }
     }
@@ -223,7 +251,7 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
     }
 
     pub fn table_end(&mut self) -> std::fmt::Result {
-        writeln!(self.out)
+        Ok(())
     }
 
     pub fn emoji_vpn(&self, connected: bool) -> &'static str {
