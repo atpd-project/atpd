@@ -16,9 +16,9 @@ pub fn select_congestion_target<'a>(requested: &str, available: &'a [String]) ->
     }
 
     if req.is_empty() || req.eq_ignore_ascii_case("auto") {
-        if let Some(m) = available.iter().find(|&a| a == "bbr3") {
+        if let Some(m) = available.iter().find(|&a| a.eq_ignore_ascii_case("bbr3")) {
             Some(m.as_str())
-        } else if let Some(m) = available.iter().find(|&a| a == "bbr") {
+        } else if let Some(m) = available.iter().find(|&a| a.eq_ignore_ascii_case("bbr")) {
             Some(m.as_str())
         } else {
             None
@@ -62,7 +62,27 @@ pub fn apply_tcp_congestion(requested: &str) -> io::Result<Option<String>> {
 
     let target = match select_congestion_target(requested, &available) {
         Some(t) => t,
-        None => return Ok(None),
+        None => {
+            let req = requested.trim();
+            if !req.is_empty()
+                && !req.eq_ignore_ascii_case("auto")
+                && !req.eq_ignore_ascii_case("off")
+                && !req.eq_ignore_ascii_case("none")
+                && !req.eq_ignore_ascii_case("disabled")
+            {
+                crate::log_warn!(
+                    "Requested TCP congestion control '{}' is not available in kernel (available: {:?})",
+                    req,
+                    available
+                );
+            } else if req.is_empty() || req.eq_ignore_ascii_case("auto") {
+                crate::log_debug!(
+                    "Neither BBRv3 nor BBR found in kernel (available: {:?}); keeping system default",
+                    available
+                );
+            }
+            return Ok(None);
+        }
     };
 
     let current = read_current_congestion().unwrap_or_default();
@@ -82,7 +102,7 @@ pub fn apply_tcp_congestion(requested: &str) -> io::Result<Option<String>> {
         );
     }
 
-    if target == "bbr3" || target == "bbr" {
+    if target.eq_ignore_ascii_case("bbr3") || target.eq_ignore_ascii_case("bbr") {
         let current_qdisc = read_default_qdisc().unwrap_or_default();
         if current_qdisc != "fq" {
             if let Err(e) = fs::write(PROC_DEFAULT_QDISC, "fq") {
@@ -110,6 +130,12 @@ mod tests {
         ];
         assert_eq!(select_congestion_target("auto", &avail_bbr3), Some("bbr3"));
         assert_eq!(select_congestion_target("", &avail_bbr3), Some("bbr3"));
+
+        let avail_bbr3_upper = vec!["cubic".to_string(), "BBR3".to_string()];
+        assert_eq!(
+            select_congestion_target("auto", &avail_bbr3_upper),
+            Some("BBR3")
+        );
 
         let avail_bbr1 = vec!["cubic".to_string(), "reno".to_string(), "bbr".to_string()];
         assert_eq!(select_congestion_target("auto", &avail_bbr1), Some("bbr"));

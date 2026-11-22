@@ -214,10 +214,11 @@ fn parse_key_value(spec: &ConfigKeySpec, k: &str, v: &str, cfg: &mut Config) -> 
                     cfg.core.log_file = v.to_string();
                 }
                 "TCP_CONGESTION" => {
-                    if v.len() >= 64 {
+                    let trimmed = v.trim();
+                    if trimmed.len() >= 64 {
                         return Err(());
                     }
-                    cfg.core.tcp_congestion = v.to_string();
+                    cfg.core.tcp_congestion = trimmed.to_string();
                 }
                 "CORE_USER_GROUP" => {
                     let (user, group) = match v.split_once(':') {

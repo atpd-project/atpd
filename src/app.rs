@@ -228,10 +228,16 @@ impl App {
         if let Ok(Some(applied)) =
             crate::utils::tcp::apply_tcp_congestion(&self.config.core.tcp_congestion)
         {
-            crate::log_info!(
-                "TCP congestion control initialized: {} (qdisc: fq)",
-                applied
-            );
+            let qdisc = crate::utils::tcp::read_default_qdisc().unwrap_or_default();
+            if !qdisc.is_empty() {
+                crate::log_info!(
+                    "TCP congestion control initialized: {} (qdisc: {})",
+                    applied,
+                    qdisc
+                );
+            } else {
+                crate::log_info!("TCP congestion control initialized: {}", applied);
+            }
         }
 
         if self
@@ -418,10 +424,21 @@ impl App {
             &self.supervisor.conf_path,
         );
 
-        if let Ok(Some(applied)) =
-            crate::utils::tcp::apply_tcp_congestion(&candidate.core.tcp_congestion)
-        {
-            crate::log_info!("TCP congestion control updated: {} (qdisc: fq)", applied);
+        if self.config.core.tcp_congestion != candidate.core.tcp_congestion {
+            if let Ok(Some(applied)) =
+                crate::utils::tcp::apply_tcp_congestion(&candidate.core.tcp_congestion)
+            {
+                let qdisc = crate::utils::tcp::read_default_qdisc().unwrap_or_default();
+                if !qdisc.is_empty() {
+                    crate::log_info!(
+                        "TCP congestion control updated: {} (qdisc: {})",
+                        applied,
+                        qdisc
+                    );
+                } else {
+                    crate::log_info!("TCP congestion control updated: {}", applied);
+                }
+            }
         }
         self.config = candidate;
         crate::log_info!("Config reload completed successfully");

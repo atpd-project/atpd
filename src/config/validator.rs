@@ -287,5 +287,24 @@ pub fn config_validate_values(cfg: &Config) -> Result<(), ConfigError> {
         )));
     }
 
+    let cong = cfg.core.tcp_congestion.trim();
+    if !cong.is_empty() {
+        if cong.len() >= 64 {
+            return Err(ConfigError::Validation(format!(
+                "tcp_congestion too long (max 63 chars): '{}'",
+                cong
+            )));
+        }
+        if !cong
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(ConfigError::Validation(format!(
+                "invalid characters in tcp_congestion: '{}'",
+                cong
+            )));
+        }
+    }
+
     Ok(())
 }

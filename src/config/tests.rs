@@ -504,4 +504,11 @@ fn test_tcp_congestion_config_and_reload() {
     let res = classify_reload(&current, &candidate);
     assert!(res.contains(ReloadChanges::HOT));
     assert!(!res.contains(ReloadChanges::REQUIRES_RESTART));
+
+    // Test invalid characters in TCP_CONGESTION
+    let (bad_conf_path, _bad_guard) = create_temp_conf("TCP_CONGESTION=bbr 3\n");
+    assert!(load(&bad_conf_path).is_err());
+
+    let (bad_chars_path, _bad_chars_guard) = create_temp_conf("TCP_CONGESTION=bbr;rm\n");
+    assert!(load(&bad_chars_path).is_err());
 }

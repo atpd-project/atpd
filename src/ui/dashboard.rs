@@ -578,5 +578,23 @@ mod tests {
 
         let summary = status_summary_to_string(&snapshot);
         assert!(summary.contains("TCP Cong:  bbr3 (fq)"));
+
+        // Fallback when default_qdisc is empty
+        let snapshot_no_qdisc = StatusSnapshot {
+            emoji_enabled: false,
+            daemon_running: true,
+            atpd_pid: 1234,
+            kernel_release,
+            tcp_congestion,
+            default_qdisc: [0u8; 32],
+            ..Default::default()
+        };
+        let rendered_no_qdisc = status_render_to_string(&snapshot_no_qdisc, 0, true);
+        assert!(rendered_no_qdisc.contains("TCP Congestion"));
+        assert!(rendered_no_qdisc.contains("bbr3"));
+        assert!(!rendered_no_qdisc.contains("bbr3 ("));
+
+        let summary_no_qdisc = status_summary_to_string(&snapshot_no_qdisc);
+        assert!(summary_no_qdisc.contains("TCP Cong:  bbr3\n"));
     }
 }
