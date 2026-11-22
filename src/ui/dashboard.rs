@@ -653,7 +653,7 @@ mod tests {
                         .collect()
                 };
                 let display_w = crate::ui::str_display_width(&visible);
-                let max_allowed = if width < 90 { width } else { width.max(90) };
+                let max_allowed = width;
                 assert!(
                     display_w <= max_allowed,
                     "Line '{}' display width {} exceeds max_allowed {} at width {}",
@@ -662,7 +662,22 @@ mod tests {
                     max_allowed,
                     width
                 );
+                // Dividers are centred in min(width, 90) columns at the wide layout.
+                if width >= 60 && visible.starts_with('=') {
+                    assert_eq!(
+                        display_w,
+                        width.min(90),
+                        "divider '{}' at {}",
+                        visible,
+                        width
+                    );
+                }
             }
+            assert!(
+                !rendered.contains("\n\n\n"),
+                "double blank line at width {}",
+                width
+            );
         }
     }
 }

@@ -30,7 +30,14 @@ pub fn label_width(width: usize) -> usize {
 }
 
 pub fn str_display_width(s: &str) -> usize {
-    s.chars().map(|ch| if ch.is_ascii() { 1 } else { 2 }).sum()
+    // shortcut: non-ASCII is assumed 2 columns wide (zero-width joiners excepted), use unicode-width if exact widths matter.
+    s.chars()
+        .map(|ch| match ch {
+            '\u{FE0F}' | '\u{200D}' => 0,
+            c if c.is_ascii() => 1,
+            _ => 2,
+        })
+        .sum()
 }
 
 pub fn truncate_utf8(src: &str, max_bytes: usize) -> String {
