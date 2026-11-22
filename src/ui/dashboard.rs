@@ -273,13 +273,9 @@ pub fn status_render_snapshot_width<W: std::fmt::Write>(
         "ATPD Status"
     })?;
     render_atpd(&mut ui, snapshot)?;
-    ui.blank()?;
     render_proxy(&mut ui, snapshot)?;
-    ui.blank()?;
     render_api(&mut ui, snapshot)?;
-    ui.blank()?;
     render_vpn(&mut ui, snapshot)?;
-    ui.blank()?;
     render_system(&mut ui, snapshot)?;
     Ok(())
 }
@@ -596,5 +592,77 @@ mod tests {
 
         let summary_no_qdisc = status_summary_to_string(&snapshot_no_qdisc);
         assert!(summary_no_qdisc.contains("TCP Cong:  bbr3\n"));
+    }
+
+    #[test]
+    fn test_status_render_responsive_widths() {
+        let mut kernel_release = [0u8; 256];
+        let krel = b"6.1.0-test";
+        kernel_release[..krel.len()].copy_from_slice(krel);
+
+        let mut tcp_congestion = [0u8; 32];
+        let cong = b"bbr";
+        tcp_congestion[..cong.len()].copy_from_slice(cong);
+
+        let mut default_qdisc = [0u8; 32];
+        let qdisc = b"fq";
+        default_qdisc[..qdisc.len()].copy_from_slice(qdisc);
+
+        let snapshot = StatusSnapshot {
+            emoji_enabled: true,
+            daemon_running: true,
+            api_port: 9080,
+            kernel_release,
+            tcp_congestion,
+            default_qdisc,
+            atpd_pid: 1234,
+            atpd_uptime_sec: 120,
+            atpd_fd_count: 5,
+            atpd_thread_count: 3,
+            atpd_rss_kb: 2048,
+            atpd_hwm_kb: 4096,
+            singbox_pid: 5678,
+            singbox_state: ServiceState::Running,
+            singbox_healthy: true,
+            singbox_uptime_sec: 100,
+            cpu_temperature_c: 42,
+            ..Default::default()
+        };
+
+        for width in [30, 45, 60, 80, 120, 200] {
+            let rendered = status_render_to_string(&snapshot, width, false);
+            assert!(!rendered.is_empty());
+            for line in rendered.lines() {
+                // Strip ANSI escape codes to measure visible length
+                let visible: String = {
+                    let mut in_esc = false;
+                    line.chars()
+                        .filter(|c| {
+                            if *c == '\x1b' {
+                                in_esc = true;
+                                false
+                            } else if in_esc {
+                                if *c == 'm' {
+                                    in_esc = false;
+                                }
+                                false
+                            } else {
+                                true
+                            }
+                        })
+                        .collect()
+                };
+                let display_w = crate::ui::str_display_width(&visible);
+                let max_allowed = if width < 90 { width } else { width.max(90) };
+                assert!(
+                    display_w <= max_allowed,
+                    "Line '{}' display width {} exceeds max_allowed {} at width {}",
+                    visible,
+                    display_w,
+                    max_allowed,
+                    width
+                );
+            }
+        }
     }
 }
