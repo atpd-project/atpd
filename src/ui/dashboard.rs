@@ -644,7 +644,7 @@ mod tests {
         for (no_color, emoji) in [(false, true), (true, true), (true, false)] {
             let snapshot = StatusSnapshot {
                 emoji_enabled: emoji,
-                ..snapshot.clone()
+                ..snapshot
             };
             for width in [30, 45, 60, 80, 120, 200] {
                 let rendered = status_render_to_string(&snapshot, width, no_color);
@@ -689,7 +689,7 @@ mod tests {
                         width,
                         width
                     );
-                    if (visible.starts_with('━') || visible.starts_with("==")) {
+                    if visible.starts_with('━') || visible.starts_with("==") {
                         let expected = if width < 60 { width } else { width.min(90) };
                         assert_eq!(display_w, expected, "title rule '{}' at {}", visible, width);
                     }
