@@ -237,7 +237,8 @@ fn render_system<W: std::fmt::Write>(
     let temperature = if snapshot.cpu_temperature_c < 0 {
         "N/A".to_string()
     } else {
-        format!("{}°C", snapshot.cpu_temperature_c)
+        let unit = if ui.emoji_enabled { "°C" } else { "C" };
+        format!("{}{}", snapshot.cpu_temperature_c, unit)
     };
     let kernel = if snapshot.kernel_release[0] != 0 {
         snapshot.kernel_release_str()
@@ -495,7 +496,8 @@ mod tests {
         assert!(narrow_emoji.contains("State: STANDALONE / DIRECT"));
         assert!(!narrow_emoji.contains('ℹ'));
         assert!(!narrow_emoji.contains("\x1b["));
-        assert!(narrow.contains("\n  ├─ Kernel: "));
+        assert!(narrow.contains("\n  |- Kernel: "));
+        assert!(narrow_emoji.contains("\n  ├─ Kernel: "));
         assert!(!narrow.contains("6.1.0-test-kernel-release"));
 
         let mut kernel_release = [0u8; 256];
@@ -611,7 +613,14 @@ mod tests {
         let qdisc = b"fq";
         default_qdisc[..qdisc.len()].copy_from_slice(qdisc);
 
+        let mut vpn = StatusSnapshot::default().vpn;
+        vpn.state = crate::context::VpnState::Ready;
+        vpn.iface[..5].copy_from_slice(b"tun0\0");
         let snapshot = StatusSnapshot {
+            vpn,
+            traffic_available: true,
+            vpn_rx_bytes: 123_456_789,
+            vpn_tx_bytes: 987_654_321,
             emoji_enabled: true,
             daemon_running: true,
             api_port: 9080,
@@ -632,10 +641,22 @@ mod tests {
             ..Default::default()
         };
 
-        for no_color in [false, true] {
+        for (no_color, emoji) in [(false, true), (true, true), (true, false)] {
+            let snapshot = StatusSnapshot {
+                emoji_enabled: emoji,
+                ..snapshot
+            };
             for width in [30, 45, 60, 80, 120, 200] {
                 let rendered = status_render_to_string(&snapshot, width, no_color);
                 assert!(!rendered.is_empty());
+                assert!(rendered.contains("CONNECTED"));
+                if !emoji {
+                    assert!(
+                        rendered.is_ascii(),
+                        "non-ASCII output with emoji off: {}",
+                        rendered
+                    );
+                }
                 if no_color {
                     assert!(!rendered.contains("\x1b["));
                 }
@@ -668,11 +689,14 @@ mod tests {
                         width,
                         width
                     );
-                    if visible.starts_with('━') {
+                    if visible.starts_with('━') || visible.starts_with("==") {
                         let expected = if width < 60 { width } else { width.min(90) };
                         assert_eq!(display_w, expected, "title rule '{}' at {}", visible, width);
                     }
-                    if width >= 60 && visible.contains('─') && !visible.starts_with("  ") {
+                    if width >= 60
+                        && (visible.contains('─') || visible.contains("--"))
+                        && !visible.starts_with("  ")
+                    {
                         assert_eq!(
                             display_w,
                             width.min(90),

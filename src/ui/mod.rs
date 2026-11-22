@@ -103,6 +103,26 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
         }
     }
 
+    /// Rule glyph; ASCII when `emoji_enabled` is off so non-UTF-8 terminals stay readable.
+    fn rule(&self, heavy: bool) -> &'static str {
+        match (self.emoji_enabled, heavy) {
+            (true, true) => "━",
+            (true, false) => "─",
+            (false, true) => "=",
+            (false, false) => "-",
+        }
+    }
+
+    /// Tree branch glyph with the same ASCII fallback (same 2-column width).
+    fn branch<'a>(&self, prefix: &'a str) -> &'a str {
+        let b = if prefix.is_empty() { "├─" } else { prefix };
+        match (self.emoji_enabled, b) {
+            (false, "├─") => "|-",
+            (false, "└─") => "`-",
+            _ => b,
+        }
+    }
+
     pub fn title(&mut self, title: &str) -> std::fmt::Result {
         let rule_width = if self.width < 60 {
             self.width
@@ -116,9 +136,10 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
             title,
             self.reset()
         )?;
+        let rule = self.rule(true);
         write!(self.out, "{}", self.style(COLOR_DIM))?;
         for _ in 0..rule_width {
-            write!(self.out, "━")?;
+            write!(self.out, "{}", rule)?;
         }
         writeln!(self.out, "{}", self.reset())
     }
@@ -158,9 +179,10 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
             self.reset()
         )?;
         if trail_len > 0 {
+            let rule = self.rule(false);
             write!(self.out, " {}", self.style(COLOR_DIM))?;
             for _ in 0..trail_len {
-                write!(self.out, "─")?;
+                write!(self.out, "{}", rule)?;
             }
             write!(self.out, "{}", self.reset())?;
         }
@@ -209,7 +231,7 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
     }
 
     pub fn table_subrow(&mut self, prefix: &str, label: &str, value: &str) -> std::fmt::Result {
-        let branch = if prefix.is_empty() { "├─" } else { prefix };
+        let branch = self.branch(prefix);
         let branch_w = str_display_width(branch);
         if self.width < 60 {
             let label_w = str_display_width(label);
@@ -253,7 +275,7 @@ impl<W: std::fmt::Write> UiRenderCtx<W> {
         value: &str,
         color: &str,
     ) -> std::fmt::Result {
-        let branch = if prefix.is_empty() { "├─" } else { prefix };
+        let branch = self.branch(prefix);
         let branch_w = str_display_width(branch);
         if self.width < 60 {
             let label_w = str_display_width(label);
