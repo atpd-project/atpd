@@ -227,19 +227,8 @@ impl App {
             crate::log_error!("IPv6 leak guard apply failed: {}", e);
         }
 
-        if let Ok(Some(applied)) =
-            crate::utils::tcp::apply_tcp_congestion(&self.config.core.tcp_congestion)
-        {
-            let qdisc = crate::utils::tcp::read_default_qdisc().unwrap_or_default();
-            if !qdisc.is_empty() {
-                crate::log_info!(
-                    "TCP congestion control initialized: {} (qdisc: {})",
-                    applied,
-                    qdisc
-                );
-            } else {
-                crate::log_info!("TCP congestion control initialized: {}", applied);
-            }
+        if let Err(e) = crate::utils::tcp::apply_tcp_congestion(&self.config.core.tcp_congestion) {
+            crate::log_warn!("Failed to set TCP congestion control: {}", e);
         }
 
         if self
@@ -434,19 +423,17 @@ impl App {
         }
 
         if self.config.core.tcp_congestion != candidate.core.tcp_congestion {
-            if let Ok(Some(applied)) =
-                crate::utils::tcp::apply_tcp_congestion(&candidate.core.tcp_congestion)
+            let req = candidate.core.tcp_congestion.trim();
+            if ["off", "none", "disabled"]
+                .iter()
+                .any(|o| req.eq_ignore_ascii_case(o))
             {
-                let qdisc = crate::utils::tcp::read_default_qdisc().unwrap_or_default();
-                if !qdisc.is_empty() {
-                    crate::log_info!(
-                        "TCP congestion control updated: {} (qdisc: {})",
-                        applied,
-                        qdisc
-                    );
-                } else {
-                    crate::log_info!("TCP congestion control updated: {}", applied);
-                }
+                crate::log_info!(
+                    "TCP congestion control set to '{}': current kernel algorithm left unchanged (not reverted)",
+                    req
+                );
+            } else if let Err(e) = crate::utils::tcp::apply_tcp_congestion(req) {
+                crate::log_warn!("Failed to set TCP congestion control: {}", e);
             }
         }
         self.config = candidate;

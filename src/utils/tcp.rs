@@ -87,26 +87,22 @@ pub fn apply_tcp_congestion(requested: &str) -> io::Result<Option<String>> {
 
     let current = read_current_congestion().unwrap_or_default();
     if current != target {
-        if let Err(e) = fs::write(PROC_TCP_CONG, target) {
-            crate::log_warn!(
-                "Failed to set TCP congestion control to '{}': {}",
-                target,
-                e
-            );
-            return Ok(None);
-        }
+        fs::write(PROC_TCP_CONG, target)?;
         crate::log_info!(
             "TCP congestion control set to '{}' (was '{}')",
             target,
             current
         );
+    } else {
+        crate::log_info!("TCP congestion control already '{}'", target);
     }
 
     if target.eq_ignore_ascii_case("bbr3") || target.eq_ignore_ascii_case("bbr") {
         let current_qdisc = read_default_qdisc().unwrap_or_default();
         if current_qdisc != "fq" {
+            // Only affects interfaces created afterwards; existing ones keep their qdisc.
             if let Err(e) = fs::write(PROC_DEFAULT_QDISC, "fq") {
-                crate::log_debug!("Failed to set default_qdisc to 'fq': {}", e);
+                crate::log_warn!("Failed to set default_qdisc to 'fq': {}", e);
             } else {
                 crate::log_info!("Default qdisc set to 'fq' (was '{}')", current_qdisc);
             }

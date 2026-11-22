@@ -9,6 +9,8 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 pub const TUN_ROUTING_TABLE: u32 = 2022;
 pub const TPROXY_ROUTING_TABLE: u32 = 160;
@@ -384,7 +386,8 @@ pub fn ipv6_leak_guard_commands(guard: Option<&Ipv6LeakGuard>) -> Vec<String> {
 /// Executes shell commands to apply IPv6 leak guard rules.
 ///
 /// Runs under `set -e`: the cleanup prefix cannot fail, so the first failing
-/// `ip ... add` aborts the script and is reported as an error.
+/// `ip ... add` aborts the script. A partial install is then rolled back so the
+/// state is defined (no rules) and the error is returned.
 pub fn exec_leak_guard_commands(commands: &[String]) -> io::Result<()> {
     if commands.is_empty() {
         return Ok(());
@@ -392,8 +395,10 @@ pub fn exec_leak_guard_commands(commands: &[String]) -> io::Result<()> {
     let script = format!("set -e\n{}", commands.join("\n"));
     let output = run_sh(&script)?;
     if !output.status.success() {
+        let rollback = format!("set -e\n{}", ipv6_leak_guard_commands(None).join("\n"));
+        let _ = run_sh(&rollback);
         return Err(io::Error::other(format!(
-            "IPv6 leak guard command failed ({:?}): {}",
+            "IPv6 leak guard command failed ({:?}), rolled back: {}",
             output.status.code(),
             String::from_utf8_lossy(&output.stderr).trim()
         )));
@@ -420,13 +425,32 @@ pub fn apply_ipv6_leak_guard(guard: Option<&Ipv6LeakGuard>) -> io::Result<()> {
     exec_leak_guard_commands(&cmds)
 }
 
-/// Reads the config and derives the desired guard. Any read/parse failure is an
-/// error so callers keep the existing rules (fail closed) instead of removing them.
+type GuardCache = Option<(String, Option<Ipv6LeakGuard>)>;
+static GUARD_CACHE: Mutex<GuardCache> = Mutex::new(None);
+static LAST_RECONCILE: Mutex<Option<Instant>> = Mutex::new(None);
+const RECONCILE_MIN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Reads the config and derives the desired guard. The result is cached by file
+/// content so parse warnings are logged once per config, not per netlink event.
+/// A missing config is `Ok(None)` (nothing to guard, stale rules get removed);
+/// any other read/parse failure is an error so existing rules are kept.
 fn guard_from_config_file(conf_path: &str) -> io::Result<Option<Ipv6LeakGuard>> {
-    let content = fs::read_to_string(Path::new(conf_path))?;
+    let content = match fs::read_to_string(Path::new(conf_path)) {
+        Ok(c) => c,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let mut cache = GUARD_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((cached, guard)) = cache.as_ref() {
+        if *cached == content {
+            return Ok(guard.clone());
+        }
+    }
     serde_json::from_str::<serde_json::Value>(&content)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(ipv6_leak_guard_from_config(&content))
+    let guard = ipv6_leak_guard_from_config(&content);
+    *cache = Some((content, guard.clone()));
+    Ok(guard)
 }
 
 /// Reads sing-box config file and applies IPv6 leak guard.
@@ -440,25 +464,39 @@ pub fn apply_ipv6_leak_guard_from_config_file(conf_path: &str) -> io::Result<()>
     apply_ipv6_leak_guard(guard.as_ref())
 }
 
-/// Re-applies the guard only if its rules were flushed (e.g. by netd); the rule
-/// multicast groups are not subscribed to, so this runs from the netlink debounce.
+/// Re-applies the guard only if its rules or lo address were flushed (e.g. by
+/// netd); the rule multicast groups are not subscribed to, so this runs from the
+/// netlink debounce. Rate-limited because it forks a shell on the reactor thread.
 pub fn reconcile_ipv6_leak_guard(conf_path: &str) -> io::Result<()> {
+    {
+        let mut last = LAST_RECONCILE.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|t| t.elapsed() < RECONCILE_MIN_INTERVAL) {
+            return Ok(());
+        }
+        *last = Some(Instant::now());
+    }
     let guard = guard_from_config_file(conf_path)?;
     let cmds = ipv6_leak_guard_commands(guard.as_ref());
     let route_add = format!("rule add pref {}", ROUTE_PREF);
-    if !cmds.iter().any(|c| c.contains(&route_add)) {
+    let need_rules = cmds.iter().any(|c| c.contains(&route_add));
+    let need_addr = guard.as_ref().is_some_and(|g| g.loopback_source);
+    if !need_rules && !need_addr {
         return Ok(());
     }
-    let out = run_sh("ip -6 rule show")?;
+    let out = run_sh("ip -6 rule show; echo ---; ip -6 addr show dev lo")?;
     let shown = String::from_utf8_lossy(&out.stdout);
+    let (rules, addrs) = shown.split_once("---").unwrap_or((&shown, ""));
     let has = |pref: u32| {
         let prefix = format!("{}:", pref);
-        shown.lines().any(|l| l.starts_with(&prefix))
+        rules.lines().any(|l| l.starts_with(&prefix))
     };
-    if out.status.success() && has(SKIP_PREF) && has(ROUTE_PREF) && has(NOP_PREF) {
+    let rules_ok = !need_rules || (has(SKIP_PREF) && has(ROUTE_PREF) && has(NOP_PREF));
+    let addr = LOOPBACK_SOURCE_ADDRESS.trim_end_matches("/128");
+    let addr_ok = !need_addr || addrs.contains(addr);
+    if out.status.success() && rules_ok && addr_ok {
         return Ok(());
     }
-    crate::log_warn!("IPv6 leak guard: rules missing, re-applying");
+    crate::log_warn!("IPv6 leak guard: rules or lo address missing, re-applying");
     exec_leak_guard_commands(&cmds)
 }
 
@@ -645,6 +683,11 @@ mod tests {
     fn test_exec_reports_failure_and_bad_config_keeps_rules() {
         assert!(exec_leak_guard_commands(&["false".to_string()]).is_err());
         assert!(exec_leak_guard_commands(&["true".to_string()]).is_ok());
-        assert!(apply_ipv6_leak_guard_from_config_file("/nonexistent/config.json").is_err());
+        // Missing config means nothing to guard; unreadable/malformed keeps rules.
+        assert_eq!(
+            guard_from_config_file("/nonexistent/config.json").unwrap(),
+            None
+        );
+        assert!(guard_from_config_file("/").is_err());
     }
 }
