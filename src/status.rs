@@ -185,6 +185,15 @@ impl StatusSnapshot {
     }
 }
 
+/// Copies `s` into a NUL-terminated buffer, truncating on a char boundary.
+fn copy_truncated(dst: &mut [u8], s: &str) {
+    let mut len = s.len().min(dst.len() - 1);
+    while !s.is_char_boundary(len) {
+        len -= 1;
+    }
+    dst[..len].copy_from_slice(&s.as_bytes()[..len]);
+}
+
 struct CpuCacheEntry {
     pid: i32,
     starttime_ticks: u64,
@@ -436,14 +445,10 @@ pub fn collect(
     }
 
     if let Ok(cong) = crate::utils::tcp::read_current_congestion() {
-        let bytes = cong.as_bytes();
-        let len = bytes.len().min(out.tcp_congestion.len() - 1);
-        out.tcp_congestion[..len].copy_from_slice(&bytes[..len]);
+        copy_truncated(&mut out.tcp_congestion, &cong);
     }
     if let Ok(qdisc) = crate::utils::tcp::read_default_qdisc() {
-        let bytes = qdisc.as_bytes();
-        let len = bytes.len().min(out.default_qdisc.len() - 1);
-        out.default_qdisc[..len].copy_from_slice(&bytes[..len]);
+        copy_truncated(&mut out.default_qdisc, &qdisc);
     }
 
     out.daemon_running = supervisor.state != crate::supervisor::ServiceState::Stopped

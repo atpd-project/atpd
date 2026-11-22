@@ -366,8 +366,8 @@ impl NetlinkWatcher {
                             && !info.name.starts_with("ipsec")
                             && !info.name.starts_with("xfrm")
                         {
-                            let want = (libc::IFF_UP | libc::IFF_RUNNING) as u32;
-                            let up = msg.nlmsg_type == RTM_NEWLINK && (info.flags & want) == want;
+                            let up = msg.nlmsg_type == RTM_NEWLINK
+                                && (info.flags & libc::IFF_UP as u32) != 0;
                             let snap = ctx.vpn_snapshot();
                             let change = if up {
                                 ctx.vpn_transition(VpnState::Ready, 0, Some(&info.name))
